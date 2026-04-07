@@ -1,0 +1,45 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+@theme {
+  --color-base: #060a14;
+  --color-surface: #0b1120;
+  --color-surface-light: #111a2e;
+  --color-surface-lighter: #182440;
+  --color-border: #152035;
+  --color-border-light: #1e2d4a;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--color-base);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-lighter);
+  border-radius: 3px;
+}
+
+pre {
+  background: var(--color-surface) !important;
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+code {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+}

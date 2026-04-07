@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT="${PORT:-3100}"
+ASTRO_PORT="${ASTRO_PORT:-4321}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+cleanup() {
+  echo ""
+  echo "Shutting down..."
+  kill "$BRIDGE_PID" "$ASTRO_PID" 2>/dev/null || true
+  wait "$BRIDGE_PID" "$ASTRO_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Start bridge server
+echo "Starting bridge server on port $PORT..."
+cd "$DIR"
+PORT="$PORT" bun --watch run server.ts &
+BRIDGE_PID=$!
+sleep 1
+
+# Start astro dev server
+echo "Starting Astro dev server on port $ASTRO_PORT..."
+PUBLIC_CLAUDE_SERVER_URL="http://localhost:$PORT" \
+PUBLIC_CLAUDE_CWD="$(pwd)" \
+bun run dev --port "$ASTRO_PORT" &
+ASTRO_PID=$!
+
+echo ""
+echo "==========================================="
+echo "  Claude Code UI:    http://localhost:$ASTRO_PORT"
+echo "  Bridge Server:     http://localhost:$PORT"
+echo "==========================================="
+echo ""
+
+wait
