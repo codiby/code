@@ -205,7 +205,7 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
             </div>
 
             {/* Folder list */}
-            <div className="flex-1 overflow-y-auto px-2 py-1 min-h-[200px]">
+            <div className="flex-1 overflow-y-auto px-2 py-1 min-h-0">
               {tab === 'browse' ? (
                 loading ? <p className="text-xs text-zinc-600 text-center py-8">Loading...</p>
                 : folders.length === 0 ? <p className="text-xs text-zinc-600 text-center py-8">No subdirectories</p>
@@ -237,7 +237,7 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
 
             {/* Worktree options */}
             {showWorktree && gitInfo?.is_git && (
-              <div className="px-4 pb-3 pt-2 border-t border-border space-y-2 shrink-0">
+              <div className="px-4 pb-3 pt-2 border-t border-border space-y-2 shrink-0 max-h-[40%] overflow-y-auto">
                 <div className="flex gap-2">
                   <TextField value={worktreeBranch} onChange={setWorktreeBranch} className="flex-1">
                     <Input placeholder="branch-name" />

@@ -2,12 +2,12 @@
 @import "@heroui/styles";
 
 @theme {
-  --color-base: #060a14;
-  --color-surface: #0b1120;
-  --color-surface-light: #111a2e;
-  --color-surface-lighter: #182440;
-  --color-border: #152035;
-  --color-border-light: #1e2d4a;
+  --color-base: #1b1b1b;
+  --color-surface: #222222;
+  --color-surface-light: #2a2a2a;
+  --color-surface-lighter: #333333;
+  --color-border: #2e2e2e;
+  --color-border-light: #3a3a3a;
 }
 
 html {

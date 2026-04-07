@@ -43,7 +43,7 @@ export function TabBar({ sessions, activeSessionId, sessionStatuses, onSelect, o
   };
 
   return (
-    <div className="tab-bar flex items-end bg-[#0a0f1a] pl-1 pt-1.5 shrink-0 select-none overflow-x-auto" style={{ minHeight: 38 }}>
+    <div className="tab-bar flex items-end bg-[#161616] pl-1 pt-1.5 shrink-0 select-none overflow-x-auto" style={{ minHeight: 38 }}>
       {sessions.map(s => {
         const isActive = s.id === activeSessionId;
         const connStatus = sessionStatuses[s.id] || 'disconnected';

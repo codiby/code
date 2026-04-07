@@ -104,7 +104,7 @@ export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen
   }, [client, rootPath]);
 
   return (
-    <aside className={`border-r border-border bg-[#080d18] flex flex-col shrink-0 transition-all ${collapsed ? 'w-0 overflow-hidden' : 'w-60'}`}>
+    <aside className={`border-r border-border bg-[#161616] flex flex-col shrink-0 transition-all ${collapsed ? 'w-0 overflow-hidden' : 'w-60'}`}>
       {/* Header */}
       <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Explorer</span>

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Button, TextField, Input } from '@heroui/react';
+import { Button } from '@heroui/react';
 import Editor, { type Monaco } from '@monaco-editor/react';
 import { Providers } from './Providers';
 import { TabBar } from './TabBar';
@@ -9,6 +9,7 @@ import { PermissionModal } from './PermissionModal';
 import { NewSessionModal } from './NewSessionModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
+import { CommandPalette, type PaletteAction } from './CommandPalette';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   ClaudeClient,
@@ -48,13 +49,16 @@ export function ChatApp() {
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
   const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
   const [input, setInput] = useState('');
+  const [pastedImages, setPastedImages] = useState<{ media_type: string; data: string; preview: string }[]>([]);
   const [showNewSession, setShowNewSession] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   const [openFile, setOpenFile] = useState<{ path: string; content: string } | null>(null);
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const emptyState = (): SessionState => ({ messages: [], partialText: '', isStreaming: false, initInfo: null, permRequest: null });
 
@@ -148,6 +152,16 @@ export function ChatApp() {
     scrollToBottom();
   }, [active.messages, active.partialText, scrollToBottom]);
 
+  // Re-fetch open file when new messages arrive (file may have been edited)
+  useEffect(() => {
+    if (!openFile || !client) return;
+    client.readFile(openFile.path).then(file => {
+      if (file && file.content !== openFile.content) {
+        setOpenFile(file);
+      }
+    }).catch(() => {});
+  }, [active.messages.length]);
+
   const handleNewSession = () => {
     setShowNewSession(true);
   };
@@ -228,7 +242,10 @@ export function ChatApp() {
 
   const handleSend = () => {
     const text = input.trim();
-    if (!text || !activeId || !clientRef.current) return;
+    if (!text && pastedImages.length === 0) return;
+    if (!activeId || !clientRef.current) return;
+
+    const images = pastedImages.length > 0 ? pastedImages.map(({ media_type, data }) => ({ media_type, data })) : undefined;
 
     updateState(activeId, s => ({
       ...s,
@@ -236,13 +253,15 @@ export function ChatApp() {
         id: crypto.randomUUID(),
         role: 'user' as const,
         content: text,
+        images,
         timestamp: Date.now(),
       }],
       isStreaming: true,
       partialText: '',
     }));
     setInput('');
-    clientRef.current.sendMessage(activeId, text);
+    setPastedImages([]);
+    clientRef.current.sendMessage(activeId, text || ' ', images);
   };
 
   const handlePermission = (requestId: string, allow: boolean) => {
@@ -263,12 +282,57 @@ export function ChatApp() {
     if (file) setOpenFile(file);
   };
 
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      switch (e.key) {
+        case 'k':
+          e.preventDefault();
+          setShowPalette(p => !p);
+          break;
+        case 'b':
+          e.preventDefault();
+          setExplorerCollapsed(c => !c);
+          break;
+        case 'l':
+          e.preventDefault();
+          inputRef.current?.focus();
+          break;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const activeStatus = activeId ? (statuses[activeId] || 'disconnected') : 'disconnected';
   const activeSession = sessions.find(s => s.id === activeId);
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
   const slashCommands = active.initInfo?.slashCommands || [];
   const slash = useSlashCommands(input, slashCommands);
   const fileMention = useFileMention(input, client, explorerRoot);
+
+  const paletteActions: PaletteAction[] = [
+    { id: 'new-session', label: 'New Session', keys: ['command'], key: 'N', section: 'Sessions', onRun: () => setShowNewSession(true) },
+    { id: 'focus-input', label: 'Focus Chat Input', keys: ['command'], key: 'L', section: 'Navigation', onRun: () => inputRef.current?.focus() },
+    { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', keys: ['command'], key: 'B', section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
+    { id: 'close-editor', label: 'Close Editor', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => setOpenFile(null) },
+    { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
+    ...(activeId && active.isStreaming ? [{ id: 'stop', label: 'Stop Generation', keys: ['escape'] as string[], section: 'Session', onRun: handleInterrupt }] : []),
+    ...sessions.map(s => ({
+      id: `switch-${s.id}`,
+      label: `Switch to ${s.name}`,
+      section: 'Sessions',
+      onRun: () => handleSelectSession(s.id),
+    })),
+    ...slashCommands.map(cmd => ({
+      id: `slash-${cmd}`,
+      label: `/${cmd}`,
+      section: 'Slash Commands',
+      onRun: () => { setInput(`/${cmd} `); inputRef.current?.focus(); },
+    })),
+  ];
 
   const handleSlashSelect = (cmd: string) => {
     setInput(`/${cmd} `);
@@ -293,18 +357,18 @@ export function ChatApp() {
         const model = ed.getModel();
         if (!model) return;
         const selection = ed.getSelection();
-        const selectedText = selection && !selection.isEmpty() ? model.getValueInRange(selection) : '';
+        const hasSelection = selection && !selection.isEmpty();
         const filePath = openFile?.path || '';
         const relativePath = explorerRoot && filePath.startsWith(explorerRoot)
           ? filePath.slice(explorerRoot.length + 1)
           : filePath;
 
         let reference: string;
-        if (selectedText) {
+        if (hasSelection) {
           const startLine = selection!.startLineNumber;
           const endLine = selection!.endLineNumber;
           const lineRef = startLine === endLine ? `L${startLine}` : `L${startLine}-${endLine}`;
-          reference = `@${relativePath}:${lineRef}\n\`\`\`\n${selectedText}\n\`\`\``;
+          reference = `@${relativePath}:${lineRef}`;
         } else {
           reference = `@${relativePath}`;
         }
@@ -313,6 +377,8 @@ export function ChatApp() {
           const sep = prev && !prev.endsWith(' ') ? ' ' : '';
           return `${prev}${sep}${reference} `;
         });
+        // Focus the chat input
+        setTimeout(() => inputRef.current?.focus(), 50);
       },
     });
   }, [openFile, explorerRoot]);
@@ -412,11 +478,8 @@ export function ChatApp() {
                   </div>
 
                   {/* Input */}
-                  <div className="border-t border-border p-4 shrink-0">
-                    <form
-                      className="flex gap-2 max-w-4xl mx-auto relative"
-                      onSubmit={(e) => { e.preventDefault(); if (!slash.isActive && !fileMention.isActive) handleSend(); }}
-                    >
+                  <div className="border-t border-border p-3 shrink-0">
+                    <div className="max-w-4xl mx-auto relative">
                       {slash.isActive && (
                         <SlashCommandList
                           filtered={slash.filtered}
@@ -432,39 +495,107 @@ export function ChatApp() {
                           onSelect={handleFileMentionSelect}
                         />
                       )}
-                      {active.isStreaming && (
-                        <Button size="sm" variant="flat" onPress={handleInterrupt}
-                          className="shrink-0 text-amber-400">
-                          Stop
-                        </Button>
+                      {/* File reference chips */}
+                      {(() => {
+                        const refs = input.match(/@[\w.\/\-:]+/g);
+                        if (!refs || refs.length === 0) return null;
+                        return (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {refs.map((ref, i) => (
+                              <span
+                                key={i}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-light text-[11px] font-mono text-amber-400/80 border border-border-light"
+                              >
+                                {ref}
+                                <button
+                                  className="text-zinc-500 hover:text-zinc-300 ml-0.5"
+                                  onClick={() => setInput(prev => prev.replace(ref, '').replace(/  +/g, ' ').trim())}
+                                >
+                                  &times;
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                      {/* Image previews */}
+                      {pastedImages.length > 0 && (
+                        <div className="flex gap-2 mb-2 flex-wrap">
+                          {pastedImages.map((img, i) => (
+                            <div key={i} className="relative group">
+                              <img src={img.preview} alt="" className="h-16 rounded border border-border object-cover" />
+                              <button
+                                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-zinc-700 text-zinc-300 text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                                onClick={() => setPastedImages(prev => prev.filter((_, j) => j !== i))}
+                              >
+                                &times;
+                              </button>
+                            </div>
+                          ))}
+                        </div>
                       )}
-                      <TextField
-                        value={input}
-                        onChange={setInput}
-                        isDisabled={active.isStreaming || activeStatus !== 'connected'}
-                        className="flex-1"
-                        aria-label="Message"
-                      >
-                        <Input
+                      <div className="flex gap-2 items-end">
+                        {active.isStreaming && (
+                          <Button size="sm" variant="flat" onPress={handleInterrupt}
+                            className="shrink-0 text-amber-400">
+                            Stop
+                          </Button>
+                        )}
+                        <textarea
+                          ref={inputRef}
+                          value={input}
+                          onChange={(e) => setInput(e.target.value)}
+                          disabled={active.isStreaming || activeStatus !== 'connected'}
                           placeholder="Send a message... (/ commands, @ files)"
                           autoFocus
+                          rows={1}
+                          className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 resize-none outline-none focus:border-zinc-500 transition-colors disabled:opacity-50"
+                          style={{ minHeight: 38, maxHeight: 200 }}
+                          onPaste={(e) => {
+                            const items = e.clipboardData?.items;
+                            if (!items) return;
+                            for (const item of items) {
+                              if (item.type.startsWith('image/')) {
+                                e.preventDefault();
+                                const file = item.getAsFile();
+                                if (!file) continue;
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                  const dataUrl = reader.result as string;
+                                  const [header, data] = dataUrl.split(',');
+                                  const media_type = header!.match(/:(.*?);/)?.[1] || 'image/png';
+                                  setPastedImages(prev => [...prev, { media_type, data: data!, preview: dataUrl }]);
+                                };
+                                reader.readAsDataURL(file);
+                              }
+                            }
+                          }}
+                          onInput={(e) => {
+                            const el = e.currentTarget;
+                            el.style.height = 'auto';
+                            el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+                          }}
                           onKeyDown={(e) => {
                             if (fileMention.isActive) {
                               fileMention.onKeyDown(e, handleFileMentionSelect);
                             } else {
                               slash.onKeyDown(e, handleSlashSelect);
                             }
+                            if (e.key === 'Enter' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
+                              e.preventDefault();
+                              handleSend();
+                            }
                           }}
                         />
-                      </TextField>
-                      <Button
-                        type="submit"
-                        isDisabled={!input.trim() || active.isStreaming || activeStatus !== 'connected'}
-                        className="shrink-0 px-6"
-                      >
-                        Send
-                      </Button>
-                    </form>
+                        <Button
+                          onPress={handleSend}
+                          isDisabled={!input.trim() || active.isStreaming || activeStatus !== 'connected'}
+                          className="shrink-0 px-6"
+                        >
+                          Send
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -485,7 +616,7 @@ export function ChatApp() {
                     <div className="flex-1">
                       <Editor
                         path={openFile.path}
-                        defaultValue={openFile.content}
+                        value={openFile.content}
                         theme="vs-dark"
                         onMount={handleEditorMount}
                         options={{
@@ -514,6 +645,13 @@ export function ChatApp() {
           client={clientRef.current}
           onClose={() => setShowNewSession(false)}
           onCreate={handleCreateSession}
+        />
+        <CommandPalette
+          isOpen={showPalette}
+          onClose={() => setShowPalette(false)}
+          actions={paletteActions}
+          onSearchFiles={explorerRoot && client ? (q) => client.findFiles(explorerRoot, q) : undefined}
+          onFileOpen={handleFileOpen}
         />
       </div>
     </Providers>

@@ -7,6 +7,7 @@ export interface ChatMessage {
   role: MessageRole;
   content: string;
   timestamp: number;
+  images?: { media_type: string; data: string }[];
   toolName?: string;
   toolInput?: unknown;
   isToolResult?: boolean;
@@ -418,13 +419,21 @@ export class ClaudeClient {
     }
   }
 
-  sendMessage(sessionId: string, text: string): void {
+  sendMessage(sessionId: string, text: string, images?: { media_type: string; data: string }[]): void {
     const active = this.activeSessions.get(sessionId);
     if (!active || active.ws.readyState !== WebSocket.OPEN) return;
 
+    const content: unknown[] = [];
+    if (images) {
+      for (const img of images) {
+        content.push({ type: 'image', source: { type: 'base64', media_type: img.media_type, data: img.data } });
+      }
+    }
+    content.push({ type: 'text', text });
+
     active.ws.send(JSON.stringify({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text }] },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: sessionId,
     }));
