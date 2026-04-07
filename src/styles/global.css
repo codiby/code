@@ -31,6 +31,14 @@ body {
   border-radius: 3px;
 }
 
+.tab-bar {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab-bar::-webkit-scrollbar {
+  height: 0;
+}
+
 pre {
   background: var(--color-surface) !important;
   border-radius: 8px;

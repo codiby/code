@@ -113,6 +113,24 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  async listFiles(path: string): Promise<{ name: string; type: 'file' | 'dir'; path: string }[]> {
+    const resp = await fetch(`${this.serverUrl}/files?path=${encodeURIComponent(path)}`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  async findFiles(root: string, query: string): Promise<{ name: string; path: string; rel: string }[]> {
+    const resp = await fetch(`${this.serverUrl}/find-files?root=${encodeURIComponent(root)}&q=${encodeURIComponent(query)}`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  async readFile(path: string): Promise<{ path: string; content: string } | null> {
+    const resp = await fetch(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`);
+    if (!resp.ok) return null;
+    return resp.json();
+  }
+
   async getGitInfo(path: string): Promise<{
     is_git: boolean; branch?: string; top_level?: string;
     worktrees?: { path: string; branch: string }[];

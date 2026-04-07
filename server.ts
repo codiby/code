@@ -165,6 +165,32 @@ const server = Bun.serve({
       return handleListDirs(prefix);
     }
 
+    // List files and directories for file explorer
+    if (url.pathname === '/files' && req.method === 'GET') {
+      const dirPath = url.searchParams.get('path') || '/';
+      return handleListFiles(dirPath);
+    }
+
+    // Search files by name (recursive, for @ mentions)
+    if (url.pathname === '/find-files' && req.method === 'GET') {
+      const root = url.searchParams.get('root');
+      const query = url.searchParams.get('q') || '';
+      if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
+      return handleFindFiles(root, query);
+    }
+
+    // Read file content for editor
+    if (url.pathname === '/file-content' && req.method === 'GET') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        return Response.json({ path: filePath, content }, { headers: corsHeaders });
+      } catch {
+        return Response.json({ error: 'Cannot read file' }, { status: 404, headers: corsHeaders });
+      }
+    }
+
     // Check if a path is a git repo
     if (url.pathname === '/git-info' && req.method === 'GET') {
       const dirPath = url.searchParams.get('path');
@@ -458,6 +484,62 @@ function handleListDirs(prefix: string): Response {
       .sort();
 
     return Response.json(dirs, { headers: corsHeaders });
+  } catch {
+    return Response.json([], { headers: corsHeaders });
+  }
+}
+
+function handleListFiles(dirPath: string): Response {
+  try {
+    if (!existsSync(dirPath)) {
+      return Response.json([], { headers: corsHeaders });
+    }
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    const items = entries
+      .filter(e => !e.name.startsWith('.'))
+      .map(e => ({
+        name: e.name,
+        type: e.isDirectory() ? 'dir' as const : 'file' as const,
+        path: resolve(dirPath, e.name),
+      }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    return Response.json(items, { headers: corsHeaders });
+  } catch {
+    return Response.json([], { headers: corsHeaders });
+  }
+}
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.astro', '__pycache__', '.venv', 'vendor', 'coverage']);
+
+function handleFindFiles(root: string, query: string): Response {
+  try {
+    const results: { name: string; path: string; rel: string }[] = [];
+    const q = query.toLowerCase();
+    const maxResults = 30;
+    const maxDepth = 6;
+
+    function walk(dir: string, rel: string, depth: number) {
+      if (depth > maxDepth || results.length >= maxResults) return;
+      let entries;
+      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.name.startsWith('.')) continue;
+        if (results.length >= maxResults) break;
+        const fullPath = resolve(dir, e.name);
+        const relPath = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) {
+          if (!SKIP_DIRS.has(e.name)) walk(fullPath, relPath, depth + 1);
+        } else if (!q || e.name.toLowerCase().includes(q) || relPath.toLowerCase().includes(q)) {
+          results.push({ name: e.name, path: fullPath, rel: relPath });
+        }
+      }
+    }
+
+    walk(root, '', 0);
+    return Response.json(results, { headers: corsHeaders });
   } catch {
     return Response.json([], { headers: corsHeaders });
   }
