@@ -1,15 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@heroui/react';
 import Editor, { type Monaco } from '@monaco-editor/react';
+import { DiffReview, type ReviewComment } from './DiffReview';
 import { Providers } from './Providers';
 import { TabBar } from './TabBar';
 import { FileExplorer } from './FileExplorer';
-import { MessageBubble } from './MessageBubble';
-import { PermissionModal } from './PermissionModal';
+import { MessageBubble, AnsiText } from './MessageBubble';
 import { NewSessionModal } from './NewSessionModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
+import { useFileIndex } from '../lib/fuzzy-file-search';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   ClaudeClient,
@@ -27,11 +28,25 @@ function loadMessages(sessionId: string): ChatMessage[] {
   try { return JSON.parse(localStorage.getItem(MSG_KEY_PREFIX + sessionId) || '[]'); }
   catch { return []; }
 }
+
+const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function saveMessages(sessionId: string, messages: ChatMessage[]) {
-  try { localStorage.setItem(MSG_KEY_PREFIX + sessionId, JSON.stringify(messages)); }
-  catch {}
+  // Debounce saves — collapse rapid updates into one write
+  clearTimeout(saveTimers.get(sessionId));
+  saveTimers.set(sessionId, setTimeout(() => {
+    try {
+      // Strip large terminal output from persisted messages to keep localStorage lean
+      const slim = messages.map(m =>
+        m.isTerminal && m.content.length > 5000
+          ? { ...m, content: m.content.slice(-2000) }
+          : m
+      );
+      localStorage.setItem(MSG_KEY_PREFIX + sessionId, JSON.stringify(slim));
+    } catch {}
+  }, 500));
 }
 function deleteMessages(sessionId: string) {
+  clearTimeout(saveTimers.get(sessionId));
   localStorage.removeItem(MSG_KEY_PREFIX + sessionId);
 }
 
@@ -45,6 +60,10 @@ type SessionState = {
 
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
+    catch { return new Set(); }
+  });
   const [activeId, setActiveId] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
   const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
@@ -53,7 +72,22 @@ export function ChatApp() {
   const [showNewSession, setShowNewSession] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
-  const [openFile, setOpenFile] = useState<{ path: string; content: string } | null>(null);
+  const [openFile, setOpenFileRaw] = useState<{ path: string; content: string } | null>(null);
+  const [openTerminalId, setOpenTerminalId] = useState<string | null>(null);
+  const [diffView, setDiffView] = useState<{ path: string; original: string; modified: string } | null>(null);
+  const [editorFullWidth, setEditorFullWidth] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [reviewComments, setReviewComments] = useState<Record<string, ReviewComment[]>>({});
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewFiles, setReviewFiles] = useState<string[]>([]);
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const setOpenFile = (file: { path: string; content: string } | null) => {
+    if (file) { setOpenTerminalId(null); setDiffView(null); }
+    if (!file) setEditorFullWidth(false);
+    setOpenFileRaw(file);
+    setEditorDirty(false);
+  };
+  const [gitModified, setGitModified] = useState<Set<string>>(new Set());
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -123,18 +157,27 @@ export function ChatApp() {
     // Load existing sessions
     client.listSessions().then(list => {
       setSessions(list);
-      // Connect to all running sessions
+      // Read closed tabs from localStorage
+      let closed: Set<string>;
+      try { closed = new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
+      catch { closed = new Set(); }
+
+      // Connect to all running sessions that aren't closed
+      const initialStatuses: Record<string, ConnectionStatus> = {};
       for (const s of list) {
-        if (s.status !== 'stopped') {
+        if (s.status !== 'stopped' && !closed.has(s.id)) {
+          initialStatuses[s.id] = 'connecting';
           client.connectSession(s);
         }
       }
-      // Select first running session, or just first session
-      const running = list.find(s => s.status !== 'stopped');
+      setStatuses(initialStatuses);
+      // Select first open running session
+      const openList = list.filter(s => !closed.has(s.id));
+      const running = openList.find(s => s.status !== 'stopped');
       if (running) {
         setActiveId(running.id);
-      } else if (list.length > 0) {
-        setActiveId(list[0]!.id);
+      } else if (openList.length > 0) {
+        setActiveId(openList[0]!.id);
       }
     }).catch(() => {});
 
@@ -148,18 +191,32 @@ export function ChatApp() {
   }, []);
 
   const active = getState(activeId);
+  const lastMsgContent = active.messages[active.messages.length - 1]?.content;
+  const openTerminal = openTerminalId ? active.messages.find(m => m.id === openTerminalId && m.isTerminal) || null : null;
+  const hasRightPanel = !!openFile || !!openTerminal || !!diffView;
   useEffect(() => {
     scrollToBottom();
-  }, [active.messages, active.partialText, scrollToBottom]);
+  }, [active.messages, active.partialText, lastMsgContent, scrollToBottom]);
 
-  // Re-fetch open file when new messages arrive (file may have been edited)
+  // Re-fetch open file and git status when new messages arrive
+  const msgLenRef = useRef(0);
   useEffect(() => {
-    if (!openFile || !client) return;
-    client.readFile(openFile.path).then(file => {
-      if (file && file.content !== openFile.content) {
-        setOpenFile(file);
+    const len = active.messages.length;
+    if (len === msgLenRef.current) return;
+    msgLenRef.current = len;
+    if (!client) return;
+    // Debounce: wait a bit for rapid message bursts
+    const t = setTimeout(() => {
+      if (openFile) {
+        client.readFile(openFile.path).then(file => {
+          if (file && file.content !== openFile.content) {
+            setOpenFileRaw(file);
+          }
+        }).catch(() => {});
       }
-    }).catch(() => {});
+      refreshGitModified();
+    }, 1000);
+    return () => clearTimeout(t);
   }, [active.messages.length]);
 
   const handleNewSession = () => {
@@ -200,23 +257,111 @@ export function ChatApp() {
     }
   };
 
-  const handleDeleteSession = async (id: string) => {
-    await clientRef.current?.deleteSession(id);
-    deleteMessages(id);
-    setSessions(prev => prev.filter(s => s.id !== id));
-    setSessionStates(prev => {
-      const next = { ...prev };
-      delete next[id];
+  const updateClosedIds = (fn: (prev: Set<string>) => Set<string>) => {
+    setClosedSessionIds(prev => {
+      const next = fn(prev);
+      try { localStorage.setItem('claude-ui-closed-tabs', JSON.stringify([...next])); } catch {}
       return next;
     });
-    setStatuses(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+  };
+
+  const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
+
+  const handleCloseTab = (id: string) => {
+    setClosingSessionId(id);
+  };
+
+  const confirmCloseTab = async () => {
+    const id = closingSessionId;
+    if (!id) return;
+    setClosingSessionId(null);
+
+    // Save running terminal commands
+    const state = getState(id);
+    const runningCmds = state.messages
+      .filter(m => m.isTerminal && m.exitCode === undefined && m.terminalCommand)
+      .map(m => m.terminalCommand!);
+    if (clientRef.current && runningCmds.length > 0) {
+      await clientRef.current.saveCommands(id, runningCmds);
+    }
+
+    clientRef.current?.disconnectSession(id);
+    updateClosedIds(prev => new Set(prev).add(id));
     if (activeId === id) {
-      const remaining = sessions.filter(s => s.id !== id);
-      setActiveId(remaining.length > 0 ? remaining[0]!.id : null);
+      const openSessions = sessions.filter(s => s.id !== id && !closedSessionIds.has(s.id));
+      setActiveId(openSessions.length > 0 ? openSessions[0]!.id : null);
+    }
+  };
+
+  const [restoreSessionId, setRestoreSessionId] = useState<string | null>(null);
+  const [restoreCommands, setRestoreCommands] = useState<string[]>([]);
+
+  const handleReopenSession = (id: string) => {
+    updateClosedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setActiveId(id);
+    // Reconnect
+    const session = sessions.find(s => s.id === id);
+    if (session && clientRef.current) {
+      clientRef.current.connectSession(session);
+      // Check for saved commands
+      if (session.saved_commands && session.saved_commands.length > 0) {
+        setRestoreSessionId(id);
+        setRestoreCommands(session.saved_commands);
+      }
+    }
+  };
+
+  const confirmRestore = () => {
+    const id = restoreSessionId;
+    const cmds = restoreCommands;
+    setRestoreSessionId(null);
+    setRestoreCommands([]);
+    if (!id || !clientRef.current) return;
+    const session = sessions.find(s => s.id === id);
+    const cwd = getState(id).initInfo?.cwd || session?.cwd || '/';
+    // Re-run each command
+    for (const command of cmds) {
+      const msgId = crypto.randomUUID();
+      updateState(id, s => ({
+        ...s,
+        messages: [...s.messages, {
+          id: msgId,
+          role: 'system' as const,
+          content: '',
+          isTerminal: true,
+          terminalCommand: command,
+          timestamp: Date.now(),
+        }],
+      }));
+      clientRef.current!.execCommand(command, cwd, {
+        onData: (chunk) => {
+          updateState(id, s => ({
+            ...s,
+            messages: s.messages.map(m => m.id === msgId ? { ...m, content: m.content + chunk } : m),
+          }));
+        },
+        onDone: (exitCode) => {
+          updateState(id, s => ({
+            ...s,
+            messages: s.messages.map(m => m.id === msgId ? { ...m, exitCode } : m),
+          }));
+        },
+      }, id);
+    }
+    // Clear saved commands on server
+    clientRef.current.saveCommands(id, []);
+  };
+
+  const dismissRestore = () => {
+    const id = restoreSessionId;
+    setRestoreSessionId(null);
+    setRestoreCommands([]);
+    if (id && clientRef.current) {
+      clientRef.current.saveCommands(id, []);
     }
   };
 
@@ -244,6 +389,49 @@ export function ChatApp() {
     const text = input.trim();
     if (!text && pastedImages.length === 0) return;
     if (!activeId || !clientRef.current) return;
+
+    // Terminal command: > command
+    if (text.startsWith('>')) {
+      const command = text.slice(1).trim();
+      if (!command) return;
+      const msgId = crypto.randomUUID();
+      const cwd = active.initInfo?.cwd || activeSession?.cwd || '/';
+
+      updateState(activeId, s => ({
+        ...s,
+        messages: [...s.messages, {
+          id: msgId,
+          role: 'system' as const,
+          content: '',
+          isTerminal: true,
+          terminalCommand: command,
+          timestamp: Date.now(),
+        }],
+      }));
+      setInput('');
+
+      const sid = activeId;
+      clientRef.current.execCommand(command, cwd, {
+        onData: (chunk) => {
+          updateState(sid, s => ({
+            ...s,
+            messages: s.messages.map(m =>
+              m.id === msgId ? { ...m, content: m.content + chunk } : m
+            ),
+          }));
+        },
+        onDone: (exitCode) => {
+          updateState(sid, s => ({
+            ...s,
+            messages: s.messages.map(m =>
+              m.id === msgId ? { ...m, exitCode } : m
+            ),
+          }));
+          refreshGitModified();
+        },
+      }, sid);
+      return;
+    }
 
     const images = pastedImages.length > 0 ? pastedImages.map(({ media_type, data }) => ({ media_type, data })) : undefined;
 
@@ -282,6 +470,126 @@ export function ChatApp() {
     if (file) setOpenFile(file);
   };
 
+  const handleFileDiff = async (path: string) => {
+    if (!client) return;
+    const [file, original] = await Promise.all([
+      client.readFile(path),
+      client.readFileOriginal(path),
+    ]);
+    if (file) {
+      setOpenFileRaw(null);
+      setOpenTerminalId(null);
+      setDiffView({ path, original, modified: file.content });
+    }
+  };
+
+  const handleStartReview = () => {
+    const files = [...gitModified].sort();
+    if (files.length === 0) return;
+    setReviewMode(true);
+    setReviewFiles(files);
+    setReviewIndex(0);
+    setEditorFullWidth(true);
+    setOpenFileRaw(null);
+    setOpenTerminalId(null);
+    // Load the first file diff
+    loadReviewFile(files[0]!);
+  };
+
+  const loadReviewFile = async (path: string) => {
+    if (!client) return;
+    const [file, original] = await Promise.all([
+      client.readFile(path),
+      client.readFileOriginal(path),
+    ]);
+    if (file) {
+      setDiffView({ path, original, modified: file.content });
+    }
+  };
+
+  const handleReviewNav = (delta: number) => {
+    const newIdx = reviewIndex + delta;
+    if (newIdx < 0 || newIdx >= reviewFiles.length) return;
+    setReviewIndex(newIdx);
+    loadReviewFile(reviewFiles[newIdx]!);
+  };
+
+  const handleSubmitReview = () => {
+    // Build review message from all comments
+    const allComments = Object.entries(reviewComments).flatMap(([path, cmts]) => {
+      const rel = explorerRoot && path.startsWith(explorerRoot) ? path.slice(explorerRoot.length + 1) : path;
+      return cmts.map(c => {
+        const lineRef = c.startLine === c.endLine ? `L${c.startLine}` : `L${c.startLine}-${c.endLine}`;
+        return `@${rel}:${lineRef} — ${c.text}`;
+      });
+    });
+
+    if (allComments.length === 0) return;
+
+    const reviewText = `Apply these changes to the code:\n${allComments.join('\n')}`;
+
+    if (activeId && clientRef.current) {
+      updateState(activeId, s => ({
+        ...s,
+        messages: [...s.messages, {
+          id: crypto.randomUUID(),
+          role: 'user' as const,
+          content: reviewText,
+          timestamp: Date.now(),
+        }],
+        isStreaming: true,
+        partialText: '',
+      }));
+      clientRef.current.sendMessage(activeId, reviewText);
+    }
+
+    // Exit review mode
+    setReviewMode(false);
+    setReviewFiles([]);
+    setDiffView(null);
+    setEditorFullWidth(false);
+    setReviewComments({});
+  };
+
+  const handleExitReview = () => {
+    setReviewMode(false);
+    setReviewFiles([]);
+    setDiffView(null);
+    setEditorFullWidth(false);
+  };
+
+  const explorerRootRef = useRef<string | null>(null);
+
+  const refreshGitModified = useCallback(async () => {
+    const root = explorerRootRef.current;
+    if (!client || !root) return;
+    const paths = await client.getGitModified(root);
+    setGitModified(new Set(paths));
+  }, [client]);
+
+  const handleSaveFile = async () => {
+    console.log('[save] openFile:', !!openFile, 'client:', !!client, 'editorRef:', !!editorRef.current);
+    if (!openFile || !client) return;
+    const editor = editorRef.current;
+    if (!editor) { console.log('[save] editorRef is null'); return; }
+    const content = editor.getValue();
+    console.log('[save] writing', openFile.path, 'length:', content.length);
+    try {
+      const ok = await client.writeFile(openFile.path, content);
+      console.log('[save] result:', ok);
+      if (ok) {
+        setOpenFile({ path: openFile.path, content });
+        setEditorDirty(false);
+        refreshGitModified();
+      }
+    } catch (e) {
+      console.error('[save] error:', e);
+    }
+  };
+
+  const saveRef = useRef(handleSaveFile);
+  saveRef.current = handleSaveFile;
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -300,6 +608,10 @@ export function ChatApp() {
           e.preventDefault();
           inputRef.current?.focus();
           break;
+        case 's':
+          e.preventDefault();
+          saveRef.current();
+          break;
       }
     };
     window.addEventListener('keydown', handler);
@@ -309,15 +621,40 @@ export function ChatApp() {
   const activeStatus = activeId ? (statuses[activeId] || 'disconnected') : 'disconnected';
   const activeSession = sessions.find(s => s.id === activeId);
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
+  explorerRootRef.current = explorerRoot;
+
+  // Load git modified when root changes
+  useEffect(() => {
+    refreshGitModified();
+  }, [explorerRoot, refreshGitModified]);
+
   const slashCommands = active.initInfo?.slashCommands || [];
   const slash = useSlashCommands(input, slashCommands);
-  const fileMention = useFileMention(input, client, explorerRoot);
+  const fileIndex = useFileIndex(client, explorerRoot);
+  const fileMention = useFileMention(input, fileIndex);
 
   const paletteActions: PaletteAction[] = [
     { id: 'new-session', label: 'New Session', keys: ['command'], key: 'N', section: 'Sessions', onRun: () => setShowNewSession(true) },
     { id: 'focus-input', label: 'Focus Chat Input', keys: ['command'], key: 'L', section: 'Navigation', onRun: () => inputRef.current?.focus() },
     { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', keys: ['command'], key: 'B', section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
-    { id: 'close-editor', label: 'Close Editor', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => setOpenFile(null) },
+    { id: 'close-editor', label: 'Close Editor', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => { setOpenFile(null); } },
+    { id: 'save-file', label: 'Save File', keys: ['command'], key: 'S', section: 'Editor', onRun: handleSaveFile },
+    { id: 'clear-chat', label: 'Clear Chat', section: 'Session', onRun: () => {
+      if (!activeId || !clientRef.current) return;
+      const session = sessions.find(s => s.id === activeId);
+      const cwd = active.initInfo?.cwd || session?.cwd;
+      // Clear messages
+      updateState(activeId, s => ({ ...s, messages: [], partialText: '', isStreaming: false, initInfo: null, permRequest: null }));
+      deleteMessages(activeId);
+      // Disconnect old and create fresh claude session
+      clientRef.current.disconnectSession(activeId);
+      if (cwd) {
+        clientRef.current.resumeSession(activeId).then(updated => {
+          setSessions(prev => prev.map(s => s.id === activeId ? updated : s));
+          clientRef.current?.connectSession(updated);
+        }).catch(() => {});
+      }
+    } },
     { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
     ...(activeId && active.isStreaming ? [{ id: 'stop', label: 'Stop Generation', keys: ['escape'] as string[], section: 'Session', onRun: handleInterrupt }] : []),
     ...sessions.map(s => ({
@@ -388,31 +725,77 @@ export function ChatApp() {
       <div className="h-screen bg-base flex flex-col overflow-hidden">
         {/* Tab bar */}
         <TabBar
-          sessions={sessions}
+          sessions={sessions.filter(s => !closedSessionIds.has(s.id))}
+          closedSessions={sessions.filter(s => closedSessionIds.has(s.id))}
           activeSessionId={activeId}
           sessionStatuses={statuses}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
-          onDelete={handleDeleteSession}
+          onClose={handleCloseTab}
+          onReopen={handleReopenSession}
           onRename={handleRenameSession}
         />
 
         <div className="flex-1 flex min-h-0">
           {/* File Explorer */}
+          {activeId && (
           <FileExplorer
             client={client}
             rootPath={explorerRoot}
             collapsed={explorerCollapsed}
             onToggle={() => setExplorerCollapsed(c => !c)}
             onFileOpen={handleFileOpen}
+            onFileDiff={handleFileDiff}
+            gitModified={gitModified}
+            activeSessionId={activeId}
+            onOpenTerminal={(command) => {
+              const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
+              if (msg) { setOpenFile(null); setOpenTerminalId(msg.id); }
+            }}
+            onStartReview={handleStartReview}
           />
+          )}
 
           <div className="flex-1 flex flex-col min-w-0">
             {!activeId ? (
               <div className="flex-1 flex items-center justify-center">
-                <div className="text-center">
-                  <p className="text-zinc-500 mb-4">No session selected</p>
-                  <Button onPress={handleNewSession}>Create a session</Button>
+                <div className="w-full max-w-md px-6">
+                  <h2 className="text-lg text-zinc-300 font-medium mb-1">Claude Code</h2>
+                  <p className="text-[13px] text-zinc-600 mb-6">Start a new session or reopen an existing one.</p>
+
+                  <div className="space-y-2 mb-6">
+                    <button
+                      className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left text-sm text-zinc-300 bg-surface border border-border hover:bg-surface-light hover:border-border-light transition-colors"
+                      onClick={handleNewSession}
+                    >
+                      <span className="text-zinc-500 text-lg">+</span>
+                      <div>
+                        <div>New Session</div>
+                        <div className="text-[11px] text-zinc-600">Create a new Claude session</div>
+                      </div>
+                    </button>
+                  </div>
+
+                  {sessions.filter(s => closedSessionIds.has(s.id)).length > 0 && (
+                    <>
+                      <p className="text-[11px] text-zinc-600 uppercase tracking-wider mb-2">Recent Sessions</p>
+                      <div className="space-y-2">
+                        {sessions.filter(s => closedSessionIds.has(s.id)).map(s => (
+                          <button
+                            key={s.id}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-left text-sm text-zinc-400 bg-surface border border-border hover:bg-surface-light hover:border-border-light hover:text-zinc-200 transition-colors"
+                            onClick={() => handleReopenSession(s.id)}
+                          >
+                            <span className="w-2 h-2 rounded-full bg-zinc-600 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <div className="truncate">{s.name}</div>
+                              <div className="text-[11px] text-zinc-600 font-mono truncate">{s.cwd}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             ) : (
@@ -443,9 +826,9 @@ export function ChatApp() {
 
               <div className="flex-1 flex min-h-0">
                 {/* Chat panel */}
-                <div className={`flex flex-col min-w-0 ${openFile ? 'w-1/2 border-r border-border' : 'flex-1'}`}>
+                <div className={`flex flex-col min-w-0 overflow-hidden ${hasRightPanel && !editorFullWidth ? 'w-1/2 border-r border-border' : hasRightPanel && editorFullWidth ? 'hidden' : 'flex-1'}`}>
                   {/* Messages */}
-                  <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
+                  <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1">
                     {active.messages.length === 0 && !active.partialText && (
                       <div className="flex items-center justify-center h-full">
                         <p className="text-zinc-600 text-sm">
@@ -456,9 +839,9 @@ export function ChatApp() {
                       </div>
                     )}
                     {active.messages.map(msg => (
-                      <MessageBubble key={msg.id} message={msg} />
+                      <MessageBubble key={msg.id} message={msg} onOpenTerminal={(id) => { setOpenFile(null); setOpenTerminalId(id); }} />
                     ))}
-                    {active.isStreaming && !active.partialText && (
+                    {active.isStreaming && !active.partialText && !active.permRequest && (
                       <div className="py-2">
                         <div className="flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 animate-[pulse_1.4s_ease-in-out_infinite]" />
@@ -473,6 +856,35 @@ export function ChatApp() {
                           {active.partialText}
                           <span className="inline-block w-1 h-3.5 bg-zinc-500/60 animate-pulse ml-0.5 align-text-bottom" />
                         </p>
+                      </div>
+                    )}
+                    {/* Inline permission request */}
+                    {active.permRequest && (
+                      <div className="py-1 pl-3 ml-1 border-l-2 border-amber-500/50">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[11px] font-mono text-violet-400">{active.permRequest.toolName}</span>
+                          <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>
+                        </div>
+                        {active.permRequest.description && (
+                          <p className="text-[12px] text-zinc-400 mb-1">{active.permRequest.description}</p>
+                        )}
+                        <pre className="text-[11px] text-zinc-500 whitespace-pre-wrap break-all m-0 mb-2 bg-transparent p-0 max-h-40 overflow-auto leading-tight">
+                          {JSON.stringify(active.permRequest.input, null, 2)}
+                        </pre>
+                        <div className="flex items-center gap-2">
+                          <button
+                            className="flex items-center gap-1 px-2.5 py-1 rounded text-[12px] bg-green-600/15 text-green-400 hover:bg-green-600/25 transition-colors"
+                            onClick={() => handlePermission(active.permRequest!.requestId, true)}
+                          >
+                            <span>&#x1F44D;</span> Allow
+                          </button>
+                          <button
+                            className="flex items-center gap-1 px-2.5 py-1 rounded text-[12px] bg-red-600/15 text-red-400 hover:bg-red-600/25 transition-colors"
+                            onClick={() => handlePermission(active.permRequest!.requestId, false)}
+                          >
+                            <span>&#x1F44E;</span> Deny
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -534,93 +946,135 @@ export function ChatApp() {
                           ))}
                         </div>
                       )}
-                      <div className="flex gap-2 items-end">
-                        {active.isStreaming && (
-                          <Button size="sm" variant="flat" onPress={handleInterrupt}
-                            className="shrink-0 text-amber-400">
-                            Stop
-                          </Button>
-                        )}
-                        <textarea
-                          ref={inputRef}
-                          value={input}
-                          onChange={(e) => setInput(e.target.value)}
-                          disabled={active.isStreaming || activeStatus !== 'connected'}
-                          placeholder="Send a message... (/ commands, @ files)"
-                          autoFocus
-                          rows={1}
-                          className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 resize-none outline-none focus:border-zinc-500 transition-colors disabled:opacity-50"
-                          style={{ minHeight: 38, maxHeight: 200 }}
-                          onPaste={(e) => {
-                            const items = e.clipboardData?.items;
-                            if (!items) return;
-                            for (const item of items) {
-                              if (item.type.startsWith('image/')) {
-                                e.preventDefault();
-                                const file = item.getAsFile();
-                                if (!file) continue;
-                                const reader = new FileReader();
-                                reader.onload = () => {
-                                  const dataUrl = reader.result as string;
-                                  const [header, data] = dataUrl.split(',');
-                                  const media_type = header!.match(/:(.*?);/)?.[1] || 'image/png';
-                                  setPastedImages(prev => [...prev, { media_type, data: data!, preview: dataUrl }]);
-                                };
-                                reader.readAsDataURL(file);
-                              }
-                            }
-                          }}
-                          onInput={(e) => {
-                            const el = e.currentTarget;
-                            el.style.height = 'auto';
-                            el.style.height = Math.min(el.scrollHeight, 200) + 'px';
-                          }}
-                          onKeyDown={(e) => {
-                            if (fileMention.isActive) {
-                              fileMention.onKeyDown(e, handleFileMentionSelect);
-                            } else {
-                              slash.onKeyDown(e, handleSlashSelect);
-                            }
-                            if (e.key === 'Enter' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
-                              e.preventDefault();
-                              handleSend();
-                            }
-                          }}
-                        />
-                        <Button
-                          onPress={handleSend}
-                          isDisabled={!input.trim() || active.isStreaming || activeStatus !== 'connected'}
-                          className="shrink-0 px-6"
-                        >
-                          Send
-                        </Button>
-                      </div>
+                      {(() => {
+                        const isTerminalMode = input.startsWith('>');
+                        const cmdText = isTerminalMode ? input.slice(1).replace(/^ /, '') : input;
+                        return (
+                          <div className="flex gap-2 items-center">
+                            {active.isStreaming && (
+                              <Button size="sm" variant="flat" onPress={handleInterrupt}
+                                className="shrink-0 text-amber-400">
+                                Stop
+                              </Button>
+                            )}
+                            <div className={`flex-1 flex items-end rounded-lg transition-colors ${isTerminalMode ? 'border bg-[#141414] border-green-900/50' : ''}`}>
+                              {isTerminalMode && (
+                                <span className="text-green-500 text-sm font-mono pl-3 pr-1 py-2 select-none shrink-0">&gt;</span>
+                              )}
+                              <textarea
+                                ref={inputRef}
+                                value={isTerminalMode ? cmdText : input}
+                                onChange={(e) => {
+                                  if (isTerminalMode) {
+                                    const v = e.target.value;
+                                    setInput(v ? `> ${v}` : '> ');
+                                  } else {
+                                    setInput(e.target.value);
+                                  }
+                                }}
+                                disabled={active.isStreaming || activeStatus !== 'connected'}
+                                placeholder={isTerminalMode ? 'command...' : 'Send a message... (/ commands, @ files)'}
+                                onKeyDown={(e) => {
+                                  // Exit terminal mode on backspace when command is empty
+                                  if (isTerminalMode && e.key === 'Backspace' && !cmdText) {
+                                    e.preventDefault();
+                                    setInput('');
+                                    return;
+                                  }
+                                  if (fileMention.isActive) {
+                                    fileMention.onKeyDown(e, handleFileMentionSelect);
+                                  } else {
+                                    slash.onKeyDown(e, handleSlashSelect);
+                                  }
+                                  if (e.key === 'Enter' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
+                                    e.preventDefault();
+                                    handleSend();
+                                  }
+                                }}
+                                autoFocus
+                                rows={1}
+                                className={`flex-1 rounded-lg py-2 text-sm placeholder:text-zinc-600 resize-none outline-none transition-colors disabled:opacity-50 ${isTerminalMode ? 'bg-transparent border-0 font-mono text-green-300 pl-0 pr-3' : 'bg-surface border border-border text-zinc-200 focus:border-zinc-500 px-3'}`}
+                                style={{ minHeight: 38, maxHeight: 200 }}
+                                onPaste={(e) => {
+                                  const items = e.clipboardData?.items;
+                                  if (!items) return;
+                                  for (const item of items) {
+                                    if (item.type.startsWith('image/')) {
+                                      e.preventDefault();
+                                      const file = item.getAsFile();
+                                      if (!file) continue;
+                                      const reader = new FileReader();
+                                      reader.onload = () => {
+                                        const dataUrl = reader.result as string;
+                                        const [header, data] = dataUrl.split(',');
+                                        const media_type = header!.match(/:(.*?);/)?.[1] || 'image/png';
+                                        setPastedImages(prev => [...prev, { media_type, data: data!, preview: dataUrl }]);
+                                      };
+                                      reader.readAsDataURL(file);
+                                    }
+                                  }
+                                }}
+                                onInput={(e) => {
+                                  const el = e.currentTarget;
+                                  el.style.height = 'auto';
+                                  el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+                                }}
+                              />
+                            </div>
+                            <Button
+                              onPress={handleSend}
+                              isDisabled={isTerminalMode ? !cmdText.trim() || active.isStreaming || activeStatus !== 'connected' : !input.trim() || active.isStreaming || activeStatus !== 'connected'}
+                              className={`shrink-0 px-6 ${isTerminalMode ? 'bg-green-600 text-white' : ''}`}
+                            >
+                              {isTerminalMode ? 'Run' : 'Send'}
+                            </Button>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
 
-                {/* Editor panel */}
+                {/* Right panel: editor or terminal */}
                 {openFile && (
-                  <div className="w-1/2 flex flex-col min-w-0">
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface">
-                      <span className="text-[12px] text-zinc-400 font-mono truncate">
-                        {openFile.path.split('/').pop()}
-                      </span>
-                      <button
-                        className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
-                        onClick={() => setOpenFile(null)}
-                      >
-                        &times;
-                      </button>
+                  <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => setEditorFullWidth(f => !f)}>
+                      <div className="flex items-center gap-1.5 truncate cursor-default">
+                        <span className={`text-[12px] font-mono truncate ${gitModified.has(openFile.path) ? 'text-amber-400' : 'text-zinc-400'}`}>
+                          {openFile.path.split('/').pop()}
+                        </span>
+                        {editorDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {editorDirty && (
+                          <button
+                            className="text-[11px] text-zinc-500 hover:text-zinc-200 px-1.5"
+                            onClick={handleSaveFile}
+                            title="Save (Cmd+S)"
+                          >
+                            Save
+                          </button>
+                        )}
+                        <button
+                          className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
+                          onClick={() => { setOpenFile(null); }}
+                        >
+                          &times;
+                        </button>
+                      </div>
                     </div>
                     <div className="flex-1">
                       <Editor
+                        key={openFile.path}
                         path={openFile.path}
-                        value={openFile.content}
+                        defaultValue={openFile.content}
                         theme="vs-dark"
                         onMount={handleEditorMount}
+                        onChange={(value) => {
+                          if (value !== openFile.content) setEditorDirty(true);
+                          else setEditorDirty(false);
+                        }}
                         options={{
-                          readOnly: true,
                           minimap: { enabled: false },
                           fontSize: 13,
                           lineNumbers: 'on',
@@ -632,9 +1086,127 @@ export function ChatApp() {
                     </div>
                   </div>
                 )}
+                {!openFile && openTerminal && (
+                  <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => setEditorFullWidth(f => !f)}>
+                      <div className="flex items-center gap-1.5 truncate cursor-default">
+                        <span className="text-[10px] text-zinc-500">$</span>
+                        <span className="text-[12px] font-mono text-zinc-300 truncate">{openTerminal.terminalCommand}</span>
+                        {openTerminal.exitCode === undefined && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />}
+                        {openTerminal.exitCode !== undefined && openTerminal.exitCode === 0 && <span className="text-[10px] text-green-400 shrink-0">exit 0</span>}
+                        {openTerminal.exitCode !== undefined && openTerminal.exitCode !== 0 && <span className="text-[10px] text-red-400 shrink-0">exit {openTerminal.exitCode}</span>}
+                      </div>
+                      <button
+                        className="text-zinc-500 hover:text-zinc-200 text-sm px-1 shrink-0"
+                        onClick={() => setOpenTerminalId(null)}
+                      >
+                        &times;
+                      </button>
+                    </div>
+                    <pre className="flex-1 overflow-auto px-3 py-2 text-[12px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-snug m-0 bg-transparent">
+                      <AnsiText text={openTerminal.content} />
+                      {openTerminal.exitCode === undefined && <span className="inline-block w-1.5 h-3 bg-zinc-500/60 animate-pulse ml-0.5 align-text-bottom" />}
+                    </pre>
+                  </div>
+                )}
+                {!openFile && !openTerminal && diffView && (
+                  <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
+                    {/* Review status bar */}
+                    {reviewMode && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0 bg-surface-light">
+                        <span className="text-[11px] text-zinc-500">
+                          {Object.values(reviewComments).flat().length} comment{Object.values(reviewComments).flat().length !== 1 ? 's' : ''}
+                        </span>
+                        <span className="flex-1" />
+                        <button
+                          className="text-[11px] text-zinc-500 hover:text-zinc-300 px-2 py-0.5 rounded hover:bg-surface-lighter transition-colors"
+                          onClick={handleExitReview}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="flex items-center gap-1 text-[11px] bg-green-600 text-white rounded px-2.5 py-0.5 hover:bg-green-500 disabled:opacity-40 transition-colors"
+                          disabled={Object.values(reviewComments).flat().length === 0}
+                          onClick={handleSubmitReview}
+                        >
+                          Submit Review &#x25B6;
+                        </button>
+                      </div>
+                    )}
+                    {/* File header */}
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => !reviewMode && setEditorFullWidth(f => !f)}>
+                      <div className="flex items-center gap-1.5 truncate cursor-default">
+                        <span className="text-[10px] text-amber-400 shrink-0">M</span>
+                        <span className="text-[12px] font-mono text-amber-400 truncate">{diffView.path.split('/').pop()}</span>
+                        {explorerRoot && (
+                          <span className="text-[10px] text-zinc-600 font-mono truncate ml-1">{diffView.path.slice(explorerRoot.length + 1)}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {!reviewMode && (
+                          <>
+                            <button
+                              className="text-[11px] text-zinc-500 hover:text-zinc-200 px-1.5"
+                              onClick={() => { handleFileOpen(diffView.path); }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
+                              onClick={() => { setDiffView(null); setEditorFullWidth(false); }}
+                            >
+                              &times;
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex-1 flex flex-col relative min-h-0">
+                      <DiffReview
+                        original={diffView.original}
+                        modified={diffView.modified}
+                        filePath={diffView.path}
+                        comments={reviewComments[diffView.path] || []}
+                        onAddComment={(comment) => {
+                          setReviewComments(prev => ({
+                            ...prev,
+                            [diffView.path]: [...(prev[diffView.path] || []), comment],
+                          }));
+                        }}
+                        onDeleteComment={(id) => {
+                          setReviewComments(prev => ({
+                            ...prev,
+                            [diffView.path]: (prev[diffView.path] || []).filter(c => c.id !== id),
+                          }));
+                        }}
+                      />
+                      {reviewMode && reviewFiles.length > 1 && (
+                        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-zinc-800/90 backdrop-blur border border-border rounded-lg shadow-lg px-1.5 py-1 z-10">
+                          <button
+                            className="text-zinc-400 hover:text-white text-[13px] px-2 py-1 rounded hover:bg-zinc-700 disabled:opacity-30 disabled:hover:bg-transparent"
+                            disabled={reviewIndex === 0}
+                            onClick={() => handleReviewNav(-1)}
+                          >
+                            &#x25C0;
+                          </button>
+                          <span className="text-[12px] text-zinc-300 px-1.5 tabular-nums select-none">
+                            {reviewIndex + 1} / {reviewFiles.length}
+                          </span>
+                          <button
+                            className="text-zinc-400 hover:text-white text-[13px] px-2 py-1 rounded hover:bg-zinc-700 disabled:opacity-30 disabled:hover:bg-transparent"
+                            disabled={reviewIndex === reviewFiles.length - 1}
+                            onClick={() => handleReviewNav(1)}
+                          >
+                            &#x25B6;
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <PermissionModal request={active.permRequest} onRespond={handlePermission} />
+              {/* Permission modal removed — shown inline in chat */}
             </>
             )}
           </div>
@@ -650,9 +1222,49 @@ export function ChatApp() {
           isOpen={showPalette}
           onClose={() => setShowPalette(false)}
           actions={paletteActions}
-          onSearchFiles={explorerRoot && client ? (q) => client.findFiles(explorerRoot, q) : undefined}
+          fileIndex={fileIndex}
           onFileOpen={handleFileOpen}
         />
+        {closingSessionId && (() => {
+          const s = sessions.find(s => s.id === closingSessionId);
+          return (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={() => setClosingSessionId(null)}>
+              <div className="absolute inset-0 bg-black/50" />
+              <div className="relative bg-surface border border-border-light rounded-xl shadow-2xl p-5 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+                <h3 className="text-sm font-semibold text-zinc-200 mb-2">Close Session</h3>
+                <p className="text-[13px] text-zinc-400 mb-4">
+                  This will disconnect and close all running processes for <span className="text-zinc-200">{s?.name || 'this session'}</span>.
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button variant="flat" onPress={() => setClosingSessionId(null)}>Cancel</Button>
+                  <Button className="bg-red-600 text-white" onPress={confirmCloseTab}>Close</Button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+        {restoreSessionId && restoreCommands.length > 0 && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={dismissRestore}>
+            <div className="absolute inset-0 bg-black/50" />
+            <div className="relative bg-surface border border-border-light rounded-xl shadow-2xl p-5 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-zinc-200 mb-2">Restore Processes</h3>
+              <p className="text-[13px] text-zinc-400 mb-3">
+                This session had running processes. Restore them?
+              </p>
+              <div className="space-y-1 mb-4">
+                {restoreCommands.map((cmd, i) => (
+                  <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded bg-surface-light text-[12px] font-mono text-green-400">
+                    <span className="text-zinc-500">$</span> {cmd}
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="flat" onPress={dismissRestore}>Dismiss</Button>
+                <Button className="bg-green-600 text-white" onPress={confirmRestore}>Restore</Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </Providers>
   );

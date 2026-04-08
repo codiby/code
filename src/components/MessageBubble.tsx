@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import type { ChatMessage } from '../lib/claude-client';
 
 interface Props {
   message: ChatMessage;
+  onOpenTerminal?: (msgId: string) => void;
 }
 
 function parseTableRows(raw: string): { headers: string[]; rows: string[][] } | null {
@@ -162,10 +163,141 @@ function ToolBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export function MessageBubble({ message }: Props) {
+const ANSI_COLORS: Record<number, string> = {
+  30: '#6b7280', 31: '#ef4444', 32: '#22c55e', 33: '#eab308', 34: '#3b82f6',
+  35: '#a855f7', 36: '#06b6d4', 37: '#d4d4d8', 39: '',
+  90: '#71717a', 91: '#f87171', 92: '#4ade80', 93: '#facc15', 94: '#60a5fa',
+  95: '#c084fc', 96: '#22d3ee', 97: '#f4f4f5',
+};
+
+export function AnsiText({ text }: { text: string }) {
+  const parts = useMemo(() => {
+    const result: { text: string; color?: string; bold?: boolean; dim?: boolean }[] = [];
+    // eslint-disable-next-line no-control-regex
+    const re = /\x1b\[([0-9;]*)m/g;
+    let lastIndex = 0;
+    let color: string | undefined;
+    let bold = false;
+    let dim = false;
+
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        result.push({ text: text.slice(lastIndex, match.index), color, bold, dim });
+      }
+      const codes = match[1]!.split(';').map(Number);
+      for (const code of codes) {
+        if (code === 0) { color = undefined; bold = false; dim = false; }
+        else if (code === 1) bold = true;
+        else if (code === 2) dim = true;
+        else if (code === 22) { bold = false; dim = false; }
+        else if (ANSI_COLORS[code] !== undefined) color = ANSI_COLORS[code] || undefined;
+      }
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      result.push({ text: text.slice(lastIndex), color, bold, dim });
+    }
+    return result;
+  }, [text]);
+
+  return (
+    <>
+      {parts.map((p, i) => (
+        <span
+          key={i}
+          style={{
+            color: p.color,
+            fontWeight: p.bold ? 700 : undefined,
+            opacity: p.dim ? 0.6 : undefined,
+          }}
+        >
+          {p.text}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function openTerminalWindow(command: string, content: string, exitCode?: number) {
+  const running = exitCode === undefined;
+  // Strip ANSI for plain text, but keep for the HTML version
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>$ ${command}</title>
+<style>
+  body { margin: 0; background: #1b1b1b; color: #a1a1aa; font-family: 'SF Mono','Fira Code',monospace; font-size: 13px; }
+  .header { padding: 8px 12px; background: #2a2a2a; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; }
+  .cmd { color: #e4e4e7; }
+  .status { font-size: 11px; }
+  .ok { color: #4ade80; } .fail { color: #f87171; } .run { color: #fbbf24; }
+  pre { margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+</style></head><body>
+<div class="header"><span style="color:#71717a;font-size:11px">$</span><span class="cmd">${command.replace(/</g, '&lt;')}</span>
+${running ? '<span class="status run">running...</span>' : exitCode === 0 ? '<span class="status ok">exit 0</span>' : `<span class="status fail">exit ${exitCode}</span>`}
+</div><pre>${content.replace(/</g, '&lt;')}</pre></body></html>`;
+  const win = window.open('', '_blank', 'width=800,height=600');
+  if (win) { win.document.write(html); win.document.close(); }
+}
+
+function TerminalBubble({ message, onOpenInPanel }: { message: ChatMessage; onOpenInPanel?: (msgId: string) => void }) {
+  const running = message.exitCode === undefined;
+  const [collapsed, setCollapsed] = useState(!running && message.content.length > 0);
+
+  // Auto-collapse when done
+  const prevRunning = useRef(running);
+  if (prevRunning.current && !running) {
+    prevRunning.current = false;
+  }
+
+  return (
+    <div className="py-1">
+      <div className="rounded-lg border border-border-light overflow-hidden">
+        <div
+          className="flex items-center gap-2 px-3 py-1.5 bg-surface-light border-b border-border-light cursor-pointer select-none"
+          onClick={() => setCollapsed(c => !c)}
+        >
+          <span className="text-[10px] text-zinc-500 w-3 text-center shrink-0">{collapsed ? '▸' : '▾'}</span>
+          <span className="text-[10px] text-zinc-500">$</span>
+          <span className="text-[12px] font-mono text-zinc-200 flex-1 truncate">{message.terminalCommand}</span>
+          {running && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />}
+          {!running && message.exitCode === 0 && <span className="text-[10px] text-green-400 shrink-0">exit 0</span>}
+          {!running && message.exitCode !== 0 && <span className="text-[10px] text-red-400 shrink-0">exit {message.exitCode}</span>}
+          {onOpenInPanel && (
+            <button
+              className="text-zinc-600 hover:text-zinc-300 text-[11px] shrink-0 px-1"
+              onClick={(e) => { e.stopPropagation(); onOpenInPanel(message.id); }}
+              title="Open in panel"
+            >
+              &#x2197;
+            </button>
+          )}
+        </div>
+        {!collapsed && (
+          <>
+            {message.content && (
+              <pre className="px-3 py-2 text-[12px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-snug max-h-64 overflow-auto m-0 bg-transparent">
+                <AnsiText text={message.content} />
+                {running && <span className="inline-block w-1.5 h-3 bg-zinc-500/60 animate-pulse ml-0.5 align-text-bottom" />}
+              </pre>
+            )}
+            {!message.content && running && (
+              <div className="px-3 py-2 text-[11px] text-zinc-600">Running...</div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function MessageBubble({ message, onOpenTerminal }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
+
+  if (message.isTerminal) {
+    return <TerminalBubble message={message} onOpenInPanel={onOpenTerminal} />;
+  }
 
   if (isSystem) {
     return (

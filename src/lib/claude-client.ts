@@ -12,6 +12,9 @@ export interface ChatMessage {
   toolInput?: unknown;
   isToolResult?: boolean;
   isError?: boolean;
+  isTerminal?: boolean;
+  terminalCommand?: string;
+  exitCode?: number;
   costUsd?: number;
   durationMs?: number;
   usage?: { input_tokens: number; output_tokens: number };
@@ -35,6 +38,7 @@ export interface SessionInfo {
   ready: boolean;
   claude_session_id: string | null;
   ws_url: string;
+  saved_commands: string[];
 }
 
 export interface SessionInitInfo {
@@ -120,8 +124,8 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async findFiles(root: string, query: string): Promise<{ name: string; path: string; rel: string }[]> {
-    const resp = await fetch(`${this.serverUrl}/find-files?root=${encodeURIComponent(root)}&q=${encodeURIComponent(query)}`);
+  async getFileIndex(root: string): Promise<{ name: string; path: string; rel: string }[]> {
+    const resp = await fetch(`${this.serverUrl}/file-index?root=${encodeURIComponent(root)}`);
     if (!resp.ok) return [];
     return resp.json();
   }
@@ -129,6 +133,103 @@ export class ClaudeClient {
   async readFile(path: string): Promise<{ path: string; content: string } | null> {
     const resp = await fetch(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`);
     if (!resp.ok) return null;
+    return resp.json();
+  }
+
+  async readFileOriginal(path: string): Promise<string> {
+    const resp = await fetch(`${this.serverUrl}/file-original?path=${encodeURIComponent(path)}`);
+    if (!resp.ok) return '';
+    const data = await resp.json();
+    return data.content || '';
+  }
+
+  async writeFile(path: string, content: string): Promise<boolean> {
+    const resp = await fetch(`${this.serverUrl}/file-content`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path, content }),
+    });
+    return resp.ok;
+  }
+
+  async listProcesses(sessionId: string): Promise<{ id: string; pid: number; command: string; cwd: string; startedAt: number; children: { pid: number; command: string }[] }[]> {
+    const resp = await fetch(`${this.serverUrl}/processes?sessionId=${encodeURIComponent(sessionId)}`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  async saveCommands(sessionId: string, commands: string[]): Promise<boolean> {
+    const resp = await fetch(`${this.serverUrl}/save-commands`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId, commands }),
+    });
+    return resp.ok;
+  }
+
+  async killProcess(processId?: string, pid?: number): Promise<boolean> {
+    const resp = await fetch(`${this.serverUrl}/kill`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ processId, pid }),
+    });
+    return resp.ok;
+  }
+
+  execCommand(
+    command: string,
+    cwd: string,
+    callbacks: { onData: (text: string) => void; onDone: (exitCode: number) => void },
+    sessionId?: string,
+  ): AbortController {
+    const abort = new AbortController();
+    fetch(`${this.serverUrl}/exec`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command, cwd, sessionId }),
+      signal: abort.signal,
+    }).then(async (resp) => {
+      if (!resp.ok || !resp.body) {
+        callbacks.onDone(1);
+        return;
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.startsWith('event: done')) {
+            // Next data line has the exit code
+            continue;
+          }
+          if (line.startsWith('data: ')) {
+            try {
+              const parsed = JSON.parse(line.slice(6));
+              if (typeof parsed === 'string') {
+                callbacks.onData(parsed);
+              } else if (parsed.exitCode !== undefined) {
+                callbacks.onDone(parsed.exitCode);
+                return;
+              }
+            } catch {}
+          }
+        }
+      }
+      callbacks.onDone(0);
+    }).catch(() => {
+      if (!abort.signal.aborted) callbacks.onDone(1);
+    });
+    return abort;
+  }
+
+  async getGitModified(root: string): Promise<string[]> {
+    const resp = await fetch(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}`);
+    if (!resp.ok) return [];
     return resp.json();
   }
 
@@ -239,39 +340,37 @@ export class ClaudeClient {
     const active: ActiveSession = { ws, partialText: '', wsBuffer: '' };
     this.activeSessions.set(session.id, active);
 
-    ws.onopen = () => {
-      console.log(`[ws:${session.id.slice(0,8)}] Browser WS opened, waiting for claude_connected`);
-    };
+    ws.onopen = () => {};
 
     ws.onmessage = (event) => {
       const data = typeof event.data === 'string' ? event.data : '';
-      console.log(`[ws:${session.id.slice(0,8)}] Raw frame (${data.length} bytes):`, data.slice(0, 200));
       active.wsBuffer += data;
 
       const parts = active.wsBuffer.split('\n');
       active.wsBuffer = parts.pop() || '';
-      console.log(`[ws:${session.id.slice(0,8)}] Split into ${parts.length} lines, buffer remaining: ${active.wsBuffer.length} bytes`);
       for (const line of parts) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const msg = JSON.parse(trimmed);
-          console.log(`[ws:${session.id.slice(0,8)}] Parsed message type=${msg.type} subtype=${msg.subtype || ''}`);
-          this.handleMessage(session.id, msg);
-        } catch (e) {
-          console.warn(`[ws:${session.id.slice(0,8)}] Parse failed:`, trimmed.slice(0, 200), e);
-        }
+          this.handleMessage(session.id, JSON.parse(trimmed));
+        } catch {}
       }
     };
 
-    ws.onclose = (event) => {
-      console.log(`[ws:${session.id.slice(0,8)}] WS closed code=${event.code} reason=${event.reason}`);
+    ws.onclose = () => {
       this.activeSessions.delete(session.id);
       this.callbacks.onStatusChange(session.id, 'disconnected');
+      // Auto-reconnect after 2s if session is still running
+      if (session.status !== 'stopped') {
+        setTimeout(() => {
+          if (!this.activeSessions.has(session.id)) {
+            this.connectSession(session);
+          }
+        }, 2000);
+      }
     };
 
-    ws.onerror = (event) => {
-      console.error(`[ws:${session.id.slice(0,8)}] WS error`, event);
+    ws.onerror = () => {
       this.callbacks.onStatusChange(session.id, 'error');
     };
   }

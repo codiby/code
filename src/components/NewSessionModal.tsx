@@ -145,12 +145,14 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
   if (!isOpen) return null;
 
   const showConsole = showWorktree && consoleStatus !== 'idle';
+  const hasWorktrees = gitInfo?.is_git && gitInfo.worktrees && gitInfo.worktrees.length > 0;
+  const showRightPanel = hasWorktrees || showConsole;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={(e) => { if (e.target === e.currentTarget && !creatingWt) onClose(); }}>
       <div
         className="bg-surface border border-border-light rounded-xl shadow-2xl flex flex-col overflow-hidden"
-        style={{ width: showConsole ? 960 : 560, maxHeight: '80vh', transition: 'width 200ms ease' }}
+        style={{ width: 960, height: '80vh' }}
       >
         {/* Header */}
         <div className="px-5 py-3 border-b border-border flex items-center justify-between shrink-0">
@@ -163,7 +165,7 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
         {/* Body */}
         <div className="flex flex-1 min-h-0">
           {/* Left: folder browser */}
-          <div className={`flex flex-col min-h-0 ${showConsole ? 'w-[480px] shrink-0' : 'flex-1'}`}>
+          <div className={`flex flex-col min-h-0 ${showRightPanel ? 'w-[480px] shrink-0' : 'flex-1'}`}>
             {/* Breadcrumb */}
             <div className="flex items-center gap-1 px-4 pt-3 pb-2 flex-wrap min-h-[32px] shrink-0">
               <button className="text-xs text-zinc-500 hover:text-zinc-200" onClick={() => navigate('/')}>
@@ -174,7 +176,7 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
                 const isLast = i === segments.length - 1;
                 return (
                   <span key={path} className="flex items-center gap-1">
-                    <span className="text-zinc-700 text-xs">/</span>
+                    {i > 0 && <span className="text-zinc-700 text-xs">/</span>}
                     <button
                       className={`text-xs ${isLast ? 'text-zinc-100 font-medium' : 'text-zinc-500 hover:text-zinc-200'}`}
                       onClick={() => navigate(path)}
@@ -186,10 +188,6 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
                 <span className="ml-auto flex items-center gap-1.5 shrink-0">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
                   <span className="text-xs text-green-400 font-mono">{gitInfo.branch}</span>
-                  <button
-                    className="text-xs text-zinc-400 hover:text-zinc-100 bg-surface-light hover:bg-surface-lighter rounded px-1.5 py-0.5"
-                    onClick={() => { setShowWorktree(!showWorktree); if (!showWorktree) { setConsoleLogs([]); setConsoleStatus('idle'); } }}
-                  >+wt</button>
                 </span>
               )}
             </div>
@@ -235,115 +233,132 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
               )}
             </div>
 
-            {/* Worktree options */}
-            {showWorktree && gitInfo?.is_git && (
-              <div className="px-4 pb-3 pt-2 border-t border-border space-y-2 shrink-0 max-h-[40%] overflow-y-auto">
-                <div className="flex gap-2">
-                  <TextField value={worktreeBranch} onChange={setWorktreeBranch} className="flex-1">
-                    <Input placeholder="branch-name" />
-                  </TextField>
-                  <Button size="sm" isDisabled={!worktreeBranch.trim() || creatingWt} onPress={handleCreateWorktree}>
-                    {creatingWt ? '...' : 'Create'}
-                  </Button>
-                </div>
+          </div>
 
-                <div className="flex items-center gap-3 flex-wrap">
-                  <Checkbox isSelected={copyEnv} onChange={setCopyEnv} isDisabled={!gitInfo.has_env}>
-                    <CheckboxControl><CheckboxIndicator /></CheckboxControl>
-                    <CheckboxContent>
-                      <span className="text-xs text-zinc-300">
-                        .env{!gitInfo.has_env && <span className="text-zinc-600"> (none)</span>}
-                      </span>
-                    </CheckboxContent>
-                  </Checkbox>
-
-                  <span className="text-xs text-zinc-600">node_modules:</span>
-                  {(['install', 'copy', 'link', 'none'] as const).map(mode => (
-                    <button
-                      key={mode}
-                      className={`text-xs px-2 py-0.5 rounded transition-colors ${
-                        depsMode === mode
-                          ? 'bg-surface-lighter text-zinc-100'
-                          : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface-light'
-                      }`}
-                      onClick={() => setDepsMode(mode)}
-                    >
-                      {mode === 'install' ? 'Install' : mode === 'copy' ? 'Copy' : mode === 'link' ? 'Link' : 'Skip'}
-                    </button>
-                  ))}
-                  {depsMode === 'install' && (
-                    <Select aria-label="Package manager" selectedKey={packageManager}
-                      onSelectionChange={(key) => setPackageManager(key as PackageManager)}>
-                      <SelectTrigger className="h-6 text-xs w-24">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectPopover>
-                        <ListBox>
-                          {PM_OPTIONS.map(pm => (
-                            <ListBoxItem key={pm} id={pm} textValue={pm}>
-                              <span className="text-sm">{pm}</span>
-                              {pm === gitInfo.package_manager && <span className="text-xs text-zinc-500 ml-1">(detected)</span>}
-                            </ListBoxItem>
-                          ))}
-                        </ListBox>
-                      </SelectPopover>
-                    </Select>
-                  )}
-                </div>
-
-                {gitInfo.worktrees && gitInfo.worktrees.length > 1 && (
-                  <div>
-                    <p className="text-xs text-zinc-600 mb-1">Existing:</p>
+          {/* Right: worktrees + console */}
+          {showRightPanel && (
+            <div className="flex-1 flex flex-col border-l border-border min-w-0">
+              {/* Worktrees list */}
+              {gitInfo?.worktrees && gitInfo.worktrees.length > 0 && (
+                <div className="shrink-0 border-b border-border">
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
+                    <span className="text-xs text-zinc-400 font-medium">Worktrees</span>
+                    <span className="text-[10px] text-zinc-600">{gitInfo.worktrees.length}</span>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto py-1">
                     {gitInfo.worktrees.map(wt => (
                       <button key={wt.path}
-                        className="block w-full text-left text-xs px-2 py-0.5 rounded hover:bg-surface-light text-zinc-400 hover:text-zinc-200"
-                        onClick={() => { navigate(wt.path); setShowWorktree(false); }}
+                        className={`flex items-center gap-2 w-full text-left text-xs px-3 py-1.5 transition-colors ${
+                          cwd === wt.path ? 'bg-surface-light text-zinc-100' : 'text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200'
+                        }`}
+                        onClick={() => navigate(wt.path)}
                       >
-                        <span className="text-green-400 font-mono">{wt.branch}</span>
-                        <span className="text-zinc-600 ml-2">{wt.path}</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                        <span className="text-green-400 font-mono shrink-0">{wt.branch}</span>
+                        <span className="text-zinc-600 font-mono truncate">{wt.path}</span>
                       </button>
                     ))}
                   </div>
-                )}
-              </div>
-            )}
-          </div>
+                </div>
+              )}
 
-          {/* Right: console */}
-          {showConsole && (
-            <div className="flex-1 flex flex-col border-l border-border min-w-0">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
-                <span className="text-xs text-zinc-400 font-medium">Console</span>
-                <span className={`text-xs ${
-                  consoleStatus === 'running' ? 'text-amber-400' :
-                  consoleStatus === 'done' ? 'text-green-400' :
-                  consoleStatus === 'error' ? 'text-red-400' : 'text-zinc-600'
-                }`}>
-                  {consoleStatus === 'running' && 'running...'}
-                  {consoleStatus === 'done' && 'complete'}
-                  {consoleStatus === 'error' && 'failed'}
-                </span>
-              </div>
-              <div
-                ref={consoleRef}
-                className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-5 bg-base"
-              >
-                {consoleLogs.length === 0 && consoleStatus === 'running' && (
-                  <div className="text-zinc-600">Waiting for output...</div>
-                )}
-                {consoleLogs.map((line, i) => (
-                  <div key={i} className={
-                    line.startsWith('$') ? 'text-blue-400' :
-                    line.startsWith('ERROR') ? 'text-red-400' :
-                    line.startsWith('Done.') ? 'text-green-400 font-medium' :
-                    line.startsWith('Copied') || line.startsWith('Worktree created') ? 'text-amber-400' :
-                    'text-zinc-500'
-                  }>{line || '\u00A0'}</div>
-                ))}
-                {consoleStatus === 'running' && consoleLogs.length > 0 && (
-                  <span className="inline-block w-2 h-3 bg-amber-400/60 animate-pulse mt-1" />
-                )}
-              </div>
+              {/* Create worktree form */}
+              {gitInfo?.is_git && showWorktree && (
+                <div className="px-3 py-2 border-b border-border space-y-2 shrink-0">
+                  <div className="flex gap-2">
+                    <TextField value={worktreeBranch} onChange={setWorktreeBranch} className="flex-1">
+                      <Input placeholder="new-branch-name" />
+                    </TextField>
+                    <Button size="sm" isDisabled={!worktreeBranch.trim() || creatingWt} onPress={handleCreateWorktree}>
+                      {creatingWt ? '...' : 'Create'}
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <Checkbox isSelected={copyEnv} onChange={setCopyEnv} isDisabled={!gitInfo.has_env}>
+                      <CheckboxControl><CheckboxIndicator /></CheckboxControl>
+                      <CheckboxContent>
+                        <span className="text-xs text-zinc-300">.env{!gitInfo.has_env && <span className="text-zinc-600"> (none)</span>}</span>
+                      </CheckboxContent>
+                    </Checkbox>
+                    <span className="text-xs text-zinc-600">node_modules:</span>
+                    {(['install', 'copy', 'link', 'none'] as const).map(mode => (
+                      <button key={mode}
+                        className={`text-xs px-2 py-0.5 rounded transition-colors ${depsMode === mode ? 'bg-surface-lighter text-zinc-100' : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface-light'}`}
+                        onClick={() => setDepsMode(mode)}
+                      >{mode === 'install' ? 'Install' : mode === 'copy' ? 'Copy' : mode === 'link' ? 'Link' : 'Skip'}</button>
+                    ))}
+                    {depsMode === 'install' && (
+                      <Select aria-label="Package manager" selectedKey={packageManager}
+                        onSelectionChange={(key) => setPackageManager(key as PackageManager)}>
+                        <SelectTrigger className="h-6 text-xs w-24"><SelectValue /></SelectTrigger>
+                        <SelectPopover>
+                          <ListBox>
+                            {PM_OPTIONS.map(pm => (
+                              <ListBoxItem key={pm} id={pm} textValue={pm}>
+                                <span className="text-sm">{pm}</span>
+                                {pm === gitInfo.package_manager && <span className="text-xs text-zinc-500 ml-1">(detected)</span>}
+                              </ListBoxItem>
+                            ))}
+                          </ListBox>
+                        </SelectPopover>
+                      </Select>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* New worktree button (when form is hidden) */}
+              {gitInfo?.is_git && !showWorktree && (
+                <div className="px-3 py-2 border-b border-border shrink-0">
+                  <button
+                    className="text-xs text-zinc-400 hover:text-zinc-100 bg-surface-light hover:bg-surface-lighter rounded px-2.5 py-1 transition-colors"
+                    onClick={() => { setShowWorktree(true); setConsoleLogs([]); setConsoleStatus('idle'); }}
+                  >+ New worktree</button>
+                </div>
+              )}
+
+              {/* Console output */}
+              {showConsole && (
+                <>
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
+                    <span className="text-xs text-zinc-400 font-medium">Console</span>
+                    <span className={`text-xs ${
+                      consoleStatus === 'running' ? 'text-amber-400' :
+                      consoleStatus === 'done' ? 'text-green-400' :
+                      consoleStatus === 'error' ? 'text-red-400' : 'text-zinc-600'
+                    }`}>
+                      {consoleStatus === 'running' && 'running...'}
+                      {consoleStatus === 'done' && 'complete'}
+                      {consoleStatus === 'error' && 'failed'}
+                    </span>
+                  </div>
+                  <div
+                    ref={consoleRef}
+                    className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-5 bg-base"
+                  >
+                    {consoleLogs.length === 0 && consoleStatus === 'running' && (
+                      <div className="text-zinc-600">Waiting for output...</div>
+                    )}
+                    {consoleLogs.map((line, i) => (
+                      <div key={i} className={
+                        line.startsWith('$') ? 'text-blue-400' :
+                        line.startsWith('ERROR') ? 'text-red-400' :
+                        line.startsWith('Done.') ? 'text-green-400 font-medium' :
+                        line.startsWith('Copied') || line.startsWith('Worktree created') ? 'text-amber-400' :
+                        'text-zinc-500'
+                      }>{line || '\u00A0'}</div>
+                    ))}
+                    {consoleStatus === 'running' && consoleLogs.length > 0 && (
+                      <span className="inline-block w-2 h-3 bg-amber-400/60 animate-pulse mt-1" />
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* Empty state when no console */}
+              {!showConsole && (
+                <div className="flex-1" />
+              )}
             </div>
           )}
         </div>

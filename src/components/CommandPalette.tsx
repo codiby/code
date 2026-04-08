@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Kbd } from '@heroui/react';
+import { searchFiles, type FileEntry } from '../lib/fuzzy-file-search';
 
 export interface PaletteAction {
   id: string;
   label: string;
-  /** Modifier keys for Kbd, e.g. ["command", "option"] */
   keys?: string[];
-  /** The final key label, e.g. "K" */
   key?: string;
   section?: string;
   onRun: () => void;
@@ -16,17 +15,15 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   actions: PaletteAction[];
-  onSearchFiles?: (query: string) => Promise<{ name: string; path: string; rel: string }[]>;
+  fileIndex: FileEntry[];
   onFileOpen?: (path: string) => void;
 }
 
-export function CommandPalette({ isOpen, onClose, actions, onSearchFiles, onFileOpen }: Props) {
+export function CommandPalette({ isOpen, onClose, actions, fileIndex, onFileOpen }: Props) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [fileResults, setFileResults] = useState<{ name: string; path: string; rel: string }[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   const filteredActions = useMemo(() => {
     if (!query) return actions;
@@ -37,40 +34,26 @@ export function CommandPalette({ isOpen, onClose, actions, onSearchFiles, onFile
     );
   }, [query, actions]);
 
-  // File actions from search results
-  const fileActions: PaletteAction[] = useMemo(() =>
-    fileResults.map(f => ({
+  const fileActions: PaletteAction[] = useMemo(() => {
+    if (!query) return [];
+    return searchFiles(fileIndex, query, 15).map(f => ({
       id: `file-${f.path}`,
       label: f.name,
       section: 'Files',
       key: f.rel,
       onRun: () => onFileOpen?.(f.path),
-    })),
-  [fileResults, onFileOpen]);
+    }));
+  }, [query, fileIndex, onFileOpen]);
 
   const filtered = useMemo(() => {
     if (!query) return actions;
     return [...fileActions, ...filteredActions];
   }, [query, actions, fileActions, filteredActions]);
 
-  // Search files when query changes
-  useEffect(() => {
-    if (!query || !onSearchFiles) {
-      setFileResults([]);
-      return;
-    }
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      onSearchFiles(query).then(setFileResults).catch(() => setFileResults([]));
-    }, 150);
-    return () => clearTimeout(debounceRef.current);
-  }, [query, onSearchFiles]);
-
   useEffect(() => {
     if (isOpen) {
       setQuery('');
       setSelectedIndex(0);
-      setFileResults([]);
       setTimeout(() => inputRef.current?.focus(), 20);
     }
   }, [isOpen]);
@@ -109,7 +92,6 @@ export function CommandPalette({ isOpen, onClose, actions, onSearchFiles, onFile
     }
   };
 
-  // Group by section
   let lastSection = '';
 
   return (
@@ -119,22 +101,20 @@ export function CommandPalette({ isOpen, onClose, actions, onSearchFiles, onFile
         className="relative w-full max-w-lg bg-[#1e1e1e] border border-border-light rounded-xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Search input */}
         <div className="px-4 py-3 border-b border-border">
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a command..."
+            placeholder="Type a command or file name..."
             className="w-full bg-transparent text-sm text-zinc-200 placeholder:text-zinc-600 outline-none"
           />
         </div>
 
-        {/* Results */}
         <div ref={listRef} className="max-h-72 overflow-y-auto py-1">
           {filtered.length === 0 && (
-            <p className="text-xs text-zinc-600 text-center py-6">No matching commands</p>
+            <p className="text-xs text-zinc-600 text-center py-6">No matching commands or files</p>
           )}
           {filtered.map((action, i) => {
             const showSection = action.section && action.section !== lastSection;

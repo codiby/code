@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { ClaudeClient } from '../lib/claude-client';
 
 interface FileEntry {
@@ -13,6 +13,11 @@ interface Props {
   collapsed: boolean;
   onToggle: () => void;
   onFileOpen: (path: string) => void;
+  onFileDiff?: (path: string) => void;
+  gitModified: Set<string>;
+  activeSessionId: string | null;
+  onOpenTerminal?: (command: string) => void;
+  onStartReview?: () => void;
 }
 
 const EXT_COLORS: Record<string, string> = {
@@ -29,7 +34,7 @@ function getExtColor(name: string): string {
   return EXT_COLORS[ext] || 'text-zinc-600';
 }
 
-function DirNode({ entry, client, depth, onFileOpen }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void }) {
+function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: Set<string> }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -70,9 +75,9 @@ function DirNode({ entry, client, depth, onFileOpen }: { entry: FileEntry; clien
           )}
           {children.map(child =>
             child.type === 'dir' ? (
-              <DirNode key={child.path} entry={child} client={client} depth={depth + 1} onFileOpen={onFileOpen} />
+              <DirNode key={child.path} entry={child} client={client} depth={depth + 1} onFileOpen={onFileOpen} gitModified={gitModified} />
             ) : (
-              <FileNode key={child.path} entry={child} depth={depth + 1} onFileOpen={onFileOpen} />
+              <FileNode key={child.path} entry={child} depth={depth + 1} onFileOpen={onFileOpen} gitModified={gitModified} />
             )
           )}
         </div>
@@ -81,11 +86,12 @@ function DirNode({ entry, client, depth, onFileOpen }: { entry: FileEntry; clien
   );
 }
 
-function FileNode({ entry, depth, onFileOpen }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void }) {
-  const color = getExtColor(entry.name);
+function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: Set<string> }) {
+  const isModified = gitModified.has(entry.path);
+  const color = isModified ? 'text-amber-400' : getExtColor(entry.name);
   return (
     <div
-      className="flex items-center gap-1 py-[2px] text-zinc-500 hover:text-zinc-300 hover:bg-surface-light/50 cursor-pointer transition-colors"
+      className={`flex items-center gap-1 py-[2px] hover:bg-surface-light/50 cursor-pointer transition-colors ${isModified ? 'text-amber-400/80' : 'text-zinc-500 hover:text-zinc-300'}`}
       style={{ paddingLeft: depth * 12 + 8 }}
       onClick={() => onFileOpen(entry.path)}
     >
@@ -95,7 +101,196 @@ function FileNode({ entry, depth, onFileOpen }: { entry: FileEntry; depth: numbe
   );
 }
 
-export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen }: Props) {
+function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview }: { gitModified: Set<string>; rootPath: string | null; onFileDiff: (path: string) => void; onStartReview?: () => void }) {
+  const [expanded, setExpanded] = useState(true);
+  const files = [...gitModified].sort();
+  if (files.length === 0) return null;
+
+  return (
+    <div className="border-b border-border/50 shrink-0">
+      <button
+        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <span className="text-[11px] w-3 text-center shrink-0 text-zinc-400">{expanded ? '▾' : '▸'}</span>
+        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Changes</span>
+        <span className="text-[10px] text-amber-400/70 ml-auto mr-1">{files.length}</span>
+        {onStartReview && (
+          <span
+            className="text-[11px] text-zinc-500 hover:text-green-400 px-1 transition-colors"
+            onClick={(e) => { e.stopPropagation(); onStartReview(); }}
+            title="Start Review"
+          >
+            &#x25B6;
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <div className="pb-1">
+          {files.map(filePath => {
+            const rel = rootPath && filePath.startsWith(rootPath)
+              ? filePath.slice(rootPath.length + 1)
+              : filePath;
+            const name = filePath.split('/').pop() || filePath;
+            return (
+              <div
+                key={filePath}
+                className="flex items-center gap-1 py-[2px] px-2 text-amber-400/80 hover:bg-surface-light/50 cursor-pointer transition-colors"
+                onClick={() => onFileDiff(filePath)}
+              >
+                <span className="text-[10px] w-3 text-center shrink-0 text-amber-400">M</span>
+                <span className="truncate text-[12px]">{name}</span>
+                <span className="text-[10px] text-zinc-600 font-mono truncate ml-auto shrink-0 max-w-[45%] text-right">{rel}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ProcessInfo {
+  id: string;
+  pid: number;
+  command: string;
+  cwd: string;
+  startedAt: number;
+  children: { pid: number; command: string }[];
+}
+
+function ProcessNode({ proc, onKill, onView }: { proc: ProcessInfo; onKill: (processId?: string, pid?: number) => void; onView?: (command: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasChildren = proc.children.length > 0;
+
+  return (
+    <div>
+      <div className="flex items-center gap-1 py-[2px] px-2 text-zinc-400 group">
+        {hasChildren ? (
+          <button className="text-[10px] w-3 text-center shrink-0 text-zinc-500" onClick={() => setExpanded(e => !e)}>
+            {expanded ? '▾' : '▸'}
+          </button>
+        ) : (
+          <span className="w-3 shrink-0" />
+        )}
+        <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+        <span className="truncate text-[11px] font-mono flex-1 cursor-pointer hover:text-zinc-200" onClick={() => onView?.(proc.command)}>{proc.command}</span>
+        <span className="text-[10px] text-zinc-600 shrink-0">{proc.pid}</span>
+        {onView && (
+          <button
+            className="text-zinc-600 hover:text-zinc-300 text-[10px] opacity-0 group-hover:opacity-100 shrink-0 ml-0.5 transition-opacity"
+            onClick={() => onView(proc.command)}
+            title="Open in panel"
+          >
+            &#x2197;
+          </button>
+        )}
+        <button
+          className="text-zinc-600 hover:text-red-400 text-[11px] opacity-0 group-hover:opacity-100 shrink-0 ml-0.5 transition-opacity"
+          onClick={() => onKill(proc.id)}
+          title="Kill process"
+        >
+          &times;
+        </button>
+      </div>
+      {expanded && proc.children.map(child => (
+        <div key={child.pid} className="flex items-center gap-1 py-[1px] text-zinc-500 group" style={{ paddingLeft: 28 }}>
+          <span className="text-[10px] text-zinc-600 shrink-0">&#x2514;</span>
+          <span className="truncate text-[10px] font-mono flex-1">{child.command}</span>
+          <span className="text-[9px] text-zinc-600 shrink-0">{child.pid}</span>
+          <button
+            className="text-zinc-600 hover:text-red-400 text-[10px] opacity-0 group-hover:opacity-100 shrink-0 ml-1 pr-2 transition-opacity"
+            onClick={() => onKill(undefined, child.pid)}
+            title="Kill process"
+          >
+            &times;
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProcessesSection({ client, sessionId, onViewTerminal }: { client: ClaudeClient | null; sessionId: string | null; onViewTerminal?: (command: string) => void }) {
+  const [expanded, setExpanded] = useState(true);
+  const [processes, setProcesses] = useState<ProcessInfo[]>([]);
+  const intervalRef = useRef<ReturnType<typeof setInterval>>();
+
+  const refresh = useCallback(async () => {
+    if (!client || !sessionId) { setProcesses([]); return; }
+    try {
+      const procs = await client.listProcesses(sessionId);
+      setProcesses(procs);
+    } catch { setProcesses([]); }
+  }, [client, sessionId]);
+
+  useEffect(() => {
+    refresh();
+    intervalRef.current = setInterval(refresh, 3000);
+    return () => clearInterval(intervalRef.current);
+  }, [refresh]);
+
+  const handleKill = async (processId?: string, pid?: number) => {
+    if (!client) return;
+    await client.killProcess(processId, pid);
+    setTimeout(refresh, 500);
+  };
+
+  if (processes.length === 0) return null;
+
+  return (
+    <div className="border-b border-border/50 shrink-0">
+      <button
+        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <span className="text-[11px] w-3 text-center shrink-0 text-zinc-400">{expanded ? '▾' : '▸'}</span>
+        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Processes</span>
+        <span className="text-[10px] text-green-400/70 ml-auto">{processes.length}</span>
+      </button>
+      {expanded && (
+        <div className="pb-1">
+          {processes.map(proc => (
+            <ProcessNode key={proc.id} proc={proc} onKill={handleKill} onView={onViewTerminal} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: Set<string> }) {
+  const [expanded, setExpanded] = useState(true);
+  const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <button
+        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors border-b border-border/50 shrink-0"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <span className="text-[11px] w-3 text-center shrink-0 text-zinc-400">{expanded ? '▾' : '▸'}</span>
+        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider truncate">{label}</span>
+      </button>
+      {expanded && (
+        <div className="flex-1 overflow-y-auto py-1">
+          {!rootPath && (
+            <p className="text-[11px] text-zinc-600 px-3 py-4 text-center">No session active</p>
+          )}
+          {entries.map(entry =>
+            entry.type === 'dir' ? (
+              <DirNode key={entry.path} entry={entry} client={client} depth={0} onFileOpen={onFileOpen} gitModified={gitModified} />
+            ) : (
+              <FileNode key={entry.path} entry={entry} depth={0} onFileOpen={onFileOpen} gitModified={gitModified} />
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
 
   useEffect(() => {
@@ -117,26 +312,14 @@ export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen
         </button>
       </div>
 
-      {/* Root label */}
-      {rootPath && (
-        <div className="px-3 py-1.5 text-[11px] text-zinc-500 font-mono truncate border-b border-border/50">
-          {rootPath.split('/').filter(Boolean).pop() || rootPath}
-        </div>
-      )}
+      {/* Processes */}
+      <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} />
 
-      {/* File tree */}
-      <div className="flex-1 overflow-y-auto py-1">
-        {!rootPath && (
-          <p className="text-[11px] text-zinc-600 px-3 py-4 text-center">No session active</p>
-        )}
-        {entries.map(entry =>
-          entry.type === 'dir' ? (
-            <DirNode key={entry.path} entry={entry} client={client} depth={0} onFileOpen={onFileOpen} />
-          ) : (
-            <FileNode key={entry.path} entry={entry} depth={0} onFileOpen={onFileOpen} />
-          )
-        )}
-      </div>
+      {/* Changes */}
+      <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onStartReview={onStartReview} />
+
+      {/* File tree (collapsible) */}
+      <FileTreeSection rootPath={rootPath} entries={entries} client={client} onFileOpen={onFileOpen} gitModified={gitModified} />
     </aside>
   );
 }

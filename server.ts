@@ -8,11 +8,26 @@
 
 import { randomUUID } from 'crypto';
 import { spawn, type ChildProcess } from 'child_process';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
 const PORT = parseInt(process.env.PORT || '3100', 10);
+const LOG_FILE = join(import.meta.dir, 'server.log');
+
+function log(...args: unknown[]) {
+  const ts = new Date().toISOString();
+  const msg = `[${ts}] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`;
+  console.log(msg);
+  try { appendFileSync(LOG_FILE, msg + '\n'); } catch {}
+}
+
+function logError(...args: unknown[]) {
+  const ts = new Date().toISOString();
+  const msg = `[${ts}] ERROR: ${args.map(a => typeof a === 'string' ? a : (a instanceof Error ? a.stack || a.message : JSON.stringify(a))).join(' ')}`;
+  console.error(msg);
+  try { appendFileSync(LOG_FILE, msg + '\n'); } catch {}
+}
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const CWD = process.env.CLAUDE_CWD || process.cwd();
 
@@ -30,6 +45,7 @@ type Session = {
   ready: boolean;
   status: 'starting' | 'running' | 'stopped';
   pendingMessages: string[]; // buffered messages from Claude before browser connects
+  savedCommands: string[];
 };
 
 type PersistedSession = {
@@ -38,19 +54,20 @@ type PersistedSession = {
   cwd: string;
   createdAt: number;
   claudeSessionId: string | null;
+  savedCommands?: string[];
 };
 
 const sessions = new Map<string, Session>();
 
 function saveSessions() {
   const data: PersistedSession[] = [...sessions.values()].map(s => ({
-    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId,
+    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands,
   }));
   try {
     mkdirSync(join(homedir(), '.claude'), { recursive: true });
     writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
-    console.log(`[persist] Failed to save: ${e}`);
+    logError(`[persist] Failed to save: ${e}`);
   }
 }
 
@@ -60,11 +77,12 @@ function loadSessions() {
     for (const p of data) {
       sessions.set(p.id, {
         ...p,
+        savedCommands: p.savedCommands || [],
         claudeWs: null, browserWs: new Set(), process: null,
         ready: false, status: 'stopped', pendingMessages: [],
       });
     }
-    console.log(`[persist] Loaded ${data.length} sessions`);
+    log(`[persist] Loaded ${data.length} sessions`);
   } catch {
     // No file or invalid — start fresh
   }
@@ -74,7 +92,7 @@ loadSessions();
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
@@ -94,17 +112,23 @@ function sessionToJSON(s: Session) {
     ready: s.ready,
     claude_session_id: s.claudeSessionId,
     ws_url: `ws://localhost:${PORT}/browser/ws/${s.id}`,
+    saved_commands: s.savedCommands || [],
   };
 }
 
 const server = Bun.serve({
   port: PORT,
-  fetch(req, server) {
+  async fetch(req, server) {
     const url = new URL(req.url);
 
     // CORS preflight
     if (req.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    // Log requests (skip health checks and file-index to reduce noise)
+    if (url.pathname !== '/health' && url.pathname !== '/file-index' && url.pathname !== '/git-modified' && url.pathname !== '/processes') {
+      log(`${req.method} ${url.pathname}${url.search}`);
     }
 
     // List sessions
@@ -171,12 +195,11 @@ const server = Bun.serve({
       return handleListFiles(dirPath);
     }
 
-    // Search files by name (recursive, for @ mentions)
-    if (url.pathname === '/find-files' && req.method === 'GET') {
+    // File index (cached, for fuzzy search)
+    if (url.pathname === '/file-index' && req.method === 'GET') {
       const root = url.searchParams.get('root');
-      const query = url.searchParams.get('q') || '';
       if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
-      return handleFindFiles(root, query);
+      return handleFileIndex(root);
     }
 
     // Read file content for editor
@@ -189,6 +212,69 @@ const server = Bun.serve({
       } catch {
         return Response.json({ error: 'Cannot read file' }, { status: 404, headers: corsHeaders });
       }
+    }
+
+    // Write file content
+    if (url.pathname === '/file-content' && req.method === 'PUT') {
+      try {
+        const body = await req.json() as { path: string; content: string };
+        if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+        writeFileSync(body.path, body.content, 'utf-8');
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      } catch (e: any) {
+        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Execute shell command (streaming)
+    if (url.pathname === '/exec' && req.method === 'POST') {
+      const body = await req.json() as { command: string; cwd?: string; sessionId?: string };
+      if (!body.command) return Response.json({ error: 'command required' }, { status: 400, headers: corsHeaders });
+      return handleExec(body.command, body.cwd || '/', body.sessionId || 'unknown');
+    }
+
+    // List processes for a session
+    if (url.pathname === '/processes' && req.method === 'GET') {
+      const sessionId = url.searchParams.get('sessionId');
+      if (!sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
+      return handleListProcesses(sessionId);
+    }
+
+    // Get original file content (git HEAD version) for diff
+    if (url.pathname === '/file-original' && req.method === 'GET') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+      try {
+        const content = execSync(`git show HEAD:$(git ls-files --full-name "${filePath}")`, { cwd: dirname(filePath), encoding: 'utf-8', timeout: 5000 });
+        return Response.json({ path: filePath, content }, { headers: corsHeaders });
+      } catch {
+        return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
+      }
+    }
+
+    // Save commands for a session
+    if (url.pathname === '/save-commands' && req.method === 'POST') {
+      const body = await req.json() as { sessionId: string; commands: string[] };
+      if (!body.sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
+      const session = sessions.get(body.sessionId);
+      if (!session) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+      session.savedCommands = body.commands || [];
+      saveSessions();
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    // Kill a process
+    if (url.pathname === '/kill' && req.method === 'POST') {
+      const body = await req.json() as { processId?: string; pid?: number };
+      if (!body.processId && !body.pid) return Response.json({ error: 'processId or pid required' }, { status: 400, headers: corsHeaders });
+      return handleKillProcess(body.processId || '', body.pid);
+    }
+
+    // Git modified files list
+    if (url.pathname === '/git-modified' && req.method === 'GET') {
+      const root = url.searchParams.get('root');
+      if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
+      return handleGitModified(root);
     }
 
     // Check if a path is a git repo
@@ -234,9 +320,10 @@ const server = Bun.serve({
 
       if (type === 'browser') {
         session.browserWs.add(ws);
-        console.log(`[${sessionId.slice(0, 8)}] Browser connected (${session.browserWs.size} total), replaying ${session.pendingMessages.length} buffered messages`);
+        log(`[${sessionId.slice(0, 8)}] Browser WS connected (${session.browserWs.size} total), session.status=${session.status}, session.ready=${session.ready}, pending=${session.pendingMessages.length}, hasProcess=${!!session.process}`);
         if (session.ready) {
           ws.send(JSON.stringify({ type: 'bridge', status: 'claude_connected' }) + '\n');
+          log(`[${sessionId.slice(0, 8)}] Sent claude_connected to browser (already ready)`);
         }
         // Replay buffered messages to this new browser
         for (const msg of session.pendingMessages) {
@@ -250,7 +337,7 @@ const server = Bun.serve({
         session.claudeWs = ws as unknown as WebSocket;
         session.ready = true;
         session.status = 'running';
-        console.log(`[${sessionId.slice(0, 8)}] Claude CLI connected`);
+        log(`[${sessionId.slice(0, 8)}] Claude CLI WS connected! Broadcasting claude_connected to ${session.browserWs.size} browser(s)`);
         broadcast(session, JSON.stringify({ type: 'bridge', status: 'claude_connected' }) + '\n');
       }
     },
@@ -305,9 +392,9 @@ const server = Bun.serve({
 
       if (type === 'browser') {
         session.browserWs.delete(ws);
-        console.log(`[${sessionId.slice(0, 8)}] Browser disconnected (${session.browserWs.size} remaining)`);
+        log(`[${sessionId.slice(0, 8)}] Browser disconnected (${session.browserWs.size} remaining)`);
       } else if (type === 'claude') {
-        console.log(`[${sessionId.slice(0, 8)}] Claude CLI disconnected`);
+        log(`[${sessionId.slice(0, 8)}] Claude CLI disconnected`);
         session.claudeWs = null;
         session.ready = false;
         session.status = 'stopped';
@@ -331,7 +418,9 @@ function spawnClaude(session: Session, resumeSessionId?: string) {
   }
 
   const sid = session.id.slice(0, 8);
-  console.log(`[${sid}] Spawning: ${CLAUDE_BIN} ${args.join(' ')}`);
+  const spawnStart = Date.now();
+  log(`[${sid}] Spawning: ${CLAUDE_BIN} ${args.join(' ')}`);
+  log(`[${sid}] CWD: ${session.cwd}`);
 
   const proc = spawn(CLAUDE_BIN, args, {
     cwd: session.cwd,
@@ -343,18 +432,20 @@ function spawnClaude(session: Session, resumeSessionId?: string) {
   session.status = 'starting';
   session.ready = false;
 
+  log(`[${sid}] Process spawned, PID=${proc.pid}, waiting for Claude CLI to connect via WS...`);
+
   proc.stdout?.on('data', (data: Buffer) => {
     const text = data.toString().trim();
-    if (text) console.log(`[${sid}] stdout: ${text}`);
+    if (text) log(`[${sid}] stdout (${Date.now() - spawnStart}ms): ${text.slice(0, 200)}`);
   });
 
   proc.stderr?.on('data', (data: Buffer) => {
     const msg = data.toString().trim();
-    if (msg) console.log(`[${sid}] stderr: ${msg}`);
+    if (msg) log(`[${sid}] stderr (${Date.now() - spawnStart}ms): ${msg.slice(0, 200)}`);
   });
 
   proc.on('exit', (code) => {
-    console.log(`[${sid}] Claude exited with code ${code}`);
+    log(`[${sid}] Claude exited with code ${code} after ${Date.now() - spawnStart}ms`);
     const s = sessions.get(session.id);
     if (s) {
       s.status = 'stopped';
@@ -363,6 +454,10 @@ function spawnClaude(session: Session, resumeSessionId?: string) {
       saveSessions();
       broadcast(s, JSON.stringify({ type: 'bridge', status: 'claude_exited', code }) + '\n');
     }
+  });
+
+  proc.on('error', (err) => {
+    logError(`[${sid}] Failed to spawn Claude: ${err.message}`);
   });
 }
 
@@ -387,9 +482,11 @@ async function handleCreateSession(req: Request): Promise<Response> {
     ready: false,
     status: 'starting',
     pendingMessages: [],
+    savedCommands: [],
   };
   sessions.set(session.id, session);
 
+  log(`[${session.id.slice(0,8)}] Creating new session, cwd=${cwd}`);
   spawnClaude(session);
   saveSessions();
 
@@ -405,9 +502,10 @@ function handleResumeSession(sessionId: string): Response {
     return Response.json({ error: 'Session already running' }, { status: 409, headers: corsHeaders });
   }
   if (!session.claudeSessionId) {
-    // No claude session to resume — start fresh
+    log(`[${sessionId.slice(0,8)}] Resuming session (no claude_session_id, starting fresh)`);
     spawnClaude(session);
   } else {
+    log(`[${sessionId.slice(0,8)}] Resuming session with claude_session_id=${session.claudeSessionId}`);
     spawnClaude(session, session.claudeSessionId);
   }
   saveSessions();
@@ -446,7 +544,7 @@ function handleDeleteSession(sessionId: string): Response {
   }
   sessions.delete(sessionId);
   saveSessions();
-  console.log(`[${sessionId.slice(0, 8)}] Session deleted`);
+  log(`[${sessionId.slice(0, 8)}] Session deleted`);
 
   return Response.json({ ok: true }, { headers: corsHeaders });
 }
@@ -512,34 +610,46 @@ function handleListFiles(dirPath: string): Response {
   }
 }
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.astro', '__pycache__', '.venv', 'vendor', 'coverage']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.astro', '__pycache__', '.venv', 'vendor', 'coverage', '.cache', '.turbo', 'target', '__snapshots__']);
 
-function handleFindFiles(root: string, query: string): Response {
-  try {
-    const results: { name: string; path: string; rel: string }[] = [];
-    const q = query.toLowerCase();
-    const maxResults = 30;
-    const maxDepth = 6;
+const fileIndexCache = new Map<string, { files: { name: string; path: string; rel: string }[]; ts: number }>();
+const FILE_INDEX_TTL = 30_000; // 30s cache
 
-    function walk(dir: string, rel: string, depth: number) {
-      if (depth > maxDepth || results.length >= maxResults) return;
-      let entries;
-      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
-      for (const e of entries) {
-        if (e.name.startsWith('.')) continue;
-        if (results.length >= maxResults) break;
-        const fullPath = resolve(dir, e.name);
-        const relPath = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) {
-          if (!SKIP_DIRS.has(e.name)) walk(fullPath, relPath, depth + 1);
-        } else if (!q || e.name.toLowerCase().includes(q) || relPath.toLowerCase().includes(q)) {
-          results.push({ name: e.name, path: fullPath, rel: relPath });
-        }
+function buildFileIndex(root: string): { name: string; path: string; rel: string }[] {
+  const files: { name: string; path: string; rel: string }[] = [];
+  const maxDepth = 10;
+  const maxFiles = 10_000;
+
+  function walk(dir: string, rel: string, depth: number) {
+    if (depth > maxDepth || files.length >= maxFiles) return;
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      if (files.length >= maxFiles) break;
+      const fullPath = resolve(dir, e.name);
+      const relPath = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) walk(fullPath, relPath, depth + 1);
+      } else {
+        files.push({ name: e.name, path: fullPath, rel: relPath });
       }
     }
+  }
 
-    walk(root, '', 0);
-    return Response.json(results, { headers: corsHeaders });
+  walk(root, '', 0);
+  return files;
+}
+
+function handleFileIndex(root: string): Response {
+  try {
+    const cached = fileIndexCache.get(root);
+    if (cached && Date.now() - cached.ts < FILE_INDEX_TTL) {
+      return Response.json(cached.files, { headers: corsHeaders });
+    }
+    const files = buildFileIndex(root);
+    fileIndexCache.set(root, { files, ts: Date.now() });
+    return Response.json(files, { headers: corsHeaders });
   } catch {
     return Response.json([], { headers: corsHeaders });
   }
@@ -552,6 +662,132 @@ function detectPackageManager(dir: string): string | null {
   if (existsSync(`${dir}/package-lock.json`)) return 'npm';
   if (existsSync(`${dir}/package.json`)) return 'npm';
   return null;
+}
+
+// Process tracking
+interface TrackedProcess {
+  id: string;
+  pid: number;
+  command: string;
+  cwd: string;
+  sessionId: string;
+  startedAt: number;
+  proc: ChildProcess;
+}
+
+const trackedProcesses = new Map<string, TrackedProcess>();
+
+function getProcessTree(pid: number): { pid: number; command: string; children: { pid: number; command: string }[] } | null {
+  try {
+    const out = execSync(`ps -o pid=,ppid=,comm= -ax`, { encoding: 'utf-8', timeout: 3000 });
+    const rows = out.trim().split('\n').map(line => {
+      const parts = line.trim().split(/\s+/);
+      return { pid: parseInt(parts[0]!, 10), ppid: parseInt(parts[1]!, 10), comm: parts.slice(2).join(' ') };
+    }).filter(r => !isNaN(r.pid));
+
+    const entry = rows.find(r => r.pid === pid);
+    if (!entry) return null;
+    const children = rows.filter(r => r.ppid === pid).map(r => ({ pid: r.pid, command: r.comm }));
+    return { pid, command: entry.comm, children };
+  } catch {
+    return null;
+  }
+}
+
+function handleListProcesses(sessionId: string): Response {
+  const procs: { id: string; pid: number; command: string; cwd: string; startedAt: number; children: { pid: number; command: string }[] }[] = [];
+  for (const [id, tp] of trackedProcesses) {
+    if (tp.sessionId !== sessionId) continue;
+    const tree = getProcessTree(tp.pid);
+    procs.push({
+      id,
+      pid: tp.pid,
+      command: tp.command,
+      cwd: tp.cwd,
+      startedAt: tp.startedAt,
+      children: tree?.children || [],
+    });
+  }
+  return Response.json(procs, { headers: corsHeaders });
+}
+
+function killProcessTree(pid: number) {
+  try { execSync(`kill -9 -- -${pid} 2>/dev/null; kill -9 ${pid} 2>/dev/null`, { timeout: 3000 }); } catch {}
+  // Also try pkill for any remaining children
+  try { execSync(`pkill -9 -P ${pid} 2>/dev/null`, { timeout: 3000 }); } catch {}
+}
+
+function handleKillProcess(processId: string, pid?: number): Response {
+  if (pid) {
+    killProcessTree(pid);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  }
+  const tp = trackedProcesses.get(processId);
+  if (!tp) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+  killProcessTree(tp.pid);
+  try { tp.proc.kill('SIGKILL'); } catch {}
+  trackedProcesses.delete(processId);
+  return Response.json({ ok: true }, { headers: corsHeaders });
+}
+
+function handleExec(command: string, cwd: string, sessionId: string): Response {
+  const encoder = new TextEncoder();
+  const procId = randomUUID();
+  const stream = new ReadableStream({
+    start(controller) {
+      const shell = process.env.SHELL || '/bin/sh';
+      const proc = spawn(shell, ['-ilc', command], { cwd, detached: true, env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' } });
+
+      trackedProcesses.set(procId, { id: procId, pid: proc.pid!, command, cwd, sessionId, startedAt: Date.now(), proc });
+
+      // Send process ID as first event
+      try { controller.enqueue(encoder.encode(`event: pid\ndata: ${JSON.stringify({ procId, pid: proc.pid })}\n\n`)); } catch {}
+
+      const send = (data: string) => {
+        try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); } catch {}
+      };
+
+      proc.stdout.on('data', (chunk: Buffer) => send(chunk.toString()));
+      proc.stderr.on('data', (chunk: Buffer) => send(chunk.toString()));
+
+      proc.on('close', (code) => {
+        trackedProcesses.delete(procId);
+        try {
+          controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ exitCode: code ?? 0 })}\n\n`));
+          controller.close();
+        } catch {}
+      });
+
+      proc.on('error', (err) => {
+        trackedProcesses.delete(procId);
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(`Error: ${err.message}`)}\n\n`));
+          controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ exitCode: 1 })}\n\n`));
+          controller.close();
+        } catch {}
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
+}
+
+function handleGitModified(root: string): Response {
+  try {
+    const output = execSync('git diff --name-only HEAD && git diff --name-only --cached && git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 });
+    const files = [...new Set(output.split('\n').filter(Boolean))];
+    const paths = files.map(f => resolve(root, f));
+    return Response.json(paths, { headers: corsHeaders });
+  } catch {
+    return Response.json([], { headers: corsHeaders });
+  }
 }
 
 function handleGitInfo(dirPath: string): Response {
@@ -767,7 +1003,7 @@ function killAllClaudeProcesses() {
       killed++;
     }
   }
-  if (killed > 0) console.log(`[shutdown] Killed ${killed} Claude processes`);
+  if (killed > 0) log(`[shutdown] Killed ${killed} Claude processes`);
 }
 
 process.on('SIGINT', () => { killAllClaudeProcesses(); process.exit(0); });
@@ -776,6 +1012,6 @@ process.on('exit', () => { killAllClaudeProcesses(); });
 // bun --watch sends SIGUSR2 before restart
 process.on('SIGUSR2', () => { killAllClaudeProcesses(); });
 
-console.log(`Bridge server listening on http://localhost:${PORT}`);
-console.log(`Claude binary: ${CLAUDE_BIN}`);
-console.log(`Working directory: ${CWD}`);
+log(`Bridge server listening on http://localhost:${PORT}`);
+log(`Claude binary: ${CLAUDE_BIN}`);
+log(`Working directory: ${CWD}`);

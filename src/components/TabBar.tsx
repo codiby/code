@@ -3,24 +3,28 @@ import type { SessionInfo, ConnectionStatus } from '../lib/claude-client';
 
 interface Props {
   sessions: SessionInfo[];
+  closedSessions: SessionInfo[];
   activeSessionId: string | null;
   sessionStatuses: Record<string, ConnectionStatus>;
   onSelect: (id: string) => void;
   onNew: () => void;
-  onDelete: (id: string) => void;
+  onClose: (id: string) => void;
+  onReopen: (id: string) => void;
   onRename: (id: string, name: string) => void;
 }
 
 const statusColor: Record<string, string> = {
   connected: 'bg-green-400',
   connecting: 'bg-amber-400 animate-pulse',
-  disconnected: 'bg-zinc-600',
+  disconnected: 'bg-zinc-500',
   error: 'bg-red-400',
 };
 
-export function TabBar({ sessions, activeSessionId, sessionStatuses, onSelect, onNew, onDelete, onRename }: Props) {
+export function TabBar({ sessions, closedSessions, activeSessionId, sessionStatuses, onSelect, onNew, onClose, onReopen, onRename }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const [showMenu, setShowMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const editRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -43,7 +47,7 @@ export function TabBar({ sessions, activeSessionId, sessionStatuses, onSelect, o
   };
 
   return (
-    <div className="tab-bar flex items-end bg-[#161616] pl-1 pt-1.5 shrink-0 select-none overflow-x-auto" style={{ minHeight: 38 }}>
+    <div className="tab-bar flex items-center bg-[#161616] px-1 shrink-0 select-none overflow-x-auto gap-1" style={{ minHeight: 38 }}>
       {sessions.map(s => {
         const isActive = s.id === activeSessionId;
         const connStatus = sessionStatuses[s.id] || 'disconnected';
@@ -51,10 +55,10 @@ export function TabBar({ sessions, activeSessionId, sessionStatuses, onSelect, o
         return (
           <div
             key={s.id}
-            className={`tab-item group relative flex items-center gap-1.5 px-3 h-[34px] text-[12px] cursor-pointer shrink-0 max-w-[200px] min-w-[100px] transition-colors ${
+            className={`tab-item group relative flex items-center gap-1.5 px-3 h-[30px] text-[12px] cursor-pointer shrink-0 max-w-[200px] min-w-[100px] rounded-md transition-colors ${
               isActive
-                ? 'bg-base text-zinc-200 rounded-t-lg z-10'
-                : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-t-lg'
+                ? 'bg-surface-light text-zinc-200'
+                : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface/50'
             }`}
             onClick={() => onSelect(s.id)}
           >
@@ -86,28 +90,61 @@ export function TabBar({ sessions, activeSessionId, sessionStatuses, onSelect, o
               className={`shrink-0 w-4 h-4 flex items-center justify-center rounded-sm text-[14px] leading-none transition-opacity ${
                 isActive ? 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light' : 'opacity-0 group-hover:opacity-100 text-zinc-600 hover:text-zinc-300 hover:bg-surface-light'
               }`}
-              onClick={(e) => { e.stopPropagation(); onDelete(s.id); }}
+              onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
               title="Close tab"
             >
               &times;
             </button>
 
-            {/* Active tab bottom line cover */}
-            {isActive && (
-              <div className="absolute bottom-0 left-0 right-0 h-px bg-base" />
-            )}
           </div>
         );
       })}
 
-      {/* New tab button */}
-      <button
-        className="flex items-center justify-center w-8 h-[34px] text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-t-lg shrink-0 text-lg leading-none transition-colors"
-        onClick={onNew}
-        title="New session"
-      >
-        +
-      </button>
+      {/* New/reopen button */}
+      <div className="shrink-0" ref={menuRef}>
+        <button
+          className="flex items-center justify-center w-8 h-[30px] text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md text-lg leading-none transition-colors"
+          onClick={() => setShowMenu(m => !m)}
+          title="Open session"
+        >
+          +
+        </button>
+        {showMenu && (() => {
+          const rect = menuRef.current?.getBoundingClientRect();
+          return (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+            <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl min-w-[220px] py-1 overflow-y-auto max-h-80"
+              style={{ top: (rect?.bottom ?? 38) + 4, left: rect?.left ?? 0 }}>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-zinc-300 hover:bg-surface-light transition-colors"
+                onClick={() => { setShowMenu(false); onNew(); }}
+              >
+                <span className="text-zinc-500">+</span>
+                <span>New session</span>
+              </button>
+              {closedSessions.length > 0 && (
+                <>
+                  <div className="h-px bg-border mx-2 my-1" />
+                  <div className="px-3 py-1 text-[10px] text-zinc-600 uppercase tracking-wider">Closed sessions</div>
+                  {closedSessions.map(s => (
+                    <button
+                      key={s.id}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                      onClick={() => { setShowMenu(false); onReopen(s.id); }}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
+                      <span className="truncate">{s.name}</span>
+                      <span className="text-[10px] text-zinc-600 ml-auto shrink-0 font-mono">{s.cwd.split('/').pop()}</span>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          </>
+          );
+        })()}
+      </div>
     </div>
   );
 }
