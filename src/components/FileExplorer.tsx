@@ -14,10 +14,11 @@ interface Props {
   onToggle: () => void;
   onFileOpen: (path: string) => void;
   onFileDiff?: (path: string) => void;
-  gitModified: Set<string>;
+  gitModified: Map<string, boolean>;
   activeSessionId: string | null;
   onOpenTerminal?: (command: string) => void;
   onStartReview?: () => void;
+  onRefreshGit?: () => void;
 }
 
 const EXT_COLORS: Record<string, string> = {
@@ -34,7 +35,7 @@ function getExtColor(name: string): string {
   return EXT_COLORS[ext] || 'text-zinc-600';
 }
 
-function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: Set<string> }) {
+function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: Map<string, boolean> }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -86,12 +87,13 @@ function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: Fil
   );
 }
 
-function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: Set<string> }) {
+function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: Map<string, boolean> }) {
   const isModified = gitModified.has(entry.path);
-  const color = isModified ? 'text-amber-400' : getExtColor(entry.name);
+  const isStaged = gitModified.get(entry.path) === true;
+  const color = isModified ? (isStaged ? 'text-green-400' : 'text-amber-400') : getExtColor(entry.name);
   return (
     <div
-      className={`flex items-center gap-1 py-[2px] hover:bg-surface-light/50 cursor-pointer transition-colors ${isModified ? 'text-amber-400/80' : 'text-zinc-500 hover:text-zinc-300'}`}
+      className={`flex items-center gap-1 py-[2px] hover:bg-surface-light/50 cursor-pointer transition-colors ${isModified ? (isStaged ? 'text-green-400/80' : 'text-amber-400/80') : 'text-zinc-500 hover:text-zinc-300'}`}
       style={{ paddingLeft: depth * 12 + 8 }}
       onClick={() => onFileOpen(entry.path)}
     >
@@ -101,20 +103,72 @@ function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry;
   );
 }
 
-function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview }: { gitModified: Set<string>; rootPath: string | null; onFileDiff: (path: string) => void; onStartReview?: () => void }) {
+function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, client, onRefresh }: { gitModified: Map<string, boolean>; rootPath: string | null; onFileDiff: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState(true);
-  const files = [...gitModified].sort();
-  if (files.length === 0) return null;
+  const entries = [...gitModified.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const stagedFiles = entries.filter(([, s]) => s);
+  const unstagedFiles = entries.filter(([, s]) => !s);
+  if (entries.length === 0) return null;
+
+  const toggleStage = async (e: React.MouseEvent, filePath: string, isStaged: boolean) => {
+    e.stopPropagation();
+    if (!client || !rootPath) return;
+    await client.gitStage(rootPath, [filePath], isStaged);
+    onRefresh();
+  };
+
+  const stageAll = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!client || !rootPath) return;
+    await client.gitStage(rootPath, unstagedFiles.map(([p]) => p));
+    onRefresh();
+  };
+
+  const renderFile = (filePath: string, isStaged: boolean) => {
+    if (!filePath) return null;
+    const rel = rootPath && filePath.startsWith(rootPath)
+      ? filePath.slice(rootPath.length + 1)
+      : filePath;
+    const name = filePath.split('/').pop() || filePath;
+    const color = isStaged ? 'text-green-400' : 'text-amber-400';
+    return (
+      <div
+        key={filePath}
+        className={`flex items-center gap-1 py-[2px] px-2 ${color}/80 hover:bg-surface-light/50 cursor-pointer transition-colors group/file`}
+        onClick={() => onFileDiff(filePath)}
+      >
+        <span className={`text-[10px] w-3 text-center shrink-0 ${color}`}>{isStaged ? 'S' : 'M'}</span>
+        <span className="truncate text-[12px]">{name}</span>
+        <span className="text-[10px] text-zinc-600 font-mono truncate ml-auto shrink-0 max-w-[45%] text-right">{rel}</span>
+        <span
+          className={`text-[11px] px-1 transition-colors opacity-0 group-hover/file:opacity-100 shrink-0 ${isStaged ? 'text-zinc-600 hover:text-red-400' : 'text-zinc-600 hover:text-green-400'}`}
+          onClick={(e) => toggleStage(e, filePath, isStaged)}
+          title={isStaged ? 'Unstage file' : 'Stage file'}
+        >
+          {isStaged ? '−' : '+'}
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div className="border-b border-border/50 shrink-0">
       <button
-        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
+        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors group"
         onClick={() => setExpanded(e => !e)}
       >
         <span className="text-[11px] w-3 text-center shrink-0 text-zinc-400">{expanded ? '▾' : '▸'}</span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Changes</span>
-        <span className="text-[10px] text-amber-400/70 ml-auto mr-1">{files.length}</span>
+        <span className="text-[10px] text-amber-400/70 ml-auto mr-1">{entries.length}</span>
+        {unstagedFiles.length > 0 && (
+          <span
+            className="text-[11px] text-zinc-600 hover:text-green-400 px-1 transition-colors opacity-0 group-hover:opacity-100"
+            onClick={stageAll}
+            title="Stage All"
+          >
+            +
+          </span>
+        )}
         {onStartReview && (
           <span
             className="text-[11px] text-zinc-500 hover:text-green-400 px-1 transition-colors"
@@ -127,23 +181,18 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview }: { 
       </button>
       {expanded && (
         <div className="pb-1">
-          {files.map(filePath => {
-            const rel = rootPath && filePath.startsWith(rootPath)
-              ? filePath.slice(rootPath.length + 1)
-              : filePath;
-            const name = filePath.split('/').pop() || filePath;
-            return (
-              <div
-                key={filePath}
-                className="flex items-center gap-1 py-[2px] px-2 text-amber-400/80 hover:bg-surface-light/50 cursor-pointer transition-colors"
-                onClick={() => onFileDiff(filePath)}
-              >
-                <span className="text-[10px] w-3 text-center shrink-0 text-amber-400">M</span>
-                <span className="truncate text-[12px]">{name}</span>
-                <span className="text-[10px] text-zinc-600 font-mono truncate ml-auto shrink-0 max-w-[45%] text-right">{rel}</span>
-              </div>
-            );
-          })}
+          {stagedFiles.length > 0 && (
+            <div className="px-3 py-0.5">
+              <span className="text-[10px] text-green-400/60 uppercase tracking-wider">Staged</span>
+            </div>
+          )}
+          {stagedFiles.map(([path]) => renderFile(path, true))}
+          {unstagedFiles.length > 0 && stagedFiles.length > 0 && (
+            <div className="px-3 py-0.5 mt-0.5">
+              <span className="text-[10px] text-amber-400/60 uppercase tracking-wider">Unstaged</span>
+            </div>
+          )}
+          {unstagedFiles.map(([path]) => renderFile(path, false))}
         </div>
       )}
     </div>
@@ -259,7 +308,7 @@ function ProcessesSection({ client, sessionId, onViewTerminal }: { client: Claud
   );
 }
 
-function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: Set<string> }) {
+function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: Map<string, boolean> }) {
   const [expanded, setExpanded] = useState(true);
   const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
 
@@ -290,7 +339,7 @@ function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }:
   );
 }
 
-export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview }: Props) {
+export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
 
   useEffect(() => {
@@ -316,7 +365,7 @@ export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen
       <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} />
 
       {/* Changes */}
-      <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onStartReview={onStartReview} />
+      <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
 
       {/* File tree (collapsible) */}
       <FileTreeSection rootPath={rootPath} entries={entries} client={client} onFileOpen={onFileOpen} gitModified={gitModified} />

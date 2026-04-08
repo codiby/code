@@ -227,10 +227,24 @@ export class ClaudeClient {
     return abort;
   }
 
-  async getGitModified(root: string): Promise<string[]> {
+  async getGitModified(root: string): Promise<{ path: string; staged: boolean }[]> {
     const resp = await fetch(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}`);
     if (!resp.ok) return [];
-    return resp.json();
+    const data = await resp.json();
+    // Handle legacy format (plain string array) from old server
+    if (Array.isArray(data) && data.length > 0 && typeof data[0] === 'string') {
+      return data.map((p: string) => ({ path: p, staged: false }));
+    }
+    return data;
+  }
+
+  async gitStage(root: string, files: string[], unstage = false): Promise<boolean> {
+    const resp = await fetch(`${this.serverUrl}/git-stage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ root, files, unstage }),
+    });
+    return resp.ok;
   }
 
   async getGitInfo(path: string): Promise<{

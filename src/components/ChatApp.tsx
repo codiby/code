@@ -87,7 +87,7 @@ export function ChatApp() {
     setOpenFileRaw(file);
     setEditorDirty(false);
   };
-  const [gitModified, setGitModified] = useState<Set<string>>(new Set());
+  const [gitModified, setGitModified] = useState<Map<string, boolean>>(new Map());
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -484,7 +484,7 @@ export function ChatApp() {
   };
 
   const handleStartReview = () => {
-    const files = [...gitModified].sort();
+    const files = [...gitModified.keys()].sort();
     if (files.length === 0) return;
     setReviewMode(true);
     setReviewFiles(files);
@@ -563,8 +563,8 @@ export function ChatApp() {
   const refreshGitModified = useCallback(async () => {
     const root = explorerRootRef.current;
     if (!client || !root) return;
-    const paths = await client.getGitModified(root);
-    setGitModified(new Set(paths));
+    const entries = await client.getGitModified(root);
+    setGitModified(new Map(entries.map(e => [e.path, e.staged])));
   }, [client]);
 
   const handleSaveFile = async () => {
@@ -753,6 +753,7 @@ export function ChatApp() {
               if (msg) { setOpenFile(null); setOpenTerminalId(msg.id); }
             }}
             onStartReview={handleStartReview}
+            onRefreshGit={refreshGitModified}
           />
           )}
 
@@ -1040,7 +1041,7 @@ export function ChatApp() {
                   <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => setEditorFullWidth(f => !f)}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
-                        <span className={`text-[12px] font-mono truncate ${gitModified.has(openFile.path) ? 'text-amber-400' : 'text-zinc-400'}`}>
+                        <span className={`text-[12px] font-mono truncate ${gitModified.has(openFile.path) ? (gitModified.get(openFile.path) ? 'text-green-400' : 'text-amber-400') : 'text-zinc-400'}`}>
                           {openFile.path.split('/').pop()}
                         </span>
                         {editorDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}

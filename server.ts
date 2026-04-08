@@ -270,6 +270,20 @@ const server = Bun.serve({
       return handleKillProcess(body.processId || '', body.pid);
     }
 
+    // Git stage/unstage files
+    if (url.pathname === '/git-stage' && req.method === 'POST') {
+      const body = await req.json() as { root: string; files: string[]; unstage?: boolean };
+      if (!body.root || !body.files?.length) return Response.json({ error: 'root and files required' }, { status: 400, headers: corsHeaders });
+      try {
+        const gitTop = execSync('git rev-parse --show-toplevel', { cwd: body.root, encoding: 'utf-8', timeout: 5000 }).trim();
+        const cmd = body.unstage ? 'git reset HEAD --' : 'git add --';
+        execSync(`${cmd} ${body.files.map(f => `'${f.replace(/'/g, "'\\''")}'`).join(' ')}`, { cwd: gitTop, encoding: 'utf-8', timeout: 5000 });
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      } catch (e: any) {
+        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Git modified files list
     if (url.pathname === '/git-modified' && req.method === 'GET') {
       const root = url.searchParams.get('root');
@@ -781,10 +795,26 @@ function handleExec(command: string, cwd: string, sessionId: string): Response {
 
 function handleGitModified(root: string): Response {
   try {
-    const output = execSync('git diff --name-only HEAD && git diff --name-only --cached && git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 });
-    const files = [...new Set(output.split('\n').filter(Boolean))];
-    const paths = files.map(f => resolve(root, f));
-    return Response.json(paths, { headers: corsHeaders });
+    const gitTop = execSync('git rev-parse --show-toplevel', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim();
+    const unstaged = execSync('git diff --name-only', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+    const staged = execSync('git diff --name-only --cached', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+    const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+
+    const result: { path: string; staged: boolean }[] = [];
+    const seen = new Set<string>();
+
+    for (const f of staged) {
+      const p = resolve(gitTop, f);
+      if (!p.startsWith(root)) continue;
+      if (!seen.has(p)) { seen.add(p); result.push({ path: p, staged: true }); }
+    }
+    for (const f of [...unstaged, ...untracked]) {
+      const p = resolve(gitTop, f);
+      if (!p.startsWith(root)) continue;
+      if (!seen.has(p)) { seen.add(p); result.push({ path: p, staged: false }); }
+    }
+
+    return Response.json(result, { headers: corsHeaders });
   } catch {
     return Response.json([], { headers: corsHeaders });
   }
