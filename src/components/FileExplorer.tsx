@@ -19,6 +19,7 @@ interface Props {
   onOpenTerminal?: (command: string) => void;
   onStartReview?: () => void;
   onRefreshGit?: () => void;
+  tools?: string[];
 }
 
 const EXT_COLORS: Record<string, string> = {
@@ -340,7 +341,34 @@ function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }:
   );
 }
 
-export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit }: Props) {
+function ToolsSection({ tools }: { tools: string[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (tools.length === 0) return null;
+
+  return (
+    <div className="border-b border-border/50 shrink-0">
+      <button
+        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <span className="text-[11px] w-3 text-center shrink-0 text-zinc-400">{expanded ? '▾' : '▸'}</span>
+        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Tools</span>
+        <span className="text-[10px] text-zinc-600 ml-auto">{tools.length}</span>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2 flex flex-wrap gap-1">
+          {tools.map(tool => (
+            <span key={tool} className="text-[10px] bg-surface-light text-zinc-400 px-1.5 py-0.5 rounded font-mono">
+              {tool}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
 
   useEffect(() => {
@@ -367,6 +395,9 @@ export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen
 
       {/* Changes */}
       <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
+
+      {/* Tools */}
+      <ToolsSection tools={tools || []} />
 
       {/* File tree (collapsible) */}
       <FileTreeSection rootPath={rootPath} entries={entries} client={client} onFileOpen={onFileOpen} gitModified={gitModified} />

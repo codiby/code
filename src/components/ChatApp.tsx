@@ -89,6 +89,10 @@ export function ChatApp() {
     catch { return new Set(); }
   });
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [tabOrder, setTabOrder] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('claude-ui-tab-order') || '[]'); }
+    catch { return []; }
+  });
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
   const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
   const [input, setInput] = useState('');
@@ -693,6 +697,32 @@ export function ChatApp() {
 
   const activeStatus = activeId ? (statuses[activeId] || 'disconnected') : 'disconnected';
   const activeSession = sessions.find(s => s.id === activeId);
+
+  // Ordered sessions for tab bar
+  const orderedOpenSessions = sessions
+    .filter(s => !closedSessionIds.has(s.id))
+    .sort((a, b) => {
+      const ai = tabOrder.indexOf(a.id);
+      const bi = tabOrder.indexOf(b.id);
+      return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
+    });
+
+  const handleReorder = (fromId: string, toId: string) => {
+    setTabOrder(prev => {
+      // Ensure all open session IDs are in the order
+      const openIds = sessions.filter(s => !closedSessionIds.has(s.id)).map(s => s.id);
+      const order = prev.filter(id => openIds.includes(id));
+      for (const id of openIds) { if (!order.includes(id)) order.push(id); }
+      // Move fromId to toId's position
+      const fromIdx = order.indexOf(fromId);
+      const toIdx = order.indexOf(toId);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      order.splice(fromIdx, 1);
+      order.splice(toIdx, 0, fromId);
+      try { localStorage.setItem('claude-ui-tab-order', JSON.stringify(order)); } catch {}
+      return order;
+    });
+  };
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
   explorerRootRef.current = explorerRoot;
 
@@ -814,16 +844,18 @@ export function ChatApp() {
         />
         {/* Tab bar */}
         <TabBar
-          sessions={sessions.filter(s => !closedSessionIds.has(s.id))}
+          sessions={orderedOpenSessions}
           closedSessions={sessions.filter(s => closedSessionIds.has(s.id))}
           activeSessionId={activeId}
           sessionStatuses={statuses}
           sessionStreaming={Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, s.isStreaming]))}
+          sessionHasPermission={Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.permRequest]))}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
           onClose={handleCloseTab}
           onReopen={handleReopenSession}
           onRename={handleRenameSession}
+          onReorder={handleReorder}
         />
 
         <div className="flex-1 flex min-h-0">
@@ -844,6 +876,7 @@ export function ChatApp() {
             }}
             onStartReview={handleStartReview}
             onRefreshGit={refreshGitModified}
+            tools={active.initInfo?.tools}
           />
           )}
 
