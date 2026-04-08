@@ -7,5 +7,14 @@ export default defineConfig({
   integrations: [react()],
   vite: {
     plugins: [tailwindcss()],
+    // Prevent Vite from watching src-tauri
+    server: {
+      watch: {
+        ignored: ['**/src-tauri/**'],
+      },
+    },
+  },
+  server: {
+    port: 4321,
   },
 });

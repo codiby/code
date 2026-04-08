@@ -46,6 +46,8 @@ type Session = {
   status: 'starting' | 'running' | 'stopped';
   pendingMessages: string[]; // buffered messages from Claude before browser connects
   savedCommands: string[];
+  model: string | null;
+  planMode: boolean;
 };
 
 type PersistedSession = {
@@ -55,13 +57,15 @@ type PersistedSession = {
   createdAt: number;
   claudeSessionId: string | null;
   savedCommands?: string[];
+  model?: string | null;
+  planMode?: boolean;
 };
 
 const sessions = new Map<string, Session>();
 
 function saveSessions() {
   const data: PersistedSession[] = [...sessions.values()].map(s => ({
-    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands,
+    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands, model: s.model, planMode: s.planMode,
   }));
   try {
     mkdirSync(join(homedir(), '.claude'), { recursive: true });
@@ -78,6 +82,8 @@ function loadSessions() {
       sessions.set(p.id, {
         ...p,
         savedCommands: p.savedCommands || [],
+        model: p.model || null,
+        planMode: p.planMode || false,
         claudeWs: null, browserWs: new Set(), process: null,
         ready: false, status: 'stopped', pendingMessages: [],
       });
@@ -113,6 +119,8 @@ function sessionToJSON(s: Session) {
     claude_session_id: s.claudeSessionId,
     ws_url: `ws://localhost:${PORT}/browser/ws/${s.id}`,
     saved_commands: s.savedCommands || [],
+    model: s.model || null,
+    plan_mode: s.planMode || false,
   };
 }
 
@@ -431,6 +439,10 @@ function spawnClaude(session: Session, resumeSessionId?: string) {
     args.push('--resume', resumeSessionId, '--replay-user-messages');
   }
 
+  if (session.model) {
+    args.push('--model', session.model);
+  }
+
   const sid = session.id.slice(0, 8);
   const spawnStart = Date.now();
   log(`[${sid}] Spawning: ${CLAUDE_BIN} ${args.join(' ')}`);
@@ -478,10 +490,14 @@ function spawnClaude(session: Session, resumeSessionId?: string) {
 async function handleCreateSession(req: Request): Promise<Response> {
   let cwd = CWD;
   let name = '';
+  let model: string | null = null;
+  let planMode = false;
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
     if (body.name && typeof body.name === 'string') name = body.name;
+    if (body.model && typeof body.model === 'string') model = body.model;
+    if (body.planMode === true) planMode = true;
   } catch {}
 
   const session: Session = {
@@ -497,6 +513,8 @@ async function handleCreateSession(req: Request): Promise<Response> {
     status: 'starting',
     pendingMessages: [],
     savedCommands: [],
+    model,
+    planMode,
   };
   sessions.set(session.id, session);
 
@@ -535,8 +553,11 @@ async function handleRenameSession(sessionId: string, req: Request): Promise<Res
     const body = await req.json() as Record<string, unknown>;
     if (body.name && typeof body.name === 'string') {
       session.name = body.name;
-      saveSessions();
     }
+    if (typeof body.planMode === 'boolean') {
+      session.planMode = body.planMode;
+    }
+    saveSessions();
   } catch {}
   return Response.json(sessionToJSON(session), { headers: corsHeaders });
 }
@@ -801,17 +822,21 @@ function handleGitModified(root: string): Response {
     const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
 
     const result: { path: string; staged: boolean }[] = [];
-    const seen = new Set<string>();
+    const stagedSet = new Set<string>();
 
     for (const f of staged) {
       const p = resolve(gitTop, f);
       if (!p.startsWith(root)) continue;
-      if (!seen.has(p)) { seen.add(p); result.push({ path: p, staged: true }); }
+      stagedSet.add(p);
+      result.push({ path: p, staged: true });
     }
+    // Files with unstaged changes (including those also staged — shown in both sections)
+    const unstagedSeen = new Set<string>();
     for (const f of [...unstaged, ...untracked]) {
       const p = resolve(gitTop, f);
-      if (!p.startsWith(root)) continue;
-      if (!seen.has(p)) { seen.add(p); result.push({ path: p, staged: false }); }
+      if (!p.startsWith(root) || unstagedSeen.has(p)) continue;
+      unstagedSeen.add(p);
+      result.push({ path: p, staged: false });
     }
 
     return Response.json(result, { headers: corsHeaders });

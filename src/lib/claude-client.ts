@@ -39,6 +39,8 @@ export interface SessionInfo {
   claude_session_id: string | null;
   ws_url: string;
   saved_commands: string[];
+  model: string | null;
+  plan_mode: boolean;
 }
 
 export interface SessionInitInfo {
@@ -46,6 +48,8 @@ export interface SessionInitInfo {
   cwd: string;
   version: string;
   slashCommands: string[];
+  model: string;
+  permissionMode: string;
 }
 
 type ClientCallbacks = {
@@ -55,6 +59,7 @@ type ClientCallbacks = {
   onPermissionCancelled: (sessionId: string, requestId: string) => void;
   onStatusChange: (sessionId: string, status: ConnectionStatus) => void;
   onSessionInit: (sessionId: string, info: SessionInitInfo) => void;
+  onSessionStatusUpdate: (sessionId: string, updates: { model?: string; permissionMode?: string }) => void;
   onTurnComplete: (sessionId: string) => void;
   onSessionNameUpdate: (sessionId: string, name: string) => void;
 };
@@ -102,11 +107,11 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async createSession(cwd?: string, name?: string): Promise<SessionInfo> {
+  async createSession(cwd?: string, name?: string, model?: string, planMode?: boolean): Promise<SessionInfo> {
     const resp = await fetch(`${this.serverUrl}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cwd: cwd || '/', name }),
+      body: JSON.stringify({ cwd: cwd || '/', name, model: model || undefined, planMode: planMode || undefined }),
     });
     if (!resp.ok) throw new Error(`Failed to create session: ${resp.status}`);
     return resp.json();
@@ -340,6 +345,16 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  async updateSession(sessionId: string, updates: { planMode?: boolean }): Promise<SessionInfo> {
+    const resp = await fetch(`${this.serverUrl}/sessions/${sessionId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!resp.ok) throw new Error(`Failed to update: ${resp.status}`);
+    return resp.json();
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     this.disconnectSession(sessionId);
     await fetch(`${this.serverUrl}/sessions/${sessionId}`, { method: 'DELETE' });
@@ -426,7 +441,12 @@ export class ClaudeClient {
             cwd: (msg.cwd as string) || '',
             version: (msg.claude_code_version as string) || '',
             slashCommands: (msg.slash_commands as string[]) || (msg.skills as string[]) || [],
+            model: (msg.model as string) || '',
+            permissionMode: (msg.permissionMode as string) || 'default',
           });
+        }
+        if ((msg.subtype as string) === 'status' && msg.permissionMode) {
+          this.callbacks.onSessionStatusUpdate(sessionId, { permissionMode: msg.permissionMode as string });
         }
         break;
       }
@@ -576,6 +596,26 @@ export class ClaudeClient {
       type: 'control_request',
       request_id: crypto.randomUUID(),
       request: { subtype: 'interrupt' },
+    }));
+  }
+
+  setModel(sessionId: string, model: string): void {
+    const active = this.activeSessions.get(sessionId);
+    if (!active || active.ws.readyState !== WebSocket.OPEN) return;
+    active.ws.send(JSON.stringify({
+      type: 'control_request',
+      request_id: crypto.randomUUID(),
+      request: { subtype: 'set_model', model },
+    }));
+  }
+
+  setPermissionMode(sessionId: string, mode: string): void {
+    const active = this.activeSessions.get(sessionId);
+    if (!active || active.ws.readyState !== WebSocket.OPEN) return;
+    active.ws.send(JSON.stringify({
+      type: 'control_request',
+      request_id: crypto.randomUUID(),
+      request: { subtype: 'set_permission_mode', mode },
     }));
   }
 }

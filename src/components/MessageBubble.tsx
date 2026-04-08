@@ -1,5 +1,8 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, lazy, Suspense } from 'react';
 import type { ChatMessage } from '../lib/claude-client';
+
+const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
+const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.default })));
 
 interface Props {
   message: ChatMessage;
@@ -136,28 +139,111 @@ function toolSummary(message: ChatMessage): string {
   return json.length > 80 ? json.slice(0, 77) + '...' : json;
 }
 
+const LANG_MAP: Record<string, string> = {
+  ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact',
+  py: 'python', rs: 'rust', go: 'go', json: 'json', css: 'css', html: 'html',
+  md: 'markdown', sh: 'shell', bash: 'shell', yml: 'yaml', yaml: 'yaml',
+  toml: 'toml', sql: 'sql', swift: 'swift', kt: 'kotlin', rb: 'ruby',
+};
+
+function langFromPath(filePath: string): string {
+  const ext = filePath.split('.').pop() || '';
+  return LANG_MAP[ext] || 'plaintext';
+}
+
+const MONACO_SHARED_OPTS = {
+  readOnly: true,
+  minimap: { enabled: false },
+  scrollBeyondLastLine: false,
+  fontSize: 12,
+  lineNumbers: 'off' as const,
+  glyphMargin: false,
+  folding: false,
+  lineDecorationsWidth: 0,
+  overviewRulerLanes: 0,
+  scrollbar: { vertical: 'hidden' as const, horizontal: 'auto' as const },
+  renderOverviewRuler: false,
+  contextmenu: false,
+  domReadOnly: true,
+};
+
 function ToolBubble({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
   const summary = toolSummary(message);
+  const input = (message.toolInput && typeof message.toolInput === 'object' ? message.toolInput : null) as Record<string, unknown> | null;
+  const isEdit = message.toolName === 'Edit' && input && typeof input.old_string === 'string' && typeof input.new_string === 'string';
+  const isWrite = message.toolName === 'Write' && input && typeof input.content === 'string';
+  const isBash = message.toolName === 'Bash' && input && typeof input.command === 'string';
+  const filePath = input && typeof input.file_path === 'string' ? input.file_path as string : null;
+  const lang = filePath ? langFromPath(filePath) : 'plaintext';
+
+  const oldLines = isEdit ? (input.old_string as string).split('\n').length : 0;
+  const newLines = isEdit ? (input.new_string as string).split('\n').length : 0;
+  const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
+  const writeLines = isWrite ? (input.content as string).split('\n').length : 0;
+  const writeHeight = isWrite ? Math.min(writeLines * 19 + 20, 250) : 0;
 
   return (
-    <div
-      className="py-0.5 pl-3 ml-1 border-l-2 border-border cursor-pointer select-none"
-      onClick={() => setExpanded(e => !e)}
-    >
-      <div className="flex items-center gap-1.5">
+    <div className="py-0.5 pl-3 ml-1 border-l-2 border-border select-none">
+      <div
+        className="flex items-center gap-1.5 cursor-pointer"
+        onClick={() => setExpanded(e => !e)}
+      >
         <span className="text-[10px] text-zinc-600">{expanded ? '▾' : '▸'}</span>
         <span className="text-[11px] font-mono text-violet-400">{message.toolName}</span>
         {!expanded && summary && (
           <span className="text-[11px] text-zinc-600 font-mono truncate max-w-md">{summary}</span>
         )}
       </div>
-      {expanded && message.toolInput && (
-        <pre className="text-[11px] text-zinc-600 whitespace-pre-wrap break-all m-0 mt-0.5 bg-transparent p-0 max-h-24 overflow-auto leading-tight">
-          {typeof message.toolInput === 'string'
-            ? message.toolInput
-            : JSON.stringify(message.toolInput, null, 2)}
-        </pre>
+      {expanded && (
+        <div className="mt-1">
+          {filePath && (
+            <p className="text-[10px] text-zinc-500 font-mono mb-1 truncate">{filePath}</p>
+          )}
+
+          {isEdit && (
+            <div className="rounded overflow-hidden border border-border mb-1" style={{ height: diffHeight }}>
+              <Suspense fallback={<div className="p-2 text-[11px] text-zinc-600">Loading diff...</div>}>
+                <DiffEditor
+                  original={input.old_string as string}
+                  modified={input.new_string as string}
+                  language={lang}
+                  theme="vs-dark"
+                  options={{ ...MONACO_SHARED_OPTS, renderSideBySide: true }}
+                />
+              </Suspense>
+            </div>
+          )}
+
+          {isWrite && (
+            <div className="rounded overflow-hidden border border-border mb-1" style={{ height: writeHeight }}>
+              <Suspense fallback={<div className="p-2 text-[11px] text-zinc-600">Loading editor...</div>}>
+                <Editor
+                  value={(input.content as string).slice(0, 10000)}
+                  language={lang}
+                  theme="vs-dark"
+                  options={{ ...MONACO_SHARED_OPTS, lineNumbers: 'on' }}
+                />
+              </Suspense>
+            </div>
+          )}
+
+          {isBash && (
+            <div className="rounded bg-[#0d0d0d] border border-border mb-1 px-3 py-2">
+              <pre className="text-[12px] font-mono text-green-400 whitespace-pre-wrap break-all m-0 leading-snug">
+                <span className="text-zinc-600 select-none">$ </span>{input.command as string}
+              </pre>
+            </div>
+          )}
+
+          {!isEdit && !isWrite && !isBash && message.toolInput && (
+            <pre className="text-[11px] text-zinc-600 whitespace-pre-wrap break-all m-0 bg-transparent p-0 max-h-24 overflow-auto leading-tight">
+              {typeof message.toolInput === 'string'
+                ? message.toolInput
+                : JSON.stringify(message.toolInput, null, 2)}
+            </pre>
+          )}
+        </div>
       )}
     </div>
   );

@@ -22,3 +22,9 @@ pnpm-debug.log*
 
 # jetbrains setting folder
 .idea/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/sidecar/bun
+src-tauri/sidecar/server.log

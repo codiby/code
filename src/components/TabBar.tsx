@@ -47,7 +47,10 @@ export function TabBar({ sessions, closedSessions, activeSessionId, sessionStatu
   };
 
   return (
-    <div className="tab-bar flex items-center bg-[#161616] px-1 shrink-0 select-none overflow-x-auto gap-1" style={{ minHeight: 38 }}>
+    <div className="tab-bar flex flex-col bg-[#161616] shrink-0 select-none">
+      {/* Spacer for native titlebar */}
+      <div className="h-[28px] shrink-0" />
+      <div className="flex items-center gap-1 px-1 overflow-x-auto" style={{ minHeight: 34 }}>
       {sessions.map(s => {
         const isActive = s.id === activeSessionId;
         const connStatus = sessionStatuses[s.id] || 'disconnected';
@@ -144,6 +147,7 @@ export function TabBar({ sessions, closedSessions, activeSessionId, sessionStatu
           </>
           );
         })()}
+      </div>
       </div>
     </div>
   );

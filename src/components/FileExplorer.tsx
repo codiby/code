@@ -14,7 +14,7 @@ interface Props {
   onToggle: () => void;
   onFileOpen: (path: string) => void;
   onFileDiff?: (path: string) => void;
-  gitModified: Map<string, boolean>;
+  gitModified: { staged: Set<string>; unstaged: Set<string> };
   activeSessionId: string | null;
   onOpenTerminal?: (command: string) => void;
   onStartReview?: () => void;
@@ -35,7 +35,7 @@ function getExtColor(name: string): string {
   return EXT_COLORS[ext] || 'text-zinc-600';
 }
 
-function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: Map<string, boolean> }) {
+function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string> } }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -87,9 +87,10 @@ function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: Fil
   );
 }
 
-function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: Map<string, boolean> }) {
-  const isModified = gitModified.has(entry.path);
-  const isStaged = gitModified.get(entry.path) === true;
+function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string> } }) {
+  const isStaged = gitModified.staged.has(entry.path);
+  const isUnstaged = gitModified.unstaged.has(entry.path);
+  const isModified = isStaged || isUnstaged;
   const color = isModified ? (isStaged ? 'text-green-400' : 'text-amber-400') : getExtColor(entry.name);
   return (
     <div
@@ -103,12 +104,12 @@ function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry;
   );
 }
 
-function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, client, onRefresh }: { gitModified: Map<string, boolean>; rootPath: string | null; onFileDiff: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
+function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, client, onRefresh }: { gitModified: { staged: Set<string>; unstaged: Set<string> }; rootPath: string | null; onFileDiff: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState(true);
-  const entries = [...gitModified.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  const stagedFiles = entries.filter(([, s]) => s);
-  const unstagedFiles = entries.filter(([, s]) => !s);
-  if (entries.length === 0) return null;
+  const stagedFiles = [...gitModified.staged].sort();
+  const unstagedFiles = [...gitModified.unstaged].sort();
+  const totalCount = new Set([...stagedFiles, ...unstagedFiles]).size;
+  if (totalCount === 0) return null;
 
   const toggleStage = async (e: React.MouseEvent, filePath: string, isStaged: boolean) => {
     e.stopPropagation();
@@ -120,7 +121,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, clie
   const stageAll = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!client || !rootPath) return;
-    await client.gitStage(rootPath, unstagedFiles.map(([p]) => p));
+    await client.gitStage(rootPath, unstagedFiles);
     onRefresh();
   };
 
@@ -133,7 +134,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, clie
     const color = isStaged ? 'text-green-400' : 'text-amber-400';
     return (
       <div
-        key={filePath}
+        key={`${filePath}-${isStaged ? 's' : 'u'}`}
         className={`flex items-center gap-1 py-[2px] px-2 ${color}/80 hover:bg-surface-light/50 cursor-pointer transition-colors group/file`}
         onClick={() => onFileDiff(filePath)}
       >
@@ -159,7 +160,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, clie
       >
         <span className="text-[11px] w-3 text-center shrink-0 text-zinc-400">{expanded ? '▾' : '▸'}</span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Changes</span>
-        <span className="text-[10px] text-amber-400/70 ml-auto mr-1">{entries.length}</span>
+        <span className="text-[10px] text-amber-400/70 ml-auto mr-1">{totalCount}</span>
         {unstagedFiles.length > 0 && (
           <span
             className="text-[11px] text-zinc-600 hover:text-green-400 px-1 transition-colors opacity-0 group-hover:opacity-100"
@@ -186,13 +187,13 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, clie
               <span className="text-[10px] text-green-400/60 uppercase tracking-wider">Staged</span>
             </div>
           )}
-          {stagedFiles.map(([path]) => renderFile(path, true))}
-          {unstagedFiles.length > 0 && stagedFiles.length > 0 && (
+          {stagedFiles.map(path => renderFile(path, true))}
+          {unstagedFiles.length > 0 && (
             <div className="px-3 py-0.5 mt-0.5">
-              <span className="text-[10px] text-amber-400/60 uppercase tracking-wider">Unstaged</span>
+              <span className="text-[10px] text-amber-400/60 uppercase tracking-wider">Changes</span>
             </div>
           )}
-          {unstagedFiles.map(([path]) => renderFile(path, false))}
+          {unstagedFiles.map(path => renderFile(path, false))}
         </div>
       )}
     </div>
@@ -308,7 +309,7 @@ function ProcessesSection({ client, sessionId, onViewTerminal }: { client: Claud
   );
 }
 
-function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: Map<string, boolean> }) {
+function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string> } }) {
   const [expanded, setExpanded] = useState(true);
   const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
 

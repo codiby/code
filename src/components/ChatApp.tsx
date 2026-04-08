@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Button } from '@heroui/react';
-import Editor, { type Monaco } from '@monaco-editor/react';
+import { Button, Select, SelectTrigger, SelectValue, SelectPopover, ListBox, ListBoxItem } from '@heroui/react';
+import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
 import { Providers } from './Providers';
 import { TabBar } from './TabBar';
@@ -11,6 +11,7 @@ import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
 import { useFileIndex } from '../lib/fuzzy-file-search';
+import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   ClaudeClient,
@@ -21,7 +22,19 @@ import {
   type SessionInitInfo,
 } from '../lib/claude-client';
 
-const SERVER_URL = (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
+async function resolveServerUrl(): Promise<string> {
+  // Check if running inside Tauri
+  if ((window as any).__TAURI_INTERNALS__) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const port = await invoke<number>('start_bridge_server');
+      return `http://localhost:${port}`;
+    } catch (e) {
+      console.error('Failed to start bridge server:', e);
+    }
+  }
+  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
+}
 const MSG_KEY_PREFIX = 'claude-ui-msgs-';
 
 function loadMessages(sessionId: string): ChatMessage[] {
@@ -87,7 +100,7 @@ export function ChatApp() {
     setOpenFileRaw(file);
     setEditorDirty(false);
   };
-  const [gitModified, setGitModified] = useState<Map<string, boolean>>(new Map());
+  const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string> }>({ staged: new Set(), unstaged: new Set() });
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -122,8 +135,18 @@ export function ChatApp() {
   }, []);
 
   // Initialize client
+  // Request notification permission on mount
   useEffect(() => {
-    const client = new ClaudeClient(SERVER_URL, {
+    isPermissionGranted().then(granted => {
+      if (!granted) requestPermission().catch(() => {});
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    resolveServerUrl().then(serverUrl => {
+      if (cancelled) return;
+    const client = new ClaudeClient(serverUrl, {
       onMessage: (sid, msg) => {
         updateState(sid, s => ({ ...s, messages: [...s.messages, msg], partialText: '' }));
       },
@@ -132,6 +155,13 @@ export function ChatApp() {
       },
       onPermissionRequest: (sid, req) => {
         updateState(sid, s => ({ ...s, permRequest: req }));
+        // Notify when window is not focused
+        if (!document.hasFocus()) {
+          const body = req.toolName + (req.input?.file_path ? `: ${String(req.input.file_path).split('/').pop()}` : req.input?.command ? `: ${String(req.input.command).slice(0, 60)}` : '');
+          isPermissionGranted().then(granted => {
+            if (granted) sendNotification({ title: 'Claude needs approval', body });
+          }).catch(() => {});
+        }
       },
       onPermissionCancelled: (sid, requestId) => {
         updateState(sid, s =>
@@ -143,6 +173,20 @@ export function ChatApp() {
       },
       onSessionInit: (sid, info) => {
         updateState(sid, s => ({ ...s, initInfo: info }));
+        // Sync model and permission mode from CLI init
+        setSessions(prev => prev.map(s => s.id === sid ? {
+          ...s,
+          model: info.model || s.model,
+          plan_mode: info.permissionMode === 'plan',
+        } : s));
+      },
+      onSessionStatusUpdate: (sid, updates) => {
+        setSessions(prev => prev.map(s => {
+          if (s.id !== sid) return s;
+          const patched = { ...s };
+          if (updates.permissionMode !== undefined) patched.plan_mode = updates.permissionMode === 'plan';
+          return patched;
+        }));
       },
       onTurnComplete: (sid) => {
         updateState(sid, s => ({ ...s, isStreaming: false, partialText: '' }));
@@ -162,11 +206,17 @@ export function ChatApp() {
       try { closed = new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
       catch { closed = new Set(); }
 
-      // Connect to all running sessions that aren't closed
+      // Connect to all open sessions (resume stopped ones)
       const initialStatuses: Record<string, ConnectionStatus> = {};
       for (const s of list) {
-        if (s.status !== 'stopped' && !closed.has(s.id)) {
-          initialStatuses[s.id] = 'connecting';
+        if (closed.has(s.id)) continue;
+        initialStatuses[s.id] = 'connecting';
+        if (s.status === 'stopped') {
+          client.resumeSession(s.id).then(updated => {
+            setSessions(prev => prev.map(p => p.id === s.id ? updated : p));
+            client.connectSession(updated);
+          }).catch(() => {});
+        } else {
           client.connectSession(s);
         }
       }
@@ -180,8 +230,9 @@ export function ChatApp() {
         setActiveId(openList[0]!.id);
       }
     }).catch(() => {});
+    }); // end resolveServerUrl().then()
 
-    return () => client.destroy();
+    return () => { cancelled = true; clientRef.current?.destroy(); };
   }, [updateState]);
 
   const scrollToBottom = useCallback(() => {
@@ -197,6 +248,15 @@ export function ChatApp() {
   useEffect(() => {
     scrollToBottom();
   }, [active.messages, active.partialText, lastMsgContent, scrollToBottom]);
+
+  // Scroll when permission request appears (with delay for Monaco to mount)
+  useEffect(() => {
+    if (active.permRequest) {
+      scrollToBottom();
+      const t = setTimeout(scrollToBottom, 300);
+      return () => clearTimeout(t);
+    }
+  }, [active.permRequest, scrollToBottom]);
 
   // Re-fetch open file and git status when new messages arrive
   const msgLenRef = useRef(0);
@@ -484,7 +544,7 @@ export function ChatApp() {
   };
 
   const handleStartReview = () => {
-    const files = [...gitModified.keys()].sort();
+    const files = [...new Set([...gitModified.staged, ...gitModified.unstaged])].sort();
     if (files.length === 0) return;
     setReviewMode(true);
     setReviewFiles(files);
@@ -564,7 +624,13 @@ export function ChatApp() {
     const root = explorerRootRef.current;
     if (!client || !root) return;
     const entries = await client.getGitModified(root);
-    setGitModified(new Map(entries.map(e => [e.path, e.staged])));
+    const staged = new Set<string>();
+    const unstaged = new Set<string>();
+    for (const e of entries) {
+      if (e.staged) staged.add(e.path);
+      else unstaged.add(e.path);
+    }
+    setGitModified({ staged, unstaged });
   }, [client]);
 
   const handleSaveFile = async () => {
@@ -723,6 +789,12 @@ export function ChatApp() {
   return (
     <Providers>
       <div className="h-screen bg-base flex flex-col overflow-hidden">
+        {/* Titlebar drag region */}
+        <div
+          data-tauri-drag-region
+          className="fixed top-0 left-0 right-0 h-[28px] z-[9999]"
+          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        />
         {/* Tab bar */}
         <TabBar
           sessions={sessions.filter(s => !closedSessionIds.has(s.id))}
@@ -860,34 +932,119 @@ export function ChatApp() {
                       </div>
                     )}
                     {/* Inline permission request */}
-                    {active.permRequest && (
-                      <div className="py-1 pl-3 ml-1 border-l-2 border-amber-500/50">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-[11px] font-mono text-violet-400">{active.permRequest.toolName}</span>
-                          <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>
+                    {active.permRequest && (() => {
+                      const req = active.permRequest;
+                      const input = req.input;
+                      const isEdit = req.toolName === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string';
+                      const isBash = req.toolName === 'Bash' && typeof input.command === 'string';
+                      const isWrite = req.toolName === 'Write' && typeof input.content === 'string';
+                      const filePath = typeof input.file_path === 'string' ? input.file_path : null;
+                      const ext = filePath?.split('.').pop() || '';
+                      const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact', py: 'python', rs: 'rust', go: 'go', json: 'json', css: 'css', html: 'html', md: 'markdown', sh: 'shell', bash: 'shell', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql' };
+                      const lang = langMap[ext] || 'plaintext';
+                      const oldLines = isEdit ? (input.old_string as string).split('\n').length : 0;
+                      const newLines = isEdit ? (input.new_string as string).split('\n').length : 0;
+                      const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
+
+                      return (
+                        <div className="py-1 pl-3 ml-1 border-l-2 border-amber-500/50">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-[11px] font-mono text-violet-400">{req.toolName}</span>
+                            <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>
+                          </div>
+                          {filePath && (
+                            <p className="text-[11px] text-zinc-500 font-mono mb-1 truncate">{filePath}</p>
+                          )}
+                          {req.description && !filePath && (
+                            <p className="text-[12px] text-zinc-400 mb-1">{req.description}</p>
+                          )}
+
+                          {/* Edit tool: inline diff */}
+                          {isEdit && (
+                            <div className="rounded overflow-hidden border border-border mb-2" style={{ height: diffHeight }}>
+                              <DiffEditor
+                                original={input.old_string as string}
+                                modified={input.new_string as string}
+                                language={lang}
+                                theme="vs-dark"
+                                options={{
+                                  readOnly: true,
+                                  renderSideBySide: true,
+                                  minimap: { enabled: false },
+                                  scrollBeyondLastLine: false,
+                                  fontSize: 12,
+                                  lineNumbers: 'off',
+                                  glyphMargin: false,
+                                  folding: false,
+                                  lineDecorationsWidth: 0,
+                                  overviewRulerLanes: 0,
+                                  scrollbar: { vertical: 'hidden', horizontal: 'auto' },
+                                  renderOverviewRuler: false,
+                                  contextmenu: false,
+                                  domReadOnly: true,
+                                }}
+                              />
+                            </div>
+                          )}
+
+                          {/* Bash tool: command block */}
+                          {isBash && (
+                            <div className="rounded bg-[#0d0d0d] border border-border mb-2 px-3 py-2">
+                              <pre className="text-[12px] font-mono text-green-400 whitespace-pre-wrap break-all m-0 leading-snug">
+                                <span className="text-zinc-600 select-none">$ </span>{input.command as string}
+                              </pre>
+                            </div>
+                          )}
+
+                          {/* Write tool: file content preview */}
+                          {isWrite && (
+                            <div className="rounded overflow-hidden border border-border mb-2" style={{ height: Math.min(((input.content as string).split('\n').length) * 19 + 20, 250) }}>
+                              <Editor
+                                value={input.content as string}
+                                language={lang}
+                                theme="vs-dark"
+                                options={{
+                                  readOnly: true,
+                                  minimap: { enabled: false },
+                                  scrollBeyondLastLine: false,
+                                  fontSize: 12,
+                                  lineNumbers: 'on',
+                                  glyphMargin: false,
+                                  folding: false,
+                                  overviewRulerLanes: 0,
+                                  scrollbar: { vertical: 'hidden', horizontal: 'auto' },
+                                  renderOverviewRuler: false,
+                                  contextmenu: false,
+                                  domReadOnly: true,
+                                }}
+                              />
+                            </div>
+                          )}
+
+                          {/* Fallback for other tools */}
+                          {!isEdit && !isBash && !isWrite && (
+                            <pre className="text-[11px] text-zinc-500 whitespace-pre-wrap break-all m-0 mb-2 bg-transparent p-0 max-h-40 overflow-auto leading-tight">
+                              {JSON.stringify(input, null, 2)}
+                            </pre>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-green-600/15 text-green-400 hover:bg-green-600/25 transition-colors"
+                              onClick={() => handlePermission(req.requestId, true)}
+                            >
+                              Allow
+                            </button>
+                            <button
+                              className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-red-600/15 text-red-400 hover:bg-red-600/25 transition-colors"
+                              onClick={() => handlePermission(req.requestId, false)}
+                            >
+                              Deny
+                            </button>
+                          </div>
                         </div>
-                        {active.permRequest.description && (
-                          <p className="text-[12px] text-zinc-400 mb-1">{active.permRequest.description}</p>
-                        )}
-                        <pre className="text-[11px] text-zinc-500 whitespace-pre-wrap break-all m-0 mb-2 bg-transparent p-0 max-h-40 overflow-auto leading-tight">
-                          {JSON.stringify(active.permRequest.input, null, 2)}
-                        </pre>
-                        <div className="flex items-center gap-2">
-                          <button
-                            className="flex items-center gap-1 px-2.5 py-1 rounded text-[12px] bg-green-600/15 text-green-400 hover:bg-green-600/25 transition-colors"
-                            onClick={() => handlePermission(active.permRequest!.requestId, true)}
-                          >
-                            <span>&#x1F44D;</span> Allow
-                          </button>
-                          <button
-                            className="flex items-center gap-1 px-2.5 py-1 rounded text-[12px] bg-red-600/15 text-red-400 hover:bg-red-600/25 transition-colors"
-                            onClick={() => handlePermission(active.permRequest!.requestId, false)}
-                          >
-                            <span>&#x1F44E;</span> Deny
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
 
                   {/* Input */}
@@ -947,6 +1104,44 @@ export function ChatApp() {
                           ))}
                         </div>
                       )}
+                      {/* Model & plan mode */}
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <Select
+                          aria-label="Model"
+                          selectedKey={activeSession?.model || 'default'}
+                          onSelectionChange={(key) => {
+                            if (!activeId || !clientRef.current) return;
+                            const modelId = key === 'default' ? '' : String(key);
+                            if (modelId) {
+                              clientRef.current.setModel(activeId, modelId);
+                            }
+                            setSessions(prev => prev.map(s => s.id === activeId ? { ...s, model: modelId || null } : s));
+                          }}
+                          className="w-32"
+                        >
+                          <SelectTrigger className="h-6 text-[11px]"><SelectValue /></SelectTrigger>
+                          <SelectPopover>
+                            <ListBox>
+                              <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
+                              <ListBoxItem key="claude-sonnet-4-6" id="claude-sonnet-4-6" textValue="Sonnet 4.6"><span className="text-xs">Sonnet 4.6</span></ListBoxItem>
+                              <ListBoxItem key="claude-opus-4-6" id="claude-opus-4-6" textValue="Opus 4.6"><span className="text-xs">Opus 4.6</span></ListBoxItem>
+                              <ListBoxItem key="claude-haiku-4-5-20251001" id="claude-haiku-4-5-20251001" textValue="Haiku 4.5"><span className="text-xs">Haiku 4.5</span></ListBoxItem>
+                            </ListBox>
+                          </SelectPopover>
+                        </Select>
+                        <button
+                          className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${activeSession?.plan_mode ? 'bg-violet-500/20 text-violet-400' : 'text-zinc-600 hover:text-zinc-400 hover:bg-surface-light'}`}
+                          onClick={() => {
+                            if (!activeId || !clientRef.current) return;
+                            const newMode = !activeSession?.plan_mode;
+                            setSessions(prev => prev.map(s => s.id === activeId ? { ...s, plan_mode: newMode } : s));
+                            clientRef.current.setPermissionMode(activeId, newMode ? 'plan' : 'acceptEdits');
+                            clientRef.current.updateSession(activeId, { planMode: newMode }).catch(() => {});
+                          }}
+                        >
+                          {activeSession?.plan_mode ? 'Plan: ON' : 'Plan: OFF'}
+                        </button>
+                      </div>
                       {(() => {
                         const isTerminalMode = input.startsWith('>');
                         const cmdText = isTerminalMode ? input.slice(1).replace(/^ /, '') : input;
@@ -1041,7 +1236,7 @@ export function ChatApp() {
                   <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => setEditorFullWidth(f => !f)}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
-                        <span className={`text-[12px] font-mono truncate ${gitModified.has(openFile.path) ? (gitModified.get(openFile.path) ? 'text-green-400' : 'text-amber-400') : 'text-zinc-400'}`}>
+                        <span className={`text-[12px] font-mono truncate ${gitModified.staged.has(openFile.path) ? 'text-green-400' : gitModified.unstaged.has(openFile.path) ? 'text-amber-400' : 'text-zinc-400'}`}>
                           {openFile.path.split('/').pop()}
                         </span>
                         {editorDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}

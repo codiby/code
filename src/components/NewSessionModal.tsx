@@ -168,7 +168,8 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
           <div className={`flex flex-col min-h-0 ${showRightPanel ? 'w-[480px] shrink-0' : 'flex-1'}`}>
             {/* Breadcrumb */}
             <div className="flex items-center gap-1 px-4 pt-3 pb-2 flex-wrap min-h-[32px] shrink-0">
-              <button className="text-xs text-zinc-500 hover:text-zinc-200" onClick={() => navigate('/')}>
+              <button className="text-xs text-zinc-500 hover:text-zinc-200 flex items-center gap-0.5" onClick={() => navigate('/')}>
+                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" /></svg>
                 /
               </button>
               {segments.map((seg, i) => {
