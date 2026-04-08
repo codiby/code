@@ -69,6 +69,17 @@ type SessionState = {
   isStreaming: boolean;
   initInfo: SessionInitInfo | null;
   permRequest: PermissionRequest | null;
+  // Panel state (per-session)
+  openFile: { path: string; content: string } | null;
+  openTerminalId: string | null;
+  diffView: { path: string; original: string; modified: string } | null;
+  editorFullWidth: boolean;
+  editorDirty: boolean;
+  reviewComments: Record<string, ReviewComment[]>;
+  reviewMode: boolean;
+  reviewFiles: string[];
+  reviewIndex: number;
+  todos: { content: string; status: string; activeForm?: string }[];
 };
 
 export function ChatApp() {
@@ -85,20 +96,17 @@ export function ChatApp() {
   const [showNewSession, setShowNewSession] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
-  const [openFile, setOpenFileRaw] = useState<{ path: string; content: string } | null>(null);
-  const [openTerminalId, setOpenTerminalId] = useState<string | null>(null);
-  const [diffView, setDiffView] = useState<{ path: string; original: string; modified: string } | null>(null);
-  const [editorFullWidth, setEditorFullWidth] = useState(false);
-  const [editorDirty, setEditorDirty] = useState(false);
-  const [reviewComments, setReviewComments] = useState<Record<string, ReviewComment[]>>({});
-  const [reviewMode, setReviewMode] = useState(false);
-  const [reviewFiles, setReviewFiles] = useState<string[]>([]);
-  const [reviewIndex, setReviewIndex] = useState(0);
+  // Panel state helpers (per-session via SessionState)
   const setOpenFile = (file: { path: string; content: string } | null) => {
-    if (file) { setOpenTerminalId(null); setDiffView(null); }
-    if (!file) setEditorFullWidth(false);
-    setOpenFileRaw(file);
-    setEditorDirty(false);
+    if (!activeId) return;
+    updateState(activeId, s => ({
+      ...s,
+      openFile: file,
+      openTerminalId: file ? null : s.openTerminalId,
+      diffView: file ? null : s.diffView,
+      editorFullWidth: file ? s.editorFullWidth : false,
+      editorDirty: false,
+    }));
   };
   const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string> }>({ staged: new Set(), unstaged: new Set() });
   const [client, setClient] = useState<ClaudeClient | null>(null);
@@ -107,7 +115,11 @@ export function ChatApp() {
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const emptyState = (): SessionState => ({ messages: [], partialText: '', isStreaming: false, initInfo: null, permRequest: null });
+  const emptyState = (): SessionState => ({
+    messages: [], partialText: '', isStreaming: false, initInfo: null, permRequest: null,
+    openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false,
+    reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
+  });
 
   const getState = (id: string | null): SessionState => {
     if (!id) return emptyState();
@@ -148,6 +160,12 @@ export function ChatApp() {
       if (cancelled) return;
     const client = new ClaudeClient(serverUrl, {
       onMessage: (sid, msg) => {
+        // Intercept TodoWrite — update task panel, don't add to chat
+        if (msg.toolName === 'TodoWrite') {
+          const input = msg.toolInput as { todos?: { content: string; status: string; activeForm?: string }[] } | null;
+          if (input?.todos) updateState(sid, s => ({ ...s, todos: input.todos! }));
+          return;
+        }
         updateState(sid, s => ({ ...s, messages: [...s.messages, msg], partialText: '' }));
       },
       onPartialText: (sid, text) => {
@@ -173,19 +191,31 @@ export function ChatApp() {
       },
       onSessionInit: (sid, info) => {
         updateState(sid, s => ({ ...s, initInfo: info }));
-        // Sync model and permission mode from CLI init
         setSessions(prev => prev.map(s => s.id === sid ? {
           ...s,
           model: info.model || s.model,
-          plan_mode: info.permissionMode === 'plan',
+          permission_mode: info.permissionMode || s.permission_mode,
         } : s));
       },
       onSessionStatusUpdate: (sid, updates) => {
         setSessions(prev => prev.map(s => {
           if (s.id !== sid) return s;
           const patched = { ...s };
-          if (updates.permissionMode !== undefined) patched.plan_mode = updates.permissionMode === 'plan';
+          if (updates.permissionMode !== undefined) patched.permission_mode = updates.permissionMode;
           return patched;
+        }));
+      },
+      onAutoApproved: (sid, toolName, filePath, command) => {
+        const label = filePath ? `${toolName}: ${filePath.split('/').pop()}` : command ? `${toolName}: ${command.slice(0, 40)}` : toolName;
+        updateState(sid, s => ({
+          ...s,
+          messages: [...s.messages, {
+            id: crypto.randomUUID(),
+            role: 'system' as const,
+            content: `Auto-approved ${label}`,
+            timestamp: Date.now(),
+            toolName,
+          }],
         }));
       },
       onTurnComplete: (sid) => {
@@ -242,8 +272,9 @@ export function ChatApp() {
   }, []);
 
   const active = getState(activeId);
+  const { openFile, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos } = active;
   const lastMsgContent = active.messages[active.messages.length - 1]?.content;
-  const openTerminal = openTerminalId ? active.messages.find(m => m.id === openTerminalId && m.isTerminal) || null : null;
+  const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
   const hasRightPanel = !!openFile || !!openTerminal || !!diffView;
   useEffect(() => {
     scrollToBottom();
@@ -267,10 +298,12 @@ export function ChatApp() {
     if (!client) return;
     // Debounce: wait a bit for rapid message bursts
     const t = setTimeout(() => {
-      if (openFile) {
-        client.readFile(openFile.path).then(file => {
-          if (file && file.content !== openFile.content) {
-            setOpenFileRaw(file);
+      if (active.openFile && activeId) {
+        const sid = activeId;
+        const curFile = active.openFile;
+        client.readFile(curFile.path).then(file => {
+          if (file && file.content !== curFile.content) {
+            updateState(sid, s => ({ ...s, openFile: file }));
           }
         }).catch(() => {});
       }
@@ -531,91 +564,70 @@ export function ChatApp() {
   };
 
   const handleFileDiff = async (path: string) => {
-    if (!client) return;
+    if (!client || !activeId) return;
+    const sid = activeId;
     const [file, original] = await Promise.all([
       client.readFile(path),
       client.readFileOriginal(path),
     ]);
     if (file) {
-      setOpenFileRaw(null);
-      setOpenTerminalId(null);
-      setDiffView({ path, original, modified: file.content });
+      updateState(sid, s => ({ ...s, openFile: null, openTerminalId: null, diffView: { path, original, modified: file.content } }));
     }
   };
 
   const handleStartReview = () => {
+    if (!activeId) return;
     const files = [...new Set([...gitModified.staged, ...gitModified.unstaged])].sort();
     if (files.length === 0) return;
-    setReviewMode(true);
-    setReviewFiles(files);
-    setReviewIndex(0);
-    setEditorFullWidth(true);
-    setOpenFileRaw(null);
-    setOpenTerminalId(null);
-    // Load the first file diff
+    updateState(activeId, s => ({ ...s, reviewMode: true, reviewFiles: files, reviewIndex: 0, editorFullWidth: true, openFile: null, openTerminalId: null }));
     loadReviewFile(files[0]!);
   };
 
   const loadReviewFile = async (path: string) => {
-    if (!client) return;
+    if (!client || !activeId) return;
+    const sid = activeId;
     const [file, original] = await Promise.all([
       client.readFile(path),
       client.readFileOriginal(path),
     ]);
     if (file) {
-      setDiffView({ path, original, modified: file.content });
+      updateState(sid, s => ({ ...s, diffView: { path, original, modified: file.content } }));
     }
   };
 
   const handleReviewNav = (delta: number) => {
-    const newIdx = reviewIndex + delta;
-    if (newIdx < 0 || newIdx >= reviewFiles.length) return;
-    setReviewIndex(newIdx);
-    loadReviewFile(reviewFiles[newIdx]!);
+    if (!activeId) return;
+    const st = getState(activeId);
+    const newIdx = st.reviewIndex + delta;
+    if (newIdx < 0 || newIdx >= st.reviewFiles.length) return;
+    updateState(activeId, s => ({ ...s, reviewIndex: newIdx }));
+    loadReviewFile(st.reviewFiles[newIdx]!);
   };
 
   const handleSubmitReview = () => {
-    // Build review message from all comments
-    const allComments = Object.entries(reviewComments).flatMap(([path, cmts]) => {
+    if (!activeId || !clientRef.current) return;
+    const st = getState(activeId);
+    const allComments = Object.entries(st.reviewComments).flatMap(([path, cmts]) => {
       const rel = explorerRoot && path.startsWith(explorerRoot) ? path.slice(explorerRoot.length + 1) : path;
       return cmts.map(c => {
         const lineRef = c.startLine === c.endLine ? `L${c.startLine}` : `L${c.startLine}-${c.endLine}`;
         return `@${rel}:${lineRef} — ${c.text}`;
       });
     });
-
     if (allComments.length === 0) return;
-
     const reviewText = `Apply these changes to the code:\n${allComments.join('\n')}`;
-
-    if (activeId && clientRef.current) {
-      updateState(activeId, s => ({
-        ...s,
-        messages: [...s.messages, {
-          id: crypto.randomUUID(),
-          role: 'user' as const,
-          content: reviewText,
-          timestamp: Date.now(),
-        }],
-        isStreaming: true,
-        partialText: '',
-      }));
-      clientRef.current.sendMessage(activeId, reviewText);
-    }
-
-    // Exit review mode
-    setReviewMode(false);
-    setReviewFiles([]);
-    setDiffView(null);
-    setEditorFullWidth(false);
-    setReviewComments({});
+    updateState(activeId, s => ({
+      ...s,
+      messages: [...s.messages, { id: crypto.randomUUID(), role: 'user' as const, content: reviewText, timestamp: Date.now() }],
+      isStreaming: true, partialText: '',
+      reviewMode: false, reviewFiles: [], diffView: null, editorFullWidth: false, reviewComments: {},
+    }));
+    clientRef.current.sendMessage(activeId, reviewText);
   };
 
   const handleExitReview = () => {
-    setReviewMode(false);
-    setReviewFiles([]);
-    setDiffView(null);
-    setEditorFullWidth(false);
+    if (!activeId) return;
+    updateState(activeId, s => ({ ...s, reviewMode: false, reviewFiles: [], diffView: null, editorFullWidth: false }));
   };
 
   const explorerRootRef = useRef<string | null>(null);
@@ -634,23 +646,18 @@ export function ChatApp() {
   }, [client]);
 
   const handleSaveFile = async () => {
-    console.log('[save] openFile:', !!openFile, 'client:', !!client, 'editorRef:', !!editorRef.current);
-    if (!openFile || !client) return;
+    if (!active.openFile || !client || !activeId) return;
     const editor = editorRef.current;
-    if (!editor) { console.log('[save] editorRef is null'); return; }
+    if (!editor) return;
     const content = editor.getValue();
-    console.log('[save] writing', openFile.path, 'length:', content.length);
+    const filePath = active.openFile.path;
     try {
-      const ok = await client.writeFile(openFile.path, content);
-      console.log('[save] result:', ok);
+      const ok = await client.writeFile(filePath, content);
       if (ok) {
-        setOpenFile({ path: openFile.path, content });
-        setEditorDirty(false);
+        updateState(activeId, s => ({ ...s, openFile: { path: filePath, content }, editorDirty: false }));
         refreshGitModified();
       }
-    } catch (e) {
-      console.error('[save] error:', e);
-    }
+    } catch {}
   };
 
   const saveRef = useRef(handleSaveFile);
@@ -694,6 +701,15 @@ export function ChatApp() {
     refreshGitModified();
   }, [explorerRoot, refreshGitModified]);
 
+  // Fetch git branch for status bar
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  useEffect(() => {
+    if (!client || !explorerRoot) { setGitBranch(null); return; }
+    client.getGitInfo(explorerRoot).then(info => {
+      setGitBranch(info.is_git ? info.branch || null : null);
+    }).catch(() => setGitBranch(null));
+  }, [client, explorerRoot]);
+
   const slashCommands = active.initInfo?.slashCommands || [];
   const slash = useSlashCommands(input, slashCommands);
   const fileIndex = useFileIndex(client, explorerRoot);
@@ -705,21 +721,22 @@ export function ChatApp() {
     { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', keys: ['command'], key: 'B', section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
     { id: 'close-editor', label: 'Close Editor', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => { setOpenFile(null); } },
     { id: 'save-file', label: 'Save File', keys: ['command'], key: 'S', section: 'Editor', onRun: handleSaveFile },
-    { id: 'clear-chat', label: 'Clear Chat', section: 'Session', onRun: () => {
+    { id: 'clear-chat', label: 'Clear Chat', section: 'Session', onRun: async () => {
       if (!activeId || !clientRef.current) return;
       const session = sessions.find(s => s.id === activeId);
-      const cwd = active.initInfo?.cwd || session?.cwd;
-      // Clear messages
-      updateState(activeId, s => ({ ...s, messages: [], partialText: '', isStreaming: false, initInfo: null, permRequest: null }));
-      deleteMessages(activeId);
-      // Disconnect old and create fresh claude session
+      const cwd = active.initInfo?.cwd || session?.cwd || '/';
+      // Close old session
       clientRef.current.disconnectSession(activeId);
-      if (cwd) {
-        clientRef.current.resumeSession(activeId).then(updated => {
-          setSessions(prev => prev.map(s => s.id === activeId ? updated : s));
-          clientRef.current?.connectSession(updated);
-        }).catch(() => {});
-      }
+      updateState(activeId, s => emptyState());
+      deleteMessages(activeId);
+      // Create a fresh session with the same cwd
+      try {
+        const fresh = await clientRef.current.createSession(cwd);
+        // Remove old, add new
+        setSessions(prev => prev.filter(s => s.id !== activeId).concat(fresh));
+        setActiveId(fresh.id);
+        clientRef.current.connectSession(fresh);
+      } catch {}
     } },
     { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
     ...(activeId && active.isStreaming ? [{ id: 'stop', label: 'Stop Generation', keys: ['escape'] as string[], section: 'Session', onRun: handleInterrupt }] : []),
@@ -801,6 +818,7 @@ export function ChatApp() {
           closedSessions={sessions.filter(s => closedSessionIds.has(s.id))}
           activeSessionId={activeId}
           sessionStatuses={statuses}
+          sessionStreaming={Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, s.isStreaming]))}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
           onClose={handleCloseTab}
@@ -822,7 +840,7 @@ export function ChatApp() {
             activeSessionId={activeId}
             onOpenTerminal={(command) => {
               const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
-              if (msg) { setOpenFile(null); setOpenTerminalId(msg.id); }
+              if (msg) { if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: msg.id, diffView: null, editorDirty: false })); }
             }}
             onStartReview={handleStartReview}
             onRefreshGit={refreshGitModified}
@@ -900,6 +918,7 @@ export function ChatApp() {
               <div className="flex-1 flex min-h-0">
                 {/* Chat panel */}
                 <div className={`flex flex-col min-w-0 overflow-hidden ${hasRightPanel && !editorFullWidth ? 'w-1/2 border-r border-border' : hasRightPanel && editorFullWidth ? 'hidden' : 'flex-1'}`}>
+                  <div className="flex flex-1 min-h-0">
                   {/* Messages */}
                   <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1">
                     {active.messages.length === 0 && !active.partialText && (
@@ -912,7 +931,7 @@ export function ChatApp() {
                       </div>
                     )}
                     {active.messages.map(msg => (
-                      <MessageBubble key={msg.id} message={msg} onOpenTerminal={(id) => { setOpenFile(null); setOpenTerminalId(id); }} />
+                      <MessageBubble key={msg.id} message={msg} onOpenTerminal={(id) => { if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: id, diffView: null, editorDirty: false })); }} />
                     ))}
                     {active.isStreaming && !active.partialText && !active.permRequest && (
                       <div className="py-2">
@@ -938,6 +957,9 @@ export function ChatApp() {
                       const isEdit = req.toolName === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string';
                       const isBash = req.toolName === 'Bash' && typeof input.command === 'string';
                       const isWrite = req.toolName === 'Write' && typeof input.content === 'string';
+                      const isPlan = req.toolName === 'ExitPlanMode';
+                      const planContent = isPlan && typeof input.plan === 'string' ? input.plan as string : null;
+                      const allowedPrompts = isPlan && Array.isArray(input.allowedPrompts) ? input.allowedPrompts as { tool: string; prompt: string }[] : [];
                       const filePath = typeof input.file_path === 'string' ? input.file_path : null;
                       const ext = filePath?.split('.').pop() || '';
                       const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact', py: 'python', rs: 'rust', go: 'go', json: 'json', css: 'css', html: 'html', md: 'markdown', sh: 'shell', bash: 'shell', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql' };
@@ -1021,8 +1043,54 @@ export function ChatApp() {
                             </div>
                           )}
 
+                          {/* ExitPlanMode: full-height markdown plan */}
+                          {isPlan && (
+                            <div className="rounded overflow-hidden border border-violet-500/30 mb-2 flex flex-col" style={{ height: 'calc(60vh)' }}>
+                              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-violet-500/20 bg-violet-500/5 shrink-0">
+                                <span className="text-[11px] text-violet-400 font-semibold uppercase tracking-wide">Plan</span>
+                              </div>
+                              {planContent ? (
+                                <div className="flex-1 overflow-hidden">
+                                  <Editor
+                                    value={planContent}
+                                    language="markdown"
+                                    theme="vs-dark"
+                                    options={{
+                                      readOnly: true,
+                                      minimap: { enabled: false },
+                                      scrollBeyondLastLine: false,
+                                      fontSize: 13,
+                                      lineNumbers: 'off',
+                                      glyphMargin: false,
+                                      folding: false,
+                                      wordWrap: 'on',
+                                      overviewRulerLanes: 0,
+                                      scrollbar: { vertical: 'auto', horizontal: 'hidden' },
+                                      renderOverviewRuler: false,
+                                      contextmenu: false,
+                                      domReadOnly: true,
+                                      padding: { top: 12, bottom: 12 },
+                                    }}
+                                  />
+                                </div>
+                              ) : (
+                                <p className="text-[12px] text-zinc-500 px-3 py-3">No plan content</p>
+                              )}
+                              {allowedPrompts.length > 0 && (
+                                <div className="border-t border-violet-500/20 px-3 py-2 shrink-0">
+                                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Allowed actions</p>
+                                  <div className="flex flex-wrap gap-1">
+                                    {allowedPrompts.map((p, i) => (
+                                      <span key={i} className="text-[11px] bg-surface-light text-zinc-400 px-2 py-0.5 rounded">{p.prompt}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {/* Fallback for other tools */}
-                          {!isEdit && !isBash && !isWrite && (
+                          {!isEdit && !isBash && !isWrite && !isPlan && (
                             <pre className="text-[11px] text-zinc-500 whitespace-pre-wrap break-all m-0 mb-2 bg-transparent p-0 max-h-40 overflow-auto leading-tight">
                               {JSON.stringify(input, null, 2)}
                             </pre>
@@ -1035,6 +1103,21 @@ export function ChatApp() {
                             >
                               Allow
                             </button>
+                            {isPlan && (
+                              <button
+                                className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors"
+                                onClick={() => {
+                                  handlePermission(req.requestId, true);
+                                  if (activeId && clientRef.current) {
+                                    setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: 'acceptEdits' } : s));
+                                    clientRef.current.setPermissionMode(activeId, 'acceptEdits');
+                                    clientRef.current.updateSession(activeId, { permissionMode: 'acceptEdits' }).catch(() => {});
+                                  }
+                                }}
+                              >
+                                Approve &amp; Accept Edits
+                              </button>
+                            )}
                             <button
                               className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-red-600/15 text-red-400 hover:bg-red-600/25 transition-colors"
                               onClick={() => handlePermission(req.requestId, false)}
@@ -1045,6 +1128,31 @@ export function ChatApp() {
                         </div>
                       );
                     })()}
+                  </div>
+
+                  {/* Task panel */}
+                  {todos.length > 0 && (
+                    <div className="w-48 border-l border-border shrink-0 flex flex-col overflow-hidden">
+                      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0">
+                        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Tasks</span>
+                        <span className="text-[10px] text-zinc-600">{todos.filter(t => t.status === 'completed').length}/{todos.length}</span>
+                      </div>
+                      <div className="flex-1 overflow-y-auto px-2 py-1.5">
+                        {todos.map((todo, i) => (
+                          <div key={i} className={`flex items-start gap-1.5 text-[11px] py-0.5 ${todo.status === 'completed' ? 'text-zinc-600' : todo.status === 'in_progress' ? 'text-zinc-200' : 'text-zinc-500'}`}>
+                            <span className="w-4 text-center shrink-0 mt-px">
+                              {todo.status === 'completed' ? <span className="text-green-400">&#x2713;</span> :
+                               todo.status === 'in_progress' ? <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse inline-block" /> :
+                               <span className="w-1.5 h-1.5 rounded-full border border-zinc-600 inline-block" />}
+                            </span>
+                            <span className={todo.status === 'completed' ? 'line-through' : ''}>
+                              {todo.status === 'in_progress' && todo.activeForm ? todo.activeForm : todo.content}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   </div>
 
                   {/* Input */}
@@ -1129,18 +1237,28 @@ export function ChatApp() {
                             </ListBox>
                           </SelectPopover>
                         </Select>
-                        <button
-                          className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${activeSession?.plan_mode ? 'bg-violet-500/20 text-violet-400' : 'text-zinc-600 hover:text-zinc-400 hover:bg-surface-light'}`}
-                          onClick={() => {
+                        <Select
+                          aria-label="Permission mode"
+                          selectedKey={activeSession?.permission_mode || 'default'}
+                          onSelectionChange={(key) => {
                             if (!activeId || !clientRef.current) return;
-                            const newMode = !activeSession?.plan_mode;
-                            setSessions(prev => prev.map(s => s.id === activeId ? { ...s, plan_mode: newMode } : s));
-                            clientRef.current.setPermissionMode(activeId, newMode ? 'plan' : 'acceptEdits');
-                            clientRef.current.updateSession(activeId, { planMode: newMode }).catch(() => {});
+                            const mode = String(key);
+                            setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: mode } : s));
+                            clientRef.current.setPermissionMode(activeId, mode);
+                            clientRef.current.updateSession(activeId, { permissionMode: mode }).catch(() => {});
                           }}
+                          className="w-36"
                         >
-                          {activeSession?.plan_mode ? 'Plan: ON' : 'Plan: OFF'}
-                        </button>
+                          <SelectTrigger className="h-6 text-[11px]"><SelectValue /></SelectTrigger>
+                          <SelectPopover>
+                            <ListBox>
+                              <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
+                              <ListBoxItem key="acceptEdits" id="acceptEdits" textValue="Accept Edits"><span className="text-xs">Accept Edits</span></ListBoxItem>
+                              <ListBoxItem key="plan" id="plan" textValue="Plan"><span className="text-xs">Plan</span></ListBoxItem>
+                              <ListBoxItem key="bypassPermissions" id="bypassPermissions" textValue="Bypass"><span className="text-xs">Bypass All</span></ListBoxItem>
+                            </ListBox>
+                          </SelectPopover>
+                        </Select>
                       </div>
                       {(() => {
                         const isTerminalMode = input.startsWith('>');
@@ -1234,7 +1352,7 @@ export function ChatApp() {
                 {/* Right panel: editor or terminal */}
                 {openFile && (
                   <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => setEditorFullWidth(f => !f)}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className={`text-[12px] font-mono truncate ${gitModified.staged.has(openFile.path) ? 'text-green-400' : gitModified.unstaged.has(openFile.path) ? 'text-amber-400' : 'text-zinc-400'}`}>
                           {openFile.path.split('/').pop()}
@@ -1267,8 +1385,7 @@ export function ChatApp() {
                         theme="vs-dark"
                         onMount={handleEditorMount}
                         onChange={(value) => {
-                          if (value !== openFile.content) setEditorDirty(true);
-                          else setEditorDirty(false);
+                          if (activeId) updateState(activeId, s => ({ ...s, editorDirty: value !== s.openFile?.content }));
                         }}
                         options={{
                           minimap: { enabled: false },
@@ -1284,7 +1401,7 @@ export function ChatApp() {
                 )}
                 {!openFile && openTerminal && (
                   <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => setEditorFullWidth(f => !f)}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className="text-[10px] text-zinc-500">$</span>
                         <span className="text-[12px] font-mono text-zinc-300 truncate">{openTerminal.terminalCommand}</span>
@@ -1294,7 +1411,7 @@ export function ChatApp() {
                       </div>
                       <button
                         className="text-zinc-500 hover:text-zinc-200 text-sm px-1 shrink-0"
-                        onClick={() => setOpenTerminalId(null)}
+                        onClick={() => activeId && updateState(activeId, s => ({ ...s, openTerminalId: null }))}
                       >
                         &times;
                       </button>
@@ -1330,7 +1447,7 @@ export function ChatApp() {
                       </div>
                     )}
                     {/* File header */}
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => !reviewMode && setEditorFullWidth(f => !f)}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => !reviewMode && activeId && updateState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className="text-[10px] text-amber-400 shrink-0">M</span>
                         <span className="text-[12px] font-mono text-amber-400 truncate">{diffView.path.split('/').pop()}</span>
@@ -1349,7 +1466,7 @@ export function ChatApp() {
                             </button>
                             <button
                               className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
-                              onClick={() => { setDiffView(null); setEditorFullWidth(false); }}
+                              onClick={() => { activeId && updateState(activeId, s => ({ ...s, diffView: null, editorFullWidth: false })); }}
                             >
                               &times;
                             </button>
@@ -1364,16 +1481,14 @@ export function ChatApp() {
                         filePath={diffView.path}
                         comments={reviewComments[diffView.path] || []}
                         onAddComment={(comment) => {
-                          setReviewComments(prev => ({
-                            ...prev,
-                            [diffView.path]: [...(prev[diffView.path] || []), comment],
-                          }));
+                          if (!activeId || !diffView) return;
+                          const p = diffView.path;
+                          updateState(activeId, s => ({ ...s, reviewComments: { ...s.reviewComments, [p]: [...(s.reviewComments[p] || []), comment] } }));
                         }}
                         onDeleteComment={(id) => {
-                          setReviewComments(prev => ({
-                            ...prev,
-                            [diffView.path]: (prev[diffView.path] || []).filter(c => c.id !== id),
-                          }));
+                          if (!activeId || !diffView) return;
+                          const p = diffView.path;
+                          updateState(activeId, s => ({ ...s, reviewComments: { ...s.reviewComments, [p]: (s.reviewComments[p] || []).filter(c => c.id !== id) } }));
                         }}
                       />
                       {reviewMode && reviewFiles.length > 1 && (
@@ -1404,6 +1519,39 @@ export function ChatApp() {
 
               {/* Permission modal removed — shown inline in chat */}
             </>
+            )}
+          </div>
+        </div>
+
+        {/* Status bar */}
+        <div className="flex items-center justify-between px-3 h-[22px] bg-[#181818] border-t border-border text-[11px] shrink-0 select-none">
+          <div className="flex items-center gap-3">
+            {gitBranch && (
+              <span className="flex items-center gap-1 text-zinc-500">
+                <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><path d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6c0 .73-.593 1.322-1.322 1.322H8.822A1.322 1.322 0 007.5 8.644v1.228a2.251 2.251 0 11-1.5 0V6.128a2.251 2.251 0 111.5 0v.994c0 .045.037.082.082.082h2.596c.045 0 .082-.037.082-.082v-.744A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z" /></svg>
+                {gitBranch}
+              </span>
+            )}
+            {explorerRoot && (
+              <span className="text-zinc-600 font-mono truncate max-w-[300px]">
+                {explorerRoot.split('/').slice(-3).join('/')}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            {activeId && (
+              <span className="flex items-center gap-1 text-zinc-600">
+                <span className={`w-1.5 h-1.5 rounded-full ${activeStatus === 'connected' ? 'bg-green-400' : activeStatus === 'connecting' ? 'bg-amber-400' : 'bg-zinc-600'}`} />
+                {activeStatus}
+              </span>
+            )}
+            {activeSession?.model && (
+              <span className="text-zinc-500">{activeSession.model.replace('claude-', '').replace(/-\d+$/, '')}</span>
+            )}
+            {activeSession?.permission_mode && activeSession.permission_mode !== 'default' && (
+              <span className={`px-1 rounded ${activeSession.permission_mode === 'plan' ? 'text-violet-400 bg-violet-400/10' : activeSession.permission_mode === 'acceptEdits' ? 'text-green-400 bg-green-400/10' : 'text-amber-400 bg-amber-400/10'}`}>
+                {activeSession.permission_mode}
+              </span>
             )}
           </div>
         </div>

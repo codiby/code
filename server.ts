@@ -33,6 +33,9 @@ const CWD = process.env.CLAUDE_CWD || process.cwd();
 
 const SESSIONS_FILE = join(homedir(), '.claude', 'ui-sessions.json');
 
+// Tools auto-approved in acceptEdits mode
+const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'Read', 'Glob', 'Grep', 'NotebookEdit']);
+
 type Session = {
   id: string;
   name: string;
@@ -47,7 +50,7 @@ type Session = {
   pendingMessages: string[]; // buffered messages from Claude before browser connects
   savedCommands: string[];
   model: string | null;
-  planMode: boolean;
+  permissionMode: string; // default | acceptEdits | plan | bypassPermissions
 };
 
 type PersistedSession = {
@@ -58,14 +61,14 @@ type PersistedSession = {
   claudeSessionId: string | null;
   savedCommands?: string[];
   model?: string | null;
-  planMode?: boolean;
+  permissionMode?: string;
 };
 
 const sessions = new Map<string, Session>();
 
 function saveSessions() {
   const data: PersistedSession[] = [...sessions.values()].map(s => ({
-    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands, model: s.model, planMode: s.planMode,
+    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands, model: s.model, permissionMode: s.permissionMode,
   }));
   try {
     mkdirSync(join(homedir(), '.claude'), { recursive: true });
@@ -83,7 +86,7 @@ function loadSessions() {
         ...p,
         savedCommands: p.savedCommands || [],
         model: p.model || null,
-        planMode: p.planMode || false,
+        permissionMode: p.permissionMode || 'default',
         claudeWs: null, browserWs: new Set(), process: null,
         ready: false, status: 'stopped', pendingMessages: [],
       });
@@ -120,7 +123,7 @@ function sessionToJSON(s: Session) {
     ws_url: `ws://localhost:${PORT}/browser/ws/${s.id}`,
     saved_commands: s.savedCommands || [],
     model: s.model || null,
-    plan_mode: s.planMode || false,
+    permission_mode: s.permissionMode || 'default',
   };
 }
 
@@ -377,22 +380,53 @@ const server = Bun.serve({
           (session.claudeWs as any).send(line);
         }
       } else if (type === 'claude') {
-        if (session.browserWs.size > 0) {
-          broadcast(session, data);
-        } else {
-          // Buffer messages until browser connects
-          session.pendingMessages.push(data);
-        }
-
-        // Capture claude session id and auto-name
+        // Check for auto-accept before relaying
+        let autoAccepted = false;
         try {
           const msg = JSON.parse(data);
-          // Capture claude's internal session_id from init
+
+          // Auto-accept permission requests based on session permission mode
+          if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
+            const toolName = msg.request.tool_name as string;
+            const mode = session.permissionMode || 'default';
+            const shouldAutoAccept = mode === 'bypassPermissions'
+              || (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(toolName));
+
+            if (shouldAutoAccept) {
+              autoAccepted = true;
+              const requestId = msg.request_id as string;
+              const input = msg.request.input as Record<string, unknown> || {};
+              // Send allow response directly to Claude CLI
+              const response = JSON.stringify({
+                type: 'control_response',
+                response: {
+                  subtype: 'success',
+                  request_id: requestId,
+                  response: { behavior: 'allow', updatedInput: {} },
+                },
+              }) + '\n';
+              if (session.claudeWs) {
+                (session.claudeWs as any).send(response);
+              }
+              // Notify browser
+              const notification = JSON.stringify({
+                type: 'bridge',
+                status: 'auto_approved',
+                tool_name: toolName,
+                request_id: requestId,
+                file_path: input.file_path || input.path || null,
+                command: input.command || null,
+              }) + '\n';
+              broadcast(session, notification);
+              log(`[${session.id.slice(0, 8)}] Auto-approved ${toolName} (mode=${mode})`);
+            }
+          }
+
+          // Capture claude session id and auto-name
           if (msg.type === 'system' && msg.subtype === 'init' && msg.session_id) {
             session.claudeSessionId = msg.session_id;
             saveSessions();
           }
-          // Auto-name from first assistant text
           if (msg.type === 'assistant' && session.name.startsWith('Session ')) {
             const content = msg.message?.content;
             if (Array.isArray(content)) {
@@ -404,6 +438,15 @@ const server = Bun.serve({
             }
           }
         } catch {}
+
+        // Only relay to browser if not auto-accepted
+        if (!autoAccepted) {
+          if (session.browserWs.size > 0) {
+            broadcast(session, data);
+          } else {
+            session.pendingMessages.push(data);
+          }
+        }
       }
     },
 
@@ -491,13 +534,13 @@ async function handleCreateSession(req: Request): Promise<Response> {
   let cwd = CWD;
   let name = '';
   let model: string | null = null;
-  let planMode = false;
+  let permissionMode = 'default';
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
     if (body.name && typeof body.name === 'string') name = body.name;
     if (body.model && typeof body.model === 'string') model = body.model;
-    if (body.planMode === true) planMode = true;
+    if (body.permissionMode && typeof body.permissionMode === 'string') permissionMode = body.permissionMode;
   } catch {}
 
   const session: Session = {
@@ -514,7 +557,7 @@ async function handleCreateSession(req: Request): Promise<Response> {
     pendingMessages: [],
     savedCommands: [],
     model,
-    planMode,
+    permissionMode,
   };
   sessions.set(session.id, session);
 
@@ -554,8 +597,8 @@ async function handleRenameSession(sessionId: string, req: Request): Promise<Res
     if (body.name && typeof body.name === 'string') {
       session.name = body.name;
     }
-    if (typeof body.planMode === 'boolean') {
-      session.planMode = body.planMode;
+    if (typeof body.permissionMode === 'string') {
+      session.permissionMode = body.permissionMode;
     }
     saveSessions();
   } catch {}

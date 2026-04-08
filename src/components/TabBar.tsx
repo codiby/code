@@ -6,6 +6,7 @@ interface Props {
   closedSessions: SessionInfo[];
   activeSessionId: string | null;
   sessionStatuses: Record<string, ConnectionStatus>;
+  sessionStreaming: Record<string, boolean>;
   onSelect: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
@@ -13,14 +14,15 @@ interface Props {
   onRename: (id: string, name: string) => void;
 }
 
-const statusColor: Record<string, string> = {
-  connected: 'bg-green-400',
-  connecting: 'bg-amber-400 animate-pulse',
-  disconnected: 'bg-zinc-500',
-  error: 'bg-red-400',
-};
+function getDotClass(connStatus: string, isStreaming: boolean): string {
+  if (connStatus === 'error') return 'bg-red-400';
+  if (connStatus === 'connecting') return 'bg-amber-400 animate-pulse';
+  if (connStatus === 'connected' && isStreaming) return 'bg-amber-400 animate-pulse';
+  if (connStatus === 'connected') return 'bg-zinc-500';
+  return 'bg-zinc-600';
+}
 
-export function TabBar({ sessions, closedSessions, activeSessionId, sessionStatuses, onSelect, onNew, onClose, onReopen, onRename }: Props) {
+export function TabBar({ sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, onSelect, onNew, onClose, onReopen, onRename }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [showMenu, setShowMenu] = useState(false);
@@ -65,7 +67,7 @@ export function TabBar({ sessions, closedSessions, activeSessionId, sessionStatu
             }`}
             onClick={() => onSelect(s.id)}
           >
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor[connStatus] || statusColor.disconnected}`} />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${getDotClass(connStatus, sessionStreaming[s.id] || false)}`} />
 
             {editingId === s.id ? (
               <input

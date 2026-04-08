@@ -40,7 +40,7 @@ export interface SessionInfo {
   ws_url: string;
   saved_commands: string[];
   model: string | null;
-  plan_mode: boolean;
+  permission_mode: string;
 }
 
 export interface SessionInitInfo {
@@ -60,6 +60,7 @@ type ClientCallbacks = {
   onStatusChange: (sessionId: string, status: ConnectionStatus) => void;
   onSessionInit: (sessionId: string, info: SessionInitInfo) => void;
   onSessionStatusUpdate: (sessionId: string, updates: { model?: string; permissionMode?: string }) => void;
+  onAutoApproved: (sessionId: string, toolName: string, filePath?: string, command?: string) => void;
   onTurnComplete: (sessionId: string) => void;
   onSessionNameUpdate: (sessionId: string, name: string) => void;
 };
@@ -345,7 +346,7 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async updateSession(sessionId: string, updates: { planMode?: boolean }): Promise<SessionInfo> {
+  async updateSession(sessionId: string, updates: { permissionMode?: string }): Promise<SessionInfo> {
     const resp = await fetch(`${this.serverUrl}/sessions/${sessionId}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
@@ -425,6 +426,13 @@ export class ClaudeClient {
           this.callbacks.onStatusChange(sessionId, 'connected');
         } else if (bridgeStatus === 'claude_disconnected' || bridgeStatus === 'claude_exited') {
           this.callbacks.onTurnComplete(sessionId);
+        } else if (bridgeStatus === 'auto_approved') {
+          this.callbacks.onAutoApproved(
+            sessionId,
+            msg.tool_name as string,
+            msg.file_path as string | undefined,
+            msg.command as string | undefined,
+          );
         }
         break;
       }

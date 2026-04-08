@@ -128,7 +128,7 @@ function toolSummary(message: ChatMessage): string {
   const input = message.toolInput;
   if (!input) return '';
   if (typeof input === 'string') return input.slice(0, 80);
-  // Common tool patterns
+  if (input.plan) return 'Plan';
   if (input.command) return String(input.command).slice(0, 80);
   if (input.file_path) return String(input.file_path);
   if (input.path) return String(input.path);
@@ -174,6 +174,8 @@ function ToolBubble({ message }: { message: ChatMessage }) {
   const isEdit = message.toolName === 'Edit' && input && typeof input.old_string === 'string' && typeof input.new_string === 'string';
   const isWrite = message.toolName === 'Write' && input && typeof input.content === 'string';
   const isBash = message.toolName === 'Bash' && input && typeof input.command === 'string';
+  const isPlan = message.toolName === 'ExitPlanMode' && input && typeof input.plan === 'string';
+  const planContent = isPlan ? input!.plan as string : '';
   const filePath = input && typeof input.file_path === 'string' ? input.file_path as string : null;
   const lang = filePath ? langFromPath(filePath) : 'plaintext';
 
@@ -182,6 +184,8 @@ function ToolBubble({ message }: { message: ChatMessage }) {
   const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
   const writeLines = isWrite ? (input.content as string).split('\n').length : 0;
   const writeHeight = isWrite ? Math.min(writeLines * 19 + 20, 250) : 0;
+  const planLines = isPlan ? planContent.split('\n').length : 0;
+  const planHeight = isPlan ? Math.min(planLines * 19 + 20, 400) : 0;
 
   return (
     <div className="py-0.5 pl-3 ml-1 border-l-2 border-border select-none">
@@ -236,7 +240,20 @@ function ToolBubble({ message }: { message: ChatMessage }) {
             </div>
           )}
 
-          {!isEdit && !isWrite && !isBash && message.toolInput && (
+          {isPlan && (
+            <div className="rounded overflow-hidden border border-violet-500/30 mb-1" style={{ height: planHeight }}>
+              <Suspense fallback={<div className="p-2 text-[11px] text-zinc-600">Loading plan...</div>}>
+                <Editor
+                  value={planContent}
+                  language="markdown"
+                  theme="vs-dark"
+                  options={{ ...MONACO_SHARED_OPTS, wordWrap: 'on' as const, padding: { top: 8, bottom: 8 } }}
+                />
+              </Suspense>
+            </div>
+          )}
+
+          {!isEdit && !isWrite && !isBash && !isPlan && message.toolInput && (
             <pre className="text-[11px] text-zinc-600 whitespace-pre-wrap break-all m-0 bg-transparent p-0 max-h-24 overflow-auto leading-tight">
               {typeof message.toolInput === 'string'
                 ? message.toolInput
