@@ -656,9 +656,10 @@ export function ChatApp() {
       }));
       clientRef.current!.execCommand(command, cwd, {
         onData: (chunk) => {
+          const hasScreenClear = chunk.includes('\x1b[2J') || chunk.includes('\x1b[3J');
           updateState(id, s => ({
             ...s,
-            messages: s.messages.map(m => m.id === msgId ? { ...m, content: m.content + chunk } : m),
+            messages: s.messages.map(m => m.id === msgId ? { ...m, content: hasScreenClear ? chunk : m.content + chunk } : m),
           }));
         },
         onDone: (exitCode) => {

@@ -16,7 +16,7 @@ trap cleanup EXIT
 # Start bridge server
 echo "Starting bridge server on port $PORT..."
 cd "$DIR"
-PORT="$PORT" bun server.ts 2>&1 &
+PORT="$PORT" bun server/index.ts 2>&1 &
 BRIDGE_PID=$!
 sleep 1
 

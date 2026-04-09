@@ -189,47 +189,42 @@ export class ClaudeClient {
     sessionId?: string,
   ): AbortController {
     const abort = new AbortController();
+    const wsUrl = this.serverUrl.replace('http://', 'ws://').replace('https://', 'wss://');
+
+    // 1. Create the process via POST
     fetch(`${this.serverUrl}/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ command, cwd, sessionId }),
       signal: abort.signal,
     }).then(async (resp) => {
-      if (!resp.ok || !resp.body) {
-        callbacks.onDone(1);
-        return;
-      }
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          if (line.startsWith('event: done')) {
-            // Next data line has the exit code
-            continue;
+      if (!resp.ok) { callbacks.onDone(1); return; }
+      const { procId } = await resp.json();
+
+      // 2. Connect WebSocket to view terminal output
+      const ws = new WebSocket(`${wsUrl}/terminal/ws/${procId}`);
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'data') {
+            callbacks.onData(msg.text);
+          } else if (msg.type === 'exit') {
+            callbacks.onDone(msg.code ?? 0);
           }
-          if (line.startsWith('data: ')) {
-            try {
-              const parsed = JSON.parse(line.slice(6));
-              if (typeof parsed === 'string') {
-                callbacks.onData(parsed);
-              } else if (parsed.exitCode !== undefined) {
-                callbacks.onDone(parsed.exitCode);
-                return;
-              }
-            } catch {}
-          }
-        }
-      }
-      callbacks.onDone(0);
+        } catch {}
+      };
+
+      ws.onerror = () => { callbacks.onDone(1); };
+      ws.onclose = () => {
+        // Only report done if we haven't already (exit message handles it)
+      };
+
+      abort.signal.addEventListener('abort', () => { ws.close(); });
     }).catch(() => {
       if (!abort.signal.aborted) callbacks.onDone(1);
     });
+
     return abort;
   }
 

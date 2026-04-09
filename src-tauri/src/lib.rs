@@ -1,8 +1,9 @@
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 struct BridgeServerState {
     port: Mutex<Option<u16>>,
+    child_pid: Mutex<Option<u32>>,
 }
 
 #[tauri::command]
@@ -18,13 +19,13 @@ async fn start_bridge_server(
         }
     }
 
-    // Find the sidecar server.ts path
+    // Find the sidecar server.js path
     let (sidecar_path, working_dir) = {
         let resource_path = app_handle
             .path()
             .resource_dir()
             .ok()
-            .map(|p| p.join("sidecar/server.ts"));
+            .map(|p| p.join("sidecar/server.js"));
 
         if let Some(path) = resource_path {
             if path.exists() {
@@ -43,7 +44,7 @@ async fn start_bridge_server(
                     .ok_or("Failed to find src-tauri dir")?
                     .to_path_buf();
 
-                let path = src_tauri_dir.join("sidecar/server.ts");
+                let path = src_tauri_dir.join("sidecar/server.js");
                 (path, src_tauri_dir)
             }
         } else {
@@ -59,7 +60,7 @@ async fn start_bridge_server(
                 .ok_or("Failed to find src-tauri dir")?
                 .to_path_buf();
 
-            let path = src_tauri_dir.join("sidecar/server.ts");
+            let path = src_tauri_dir.join("sidecar/server.js");
             (path, src_tauri_dir)
         }
     };
@@ -109,6 +110,12 @@ async fn start_bridge_server(
             )
         })?;
 
+    // Store child PID for cleanup
+    if let Some(pid) = child.id() {
+        let mut child_pid = state.child_pid.lock().unwrap();
+        *child_pid = Some(pid);
+    }
+
     // Read the port from stdout
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let reader = tokio::io::BufReader::new(stdout);
@@ -157,6 +164,24 @@ async fn get_bridge_port(state: State<'_, BridgeServerState>) -> Result<Option<u
     Ok(*port)
 }
 
+fn kill_sidecar(state: &BridgeServerState) {
+    let pid = state.child_pid.lock().unwrap().take();
+    if let Some(pid) = pid {
+        // Kill the process tree
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGTERM);
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            // Also kill any children
+            let _ = std::process::Command::new("pkill")
+                .args(["-TERM", "-P", &pid.to_string()])
+                .output();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -165,15 +190,17 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(BridgeServerState {
             port: Mutex::new(None),
+            child_pid: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             start_bridge_server,
             get_bridge_port,
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.emit("close-requested", ());
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Kill sidecar on window close
+                let state = window.state::<BridgeServerState>();
+                kill_sidecar(&state);
             }
         })
         .run(tauri::generate_context!())

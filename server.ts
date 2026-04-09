@@ -830,21 +830,55 @@ function handleExec(command: string, cwd: string, sessionId: string): Response {
   const stream = new ReadableStream({
     start(controller) {
       const shell = process.env.SHELL || '/bin/sh';
-      const proc = spawn(shell, ['-ilc', command], { cwd, detached: true, env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' } });
+      const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
+      const proc = spawn(shell, ['-c', init + command], { cwd, env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' }, stdio: ['ignore', 'pipe', 'pipe'] });
 
-      trackedProcesses.set(procId, { id: procId, pid: proc.pid!, command, cwd, sessionId, startedAt: Date.now(), proc });
+      const startTime = Date.now();
+      let hasOutput = false;
+      trackedProcesses.set(procId, { id: procId, pid: proc.pid!, command, cwd, sessionId, startedAt: startTime, proc });
 
       // Send process ID as first event
       try { controller.enqueue(encoder.encode(`event: pid\ndata: ${JSON.stringify({ procId, pid: proc.pid })}\n\n`)); } catch {}
 
       const send = (data: string) => {
+        hasOutput = true;
         try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); } catch {}
       };
+
+      // Keepalive ping every 15s to prevent connection timeout
+      const keepalive = setInterval(() => {
+        try { controller.enqueue(encoder.encode(`: keepalive\n\n`)); } catch { clearInterval(keepalive); }
+      }, 15000);
 
       proc.stdout.on('data', (chunk: Buffer) => send(chunk.toString()));
       proc.stderr.on('data', (chunk: Buffer) => send(chunk.toString()));
 
       proc.on('close', (code) => {
+        // Check if child processes are still running before closing the stream
+        if (code === 0 && hasOutput) {
+          try {
+            const children = execSync(`pgrep -P ${proc.pid} 2>/dev/null || true`, { encoding: 'utf-8', timeout: 2000 }).trim();
+            if (children) {
+              const childPid = parseInt(children.split('\n')[0]!, 10);
+              log(`[exec] Parent ${proc.pid} exited but child ${childPid} still running, monitoring`);
+              const poll = setInterval(() => {
+                try {
+                  process.kill(childPid, 0);
+                } catch {
+                  clearInterval(poll);
+                  clearInterval(keepalive);
+                  trackedProcesses.delete(procId);
+                  try {
+                    controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ exitCode: 0 })}\n\n`));
+                    controller.close();
+                  } catch {}
+                }
+              }, 2000);
+              return;
+            }
+          } catch {}
+        }
+        clearInterval(keepalive);
         trackedProcesses.delete(procId);
         try {
           controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ exitCode: code ?? 0 })}\n\n`));
@@ -853,6 +887,7 @@ function handleExec(command: string, cwd: string, sessionId: string): Response {
       });
 
       proc.on('error', (err) => {
+        clearInterval(keepalive);
         trackedProcesses.delete(procId);
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(`Error: ${err.message}`)}\n\n`));

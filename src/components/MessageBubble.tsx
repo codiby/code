@@ -275,6 +275,9 @@ const ANSI_COLORS: Record<number, string> = {
 
 export function AnsiText({ text }: { text: string }) {
   const parts = useMemo(() => {
+    // Strip non-SGR ANSI sequences (cursor movement, screen clear, etc.)
+    // eslint-disable-next-line no-control-regex
+    const cleaned = text.replace(/\x1b\[[0-9;]*[A-HJKSTfhln]/g, '').replace(/\x1b\[\?[0-9;]*[hl]/g, '').replace(/\r/g, '');
     const result: { text: string; color?: string; bold?: boolean; dim?: boolean }[] = [];
     // eslint-disable-next-line no-control-regex
     const re = /\x1b\[([0-9;]*)m/g;
@@ -284,9 +287,9 @@ export function AnsiText({ text }: { text: string }) {
     let dim = false;
 
     let match;
-    while ((match = re.exec(text)) !== null) {
+    while ((match = re.exec(cleaned)) !== null) {
       if (match.index > lastIndex) {
-        result.push({ text: text.slice(lastIndex, match.index), color, bold, dim });
+        result.push({ text: cleaned.slice(lastIndex, match.index), color, bold, dim });
       }
       const codes = match[1]!.split(';').map(Number);
       for (const code of codes) {
@@ -298,8 +301,8 @@ export function AnsiText({ text }: { text: string }) {
       }
       lastIndex = match.index + match[0].length;
     }
-    if (lastIndex < text.length) {
-      result.push({ text: text.slice(lastIndex), color, bold, dim });
+    if (lastIndex < cleaned.length) {
+      result.push({ text: cleaned.slice(lastIndex), color, bold, dim });
     }
     return result;
   }, [text]);
