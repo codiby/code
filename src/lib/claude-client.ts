@@ -580,7 +580,7 @@ export class ClaudeClient {
     }));
   }
 
-  respondToPermission(sessionId: string, requestId: string, allow: boolean): void {
+  respondToPermission(sessionId: string, requestId: string, allow: boolean, updatedInput?: Record<string, unknown>): void {
     const active = this.activeSessions.get(sessionId);
     if (!active || active.ws.readyState !== WebSocket.OPEN) return;
 
@@ -590,7 +590,7 @@ export class ClaudeClient {
         subtype: 'success',
         request_id: requestId,
         response: allow
-          ? { behavior: 'allow', updatedInput: {} }
+          ? { behavior: 'allow', updatedInput: updatedInput || {} }
           : { behavior: 'deny', message: 'Denied by user' },
       },
     }));

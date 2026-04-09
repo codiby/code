@@ -82,6 +82,78 @@ type SessionState = {
   todos: { content: string; status: string; activeForm?: string }[];
 };
 
+type AskQuestion = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
+
+function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]; onSubmit: (answers: Record<string, string>) => void }) {
+  const [selections, setSelections] = useState<Record<string, string>>({});
+
+  const handleSelect = (qIdx: number, label: string) => {
+    const key = String(qIdx);
+    setSelections(prev => ({ ...prev, [key]: label }));
+    // Auto-submit if single question
+    if (questions.length === 1) {
+      onSubmit({ [key]: label });
+    }
+  };
+
+  const allAnswered = questions.every((_, i) => selections[String(i)]);
+
+  return (
+    <div className="space-y-3 mb-2">
+      {questions.map((q, i) => {
+        const key = String(i);
+        const selected = selections[key];
+        return (
+          <div key={i}>
+            {q.header && (
+              <span className="inline-block text-[10px] font-semibold text-violet-400 bg-violet-400/10 px-1.5 py-0.5 rounded mb-1">
+                {q.header}
+              </span>
+            )}
+            <p className="text-[12px] text-zinc-300 leading-relaxed mb-1.5">{q.question}</p>
+            {q.options && q.options.length > 0 && (
+              <div className="space-y-1">
+                {q.options.map((opt, j) => (
+                  <button
+                    key={j}
+                    onClick={() => handleSelect(i, opt.label)}
+                    className={`w-full text-left px-3 py-2 rounded-lg border transition-all ${
+                      selected === opt.label
+                        ? 'border-violet-400/50 bg-violet-500/10 ring-1 ring-violet-400/20'
+                        : 'border-border hover:border-zinc-600 hover:bg-surface-light/50'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                        selected === opt.label ? 'border-violet-400' : 'border-zinc-600'
+                      }`}>
+                        {selected === opt.label && <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />}
+                      </span>
+                      <div>
+                        <span className="text-[12px] font-medium text-zinc-200">{opt.label}</span>
+                        {opt.description && <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">{opt.description}</p>}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {questions.length > 1 && (
+        <button
+          disabled={!allAnswered}
+          onClick={() => onSubmit(selections)}
+          className="px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors disabled:opacity-40"
+        >
+          Submit answers
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(() => {
@@ -93,6 +165,95 @@ export function ChatApp() {
     try { return JSON.parse(localStorage.getItem('claude-ui-tab-order') || '[]'); }
     catch { return []; }
   });
+  // Tab groups
+  const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string }>>(() => {
+    try { return JSON.parse(localStorage.getItem('claude-ui-tab-groups') || '{}').groups || {}; }
+    catch { return {}; }
+  });
+  const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('claude-ui-tab-groups') || '{}').map || {}; }
+    catch { return {}; }
+  });
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
+
+  const persistGroups = (groups: typeof tabGroups, map: typeof tabGroupMap) => {
+    try { localStorage.setItem('claude-ui-tab-groups', JSON.stringify({ groups, map })); } catch {}
+  };
+
+  const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
+  let groupColorIdx = Object.keys(tabGroups).length;
+
+  const handleCreateGroup = (tabIds: string[]) => {
+    const groupId = crypto.randomUUID();
+    const color = GROUP_COLORS[groupColorIdx++ % GROUP_COLORS.length]!;
+    const newGroups = { ...tabGroups, [groupId]: { id: groupId, name: `Group ${Object.keys(tabGroups).length + 1}`, color } };
+    const newMap = { ...tabGroupMap };
+    for (const id of tabIds) newMap[id] = groupId;
+    setTabGroups(newGroups);
+    setTabGroupMap(newMap);
+    setExpandedGroupId(groupId);
+    persistGroups(newGroups, newMap);
+  };
+
+  const handleGroupTabs = (tabIdA: string, tabIdB: string) => {
+    handleCreateGroup([tabIdA, tabIdB]);
+  };
+
+  const handleAddToGroup = (tabId: string, groupId: string) => {
+    const newMap = { ...tabGroupMap, [tabId]: groupId };
+    setTabGroupMap(newMap);
+    setExpandedGroupId(groupId);
+    persistGroups(tabGroups, newMap);
+  };
+
+  const handleUngroupTab = (tabId: string) => {
+    const newMap = { ...tabGroupMap };
+    const groupId = newMap[tabId];
+    delete newMap[tabId];
+    // Delete group if empty
+    const newGroups = { ...tabGroups };
+    if (groupId && !Object.values(newMap).includes(groupId)) {
+      delete newGroups[groupId];
+      if (expandedGroupId === groupId) setExpandedGroupId(null);
+    }
+    setTabGroupMap(newMap);
+    setTabGroups(newGroups);
+    persistGroups(newGroups, newMap);
+  };
+
+  const lastActivePerGroup = useRef<Record<string, string>>({});
+
+  // Track last active session per group
+  useEffect(() => {
+    if (activeId && tabGroupMap[activeId]) {
+      lastActivePerGroup.current[tabGroupMap[activeId]] = activeId;
+    }
+  }, [activeId, tabGroupMap]);
+
+  const handleToggleGroup = (groupId: string) => {
+    setExpandedGroupId(prev => {
+      if (prev === groupId) return null; // collapse
+      // Expand — select last focused session in this group
+      const lastId = lastActivePerGroup.current[groupId];
+      const members = sessions.filter(s => tabGroupMap[s.id] === groupId);
+      const target = lastId && members.some(m => m.id === lastId) ? lastId : members[0]?.id;
+      if (target) setActiveId(target);
+      return groupId;
+    });
+  };
+
+  const handleRenameGroup = (groupId: string, name: string) => {
+    const newGroups = { ...tabGroups, [groupId]: { ...tabGroups[groupId]!, name } };
+    setTabGroups(newGroups);
+    persistGroups(newGroups, tabGroupMap);
+  };
+
+  const handleChangeGroupColor = (groupId: string, color: string) => {
+    const newGroups = { ...tabGroups, [groupId]: { ...tabGroups[groupId]!, color } };
+    setTabGroups(newGroups);
+    persistGroups(newGroups, tabGroupMap);
+  };
+
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
   const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
   const [input, setInput] = useState('');
@@ -549,9 +710,9 @@ export function ChatApp() {
     clientRef.current.sendMessage(activeId, text || ' ', images);
   };
 
-  const handlePermission = (requestId: string, allow: boolean) => {
+  const handlePermission = (requestId: string, allow: boolean, updatedInput?: Record<string, unknown>) => {
     if (!activeId || !clientRef.current) return;
-    clientRef.current.respondToPermission(activeId, requestId, allow);
+    clientRef.current.respondToPermission(activeId, requestId, allow, updatedInput);
     updateState(activeId, s => ({ ...s, permRequest: null }));
   };
 
@@ -856,6 +1017,16 @@ export function ChatApp() {
           onReopen={handleReopenSession}
           onRename={handleRenameSession}
           onReorder={handleReorder}
+          tabGroups={tabGroups}
+          tabGroupMap={tabGroupMap}
+          expandedGroupId={expandedGroupId}
+          onCreateGroup={handleCreateGroup}
+          onGroupTabs={handleGroupTabs}
+          onAddToGroup={handleAddToGroup}
+          onUngroupTab={handleUngroupTab}
+          onToggleGroup={handleToggleGroup}
+          onRenameGroup={handleRenameGroup}
+          onChangeGroupColor={handleChangeGroupColor}
         />
 
         <div className="flex-1 flex min-h-0">
@@ -993,6 +1164,8 @@ export function ChatApp() {
                       const isPlan = req.toolName === 'ExitPlanMode';
                       const planContent = isPlan && typeof input.plan === 'string' ? input.plan as string : null;
                       const allowedPrompts = isPlan && Array.isArray(input.allowedPrompts) ? input.allowedPrompts as { tool: string; prompt: string }[] : [];
+                      const isAskUser = req.toolName === 'AskUserQuestion';
+                      const askQuestions = isAskUser && Array.isArray(input.questions) ? input.questions as { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean }[] : [];
                       const filePath = typeof input.file_path === 'string' ? input.file_path : null;
                       const ext = filePath?.split('.').pop() || '';
                       const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact', py: 'python', rs: 'rust', go: 'go', json: 'json', css: 'css', html: 'html', md: 'markdown', sh: 'shell', bash: 'shell', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql' };
@@ -1002,10 +1175,10 @@ export function ChatApp() {
                       const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
 
                       return (
-                        <div className="py-1 pl-3 ml-1 border-l-2 border-amber-500/50">
+                        <div className={`py-1 pl-3 ml-1 border-l-2 ${isAskUser ? 'border-violet-500/50' : 'border-amber-500/50'}`}>
                           <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[11px] font-mono text-violet-400">{req.toolName}</span>
-                            <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>
+                            <span className="text-[11px] font-mono text-violet-400">{isAskUser ? 'Question' : req.toolName}</span>
+                            {!isAskUser && <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>}
                           </div>
                           {filePath && (
                             <p className="text-[11px] text-zinc-500 font-mono mb-1 truncate">{filePath}</p>
@@ -1122,14 +1295,24 @@ export function ChatApp() {
                             </div>
                           )}
 
+                          {/* AskUserQuestion: interactive form */}
+                          {isAskUser && askQuestions.length > 0 && (
+                            <AskUserQuestionForm
+                              questions={askQuestions}
+                              onSubmit={(answers) => {
+                                handlePermission(req.requestId, true, { ...input, answers });
+                              }}
+                            />
+                          )}
+
                           {/* Fallback for other tools */}
-                          {!isEdit && !isBash && !isWrite && !isPlan && (
+                          {!isEdit && !isBash && !isWrite && !isPlan && !isAskUser && (
                             <pre className="text-[11px] text-zinc-500 whitespace-pre-wrap break-all m-0 mb-2 bg-transparent p-0 max-h-40 overflow-auto leading-tight">
                               {JSON.stringify(input, null, 2)}
                             </pre>
                           )}
 
-                          <div className="flex items-center gap-2">
+                          {!isAskUser && <div className="flex items-center gap-2">
                             <button
                               className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-green-600/15 text-green-400 hover:bg-green-600/25 transition-colors"
                               onClick={() => handlePermission(req.requestId, true)}
@@ -1157,7 +1340,7 @@ export function ChatApp() {
                             >
                               Deny
                             </button>
-                          </div>
+                          </div>}
                         </div>
                       );
                     })()}
