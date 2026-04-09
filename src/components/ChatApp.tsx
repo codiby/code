@@ -154,6 +154,64 @@ function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]
   );
 }
 
+function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: ClaudeClient | null; rootPath: string | null; onFileOpen: (path: string) => void; onClose: () => void }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<{ file: string; line: number; text: string }[]>([]);
+  const [searching, setSearching] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const doSearch = (q: string) => {
+    if (!client || !rootPath || !q.trim()) { setResults([]); return; }
+    setSearching(true);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      client.searchFiles(rootPath, q.trim()).then(r => { setResults(r); setSearching(false); }).catch(() => { setResults([]); setSearching(false); });
+    }, 300);
+  };
+
+  return (
+    <aside className="w-60 border-r border-border bg-[#161616] flex flex-col shrink-0">
+      <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
+        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Search</span>
+        <button className="text-zinc-600 hover:text-zinc-300 text-sm" onClick={onClose}>&#x2715;</button>
+      </div>
+      <div className="px-2 py-2 border-b border-border shrink-0">
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={e => { setQuery(e.target.value); doSearch(e.target.value); }}
+          onKeyDown={e => { if (e.key === 'Escape') onClose(); }}
+          placeholder="Search in files..."
+          className="w-full bg-surface border border-border rounded px-2 py-1 text-[12px] text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-zinc-500"
+        />
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {searching && <p className="text-[11px] text-zinc-600 text-center py-4">Searching...</p>}
+        {!searching && query && results.length === 0 && <p className="text-[11px] text-zinc-600 text-center py-4">No results</p>}
+        {results.map((r, i) => {
+          const relFile = rootPath && r.file.startsWith('./') ? r.file.slice(2) : r.file;
+          return (
+            <div
+              key={i}
+              className="px-2 py-1 hover:bg-surface-light/50 cursor-pointer transition-colors border-b border-border/30"
+              onClick={() => onFileOpen(rootPath ? `${rootPath}/${relFile}` : relFile)}
+            >
+              <div className="flex items-center gap-1">
+                <span className="text-[11px] text-zinc-400 truncate">{relFile}</span>
+                <span className="text-[10px] text-zinc-600 shrink-0">:{r.line}</span>
+              </div>
+              <p className="text-[10px] text-zinc-500 font-mono truncate leading-snug">{r.text}</p>
+            </div>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(() => {
@@ -261,6 +319,7 @@ export function ChatApp() {
   const [showNewSession, setShowNewSession] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
+  const [sidebarView, setSidebarView] = useState<'explorer' | 'search'>('explorer');
   // Panel state helpers (per-session via SessionState)
   const setOpenFile = (file: { path: string; content: string } | null) => {
     if (!activeId) return;
@@ -850,6 +909,13 @@ export function ChatApp() {
           e.preventDefault();
           saveRef.current();
           break;
+        case 'f':
+          if (e.shiftKey) {
+            e.preventDefault();
+            setSidebarView('search');
+            setExplorerCollapsed(false);
+          }
+          break;
       }
     };
     window.addEventListener('keydown', handler);
@@ -1030,8 +1096,26 @@ export function ChatApp() {
         />
 
         <div className="flex-1 flex min-h-0">
-          {/* File Explorer */}
-          {activeId && (
+          {/* Activity Bar */}
+          <div className="w-10 bg-[#161616] border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
+            <button
+              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'explorer' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
+              onClick={() => { if (sidebarView === 'explorer' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('explorer'); setExplorerCollapsed(false); } }}
+              title="Explorer (Cmd+B)"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" /></svg>
+            </button>
+            <button
+              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'search' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
+              onClick={() => { if (sidebarView === 'search' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('search'); setExplorerCollapsed(false); } }}
+              title="Search (Cmd+Shift+F)"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="7" /><path d="M16 16L21 21" strokeLinecap="round" /></svg>
+            </button>
+          </div>
+
+          {/* Side Panel: Explorer or Search */}
+          {activeId && sidebarView === 'explorer' && (
           <FileExplorer
             client={client}
             rootPath={explorerRoot}
@@ -1048,7 +1132,13 @@ export function ChatApp() {
             onStartReview={handleStartReview}
             onRefreshGit={refreshGitModified}
             tools={active.initInfo?.tools}
+            sessionName={activeSession?.name}
           />
+          )}
+
+          {/* Search Panel */}
+          {activeId && sidebarView === 'search' && !explorerCollapsed && (
+            <SearchPanel client={client} rootPath={explorerRoot} onFileOpen={handleFileOpen} onClose={() => setExplorerCollapsed(true)} />
           )}
 
           <div className="flex-1 flex flex-col min-w-0">

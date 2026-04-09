@@ -303,6 +303,22 @@ const server = Bun.serve({
     }
 
     // Check if a path is a git repo
+    // Search files (ripgrep / grep)
+    if (url.pathname === '/search' && req.method === 'GET') {
+      const root = url.searchParams.get('root');
+      const query = url.searchParams.get('q') || '';
+      if (!root || !query) return Response.json({ results: [] }, { headers: corsHeaders });
+      return handleSearch(root, query);
+    }
+
+    // GitHub PRs
+    if (url.pathname === '/gh-prs' && req.method === 'GET') {
+      const cwd = url.searchParams.get('cwd');
+      const sessionName = url.searchParams.get('session') || '';
+      if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
+      return handleGhPrs(cwd, sessionName);
+    }
+
     if (url.pathname === '/git-info' && req.method === 'GET') {
       const dirPath = url.searchParams.get('path');
       if (!dirPath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
@@ -855,6 +871,73 @@ function handleExec(command: string, cwd: string, sessionId: string): Response {
       'Connection': 'keep-alive',
     },
   });
+}
+
+function handleSearch(root: string, query: string): Response {
+  try {
+    // Try ripgrep first, fall back to grep
+    let cmd: string;
+    try {
+      execSync('which rg', { encoding: 'utf-8', timeout: 2000 });
+      cmd = `rg --json --max-count 5 --max-filesize 1M -e ${JSON.stringify(query)} .`;
+    } catch {
+      cmd = `grep -rn --include='*' -m 5 ${JSON.stringify(query)} .`;
+    }
+    const output = execSync(cmd, { cwd: root, encoding: 'utf-8', timeout: 10000, maxBuffer: 1024 * 1024 });
+
+    // Parse ripgrep JSON output
+    if (cmd.startsWith('rg')) {
+      const results: { file: string; line: number; text: string }[] = [];
+      for (const line of output.split('\n').filter(Boolean)) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'match') {
+            results.push({
+              file: msg.data.path.text,
+              line: msg.data.line_number,
+              text: msg.data.lines.text.trim().slice(0, 200),
+            });
+          }
+        } catch {}
+      }
+      return Response.json({ results: results.slice(0, 100) }, { headers: corsHeaders });
+    }
+
+    // Parse grep output: file:line:text
+    const results = output.split('\n').filter(Boolean).slice(0, 100).map(line => {
+      const [file, lineNum, ...rest] = line.split(':');
+      return { file: file || '', line: parseInt(lineNum || '0', 10), text: rest.join(':').trim().slice(0, 200) };
+    });
+    return Response.json({ results }, { headers: corsHeaders });
+  } catch {
+    return Response.json({ results: [] }, { headers: corsHeaders });
+  }
+}
+
+function handleGhPrs(cwd: string, sessionName: string): Response {
+  try {
+    const output = execSync(
+      'gh pr list --state all --json number,title,headRefName,state,url,isDraft --limit 20',
+      { cwd, encoding: 'utf-8', timeout: 10000 },
+    );
+    let prs = JSON.parse(output) as { number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[];
+
+    // Match PRs to session name if provided
+    if (sessionName) {
+      const words = sessionName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+      if (words.length > 0) {
+        const matched = prs.filter(pr => {
+          const text = `${pr.title} ${pr.headRefName}`.toLowerCase();
+          return words.some(w => text.includes(w));
+        });
+        if (matched.length > 0) prs = matched;
+      }
+    }
+
+    return Response.json(prs, { headers: corsHeaders });
+  } catch {
+    return Response.json([], { headers: corsHeaders });
+  }
 }
 
 function handleGitModified(root: string): Response {

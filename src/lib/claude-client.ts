@@ -263,6 +263,22 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  async searchFiles(root: string, query: string): Promise<{ file: string; line: number; text: string }[]> {
+    const params = new URLSearchParams({ root, q: query });
+    const resp = await fetch(`${this.serverUrl}/search?${params}`);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return data.results || [];
+  }
+
+  async listPullRequests(cwd: string, sessionName?: string): Promise<{ number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[]> {
+    const params = new URLSearchParams({ cwd });
+    if (sessionName) params.set('session', sessionName);
+    const resp = await fetch(`${this.serverUrl}/gh-prs?${params}`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
   /**
    * Create a worktree with streamed setup logs.
    * Returns callbacks for log lines, completion, and errors.

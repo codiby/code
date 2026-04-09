@@ -20,6 +20,7 @@ interface Props {
   onStartReview?: () => void;
   onRefreshGit?: () => void;
   tools?: string[];
+  sessionName?: string;
 }
 
 const EXT_COLORS: Record<string, string> = {
@@ -341,6 +342,73 @@ function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }:
   );
 }
 
+interface PRInfo {
+  number: number;
+  title: string;
+  headRefName: string;
+  state: string;
+  url: string;
+  isDraft: boolean;
+}
+
+const PR_STATE_COLORS: Record<string, { dot: string; text: string }> = {
+  OPEN: { dot: 'bg-green-400', text: 'text-green-400' },
+  MERGED: { dot: 'bg-violet-400', text: 'text-violet-400' },
+  CLOSED: { dot: 'bg-zinc-500', text: 'text-zinc-500' },
+};
+
+function PRsSection({ client, rootPath, sessionName }: { client: ClaudeClient | null; rootPath: string | null; sessionName?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [prs, setPrs] = useState<PRInfo[]>([]);
+
+  useEffect(() => {
+    if (!client || !rootPath) { setPrs([]); return; }
+    client.listPullRequests(rootPath, sessionName).then(setPrs).catch(() => setPrs([]));
+  }, [client, rootPath, sessionName]);
+
+  if (prs.length === 0) return null;
+
+  return (
+    <div className="border-b border-border/50 shrink-0">
+      <button
+        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <span className="text-[11px] w-3 text-center shrink-0 text-zinc-400">{expanded ? '▾' : '▸'}</span>
+        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Pull Requests</span>
+        <span className="text-[10px] text-zinc-600 ml-auto">{prs.length}</span>
+      </button>
+      {expanded && (
+        <div className="pb-1">
+          {prs.map(pr => {
+            const colors = pr.isDraft
+              ? { dot: 'bg-amber-400', text: 'text-amber-400' }
+              : PR_STATE_COLORS[pr.state] || PR_STATE_COLORS.OPEN!;
+            return (
+              <a
+                key={pr.number}
+                href={pr.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-start gap-1.5 py-[3px] px-2 text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200 cursor-pointer transition-colors"
+              >
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${colors.dot}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1">
+                    <span className={`text-[10px] shrink-0 ${colors.text}`}>#{pr.number}</span>
+                    <span className="text-[11px] truncate">{pr.title}</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-600 font-mono truncate block">{pr.headRefName}</span>
+                </div>
+              </a>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolsSection({ tools }: { tools: string[] }) {
   const [expanded, setExpanded] = useState(false);
   if (tools.length === 0) return null;
@@ -368,7 +436,7 @@ function ToolsSection({ tools }: { tools: string[] }) {
   );
 }
 
-export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools }: Props) {
+export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
 
   useEffect(() => {
@@ -397,6 +465,9 @@ export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen
       <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
 
       {/* Tools */}
+      {/* Pull Requests */}
+      <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} />
+
       <ToolsSection tools={tools || []} />
 
       {/* File tree (collapsible) */}
