@@ -592,6 +592,7 @@ export function ChatApp() {
   };
 
   const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
+  const [unsavedClosePrompt, setUnsavedClosePrompt] = useState(false);
 
   const handleCloseTab = (id: string) => {
     setClosingSessionId(id);
@@ -890,14 +891,62 @@ export function ChatApp() {
     setGitModified({ staged, unstaged });
   }, [client]);
 
-  const handleSaveFile = async () => {
-    if (!active.openFile || !client || !activeId) return;
+  // handleSaveFile is now handleSaveFileWrapped (defined above)
+
+  const untitledCountRef = useRef(0);
+  const [saveAsPrompt, setSaveAsPrompt] = useState<{ content: string } | null>(null);
+  const [saveAsPath, setSaveAsPath] = useState('');
+  const saveAsInputRef = useRef<HTMLInputElement>(null);
+
+  const handleNewFile = () => {
+    if (!activeId) return;
+    untitledCountRef.current++;
+    const name = `untitled-${untitledCountRef.current}`;
+    updateState(activeId, s => ({
+      ...s,
+      openFile: { path: name, content: '' },
+      openTerminalId: null,
+      diffView: null,
+      editorDirty: true,
+    }));
+  };
+
+  const handleSaveAs = (content: string) => {
+    const root = explorerRootRef.current || '';
+    setSaveAsPath(root ? `${root}/` : '');
+    setSaveAsPrompt({ content });
+    setTimeout(() => saveAsInputRef.current?.focus(), 50);
+  };
+
+  const confirmSaveAs = async () => {
+    if (!saveAsPrompt || !saveAsPath.trim() || !clientRef.current || !activeId) return;
+    const path = saveAsPath.trim();
+    const ok = await clientRef.current.writeFile(path, saveAsPrompt.content);
+    if (ok) {
+      updateState(activeId, s => ({ ...s, openFile: { path, content: saveAsPrompt.content }, editorDirty: false }));
+      refreshGitModified();
+    }
+    setSaveAsPrompt(null);
+    setSaveAsPath('');
+  };
+
+  const handleSaveFileWrapped = async () => {
+    if (!active.openFile || !activeId) return;
+    // Untitled files need Save As
+    if (active.openFile.path.startsWith('untitled-')) {
+      const editor = editorRef.current;
+      const content = editor?.getValue() || active.openFile.content;
+      handleSaveAs(content);
+      return;
+    }
+    // Normal save
+    if (!clientRef.current) return;
     const editor = editorRef.current;
     if (!editor) return;
     const content = editor.getValue();
     const filePath = active.openFile.path;
     try {
-      const ok = await client.writeFile(filePath, content);
+      const ok = await clientRef.current.writeFile(filePath, content);
       if (ok) {
         updateState(activeId, s => ({ ...s, openFile: { path: filePath, content }, editorDirty: false }));
         refreshGitModified();
@@ -905,8 +954,27 @@ export function ChatApp() {
     } catch {}
   };
 
-  const saveRef = useRef(handleSaveFile);
-  saveRef.current = handleSaveFile;
+  const handleCloseCurrentPanel = () => {
+    if (!activeId) return;
+    const s = getState(activeId);
+    const hasPanel = s.openFile || s.openTerminalId || s.diffView;
+    if (hasPanel) {
+      if (s.openFile && s.editorDirty) {
+        setUnsavedClosePrompt(true);
+        return;
+      }
+      updateState(activeId, st => ({ ...st, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+    } else {
+      handleCloseTab(activeId);
+    }
+  };
+
+  const saveRef = useRef(handleSaveFileWrapped);
+  saveRef.current = handleSaveFileWrapped;
+  const newFileRef = useRef(handleNewFile);
+  newFileRef.current = handleNewFile;
+  const closePanelRef = useRef(handleCloseCurrentPanel);
+  closePanelRef.current = handleCloseCurrentPanel;
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -929,6 +997,16 @@ export function ChatApp() {
         case 's':
           e.preventDefault();
           saveRef.current();
+          break;
+        case 'w':
+          e.preventDefault();
+          closePanelRef.current();
+          break;
+        case 'n':
+          if (!e.shiftKey) {
+            e.preventDefault();
+            newFileRef.current();
+          }
           break;
         case 'f':
           if (e.shiftKey) {
@@ -1035,8 +1113,9 @@ export function ChatApp() {
     { id: 'new-session', label: 'New Session', keys: ['command'], key: 'N', section: 'Sessions', onRun: () => setShowNewSession(true) },
     { id: 'focus-input', label: 'Focus Chat Input', keys: ['command'], key: 'L', section: 'Navigation', onRun: () => inputRef.current?.focus() },
     { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', keys: ['command'], key: 'B', section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
-    { id: 'close-editor', label: 'Close Editor', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => { setOpenFile(null); } },
-    { id: 'save-file', label: 'Save File', keys: ['command'], key: 'S', section: 'Editor', onRun: handleSaveFile },
+    { id: 'close-editor', label: 'Close Editor / Tab', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => closePanelRef.current() },
+    { id: 'new-file', label: 'New File', keys: ['command'], key: 'N', section: 'Editor', onRun: handleNewFile },
+    { id: 'save-file', label: 'Save File', keys: ['command'], key: 'S', section: 'Editor', onRun: handleSaveFileWrapped},
     { id: 'clear-chat', label: 'Clear Chat', section: 'Session', onRun: async () => {
       if (!activeId || !clientRef.current) return;
       const session = sessions.find(s => s.id === activeId);
@@ -1760,7 +1839,7 @@ export function ChatApp() {
                         {editorDirty && (
                           <button
                             className="text-[11px] text-zinc-500 hover:text-zinc-200 px-1.5"
-                            onClick={handleSaveFile}
+                            onClick={handleSaveFileWrapped}
                             title="Save (Cmd+S)"
                           >
                             Save
@@ -2031,6 +2110,53 @@ export function ChatApp() {
           fileIndex={fileIndex}
           onFileOpen={handleFileOpen}
         />
+        {/* Unsaved changes dialog */}
+        {unsavedClosePrompt && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={() => setUnsavedClosePrompt(false)}>
+            <div className="absolute inset-0 bg-black/50" />
+            <div className="relative bg-surface border border-border-light rounded-xl shadow-2xl p-5 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-zinc-200 mb-2">Unsaved Changes</h3>
+              <p className="text-[13px] text-zinc-400 mb-4">
+                Do you want to save changes to <span className="text-zinc-200 font-mono">{active.openFile?.path.split('/').pop()}</span> before closing?
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button variant="flat" onPress={() => {
+                  setUnsavedClosePrompt(false);
+                  if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+                }}>Don't Save</Button>
+                <Button variant="flat" onPress={() => setUnsavedClosePrompt(false)}>Cancel</Button>
+                <Button onPress={async () => {
+                  setUnsavedClosePrompt(false);
+                  await handleSaveFileWrapped();
+                  if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+                }}>Save</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Save As dialog */}
+        {saveAsPrompt && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={() => setSaveAsPrompt(null)}>
+            <div className="absolute inset-0 bg-black/50" />
+            <div className="relative bg-surface border border-border-light rounded-xl shadow-2xl p-5 max-w-md w-full" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-zinc-200 mb-3">Save As</h3>
+              <input
+                ref={saveAsInputRef}
+                value={saveAsPath}
+                onChange={e => setSaveAsPath(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') confirmSaveAs(); if (e.key === 'Escape') setSaveAsPrompt(null); }}
+                placeholder="/path/to/file.ts"
+                className="w-full bg-surface-light border border-border rounded-lg px-3 py-2 text-sm text-zinc-200 font-mono placeholder:text-zinc-600 outline-none focus:border-zinc-500 mb-3"
+              />
+              <div className="flex justify-end gap-2">
+                <Button variant="flat" onPress={() => setSaveAsPrompt(null)}>Cancel</Button>
+                <Button onPress={confirmSaveAs} isDisabled={!saveAsPath.trim()}>Save</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {closingSessionId && (() => {
           const s = sessions.find(s => s.id === closingSessionId);
           return (
