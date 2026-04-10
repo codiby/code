@@ -33,6 +33,9 @@ const CWD = process.env.CLAUDE_CWD || process.cwd();
 
 const SESSIONS_FILE = join(homedir(), '.claude', 'ui-sessions.json');
 
+// Tools auto-approved in acceptEdits mode
+const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'Read', 'Glob', 'Grep', 'NotebookEdit']);
+
 type Session = {
   id: string;
   name: string;
@@ -46,6 +49,8 @@ type Session = {
   status: 'starting' | 'running' | 'stopped';
   pendingMessages: string[]; // buffered messages from Claude before browser connects
   savedCommands: string[];
+  model: string | null;
+  permissionMode: string; // default | acceptEdits | plan | bypassPermissions
 };
 
 type PersistedSession = {
@@ -55,13 +60,15 @@ type PersistedSession = {
   createdAt: number;
   claudeSessionId: string | null;
   savedCommands?: string[];
+  model?: string | null;
+  permissionMode?: string;
 };
 
 const sessions = new Map<string, Session>();
 
 function saveSessions() {
   const data: PersistedSession[] = [...sessions.values()].map(s => ({
-    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands,
+    id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt, claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands, model: s.model, permissionMode: s.permissionMode,
   }));
   try {
     mkdirSync(join(homedir(), '.claude'), { recursive: true });
@@ -78,6 +85,8 @@ function loadSessions() {
       sessions.set(p.id, {
         ...p,
         savedCommands: p.savedCommands || [],
+        model: p.model || null,
+        permissionMode: p.permissionMode || 'default',
         claudeWs: null, browserWs: new Set(), process: null,
         ready: false, status: 'stopped', pendingMessages: [],
       });
@@ -113,6 +122,8 @@ function sessionToJSON(s: Session) {
     claude_session_id: s.claudeSessionId,
     ws_url: `ws://localhost:${server.port}/browser/ws/${s.id}`,
     saved_commands: s.savedCommands || [],
+    model: s.model || null,
+    permission_mode: s.permissionMode || 'default',
   };
 }
 
@@ -292,6 +303,22 @@ const server = Bun.serve({
     }
 
     // Check if a path is a git repo
+    // Search files (ripgrep / grep)
+    if (url.pathname === '/search' && req.method === 'GET') {
+      const root = url.searchParams.get('root');
+      const query = url.searchParams.get('q') || '';
+      if (!root || !query) return Response.json({ results: [] }, { headers: corsHeaders });
+      return handleSearch(root, query);
+    }
+
+    // GitHub PRs
+    if (url.pathname === '/gh-prs' && req.method === 'GET') {
+      const cwd = url.searchParams.get('cwd');
+      const sessionName = url.searchParams.get('session') || '';
+      if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
+      return handleGhPrs(cwd, sessionName);
+    }
+
     if (url.pathname === '/git-info' && req.method === 'GET') {
       const dirPath = url.searchParams.get('path');
       if (!dirPath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
@@ -369,22 +396,53 @@ const server = Bun.serve({
           (session.claudeWs as any).send(line);
         }
       } else if (type === 'claude') {
-        if (session.browserWs.size > 0) {
-          broadcast(session, data);
-        } else {
-          // Buffer messages until browser connects
-          session.pendingMessages.push(data);
-        }
-
-        // Capture claude session id and auto-name
+        // Check for auto-accept before relaying
+        let autoAccepted = false;
         try {
           const msg = JSON.parse(data);
-          // Capture claude's internal session_id from init
+
+          // Auto-accept permission requests based on session permission mode
+          if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
+            const toolName = msg.request.tool_name as string;
+            const mode = session.permissionMode || 'default';
+            const shouldAutoAccept = mode === 'bypassPermissions'
+              || (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(toolName));
+
+            if (shouldAutoAccept) {
+              autoAccepted = true;
+              const requestId = msg.request_id as string;
+              const input = msg.request.input as Record<string, unknown> || {};
+              // Send allow response directly to Claude CLI
+              const response = JSON.stringify({
+                type: 'control_response',
+                response: {
+                  subtype: 'success',
+                  request_id: requestId,
+                  response: { behavior: 'allow', updatedInput: {} },
+                },
+              }) + '\n';
+              if (session.claudeWs) {
+                (session.claudeWs as any).send(response);
+              }
+              // Notify browser
+              const notification = JSON.stringify({
+                type: 'bridge',
+                status: 'auto_approved',
+                tool_name: toolName,
+                request_id: requestId,
+                file_path: input.file_path || input.path || null,
+                command: input.command || null,
+              }) + '\n';
+              broadcast(session, notification);
+              log(`[${session.id.slice(0, 8)}] Auto-approved ${toolName} (mode=${mode})`);
+            }
+          }
+
+          // Capture claude session id and auto-name
           if (msg.type === 'system' && msg.subtype === 'init' && msg.session_id) {
             session.claudeSessionId = msg.session_id;
             saveSessions();
           }
-          // Auto-name from first assistant text
           if (msg.type === 'assistant' && session.name.startsWith('Session ')) {
             const content = msg.message?.content;
             if (Array.isArray(content)) {
@@ -396,6 +454,15 @@ const server = Bun.serve({
             }
           }
         } catch {}
+
+        // Only relay to browser if not auto-accepted
+        if (!autoAccepted) {
+          if (session.browserWs.size > 0) {
+            broadcast(session, data);
+          } else {
+            session.pendingMessages.push(data);
+          }
+        }
       }
     },
 
@@ -429,6 +496,10 @@ function spawnClaude(session: Session, resumeSessionId?: string) {
 
   if (resumeSessionId) {
     args.push('--resume', resumeSessionId, '--replay-user-messages');
+  }
+
+  if (session.model) {
+    args.push('--model', session.model);
   }
 
   const sid = session.id.slice(0, 8);
@@ -478,10 +549,14 @@ function spawnClaude(session: Session, resumeSessionId?: string) {
 async function handleCreateSession(req: Request): Promise<Response> {
   let cwd = CWD;
   let name = '';
+  let model: string | null = null;
+  let permissionMode = 'default';
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
     if (body.name && typeof body.name === 'string') name = body.name;
+    if (body.model && typeof body.model === 'string') model = body.model;
+    if (body.permissionMode && typeof body.permissionMode === 'string') permissionMode = body.permissionMode;
   } catch {}
 
   const session: Session = {
@@ -497,6 +572,8 @@ async function handleCreateSession(req: Request): Promise<Response> {
     status: 'starting',
     pendingMessages: [],
     savedCommands: [],
+    model,
+    permissionMode,
   };
   sessions.set(session.id, session);
 
@@ -535,8 +612,11 @@ async function handleRenameSession(sessionId: string, req: Request): Promise<Res
     const body = await req.json() as Record<string, unknown>;
     if (body.name && typeof body.name === 'string') {
       session.name = body.name;
-      saveSessions();
     }
+    if (typeof body.permissionMode === 'string') {
+      session.permissionMode = body.permissionMode;
+    }
+    saveSessions();
   } catch {}
   return Response.json(sessionToJSON(session), { headers: corsHeaders });
 }
@@ -750,21 +830,55 @@ function handleExec(command: string, cwd: string, sessionId: string): Response {
   const stream = new ReadableStream({
     start(controller) {
       const shell = process.env.SHELL || '/bin/sh';
-      const proc = spawn(shell, ['-ilc', command], { cwd, detached: true, env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' } });
+      const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
+      const proc = spawn(shell, ['-c', init + command], { cwd, env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' }, stdio: ['ignore', 'pipe', 'pipe'] });
 
-      trackedProcesses.set(procId, { id: procId, pid: proc.pid!, command, cwd, sessionId, startedAt: Date.now(), proc });
+      const startTime = Date.now();
+      let hasOutput = false;
+      trackedProcesses.set(procId, { id: procId, pid: proc.pid!, command, cwd, sessionId, startedAt: startTime, proc });
 
       // Send process ID as first event
       try { controller.enqueue(encoder.encode(`event: pid\ndata: ${JSON.stringify({ procId, pid: proc.pid })}\n\n`)); } catch {}
 
       const send = (data: string) => {
+        hasOutput = true;
         try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); } catch {}
       };
+
+      // Keepalive ping every 15s to prevent connection timeout
+      const keepalive = setInterval(() => {
+        try { controller.enqueue(encoder.encode(`: keepalive\n\n`)); } catch { clearInterval(keepalive); }
+      }, 15000);
 
       proc.stdout.on('data', (chunk: Buffer) => send(chunk.toString()));
       proc.stderr.on('data', (chunk: Buffer) => send(chunk.toString()));
 
       proc.on('close', (code) => {
+        // Check if child processes are still running before closing the stream
+        if (code === 0 && hasOutput) {
+          try {
+            const children = execSync(`pgrep -P ${proc.pid} 2>/dev/null || true`, { encoding: 'utf-8', timeout: 2000 }).trim();
+            if (children) {
+              const childPid = parseInt(children.split('\n')[0]!, 10);
+              log(`[exec] Parent ${proc.pid} exited but child ${childPid} still running, monitoring`);
+              const poll = setInterval(() => {
+                try {
+                  process.kill(childPid, 0);
+                } catch {
+                  clearInterval(poll);
+                  clearInterval(keepalive);
+                  trackedProcesses.delete(procId);
+                  try {
+                    controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ exitCode: 0 })}\n\n`));
+                    controller.close();
+                  } catch {}
+                }
+              }, 2000);
+              return;
+            }
+          } catch {}
+        }
+        clearInterval(keepalive);
         trackedProcesses.delete(procId);
         try {
           controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ exitCode: code ?? 0 })}\n\n`));
@@ -773,6 +887,7 @@ function handleExec(command: string, cwd: string, sessionId: string): Response {
       });
 
       proc.on('error', (err) => {
+        clearInterval(keepalive);
         trackedProcesses.delete(procId);
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(`Error: ${err.message}`)}\n\n`));
@@ -793,6 +908,73 @@ function handleExec(command: string, cwd: string, sessionId: string): Response {
   });
 }
 
+function handleSearch(root: string, query: string): Response {
+  try {
+    // Try ripgrep first, fall back to grep
+    let cmd: string;
+    try {
+      execSync('which rg', { encoding: 'utf-8', timeout: 2000 });
+      cmd = `rg --json --max-count 5 --max-filesize 1M -e ${JSON.stringify(query)} .`;
+    } catch {
+      cmd = `grep -rn --include='*' -m 5 ${JSON.stringify(query)} .`;
+    }
+    const output = execSync(cmd, { cwd: root, encoding: 'utf-8', timeout: 10000, maxBuffer: 1024 * 1024 });
+
+    // Parse ripgrep JSON output
+    if (cmd.startsWith('rg')) {
+      const results: { file: string; line: number; text: string }[] = [];
+      for (const line of output.split('\n').filter(Boolean)) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'match') {
+            results.push({
+              file: msg.data.path.text,
+              line: msg.data.line_number,
+              text: msg.data.lines.text.trim().slice(0, 200),
+            });
+          }
+        } catch {}
+      }
+      return Response.json({ results: results.slice(0, 100) }, { headers: corsHeaders });
+    }
+
+    // Parse grep output: file:line:text
+    const results = output.split('\n').filter(Boolean).slice(0, 100).map(line => {
+      const [file, lineNum, ...rest] = line.split(':');
+      return { file: file || '', line: parseInt(lineNum || '0', 10), text: rest.join(':').trim().slice(0, 200) };
+    });
+    return Response.json({ results }, { headers: corsHeaders });
+  } catch {
+    return Response.json({ results: [] }, { headers: corsHeaders });
+  }
+}
+
+function handleGhPrs(cwd: string, sessionName: string): Response {
+  try {
+    const output = execSync(
+      'gh pr list --state all --json number,title,headRefName,state,url,isDraft --limit 20',
+      { cwd, encoding: 'utf-8', timeout: 10000 },
+    );
+    let prs = JSON.parse(output) as { number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[];
+
+    // Match PRs to session name if provided
+    if (sessionName) {
+      const words = sessionName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+      if (words.length > 0) {
+        const matched = prs.filter(pr => {
+          const text = `${pr.title} ${pr.headRefName}`.toLowerCase();
+          return words.some(w => text.includes(w));
+        });
+        if (matched.length > 0) prs = matched;
+      }
+    }
+
+    return Response.json(prs, { headers: corsHeaders });
+  } catch {
+    return Response.json([], { headers: corsHeaders });
+  }
+}
+
 function handleGitModified(root: string): Response {
   try {
     const gitTop = execSync('git rev-parse --show-toplevel', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim();
@@ -801,17 +983,21 @@ function handleGitModified(root: string): Response {
     const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
 
     const result: { path: string; staged: boolean }[] = [];
-    const seen = new Set<string>();
+    const stagedSet = new Set<string>();
 
     for (const f of staged) {
       const p = resolve(gitTop, f);
       if (!p.startsWith(root)) continue;
-      if (!seen.has(p)) { seen.add(p); result.push({ path: p, staged: true }); }
+      stagedSet.add(p);
+      result.push({ path: p, staged: true });
     }
+    // Files with unstaged changes (including those also staged — shown in both sections)
+    const unstagedSeen = new Set<string>();
     for (const f of [...unstaged, ...untracked]) {
       const p = resolve(gitTop, f);
-      if (!p.startsWith(root)) continue;
-      if (!seen.has(p)) { seen.add(p); result.push({ path: p, staged: false }); }
+      if (!p.startsWith(root) || unstagedSeen.has(p)) continue;
+      unstagedSeen.add(p);
+      result.push({ path: p, staged: false });
     }
 
     return Response.json(result, { headers: corsHeaders });
@@ -1042,9 +1228,7 @@ process.on('exit', () => { killAllClaudeProcesses(); });
 // bun --watch sends SIGUSR2 before restart
 process.on('SIGUSR2', () => { killAllClaudeProcesses(); });
 
-// Print actual port for Tauri to capture (must be before any other log)
-console.log(`BRIDGE_SERVER_PORT:${server.port}`);
-
 log(`Bridge server listening on http://localhost:${server.port}`);
 log(`Claude binary: ${CLAUDE_BIN}`);
 log(`Working directory: ${CWD}`);
+console.log(`BRIDGE_SERVER_PORT:${server.port}`);

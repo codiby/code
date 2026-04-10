@@ -13,6 +13,7 @@ interface Props {
   sessionStatuses: Record<string, ConnectionStatus>;
   sessionStreaming: Record<string, boolean>;
   sessionHasPermission: Record<string, boolean>;
+  sessionTurnComplete: Set<string>;
   onSelect: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
@@ -40,9 +41,10 @@ const COLOR_MAP: Record<string, { dot: string; bg: string; border: string; ring:
   pink:   { dot: 'bg-pink-400',   bg: 'bg-pink-500/8',   border: 'border-pink-400/25', ring: 'ring-pink-400/40' },
 };
 
-function getDotClass(connStatus: string, isStreaming: boolean): string {
+function getDotClass(connStatus: string, isStreaming: boolean, turnComplete: boolean): string {
   if (connStatus === 'error') return 'bg-red-400';
   if (connStatus === 'connecting') return 'bg-amber-400 animate-pulse';
+  if (turnComplete) return 'bg-green-400 animate-pulse';
   if (connStatus === 'connected' && isStreaming) return 'bg-amber-400 animate-pulse';
   if (connStatus === 'connected') return 'bg-zinc-500';
   return 'bg-zinc-600';
@@ -53,8 +55,8 @@ const ACTIVE_GROUP_BG: Record<string, string> = {
   violet: 'bg-violet-500/20', red: 'bg-red-500/20', pink: 'bg-pink-500/20',
 };
 
-function SortableTab({ id, session, isActive, connStatus, isStreaming, hasPermission, groupColor, compact, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onContextMenu }: {
-  id: string; session: SessionInfo; isActive: boolean; connStatus: string; isStreaming: boolean; hasPermission: boolean; groupColor?: string; compact?: boolean;
+function SortableTab({ id, session, isActive, connStatus, isStreaming, turnComplete, hasPermission, groupColor, compact, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onContextMenu }: {
+  id: string; session: SessionInfo; isActive: boolean; connStatus: string; isStreaming: boolean; turnComplete?: boolean; hasPermission: boolean; groupColor?: string; compact?: boolean;
   editingId: string | null; editName: string; editRef: React.RefObject<HTMLInputElement | null>;
   setEditName: (v: string) => void; startRename: (s: SessionInfo) => void; commitRename: () => void; setEditingId: (id: string | null) => void;
   onSelect: (id: string) => void; onClose: (id: string) => void;
@@ -71,7 +73,7 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, hasPermis
       onClick={() => onSelect(session.id)}
       onContextMenu={onContextMenu}
     >
-      <span className={`w-2 h-2 rounded-full shrink-0 ${getDotClass(connStatus, isStreaming)}`} />
+      <span className={`w-2 h-2 rounded-full shrink-0 ${getDotClass(connStatus, isStreaming, !!turnComplete)}`} />
       {editingId === session.id ? (
         <input ref={editRef} value={editName} onChange={e => setEditName(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingId(null); }}
@@ -140,7 +142,7 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, onToggle,
 export function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionHasPermission,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, expandedGroupId, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor } = props;
+    tabGroups, tabGroupMap, expandedGroupId, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor } = props;
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -218,6 +220,7 @@ export function TabBar(props: Props) {
     id: s.id, session: s, isActive: s.id === activeSessionId,
     connStatus: sessionStatuses[s.id] || 'disconnected',
     isStreaming: sessionStreaming[s.id] || false,
+    turnComplete: sessionTurnComplete.has(s.id),
     hasPermission: sessionHasPermission[s.id] || false,
     groupColor, compact,
     editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose,

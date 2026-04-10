@@ -27,7 +27,7 @@ cd "$PROJECT_DIR"
 "$BUN_PATH" build ./server/index.ts --outfile "$SIDECAR_DIR/server.js" --target bun --minify
 
 # Patch for dynamic port allocation (sidecar uses port 0)
-sed -i '' "s/process\.env\.PORT||\"\?'3100'\"\?/process.env.PORT||'0'/g" "$SIDECAR_DIR/server.js"
+sed -i '' 's/"3100"/"0"/g' "$SIDECAR_DIR/server.js"
 
 # Ensure BRIDGE_SERVER_PORT output exists for Tauri to read
 if ! grep -q 'BRIDGE_SERVER_PORT' "$SIDECAR_DIR/server.js"; then

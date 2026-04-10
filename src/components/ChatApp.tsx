@@ -35,33 +35,13 @@ async function resolveServerUrl(): Promise<string> {
   }
   return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
 }
-const MSG_KEY_PREFIX = 'claude-ui-msgs-';
-
-function loadMessages(sessionId: string): ChatMessage[] {
-  try { return JSON.parse(localStorage.getItem(MSG_KEY_PREFIX + sessionId) || '[]'); }
-  catch { return []; }
+let _serverUrl = '';
+function uiLog(msg: string) {
+  console.log('[UI]', msg);
+  if (_serverUrl) fetch(`${_serverUrl}/ui-log`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ msg }) }).catch(() => {});
 }
 
-const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
-function saveMessages(sessionId: string, messages: ChatMessage[]) {
-  // Debounce saves — collapse rapid updates into one write
-  clearTimeout(saveTimers.get(sessionId));
-  saveTimers.set(sessionId, setTimeout(() => {
-    try {
-      // Strip large terminal output from persisted messages to keep localStorage lean
-      const slim = messages.map(m =>
-        m.isTerminal && m.content.length > 5000
-          ? { ...m, content: m.content.slice(-2000) }
-          : m
-      );
-      localStorage.setItem(MSG_KEY_PREFIX + sessionId, JSON.stringify(slim));
-    } catch {}
-  }, 500));
-}
-function deleteMessages(sessionId: string) {
-  clearTimeout(saveTimers.get(sessionId));
-  localStorage.removeItem(MSG_KEY_PREFIX + sessionId);
-}
+import { loadMessages, saveMessages, deleteMessages } from '../lib/storage';
 
 type SessionState = {
   messages: ChatMessage[];
@@ -80,6 +60,9 @@ type SessionState = {
   reviewFiles: string[];
   reviewIndex: number;
   todos: { content: string; status: string; activeForm?: string }[];
+  input: string;
+  inputHistory: string[];
+  contextTokens: number; // latest input_tokens from result message
 };
 
 type AskQuestion = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
@@ -314,13 +297,20 @@ export function ChatApp() {
 
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
   const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
-  const [input, setInput] = useState('');
+  const historyIdxRef = useRef(-1);
+  const historyDraftRef = useRef('');
   const [pastedImages, setPastedImages] = useState<{ media_type: string; data: string; preview: string }[]>([]);
   const [showNewSession, setShowNewSession] = useState(false);
+  const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   const [sidebarView, setSidebarView] = useState<'explorer' | 'search'>('explorer');
   // Panel state helpers (per-session via SessionState)
+  const setInput = (val: string | ((prev: string) => string)) => {
+    if (!activeId) return;
+    updateState(activeId, s => ({ ...s, input: typeof val === 'function' ? val(s.input) : val }));
+  };
+
   const setOpenFile = (file: { path: string; content: string } | null) => {
     if (!activeId) return;
     updateState(activeId, s => ({
@@ -343,24 +333,32 @@ export function ChatApp() {
     messages: [], partialText: '', isStreaming: false, initInfo: null, permRequest: null,
     openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
+    input: '', inputHistory: [], contextTokens: 0,
   });
+
+  const loadingRef = useRef(new Set<string>());
 
   const getState = (id: string | null): SessionState => {
     if (!id) return emptyState();
     if (sessionStates[id]) return sessionStates[id];
-    // Load persisted messages on first access
-    const msgs = loadMessages(id);
-    if (msgs.length > 0) {
-      const state = { ...emptyState(), messages: msgs };
-      // Populate cache synchronously won't work in render, just return it
-      return state;
+    // Trigger async load if not already loading
+    if (!loadingRef.current.has(id)) {
+      loadingRef.current.add(id);
+      loadMessages(id).then(msgs => {
+        if (msgs.length > 0) {
+          setSessionStates(prev => {
+            if (prev[id]) return prev; // already loaded by another path
+            return { ...prev, [id]: { ...emptyState(), messages: msgs as ChatMessage[] } };
+          });
+        }
+      });
     }
     return emptyState();
   };
 
   const updateState = useCallback((id: string, fn: (prev: SessionState) => SessionState) => {
     setSessionStates(prev => {
-      const current = prev[id] || { ...emptyState(), messages: loadMessages(id) };
+      const current = prev[id] || emptyState();
       const next = fn(current);
       // Persist messages to localStorage
       if (next.messages !== current.messages) {
@@ -382,6 +380,8 @@ export function ChatApp() {
     let cancelled = false;
     resolveServerUrl().then(serverUrl => {
       if (cancelled) return;
+    _serverUrl = serverUrl;
+    uiLog(`Server URL resolved: ${serverUrl}`);
     const client = new ClaudeClient(serverUrl, {
       onMessage: (sid, msg) => {
         // Intercept TodoWrite — update task panel, don't add to chat
@@ -390,7 +390,12 @@ export function ChatApp() {
           if (input?.todos) updateState(sid, s => ({ ...s, todos: input.todos! }));
           return;
         }
-        updateState(sid, s => ({ ...s, messages: [...s.messages, msg], partialText: '' }));
+        updateState(sid, s => ({
+          ...s,
+          messages: [...s.messages, msg],
+          partialText: '',
+          contextTokens: msg.usage ? msg.usage.input_tokens + msg.usage.output_tokens : s.contextTokens,
+        }));
       },
       onPartialText: (sid, text) => {
         updateState(sid, s => ({ ...s, partialText: text }));
@@ -418,7 +423,7 @@ export function ChatApp() {
         setSessions(prev => prev.map(s => s.id === sid ? {
           ...s,
           model: info.model || s.model,
-          permission_mode: info.permissionMode || s.permission_mode,
+          // Don't override server-persisted permission_mode with CLI default
         } : s));
       },
       onSessionStatusUpdate: (sid, updates) => {
@@ -444,6 +449,8 @@ export function ChatApp() {
       },
       onTurnComplete: (sid) => {
         updateState(sid, s => ({ ...s, isStreaming: false, partialText: '' }));
+        setTurnCompleteIds(prev => new Set(prev).add(sid));
+        setTimeout(() => setTurnCompleteIds(prev => { const next = new Set(prev); next.delete(sid); return next; }), 3000);
       },
       onSessionNameUpdate: (sid, name) => {
         setSessions(prev => prev.map(s => s.id === sid && s.name.startsWith('Session ') ? { ...s, name } : s));
@@ -496,7 +503,7 @@ export function ChatApp() {
   }, []);
 
   const active = getState(activeId);
-  const { openFile, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos } = active;
+  const { openFile, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
   const lastMsgContent = active.messages[active.messages.length - 1]?.content;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
   const hasRightPanel = !!openFile || !!openTerminal || !!diffView;
@@ -553,6 +560,8 @@ export function ChatApp() {
 
   const handleSelectSession = async (id: string) => {
     setActiveId(id);
+    historyIdxRef.current = -1;
+    historyDraftRef.current = '';
     const session = sessions.find(s => s.id === id);
     const status = statuses[id];
     console.log(`[select] id=${id.slice(0,8)} session.status=${session?.status} connStatus=${status}`);
@@ -707,6 +716,17 @@ export function ChatApp() {
     const text = input.trim();
     if (!text && pastedImages.length === 0) return;
     if (!activeId || !clientRef.current) return;
+
+    // Push to per-session input history
+    if (text) {
+      updateState(activeId, s => {
+        const hist = [...s.inputHistory, text];
+        if (hist.length > 100) hist.shift();
+        return { ...s, inputHistory: hist };
+      });
+      historyIdxRef.current = -1;
+      historyDraftRef.current = '';
+    }
 
     // Terminal command: > command
     if (text.startsWith('>')) {
@@ -961,6 +981,44 @@ export function ChatApp() {
 
   // Fetch git branch for status bar
   const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const [branchMenu, setBranchMenu] = useState<{ local: string[]; remote: string[]; current: string; rect: DOMRect } | null>(null);
+  const [branchFilter, setBranchFilter] = useState('');
+  const branchBtnRef = useRef<HTMLButtonElement>(null);
+  const branchInputRef = useRef<HTMLInputElement>(null);
+
+  const openBranchMenu = () => {
+    try {
+      uiLog('openBranchMenu called');
+      const c = clientRef.current;
+      const root = explorerRootRef.current;
+      uiLog(`client: ${!!c}, root: ${root}`);
+      const rect = branchBtnRef.current?.getBoundingClientRect() || new DOMRect(10, window.innerHeight - 30, 100, 20);
+      uiLog(`rect: ${JSON.stringify({ top: rect.top, left: rect.left })}`);
+      setBranchMenu({ local: [], remote: [], current: gitBranch || '', rect });
+      setBranchFilter('');
+      if (c && root) {
+        c.listBranches(root).then(data => {
+          uiLog(`branches loaded: local=${data.local?.length}, remote=${data.remote?.length}`);
+          setBranchMenu(prev => prev ? { ...prev, local: data.local || [], remote: data.remote || [], current: data.current || '' } : null);
+          setTimeout(() => branchInputRef.current?.focus(), 50);
+        }).catch(e => { uiLog(`listBranches error: ${e}`); });
+      }
+    } catch (e) {
+      uiLog(`openBranchMenu error: ${e}`);
+    }
+  };
+
+  const doCheckout = async (branch: string) => {
+    const client = clientRef.current;
+    const explorerRoot = explorerRootRef.current;
+    if (!client || !explorerRoot) return;
+    setBranchMenu(null);
+    const result = await client.checkoutBranch(explorerRoot, branch);
+    if (result.ok && result.branch) {
+      setGitBranch(result.branch);
+      refreshGitModified();
+    }
+  };
   useEffect(() => {
     if (!client || !explorerRoot) { setGitBranch(null); return; }
     client.getGitInfo(explorerRoot).then(info => {
@@ -1077,6 +1135,7 @@ export function ChatApp() {
           activeSessionId={activeId}
           sessionStatuses={statuses}
           sessionStreaming={Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, s.isStreaming]))}
+          sessionTurnComplete={turnCompleteIds}
           sessionHasPermission={Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.permRequest]))}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
@@ -1602,6 +1661,37 @@ export function ChatApp() {
                                     setInput('');
                                     return;
                                   }
+                                  // Input history navigation (arrow up/down when input is single line)
+                                  if (e.key === 'ArrowUp' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
+                                    const el = e.currentTarget;
+                                    if (el.selectionStart === 0 && el.selectionEnd === 0) {
+                                      e.preventDefault();
+                                      const hist = active.inputHistory;
+                                      if (hist.length === 0) return;
+                                      if (historyIdxRef.current === -1) historyDraftRef.current = input;
+                                      const newIdx = historyIdxRef.current === -1 ? hist.length - 1 : Math.max(0, historyIdxRef.current - 1);
+                                      historyIdxRef.current = newIdx;
+                                      setInput(hist[newIdx]!);
+                                      return;
+                                    }
+                                  }
+                                  if (e.key === 'ArrowDown' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
+                                    const el = e.currentTarget;
+                                    if (el.selectionStart === el.value.length) {
+                                      e.preventDefault();
+                                      const hist = active.inputHistory;
+                                      if (historyIdxRef.current === -1) return;
+                                      const newIdx = historyIdxRef.current + 1;
+                                      if (newIdx >= hist.length) {
+                                        historyIdxRef.current = -1;
+                                        setInput(historyDraftRef.current);
+                                      } else {
+                                        historyIdxRef.current = newIdx;
+                                        setInput(hist[newIdx]!);
+                                      }
+                                      return;
+                                    }
+                                  }
                                   if (fileMention.isActive) {
                                     fileMention.onKeyDown(e, handleFileMentionSelect);
                                   } else {
@@ -1834,10 +1924,10 @@ export function ChatApp() {
         <div className="flex items-center justify-between px-3 h-[22px] bg-[#181818] border-t border-border text-[11px] shrink-0 select-none">
           <div className="flex items-center gap-3">
             {gitBranch && (
-              <span className="flex items-center gap-1 text-zinc-500">
+              <button ref={branchBtnRef} className="flex items-center gap-1 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer z-10" onClick={(e) => { e.stopPropagation(); openBranchMenu(); }}>
                 <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><path d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6c0 .73-.593 1.322-1.322 1.322H8.822A1.322 1.322 0 007.5 8.644v1.228a2.251 2.251 0 11-1.5 0V6.128a2.251 2.251 0 111.5 0v.994c0 .045.037.082.082.082h2.596c.045 0 .082-.037.082-.082v-.744A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z" /></svg>
                 {gitBranch}
-              </span>
+              </button>
             )}
             {explorerRoot && (
               <span className="text-zinc-600 font-mono truncate max-w-[300px]">
@@ -1860,8 +1950,73 @@ export function ChatApp() {
                 {activeSession.permission_mode}
               </span>
             )}
+            {active.contextTokens > 0 && (() => {
+              const maxTokens = 200000;
+              const pct = Math.min((active.contextTokens / maxTokens) * 100, 100);
+              const color = pct > 80 ? 'bg-red-400' : pct > 50 ? 'bg-amber-400' : 'bg-green-400';
+              const k = (active.contextTokens / 1000).toFixed(0);
+              return (
+                <span className="flex items-center gap-1.5 text-zinc-600" title={`${active.contextTokens.toLocaleString()} / ${maxTokens.toLocaleString()} tokens`}>
+                  <span className="text-[10px]">{k}k</span>
+                  <span className="w-16 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                    <span className={`block h-full rounded-full ${color} transition-all`} style={{ width: `${pct}%` }} />
+                  </span>
+                </span>
+              );
+            })()}
           </div>
         </div>
+
+        {/* Branch picker */}
+        {branchMenu && (() => { try {
+          const q = branchFilter.toLowerCase();
+          const filteredLocal = branchMenu.local.filter(b => !q || b.toLowerCase().includes(q));
+          const filteredRemote = branchMenu.remote.filter(b => !q || b.toLowerCase().includes(q));
+          const allFiltered = [...filteredLocal, ...filteredRemote];
+          const renderBranch = (branch: string, isRemote: boolean) => (
+            <button
+              key={`${isRemote ? 'r-' : 'l-'}${branch}`}
+              className={`w-full text-left px-3 py-1 text-[11px] transition-colors truncate ${branch === branchMenu.current ? 'text-green-400 bg-green-400/5' : 'text-zinc-400 hover:bg-surface-light hover:text-zinc-200'}`}
+              onClick={() => doCheckout(branch)}
+            >
+              {branch === branchMenu.current && <span className="mr-1">&#x2713;</span>}
+              {branch}
+            </button>
+          );
+          return (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setBranchMenu(null)} />
+              <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl w-72 overflow-hidden"
+                style={{ bottom: 26, left: branchMenu.rect.left || 10 }}>
+                <div className="px-2 py-2 border-b border-border">
+                  <input
+                    ref={branchInputRef}
+                    value={branchFilter}
+                    onChange={e => setBranchFilter(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Escape') setBranchMenu(null); if (e.key === 'Enter' && allFiltered.length === 1) doCheckout(allFiltered[0]!); }}
+                    placeholder="Search branches..."
+                    className="w-full bg-surface-light border border-border rounded px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-zinc-500"
+                  />
+                </div>
+                <div className="max-h-60 overflow-y-auto py-1">
+                  {allFiltered.length === 0 && <p className="text-[11px] text-zinc-600 text-center py-3">No branches found</p>}
+                  {filteredLocal.length > 0 && (
+                    <>
+                      <div className="px-3 py-0.5 text-[9px] text-zinc-600 uppercase tracking-wider">Local</div>
+                      {filteredLocal.map(b => renderBranch(b, false))}
+                    </>
+                  )}
+                  {filteredRemote.length > 0 && (
+                    <>
+                      <div className="px-3 py-0.5 mt-1 text-[9px] text-zinc-600 uppercase tracking-wider">Remote</div>
+                      {filteredRemote.map(b => renderBranch(b, true))}
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
+          );
+        } catch(e) { uiLog(`branchMenu render error: ${e}`); return null; } })()}
 
         <NewSessionModal
           isOpen={showNewSession}

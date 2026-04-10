@@ -198,11 +198,16 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Kill sidecar on window close
                 let state = window.state::<BridgeServerState>();
                 kill_sidecar(&state);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<BridgeServerState>();
+                kill_sidecar(&state);
+            }
+        });
 }

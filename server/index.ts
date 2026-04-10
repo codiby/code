@@ -16,7 +16,7 @@ import { handleCreateSession, handleResumeSession, handleRenameSession, handleDe
 import { handleListDirs, handleListFiles, handleFileIndex } from './handlers/files';
 import { handleExecCreate, terminalWsOpen, terminalWsClose } from './handlers/exec';
 import { handleListProcesses, handleKillProcess } from './handlers/processes';
-import { handleGitModified, handleGitInfo, handleGhPrs } from './handlers/git';
+import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout } from './handlers/git';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree } from './handlers/worktree';
 import { registerShutdownHandlers } from './shutdown';
@@ -230,6 +230,18 @@ const server = Bun.serve({
       return handleGitInfo(dirPath);
     }
 
+    if (url.pathname === '/git-branches' && req.method === 'GET') {
+      const cwd = url.searchParams.get('cwd');
+      if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
+      return handleGitBranches(cwd);
+    }
+
+    if (url.pathname === '/git-checkout' && req.method === 'POST') {
+      const body = await req.json() as { cwd: string; branch: string };
+      if (!body.cwd || !body.branch) return Response.json({ error: 'cwd and branch required' }, { status: 400, headers: corsHeaders });
+      return handleGitCheckout(body.cwd, body.branch);
+    }
+
     // GitHub PRs
     if (url.pathname === '/gh-prs' && req.method === 'GET') {
       const cwd = url.searchParams.get('cwd');
@@ -275,6 +287,15 @@ const server = Bun.serve({
     // Health check
     if (url.pathname === '/health') {
       return Response.json({ status: 'ok', sessions: sessions.size }, { headers: corsHeaders });
+    }
+
+    // UI logging endpoint
+    if (url.pathname === '/ui-log' && req.method === 'POST') {
+      try {
+        const body = await req.json() as { msg: string };
+        log(`[UI] ${body.msg}`);
+      } catch {}
+      return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
     // Debug: check session state

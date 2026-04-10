@@ -88,12 +88,46 @@ export function handleGhPrs(cwd: string, sessionName: string): Response {
           const text = `${pr.title} ${pr.headRefName}`.toLowerCase();
           return words.some(w => text.includes(w));
         });
-        if (matched.length > 0) prs = matched;
+        prs = matched;
       }
     }
 
     return Response.json(prs, { headers: corsHeaders });
   } catch {
     return Response.json([], { headers: corsHeaders });
+  }
+}
+
+export function handleGitBranches(cwd: string): Response {
+  try {
+    const output = execSync('git branch -a', { cwd, encoding: 'utf-8', timeout: 5000 });
+    const current = execSync('git branch --show-current', { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+    const local: string[] = [];
+    const remote: string[] = [];
+    const localSet = new Set<string>();
+    for (const raw of output.split('\n')) {
+      const b = raw.replace(/^\*?\s+/, '').trim();
+      if (!b || b.includes('HEAD')) continue;
+      if (b.startsWith('remotes/origin/')) {
+        const name = b.replace(/^remotes\/origin\//, '');
+        if (!localSet.has(name)) remote.push(name);
+      } else {
+        local.push(b);
+        localSet.add(b);
+      }
+    }
+    return Response.json({ current, local, remote }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ current: '', local: [], remote: [], error: String(e) }, { headers: corsHeaders });
+  }
+}
+
+export function handleGitCheckout(cwd: string, branch: string): Response {
+  try {
+    execSync(`git checkout ${JSON.stringify(branch)}`, { cwd, encoding: 'utf-8', timeout: 10000 });
+    const current = execSync('git branch --show-current', { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+    return Response.json({ ok: true, branch: current }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ ok: false, error: e.message }, { status: 400, headers: corsHeaders });
   }
 }

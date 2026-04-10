@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import { corsHeaders } from '../config';
+import { log } from '../logger';
 import type { TrackedProcess } from '../types';
 
 export const trackedProcesses = new Map<string, TrackedProcess>();
@@ -21,6 +22,44 @@ export function getProcessTree(pid: number): { pid: number; command: string; chi
   }
 }
 
+/** Recursively find all descendant PIDs of a process */
+function getAllDescendants(pid: number): number[] {
+  try {
+    const out = execSync(`ps -o pid=,ppid= -ax`, { encoding: 'utf-8', timeout: 3000 });
+    const rows = out.trim().split('\n').map(line => {
+      const parts = line.trim().split(/\s+/);
+      return { pid: parseInt(parts[0]!, 10), ppid: parseInt(parts[1]!, 10) };
+    }).filter(r => !isNaN(r.pid));
+
+    const descendants: number[] = [];
+    const queue = [pid];
+    while (queue.length > 0) {
+      const parent = queue.shift()!;
+      for (const row of rows) {
+        if (row.ppid === parent) {
+          descendants.push(row.pid);
+          queue.push(row.pid);
+        }
+      }
+    }
+    return descendants;
+  } catch {
+    return [];
+  }
+}
+
+export function killProcessTree(pid: number) {
+  log(`[kill] Killing process group ${pid}`);
+  // Kill entire process group (works because exec spawns with detached: true)
+  try { process.kill(-pid, 'SIGTERM'); } catch {}
+  try { process.kill(pid, 'SIGTERM'); } catch {}
+  // Force kill after a short delay
+  setTimeout(() => {
+    try { process.kill(-pid, 'SIGKILL'); } catch {}
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }, 500);
+}
+
 export function handleListProcesses(sessionId: string): Response {
   const procs: { id: string; pid: number; command: string; cwd: string; startedAt: number; children: { pid: number; command: string }[] }[] = [];
   for (const [id, tp] of trackedProcesses) {
@@ -36,12 +75,6 @@ export function handleListProcesses(sessionId: string): Response {
     });
   }
   return Response.json(procs, { headers: corsHeaders });
-}
-
-export function killProcessTree(pid: number) {
-  try { execSync(`kill -9 -- -${pid} 2>/dev/null; kill -9 ${pid} 2>/dev/null`, { timeout: 3000 }); } catch {}
-  // Also try pkill for any remaining children
-  try { execSync(`pkill -9 -P ${pid} 2>/dev/null`, { timeout: 3000 }); } catch {}
 }
 
 export function handleKillProcess(processId: string, pid?: number): Response {

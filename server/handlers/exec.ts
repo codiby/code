@@ -21,6 +21,7 @@ export async function handleExecCreate(req: Request): Promise<Response> {
   const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
   const proc = spawn(shell, ['-c', init + command], {
     cwd,
+    detached: true, // Own process group so kill(-pgid) kills entire tree
     env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

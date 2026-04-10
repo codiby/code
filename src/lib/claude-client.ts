@@ -258,6 +258,21 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  async listBranches(cwd: string): Promise<{ current: string; local: string[]; remote: string[] }> {
+    const resp = await fetch(`${this.serverUrl}/git-branches?cwd=${encodeURIComponent(cwd)}`);
+    if (!resp.ok) return { current: '', local: [], remote: [] };
+    return resp.json();
+  }
+
+  async checkoutBranch(cwd: string, branch: string): Promise<{ ok: boolean; branch?: string; error?: string }> {
+    const resp = await fetch(`${this.serverUrl}/git-checkout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd, branch }),
+    });
+    return resp.json();
+  }
+
   async searchFiles(root: string, query: string): Promise<{ file: string; line: number; text: string }[]> {
     const params = new URLSearchParams({ root, q: query });
     const resp = await fetch(`${this.serverUrl}/search?${params}`);
@@ -528,6 +543,32 @@ export class ClaudeClient {
             active.partialText += delta.text as string;
             this.callbacks.onPartialText(sessionId, active.partialText);
           }
+        }
+        break;
+      }
+
+      case 'system_event': {
+        const event = msg.event as Record<string, unknown>;
+        if (event?.subtype === 'compact_boundary') {
+          const meta = event.compact_metadata as Record<string, unknown> || {};
+          this.callbacks.onMessage(sessionId, {
+            id: crypto.randomUUID(),
+            role: 'system',
+            content: `Context compressed (${meta.trigger || 'auto'}, ${meta.pre_tokens || '?'} tokens before)`,
+            timestamp: Date.now(),
+          });
+        }
+        break;
+      }
+
+      case 'status_change': {
+        if ((msg.status as string) === 'compacting') {
+          this.callbacks.onMessage(sessionId, {
+            id: crypto.randomUUID(),
+            role: 'system',
+            content: 'Compressing context...',
+            timestamp: Date.now(),
+          });
         }
         break;
       }
