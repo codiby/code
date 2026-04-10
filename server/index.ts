@@ -5,9 +5,10 @@
  * into a single Bun.serve() instance.
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
 
 import { PORT, CLAUDE_BIN, corsHeaders, ACCEPT_EDITS_TOOLS, CWD } from './config';
 import { log } from './logger';
@@ -475,6 +476,16 @@ const server = Bun.serve({
 // ---------------------------------------------------------------------------
 // Startup log
 // ---------------------------------------------------------------------------
+
+// Write port file for service discovery
+const PORT_FILE = join(homedir(), '.claude', 'ui-server.port');
+try {
+  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  writeFileSync(PORT_FILE, String(server.port));
+} catch {}
+process.on('exit', () => { try { unlinkSync(PORT_FILE); } catch {} });
+process.on('SIGINT', () => { try { unlinkSync(PORT_FILE); } catch {}; process.exit(0); });
+process.on('SIGTERM', () => { try { unlinkSync(PORT_FILE); } catch {}; process.exit(0); });
 
 log(`Bridge server listening on http://localhost:${server.port}`);
 log(`Claude binary: ${CLAUDE_BIN}`);

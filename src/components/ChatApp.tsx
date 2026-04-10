@@ -27,10 +27,10 @@ async function resolveServerUrl(): Promise<string> {
   if ((window as any).__TAURI_INTERNALS__) {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      const port = await invoke<number>('start_bridge_server');
+      const port = await invoke<number>('get_bridge_port');
       return `http://localhost:${port}`;
     } catch (e) {
-      console.error('Failed to start bridge server:', e);
+      console.error('Bridge server not found:', e);
     }
   }
   return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
