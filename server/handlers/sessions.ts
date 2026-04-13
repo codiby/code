@@ -29,6 +29,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     process: null,
     ready: false,
     status: 'starting',
+    replayDone: true,
     pendingMessages: [],
     savedCommands: [],
     model,
@@ -53,9 +54,11 @@ export function handleResumeSession(sessionId: string, port: number): Response {
   }
   if (!session.claudeSessionId) {
     log(`[${sessionId.slice(0,8)}] Resuming session (no claude_session_id, starting fresh)`);
+    session.replayDone = true;
     spawnClaude(session, port);
   } else {
     log(`[${sessionId.slice(0,8)}] Resuming session with claude_session_id=${session.claudeSessionId}`);
+    session.replayDone = false;
     spawnClaude(session, port, session.claudeSessionId);
   }
   saveSessions();

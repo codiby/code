@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, memo } from 'react';
 import type { ClaudeClient } from '../lib/claude-client';
 
 interface FileEntry {
@@ -424,7 +424,7 @@ function ToolsSection({ tools }: { tools: string[] }) {
         <span className="text-[10px] text-zinc-600 ml-auto">{tools.length}</span>
       </button>
       {expanded && (
-        <div className="px-3 pb-2 flex flex-wrap gap-1">
+        <div className="px-3 pb-2 flex flex-wrap gap-1 max-h-40 overflow-y-auto">
           {tools.map(tool => (
             <span key={tool} className="text-[10px] bg-surface-light text-zinc-400 px-1.5 py-0.5 rounded font-mono">
               {tool}
@@ -436,7 +436,7 @@ function ToolsSection({ tools }: { tools: string[] }) {
   );
 }
 
-export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
+export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
 
   useEffect(() => {
@@ -474,4 +474,4 @@ export function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen
       <FileTreeSection rootPath={rootPath} entries={entries} client={client} onFileOpen={onFileOpen} gitModified={gitModified} />
     </aside>
   );
-}
+});

@@ -11,6 +11,7 @@ export type Session = {
   process: ChildProcess | null;
   ready: boolean;
   status: 'starting' | 'running' | 'stopped';
+  replayDone: boolean;
   pendingMessages: string[];
   savedCommands: string[];
   model: string | null;

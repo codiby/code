@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, lazy, Suspense } from 'react';
+import { useState, useMemo, useRef, lazy, Suspense, memo } from 'react';
 import type { ChatMessage } from '../lib/claude-client';
 
 const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
@@ -396,7 +396,7 @@ function TerminalBubble({ message, onOpenInPanel }: { message: ChatMessage; onOp
   );
 }
 
-export function MessageBubble({ message, onOpenTerminal }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
@@ -464,4 +464,4 @@ export function MessageBubble({ message, onOpenTerminal }: Props) {
       </div>
     </div>
   );
-}
+});

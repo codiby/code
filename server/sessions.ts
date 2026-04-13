@@ -31,7 +31,7 @@ export function loadSessions() {
         model: p.model || null,
         permissionMode: p.permissionMode || 'default',
         claudeWs: null, browserWs: new Set(), process: null,
-        ready: false, status: 'stopped', pendingMessages: [],
+        ready: false, status: 'stopped', replayDone: false, pendingMessages: [],
       });
     }
     log(`[persist] Loaded ${data.length} sessions`);

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -139,7 +139,7 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, onToggle,
   );
 }
 
-export function TabBar(props: Props) {
+export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionHasPermission,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, expandedGroupId, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor } = props;
@@ -409,4 +409,4 @@ export function TabBar(props: Props) {
       })()}
     </div>
   );
-}
+});

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -20,6 +20,7 @@ import {
   type PermissionRequest,
   type SessionInfo,
   type SessionInitInfo,
+  type SessionState,
 } from '../lib/claude-client';
 
 async function resolveServerUrl(): Promise<string> {
@@ -35,34 +36,11 @@ async function resolveServerUrl(): Promise<string> {
   }
   return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
 }
-let _serverUrl = '';
-function uiLog(msg: string) {
-  console.log('[UI]', msg);
-  if (_serverUrl) fetch(`${_serverUrl}/ui-log`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ msg }) }).catch(() => {});
-}
 
-import { loadMessages, saveMessages, deleteMessages } from '../lib/storage';
-
-type SessionState = {
-  messages: ChatMessage[];
-  partialText: string;
-  isStreaming: boolean;
-  initInfo: SessionInitInfo | null;
-  permRequest: PermissionRequest | null;
-  // Panel state (per-session)
-  openFile: { path: string; content: string } | null;
-  openTerminalId: string | null;
-  diffView: { path: string; original: string; modified: string } | null;
-  editorFullWidth: boolean;
+// Local UI extensions on top of server SessionState
+type LocalSessionState = SessionState & {
   editorDirty: boolean;
-  reviewComments: Record<string, ReviewComment[]>;
-  reviewMode: boolean;
-  reviewFiles: string[];
-  reviewIndex: number;
-  todos: { content: string; status: string; activeForm?: string }[];
-  input: string;
-  inputHistory: string[];
-  contextTokens: number; // latest input_tokens from result message
+  contextTokens: number;
 };
 
 type AskQuestion = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
@@ -197,16 +175,18 @@ function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: Claude
 
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  // TODO: move to server
   const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(() => {
     try { return new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
     catch { return new Set(); }
   });
   const [activeId, setActiveId] = useState<string | null>(null);
+  // TODO: move to server
   const [tabOrder, setTabOrder] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('claude-ui-tab-order') || '[]'); }
     catch { return []; }
   });
-  // Tab groups
+  // Tab groups — TODO: move to server
   const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string }>>(() => {
     try { return JSON.parse(localStorage.getItem('claude-ui-tab-groups') || '{}').groups || {}; }
     catch { return {}; }
@@ -296,32 +276,19 @@ export function ChatApp() {
   };
 
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
-  const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
+  // Server is the source of truth for session state. This map is populated only by server messages.
+  const [sessionStates, setSessionStates] = useState<Record<string, LocalSessionState>>({});
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
+  const subscribedRef = useRef(new Set<string>());
   const [pastedImages, setPastedImages] = useState<{ media_type: string; data: string; preview: string }[]>([]);
+  const [visibleMessageCount, setVisibleMessageCount] = useState(200);
   const [showNewSession, setShowNewSession] = useState(false);
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   const [sidebarView, setSidebarView] = useState<'explorer' | 'search'>('explorer');
-  // Panel state helpers (per-session via SessionState)
-  const setInput = (val: string | ((prev: string) => string)) => {
-    if (!activeId) return;
-    updateState(activeId, s => ({ ...s, input: typeof val === 'function' ? val(s.input) : val }));
-  };
 
-  const setOpenFile = (file: { path: string; content: string } | null) => {
-    if (!activeId) return;
-    updateState(activeId, s => ({
-      ...s,
-      openFile: file,
-      openTerminalId: file ? null : s.openTerminalId,
-      diffView: file ? null : s.diffView,
-      editorFullWidth: file ? s.editorFullWidth : false,
-      editorDirty: false,
-    }));
-  };
   const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string> }>({ staged: new Set(), unstaged: new Set() });
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
@@ -329,42 +296,54 @@ export function ChatApp() {
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const emptyState = (): SessionState => ({
+  const emptyLocalState = (): LocalSessionState => ({
     messages: [], partialText: '', isStreaming: false, initInfo: null, permRequest: null,
-    openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false,
+    openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
-    input: '', inputHistory: [], contextTokens: 0,
+    input: '', inputHistory: [],
+    editorDirty: false, contextTokens: 0,
   });
 
-  const loadingRef = useRef(new Set<string>());
-
-  const getState = (id: string | null): SessionState => {
-    if (!id) return emptyState();
-    if (sessionStates[id]) return sessionStates[id];
-    // Trigger async load if not already loading
-    if (!loadingRef.current.has(id)) {
-      loadingRef.current.add(id);
-      loadMessages(id).then(msgs => {
-        if (msgs.length > 0) {
-          setSessionStates(prev => {
-            if (prev[id]) return prev; // already loaded by another path
-            return { ...prev, [id]: { ...emptyState(), messages: msgs as ChatMessage[] } };
-          });
-        }
-      });
-    }
-    return emptyState();
+  const getState = (id: string | null): LocalSessionState => {
+    if (!id) return emptyLocalState();
+    return sessionStates[id] || emptyLocalState();
   };
 
-  const updateState = useCallback((id: string, fn: (prev: SessionState) => SessionState) => {
+  // setInput: update local state immediately and sync to server
+  const setInput = (val: string | ((prev: string) => string)) => {
+    if (!activeId || !clientRef.current) return;
+    const current = getState(activeId).input;
+    const newVal = typeof val === 'function' ? val(current) : val;
+    setSessionStates(prev => ({
+      ...prev,
+      [activeId]: { ...(prev[activeId] || emptyLocalState()), input: newVal },
+    }));
+    clientRef.current.updateUIState(activeId, { input: newVal });
+  };
+
+  // Panel state setters (local-only UI state that doesn't need server sync)
+  const setOpenFile = (file: { path: string; content: string } | null) => {
+    if (!activeId) return;
     setSessionStates(prev => {
-      const current = prev[id] || emptyState();
-      const next = fn(current);
-      // Persist messages to localStorage
-      if (next.messages !== current.messages) {
-        saveMessages(id, next.messages);
-      }
-      return { ...prev, [id]: next };
+      const s = prev[activeId] || emptyLocalState();
+      return {
+        ...prev,
+        [activeId]: {
+          ...s,
+          openFile: file,
+          openTerminalId: file ? null : s.openTerminalId,
+          diffView: file ? null : s.diffView,
+          editorFullWidth: file ? s.editorFullWidth : false,
+          editorDirty: false,
+        },
+      };
+    });
+  };
+
+  const updateLocalState = useCallback((id: string, fn: (prev: LocalSessionState) => LocalSessionState) => {
+    setSessionStates(prev => {
+      const current = prev[id] || emptyLocalState();
+      return { ...prev, [id]: fn(current) };
     });
   }, []);
 
@@ -380,121 +359,214 @@ export function ChatApp() {
     let cancelled = false;
     resolveServerUrl().then(serverUrl => {
       if (cancelled) return;
-    _serverUrl = serverUrl;
-    uiLog(`Server URL resolved: ${serverUrl}`);
-    const client = new ClaudeClient(serverUrl, {
-      onMessage: (sid, msg) => {
-        // Intercept TodoWrite — update task panel, don't add to chat
-        if (msg.toolName === 'TodoWrite') {
-          const input = msg.toolInput as { todos?: { content: string; status: string; activeForm?: string }[] } | null;
-          if (input?.todos) updateState(sid, s => ({ ...s, todos: input.todos! }));
-          return;
-        }
-        updateState(sid, s => ({
-          ...s,
-          messages: [...s.messages, msg],
-          partialText: '',
-          contextTokens: msg.usage ? msg.usage.input_tokens + msg.usage.output_tokens : s.contextTokens,
-        }));
-      },
-      onPartialText: (sid, text) => {
-        updateState(sid, s => ({ ...s, partialText: text }));
-      },
-      onPermissionRequest: (sid, req) => {
-        updateState(sid, s => ({ ...s, permRequest: req }));
-        // Notify when window is not focused
-        if (!document.hasFocus()) {
-          const body = req.toolName + (req.input?.file_path ? `: ${String(req.input.file_path).split('/').pop()}` : req.input?.command ? `: ${String(req.input.command).slice(0, 60)}` : '');
-          isPermissionGranted().then(granted => {
-            if (granted) sendNotification({ title: 'Claude needs approval', body });
-          }).catch(() => {});
-        }
-      },
-      onPermissionCancelled: (sid, requestId) => {
-        updateState(sid, s =>
-          s.permRequest?.requestId === requestId ? { ...s, permRequest: null } : s
-        );
-      },
-      onStatusChange: (sid, status) => {
-        setStatuses(prev => ({ ...prev, [sid]: status }));
-      },
-      onSessionInit: (sid, info) => {
-        updateState(sid, s => ({ ...s, initInfo: info }));
-        setSessions(prev => prev.map(s => s.id === sid ? {
-          ...s,
-          model: info.model || s.model,
-          // Don't override server-persisted permission_mode with CLI default
-        } : s));
-      },
-      onSessionStatusUpdate: (sid, updates) => {
-        setSessions(prev => prev.map(s => {
-          if (s.id !== sid) return s;
-          const patched = { ...s };
-          if (updates.permissionMode !== undefined) patched.permission_mode = updates.permissionMode;
-          return patched;
-        }));
-      },
-      onAutoApproved: (sid, toolName, filePath, command) => {
-        const label = filePath ? `${toolName}: ${filePath.split('/').pop()}` : command ? `${toolName}: ${command.slice(0, 40)}` : toolName;
-        updateState(sid, s => ({
-          ...s,
-          messages: [...s.messages, {
-            id: crypto.randomUUID(),
-            role: 'system' as const,
-            content: `Auto-approved ${label}`,
-            timestamp: Date.now(),
-            toolName,
-          }],
-        }));
-      },
-      onTurnComplete: (sid) => {
-        updateState(sid, s => ({ ...s, isStreaming: false, partialText: '' }));
-        setTurnCompleteIds(prev => new Set(prev).add(sid));
-        setTimeout(() => setTurnCompleteIds(prev => { const next = new Set(prev); next.delete(sid); return next; }), 3000);
-      },
-      onSessionNameUpdate: (sid, name) => {
-        setSessions(prev => prev.map(s => s.id === sid && s.name.startsWith('Session ') ? { ...s, name } : s));
-      },
+
+      const c = new ClaudeClient(serverUrl, {
+        onSessions: (list) => {
+          setSessions(list);
+          // Subscribe to open sessions that aren't already subscribed
+          let closed: Set<string>;
+          try { closed = new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
+          catch { closed = new Set(); }
+
+          const toSubscribe: string[] = [];
+          for (const s of list) {
+            if (closed.has(s.id)) continue;
+            if (subscribedRef.current.has(s.id)) continue;
+            toSubscribe.push(s.id);
+            c.subscribe(s.id);
+            subscribedRef.current.add(s.id);
+          }
+          if (toSubscribe.length) {
+            setStatuses(prev => {
+              const next = { ...prev };
+              for (const id of toSubscribe) next[id] = 'connecting';
+              return next;
+            });
+          }
+
+          // Select first open session
+          const openList = list.filter(s => !closed.has(s.id));
+          setActiveId(prev => {
+            if (prev) return prev;
+            // Restore session from URL hash
+            const hashId = window.location.hash.slice(1);
+            if (hashId && openList.some(s => s.id === hashId)) return hashId;
+            const running = openList.find(s => s.status !== 'stopped');
+            return running?.id || openList[0]?.id || null;
+          });
+        },
+
+        onSessionState: (sid, state) => {
+          setSessionStates(prev => ({
+            ...prev,
+            [sid]: {
+              ...emptyLocalState(),
+              ...state,
+              // Preserve local-only fields
+              editorDirty: prev[sid]?.editorDirty ?? false,
+              contextTokens: prev[sid]?.contextTokens ?? 0,
+              // Merge review comments (local-only for now)
+              reviewComments: prev[sid]?.reviewComments ?? {},
+            },
+          }));
+        },
+
+        onMessage: (sid, msg) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            // Skip user messages relayed from server — already added locally
+            if (msg.role === 'user') return prev;
+            const contextTokens = msg.usage
+              ? msg.usage.input_tokens + msg.usage.output_tokens
+              : s.contextTokens;
+            return {
+              ...prev,
+              [sid]: {
+                ...s,
+                messages: [...s.messages, msg],
+                partialText: '',
+                contextTokens,
+              },
+            };
+          });
+        },
+
+        onPartialText: (sid, text) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return { ...prev, [sid]: { ...s, partialText: text } };
+          });
+        },
+
+        onPermissionRequest: (sid, req) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return { ...prev, [sid]: { ...s, permRequest: req } };
+          });
+          // Notify when window is not focused
+          if (!document.hasFocus()) {
+            const body = req.toolName + (req.input?.file_path ? `: ${String(req.input.file_path).split('/').pop()}` : req.input?.command ? `: ${String(req.input.command).slice(0, 60)}` : '');
+            isPermissionGranted().then(granted => {
+              if (granted) sendNotification({ title: 'Claude needs approval', body });
+            }).catch(() => {});
+          }
+        },
+
+        onPermissionCancelled: (sid, requestId) => {
+          setSessionStates(prev => {
+            const s = prev[sid];
+            if (!s || s.permRequest?.requestId !== requestId) return prev;
+            return { ...prev, [sid]: { ...s, permRequest: null } };
+          });
+        },
+
+        onStatus: (sid, status) => {
+          setStatuses(prev => ({ ...prev, [sid]: status as ConnectionStatus }));
+          if (status === 'turn_complete') {
+            setSessionStates(prev => {
+              const s = prev[sid] || emptyLocalState();
+              return { ...prev, [sid]: { ...s, isStreaming: false, partialText: '' } };
+            });
+            setTurnCompleteIds(prev => new Set(prev).add(sid));
+            setTimeout(() => setTurnCompleteIds(prev => { const next = new Set(prev); next.delete(sid); return next; }), 3000);
+          } else if (status === 'streaming') {
+            setSessionStates(prev => {
+              const s = prev[sid] || emptyLocalState();
+              return { ...prev, [sid]: { ...s, isStreaming: true } };
+            });
+          }
+        },
+
+        onTerminalData: (sid, procId, text) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            const hasScreenClear = text.includes('\x1b[2J') || text.includes('\x1b[3J');
+            return {
+              ...prev,
+              [sid]: {
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === procId
+                    ? { ...m, content: hasScreenClear ? text : m.content + text }
+                    : m
+                ),
+              },
+            };
+          });
+        },
+
+        onTerminalExit: (sid, procId, code) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return {
+              ...prev,
+              [sid]: {
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === procId ? { ...m, exitCode: code } : m
+                ),
+              },
+            };
+          });
+          refreshGitModified();
+        },
+
+        onTodos: (sid, todos) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return { ...prev, [sid]: { ...s, todos } };
+          });
+        },
+
+        onAutoApproved: (sid, toolName, filePath, command) => {
+          const label = filePath ? `${toolName}: ${filePath.split('/').pop()}` : command ? `${toolName}: ${command.slice(0, 40)}` : toolName;
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return {
+              ...prev,
+              [sid]: {
+                ...s,
+                messages: [...s.messages, {
+                  id: crypto.randomUUID(),
+                  role: 'system' as const,
+                  content: `Auto-approved ${label}`,
+                  timestamp: Date.now(),
+                  toolName,
+                }],
+              },
+            };
+          });
+        },
+
+        onSessionName: (sid, name) => {
+          setSessions(prev => prev.map(s => s.id === sid && s.name.startsWith('Session ') ? { ...s, name } : s));
+        },
+
+        onInitInfo: (sid, info) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return { ...prev, [sid]: { ...s, initInfo: info } };
+          });
+          setSessions(prev => prev.map(s => s.id === sid ? {
+            ...s,
+            model: info.model || s.model,
+          } : s));
+        },
+
+        onConnectionChange: (status) => {
+          if (status === 'connected') {
+            subscribedRef.current.clear();
+            // Server pushes session list on connect — no need to request
+          }
+        },
+      });
+
+      clientRef.current = c;
+      setClient(c);
     });
-    clientRef.current = client;
-    setClient(client);
-
-    // Load existing sessions
-    client.listSessions().then(list => {
-      setSessions(list);
-      // Read closed tabs from localStorage
-      let closed: Set<string>;
-      try { closed = new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
-      catch { closed = new Set(); }
-
-      // Connect to all open sessions (resume stopped ones)
-      const initialStatuses: Record<string, ConnectionStatus> = {};
-      for (const s of list) {
-        if (closed.has(s.id)) continue;
-        initialStatuses[s.id] = 'connecting';
-        if (s.status === 'stopped') {
-          client.resumeSession(s.id).then(updated => {
-            setSessions(prev => prev.map(p => p.id === s.id ? updated : p));
-            client.connectSession(updated);
-          }).catch(() => {});
-        } else {
-          client.connectSession(s);
-        }
-      }
-      setStatuses(initialStatuses);
-      // Select first open running session
-      const openList = list.filter(s => !closed.has(s.id));
-      const running = openList.find(s => s.status !== 'stopped');
-      if (running) {
-        setActiveId(running.id);
-      } else if (openList.length > 0) {
-        setActiveId(openList[0]!.id);
-      }
-    }).catch(() => {});
-    }); // end resolveServerUrl().then()
 
     return () => { cancelled = true; clientRef.current?.destroy(); };
-  }, [updateState]);
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -502,14 +574,24 @@ export function ChatApp() {
     }
   }, []);
 
+  const handleOpenTerminal = useCallback((id: string) => {
+    const sid = activeId;
+    if (sid) updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: id, diffView: null, editorDirty: false }));
+  }, [activeId, updateLocalState]);
+
+  // Sync active session to URL hash
+  useEffect(() => {
+    if (activeId) window.history.replaceState(null, '', `#${activeId}`);
+  }, [activeId]);
+
   const active = getState(activeId);
   const { openFile, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
-  const lastMsgContent = active.messages[active.messages.length - 1]?.content;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
   const hasRightPanel = !!openFile || !!openTerminal || !!diffView;
+
   useEffect(() => {
     scrollToBottom();
-  }, [active.messages, active.partialText, lastMsgContent, scrollToBottom]);
+  }, [active.messages.length, active.partialText, scrollToBottom]);
 
   // Scroll when permission request appears (with delay for Monaco to mount)
   useEffect(() => {
@@ -534,7 +616,7 @@ export function ChatApp() {
         const curFile = active.openFile;
         client.readFile(curFile.path).then(file => {
           if (file && file.content !== curFile.content) {
-            updateState(sid, s => ({ ...s, openFile: file }));
+            updateLocalState(sid, s => ({ ...s, openFile: file }));
           }
         }).catch(() => {});
       }
@@ -548,38 +630,51 @@ export function ChatApp() {
   };
 
   const handleCreateSession = async (cwd: string) => {
-    const client = clientRef.current;
-    if (!client) return;
+    const c = clientRef.current;
+    if (!c) return;
     try {
-      const session = await client.createSession(cwd);
+      const session = await c.createSession(cwd);
       setSessions(prev => [session, ...prev]);
       setActiveId(session.id);
-      client.connectSession(session);
+      c.subscribe(session.id);
+      subscribedRef.current.add(session.id);
     } catch {}
   };
 
   const handleSelectSession = async (id: string) => {
+    const prevId = activeId;
     setActiveId(id);
+    setVisibleMessageCount(200);
     historyIdxRef.current = -1;
     historyDraftRef.current = '';
-    const session = sessions.find(s => s.id === id);
-    const status = statuses[id];
-    console.log(`[select] id=${id.slice(0,8)} session.status=${session?.status} connStatus=${status}`);
-    if (!session || !clientRef.current) return;
 
+    const session = sessions.find(s => s.id === id);
+    const c = clientRef.current;
+    if (!session || !c) return;
+
+    // Unsubscribe from old session if switching
+    if (prevId && prevId !== id) {
+      // Keep subscribed so we still receive updates; just switch focus
+    }
+
+    const status = statuses[id];
     if (session.status === 'stopped' && (!status || status === 'disconnected')) {
-      console.log(`[select] Auto-resuming stopped session ${id.slice(0,8)}`);
       try {
-        const updated = await clientRef.current.resumeSession(id);
-        console.log(`[select] Resume response:`, updated);
+        const updated = await c.resumeSession(id);
         setSessions(prev => prev.map(s => s.id === id ? updated : s));
-        clientRef.current.connectSession(updated);
+        c.subscribe(updated.id);
+        subscribedRef.current.add(updated.id);
+        c.getSessionState(id);
       } catch (e) {
         console.error(`[select] Resume failed:`, e);
       }
     } else if (!status || status === 'disconnected') {
-      console.log(`[select] Connecting browser WS for ${id.slice(0,8)}`);
-      clientRef.current.connectSession(session);
+      c.subscribe(session.id);
+      subscribedRef.current.add(session.id);
+      c.getSessionState(id);
+    } else {
+      // Already subscribed — just request current state
+      c.getSessionState(id);
     }
   };
 
@@ -612,7 +707,8 @@ export function ChatApp() {
       await clientRef.current.saveCommands(id, runningCmds);
     }
 
-    clientRef.current?.disconnectSession(id);
+    clientRef.current?.unsubscribe(id);
+    subscribedRef.current.delete(id);
     updateClosedIds(prev => new Set(prev).add(id));
     if (activeId === id) {
       const openSessions = sessions.filter(s => s.id !== id && !closedSessionIds.has(s.id));
@@ -633,7 +729,9 @@ export function ChatApp() {
     // Reconnect
     const session = sessions.find(s => s.id === id);
     if (session && clientRef.current) {
-      clientRef.current.connectSession(session);
+      clientRef.current.subscribe(session.id);
+      subscribedRef.current.add(session.id);
+      clientRef.current.getSessionState(id);
       // Check for saved commands
       if (session.saved_commands && session.saved_commands.length > 0) {
         setRestoreSessionId(id);
@@ -650,10 +748,10 @@ export function ChatApp() {
     if (!id || !clientRef.current) return;
     const session = sessions.find(s => s.id === id);
     const cwd = getState(id).initInfo?.cwd || session?.cwd || '/';
-    // Re-run each command
+    // Re-run each command — server sends back terminal_data/terminal_exit
     for (const command of cmds) {
       const msgId = crypto.randomUUID();
-      updateState(id, s => ({
+      updateLocalState(id, s => ({
         ...s,
         messages: [...s.messages, {
           id: msgId,
@@ -664,21 +762,7 @@ export function ChatApp() {
           timestamp: Date.now(),
         }],
       }));
-      clientRef.current!.execCommand(command, cwd, {
-        onData: (chunk) => {
-          const hasScreenClear = chunk.includes('\x1b[2J') || chunk.includes('\x1b[3J');
-          updateState(id, s => ({
-            ...s,
-            messages: s.messages.map(m => m.id === msgId ? { ...m, content: hasScreenClear ? chunk : m.content + chunk } : m),
-          }));
-        },
-        onDone: (exitCode) => {
-          updateState(id, s => ({
-            ...s,
-            messages: s.messages.map(m => m.id === msgId ? { ...m, exitCode } : m),
-          }));
-        },
-      }, id);
+      clientRef.current!.execCommand(id, command, cwd);
     }
     // Clear saved commands on server
     clientRef.current.saveCommands(id, []);
@@ -694,21 +778,22 @@ export function ChatApp() {
   };
 
   const handleResumeSession = async (id: string) => {
-    const client = clientRef.current;
-    if (!client) return;
+    const c = clientRef.current;
+    if (!c) return;
     try {
-      const updated = await client.resumeSession(id);
+      const updated = await c.resumeSession(id);
       setSessions(prev => prev.map(s => s.id === id ? updated : s));
-      client.connectSession(updated);
+      c.subscribe(updated.id);
+      subscribedRef.current.add(updated.id);
       setActiveId(id);
     } catch {}
   };
 
   const handleRenameSession = async (id: string, name: string) => {
-    const client = clientRef.current;
-    if (!client) return;
+    const c = clientRef.current;
+    if (!c) return;
     try {
-      const updated = await client.renameSession(id, name);
+      const updated = await c.renameSession(id, name);
       setSessions(prev => prev.map(s => s.id === id ? updated : s));
     } catch {}
   };
@@ -720,10 +805,11 @@ export function ChatApp() {
 
     // Push to per-session input history
     if (text) {
-      updateState(activeId, s => {
+      setSessionStates(prev => {
+        const s = prev[activeId] || emptyLocalState();
         const hist = [...s.inputHistory, text];
         if (hist.length > 100) hist.shift();
-        return { ...s, inputHistory: hist };
+        return { ...prev, [activeId]: { ...s, inputHistory: hist } };
       });
       historyIdxRef.current = -1;
       historyDraftRef.current = '';
@@ -736,7 +822,7 @@ export function ChatApp() {
       const msgId = crypto.randomUUID();
       const cwd = active.initInfo?.cwd || activeSession?.cwd || '/';
 
-      updateState(activeId, s => ({
+      updateLocalState(activeId, s => ({
         ...s,
         messages: [...s.messages, {
           id: msgId,
@@ -749,40 +835,24 @@ export function ChatApp() {
       }));
       setInput('');
 
-      const sid = activeId;
-      clientRef.current.execCommand(command, cwd, {
-        onData: (chunk) => {
-          updateState(sid, s => ({
-            ...s,
-            messages: s.messages.map(m =>
-              m.id === msgId ? { ...m, content: m.content + chunk } : m
-            ),
-          }));
-        },
-        onDone: (exitCode) => {
-          updateState(sid, s => ({
-            ...s,
-            messages: s.messages.map(m =>
-              m.id === msgId ? { ...m, exitCode } : m
-            ),
-          }));
-          refreshGitModified();
-        },
-      }, sid);
+      // Server sends terminal_data/terminal_exit keyed by procId=msgId
+      clientRef.current.execCommand(activeId, command, cwd);
       return;
     }
 
     const images = pastedImages.length > 0 ? pastedImages.map(({ media_type, data }) => ({ media_type, data })) : undefined;
 
-    updateState(activeId, s => ({
+    // Add user message immediately so it appears before thinking indicator
+    const userMsg = {
+      id: crypto.randomUUID(),
+      role: 'user' as const,
+      content: text || '',
+      timestamp: Date.now(),
+      images: images?.map(img => ({ media_type: img.media_type, data: img.data })),
+    };
+    updateLocalState(activeId, s => ({
       ...s,
-      messages: [...s.messages, {
-        id: crypto.randomUUID(),
-        role: 'user' as const,
-        content: text,
-        images,
-        timestamp: Date.now(),
-      }],
+      messages: [...s.messages, userMsg],
       isStreaming: true,
       partialText: '',
     }));
@@ -794,13 +864,13 @@ export function ChatApp() {
   const handlePermission = (requestId: string, allow: boolean, updatedInput?: Record<string, unknown>) => {
     if (!activeId || !clientRef.current) return;
     clientRef.current.respondToPermission(activeId, requestId, allow, updatedInput);
-    updateState(activeId, s => ({ ...s, permRequest: null }));
+    updateLocalState(activeId, s => ({ ...s, permRequest: null }));
   };
 
   const handleInterrupt = () => {
     if (!activeId || !clientRef.current) return;
     clientRef.current.interrupt(activeId);
-    updateState(activeId, s => ({ ...s, isStreaming: false }));
+    updateLocalState(activeId, s => ({ ...s, isStreaming: false }));
   };
 
   const handleFileOpen = async (path: string) => {
@@ -817,7 +887,7 @@ export function ChatApp() {
       client.readFileOriginal(path),
     ]);
     if (file) {
-      updateState(sid, s => ({ ...s, openFile: null, openTerminalId: null, diffView: { path, original, modified: file.content } }));
+      updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: null, diffView: { path, original, modified: file.content } }));
     }
   };
 
@@ -825,7 +895,7 @@ export function ChatApp() {
     if (!activeId) return;
     const files = [...new Set([...gitModified.staged, ...gitModified.unstaged])].sort();
     if (files.length === 0) return;
-    updateState(activeId, s => ({ ...s, reviewMode: true, reviewFiles: files, reviewIndex: 0, editorFullWidth: true, openFile: null, openTerminalId: null }));
+    updateLocalState(activeId, s => ({ ...s, reviewMode: true, reviewFiles: files, reviewIndex: 0, editorFullWidth: true, openFile: null, openTerminalId: null }));
     loadReviewFile(files[0]!);
   };
 
@@ -837,7 +907,7 @@ export function ChatApp() {
       client.readFileOriginal(path),
     ]);
     if (file) {
-      updateState(sid, s => ({ ...s, diffView: { path, original, modified: file.content } }));
+      updateLocalState(sid, s => ({ ...s, diffView: { path, original, modified: file.content } }));
     }
   };
 
@@ -846,7 +916,7 @@ export function ChatApp() {
     const st = getState(activeId);
     const newIdx = st.reviewIndex + delta;
     if (newIdx < 0 || newIdx >= st.reviewFiles.length) return;
-    updateState(activeId, s => ({ ...s, reviewIndex: newIdx }));
+    updateLocalState(activeId, s => ({ ...s, reviewIndex: newIdx }));
     loadReviewFile(st.reviewFiles[newIdx]!);
   };
 
@@ -855,14 +925,14 @@ export function ChatApp() {
     const st = getState(activeId);
     const allComments = Object.entries(st.reviewComments).flatMap(([path, cmts]) => {
       const rel = explorerRoot && path.startsWith(explorerRoot) ? path.slice(explorerRoot.length + 1) : path;
-      return cmts.map(c => {
+      return (cmts as ReviewComment[]).map(c => {
         const lineRef = c.startLine === c.endLine ? `L${c.startLine}` : `L${c.startLine}-${c.endLine}`;
         return `@${rel}:${lineRef} — ${c.text}`;
       });
     });
     if (allComments.length === 0) return;
     const reviewText = `Apply these changes to the code:\n${allComments.join('\n')}`;
-    updateState(activeId, s => ({
+    updateLocalState(activeId, s => ({
       ...s,
       messages: [...s.messages, { id: crypto.randomUUID(), role: 'user' as const, content: reviewText, timestamp: Date.now() }],
       isStreaming: true, partialText: '',
@@ -873,7 +943,7 @@ export function ChatApp() {
 
   const handleExitReview = () => {
     if (!activeId) return;
-    updateState(activeId, s => ({ ...s, reviewMode: false, reviewFiles: [], diffView: null, editorFullWidth: false }));
+    updateLocalState(activeId, s => ({ ...s, reviewMode: false, reviewFiles: [], diffView: null, editorFullWidth: false }));
   };
 
   const explorerRootRef = useRef<string | null>(null);
@@ -891,8 +961,6 @@ export function ChatApp() {
     setGitModified({ staged, unstaged });
   }, [client]);
 
-  // handleSaveFile is now handleSaveFileWrapped (defined above)
-
   const untitledCountRef = useRef(0);
   const [saveAsPrompt, setSaveAsPrompt] = useState<{ content: string } | null>(null);
   const [saveAsPath, setSaveAsPath] = useState('');
@@ -902,7 +970,7 @@ export function ChatApp() {
     if (!activeId) return;
     untitledCountRef.current++;
     const name = `untitled-${untitledCountRef.current}`;
-    updateState(activeId, s => ({
+    updateLocalState(activeId, s => ({
       ...s,
       openFile: { path: name, content: '' },
       openTerminalId: null,
@@ -923,7 +991,7 @@ export function ChatApp() {
     const path = saveAsPath.trim();
     const ok = await clientRef.current.writeFile(path, saveAsPrompt.content);
     if (ok) {
-      updateState(activeId, s => ({ ...s, openFile: { path, content: saveAsPrompt.content }, editorDirty: false }));
+      updateLocalState(activeId, s => ({ ...s, openFile: { path, content: saveAsPrompt.content }, editorDirty: false }));
       refreshGitModified();
     }
     setSaveAsPrompt(null);
@@ -948,7 +1016,7 @@ export function ChatApp() {
     try {
       const ok = await clientRef.current.writeFile(filePath, content);
       if (ok) {
-        updateState(activeId, s => ({ ...s, openFile: { path: filePath, content }, editorDirty: false }));
+        updateLocalState(activeId, s => ({ ...s, openFile: { path: filePath, content }, editorDirty: false }));
         refreshGitModified();
       }
     } catch {}
@@ -963,7 +1031,7 @@ export function ChatApp() {
         setUnsavedClosePrompt(true);
         return;
       }
-      updateState(activeId, st => ({ ...st, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+      updateLocalState(activeId, st => ({ ...st, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
     } else {
       handleCloseTab(activeId);
     }
@@ -1025,13 +1093,17 @@ export function ChatApp() {
   const activeSession = sessions.find(s => s.id === activeId);
 
   // Ordered sessions for tab bar
-  const orderedOpenSessions = sessions
+  const orderedOpenSessions = useMemo(() => sessions
     .filter(s => !closedSessionIds.has(s.id))
     .sort((a, b) => {
       const ai = tabOrder.indexOf(a.id);
       const bi = tabOrder.indexOf(b.id);
       return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
-    });
+    }), [sessions, closedSessionIds, tabOrder]);
+
+  const closedSessions = useMemo(() => sessions.filter(s => closedSessionIds.has(s.id)), [sessions, closedSessionIds]);
+  const sessionStreaming = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, s.isStreaming])), [sessionStates]);
+  const sessionHasPermission = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.permRequest])), [sessionStates]);
 
   const handleReorder = (fromId: string, toId: string) => {
     setTabOrder(prev => {
@@ -1049,6 +1121,7 @@ export function ChatApp() {
       return order;
     });
   };
+
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
   explorerRootRef.current = explorerRoot;
 
@@ -1065,38 +1138,31 @@ export function ChatApp() {
   const branchInputRef = useRef<HTMLInputElement>(null);
 
   const openBranchMenu = () => {
-    try {
-      uiLog('openBranchMenu called');
-      const c = clientRef.current;
-      const root = explorerRootRef.current;
-      uiLog(`client: ${!!c}, root: ${root}`);
-      const rect = branchBtnRef.current?.getBoundingClientRect() || new DOMRect(10, window.innerHeight - 30, 100, 20);
-      uiLog(`rect: ${JSON.stringify({ top: rect.top, left: rect.left })}`);
-      setBranchMenu({ local: [], remote: [], current: gitBranch || '', rect });
-      setBranchFilter('');
-      if (c && root) {
-        c.listBranches(root).then(data => {
-          uiLog(`branches loaded: local=${data.local?.length}, remote=${data.remote?.length}`);
-          setBranchMenu(prev => prev ? { ...prev, local: data.local || [], remote: data.remote || [], current: data.current || '' } : null);
-          setTimeout(() => branchInputRef.current?.focus(), 50);
-        }).catch(e => { uiLog(`listBranches error: ${e}`); });
-      }
-    } catch (e) {
-      uiLog(`openBranchMenu error: ${e}`);
+    const c = clientRef.current;
+    const root = explorerRootRef.current;
+    const rect = branchBtnRef.current?.getBoundingClientRect() || new DOMRect(10, window.innerHeight - 30, 100, 20);
+    setBranchMenu({ local: [], remote: [], current: gitBranch || '', rect });
+    setBranchFilter('');
+    if (c && root) {
+      c.listBranches(root).then(data => {
+        setBranchMenu(prev => prev ? { ...prev, local: data.local || [], remote: data.remote || [], current: data.current || '' } : null);
+        setTimeout(() => branchInputRef.current?.focus(), 50);
+      }).catch(() => {});
     }
   };
 
   const doCheckout = async (branch: string) => {
-    const client = clientRef.current;
-    const explorerRoot = explorerRootRef.current;
-    if (!client || !explorerRoot) return;
+    const c = clientRef.current;
+    const root = explorerRootRef.current;
+    if (!c || !root) return;
     setBranchMenu(null);
-    const result = await client.checkoutBranch(explorerRoot, branch);
+    const result = await c.checkoutBranch(root, branch);
     if (result.ok && result.branch) {
       setGitBranch(result.branch);
       refreshGitModified();
     }
   };
+
   useEffect(() => {
     if (!client || !explorerRoot) { setGitBranch(null); return; }
     client.getGitInfo(explorerRoot).then(info => {
@@ -1115,22 +1181,26 @@ export function ChatApp() {
     { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', keys: ['command'], key: 'B', section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
     { id: 'close-editor', label: 'Close Editor / Tab', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => closePanelRef.current() },
     { id: 'new-file', label: 'New File', keys: ['command'], key: 'N', section: 'Editor', onRun: handleNewFile },
-    { id: 'save-file', label: 'Save File', keys: ['command'], key: 'S', section: 'Editor', onRun: handleSaveFileWrapped},
+    { id: 'save-file', label: 'Save File', keys: ['command'], key: 'S', section: 'Editor', onRun: handleSaveFileWrapped },
     { id: 'clear-chat', label: 'Clear Chat', section: 'Session', onRun: async () => {
       if (!activeId || !clientRef.current) return;
       const session = sessions.find(s => s.id === activeId);
       const cwd = active.initInfo?.cwd || session?.cwd || '/';
-      // Close old session
-      clientRef.current.disconnectSession(activeId);
-      updateState(activeId, s => emptyState());
-      deleteMessages(activeId);
+      // Unsubscribe from old session
+      clientRef.current.unsubscribe(activeId);
+      subscribedRef.current.delete(activeId);
+      setSessionStates(prev => {
+        const next = { ...prev };
+        delete next[activeId];
+        return next;
+      });
       // Create a fresh session with the same cwd
       try {
         const fresh = await clientRef.current.createSession(cwd);
-        // Remove old, add new
         setSessions(prev => prev.filter(s => s.id !== activeId).concat(fresh));
         setActiveId(fresh.id);
-        clientRef.current.connectSession(fresh);
+        clientRef.current.subscribe(fresh.id);
+        subscribedRef.current.add(fresh.id);
       } catch {}
     } },
     { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
@@ -1210,12 +1280,12 @@ export function ChatApp() {
         {/* Tab bar */}
         <TabBar
           sessions={orderedOpenSessions}
-          closedSessions={sessions.filter(s => closedSessionIds.has(s.id))}
+          closedSessions={closedSessions}
           activeSessionId={activeId}
           sessionStatuses={statuses}
-          sessionStreaming={Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, s.isStreaming]))}
+          sessionStreaming={sessionStreaming}
           sessionTurnComplete={turnCompleteIds}
-          sessionHasPermission={Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.permRequest]))}
+          sessionHasPermission={sessionHasPermission}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
           onClose={handleCloseTab}
@@ -1266,7 +1336,7 @@ export function ChatApp() {
             activeSessionId={activeId}
             onOpenTerminal={(command) => {
               const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
-              if (msg) { if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: msg.id, diffView: null, editorDirty: false })); }
+              if (msg) { if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, openTerminalId: msg.id, diffView: null, editorDirty: false })); }
             }}
             onStartReview={handleStartReview}
             onRefreshGit={refreshGitModified}
@@ -1363,8 +1433,16 @@ export function ChatApp() {
                         </p>
                       </div>
                     )}
-                    {active.messages.map(msg => (
-                      <MessageBubble key={msg.id} message={msg} onOpenTerminal={(id) => { if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: id, diffView: null, editorDirty: false })); }} />
+                    {active.messages.length > visibleMessageCount && (
+                      <button
+                        className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                        onClick={() => setVisibleMessageCount(prev => prev + 200)}
+                      >
+                        Show {Math.min(200, active.messages.length - visibleMessageCount)} older messages ({active.messages.length - visibleMessageCount} hidden)
+                      </button>
+                    )}
+                    {active.messages.slice(-visibleMessageCount).map(msg => (
+                      <MessageBubble key={msg.id} message={msg} onOpenTerminal={handleOpenTerminal} />
                     ))}
                     {active.isStreaming && !active.partialText && !active.permRequest && (
                       <div className="py-2">
@@ -1828,7 +1906,7 @@ export function ChatApp() {
                 {/* Right panel: editor or terminal */}
                 {openFile && (
                   <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className={`text-[12px] font-mono truncate ${gitModified.staged.has(openFile.path) ? 'text-green-400' : gitModified.unstaged.has(openFile.path) ? 'text-amber-400' : 'text-zinc-400'}`}>
                           {openFile.path.split('/').pop()}
@@ -1861,7 +1939,7 @@ export function ChatApp() {
                         theme="vs-dark"
                         onMount={handleEditorMount}
                         onChange={(value) => {
-                          if (activeId) updateState(activeId, s => ({ ...s, editorDirty: value !== s.openFile?.content }));
+                          if (activeId) updateLocalState(activeId, s => ({ ...s, editorDirty: value !== s.openFile?.content }));
                         }}
                         options={{
                           minimap: { enabled: false },
@@ -1877,7 +1955,7 @@ export function ChatApp() {
                 )}
                 {!openFile && openTerminal && (
                   <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className="text-[10px] text-zinc-500">$</span>
                         <span className="text-[12px] font-mono text-zinc-300 truncate">{openTerminal.terminalCommand}</span>
@@ -1887,7 +1965,7 @@ export function ChatApp() {
                       </div>
                       <button
                         className="text-zinc-500 hover:text-zinc-200 text-sm px-1 shrink-0"
-                        onClick={() => activeId && updateState(activeId, s => ({ ...s, openTerminalId: null }))}
+                        onClick={() => activeId && updateLocalState(activeId, s => ({ ...s, openTerminalId: null }))}
                       >
                         &times;
                       </button>
@@ -1923,7 +2001,7 @@ export function ChatApp() {
                       </div>
                     )}
                     {/* File header */}
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => !reviewMode && activeId && updateState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
+                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => !reviewMode && activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className="text-[10px] text-amber-400 shrink-0">M</span>
                         <span className="text-[12px] font-mono text-amber-400 truncate">{diffView.path.split('/').pop()}</span>
@@ -1942,7 +2020,7 @@ export function ChatApp() {
                             </button>
                             <button
                               className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
-                              onClick={() => { activeId && updateState(activeId, s => ({ ...s, diffView: null, editorFullWidth: false })); }}
+                              onClick={() => { activeId && updateLocalState(activeId, s => ({ ...s, diffView: null, editorFullWidth: false })); }}
                             >
                               &times;
                             </button>
@@ -1955,16 +2033,16 @@ export function ChatApp() {
                         original={diffView.original}
                         modified={diffView.modified}
                         filePath={diffView.path}
-                        comments={reviewComments[diffView.path] || []}
+                        comments={reviewComments[diffView.path] as ReviewComment[] || []}
                         onAddComment={(comment) => {
                           if (!activeId || !diffView) return;
                           const p = diffView.path;
-                          updateState(activeId, s => ({ ...s, reviewComments: { ...s.reviewComments, [p]: [...(s.reviewComments[p] || []), comment] } }));
+                          updateLocalState(activeId, s => ({ ...s, reviewComments: { ...s.reviewComments, [p]: [...((s.reviewComments[p] as ReviewComment[]) || []), comment] } }));
                         }}
                         onDeleteComment={(id) => {
                           if (!activeId || !diffView) return;
                           const p = diffView.path;
-                          updateState(activeId, s => ({ ...s, reviewComments: { ...s.reviewComments, [p]: (s.reviewComments[p] || []).filter(c => c.id !== id) } }));
+                          updateLocalState(activeId, s => ({ ...s, reviewComments: { ...s.reviewComments, [p]: ((s.reviewComments[p] as ReviewComment[]) || []).filter(c => c.id !== id) } }));
                         }}
                       />
                       {reviewMode && reviewFiles.length > 1 && (
@@ -2047,7 +2125,7 @@ export function ChatApp() {
         </div>
 
         {/* Branch picker */}
-        {branchMenu && (() => { try {
+        {branchMenu && (() => {
           const q = branchFilter.toLowerCase();
           const filteredLocal = branchMenu.local.filter(b => !q || b.toLowerCase().includes(q));
           const filteredRemote = branchMenu.remote.filter(b => !q || b.toLowerCase().includes(q));
@@ -2095,7 +2173,7 @@ export function ChatApp() {
               </div>
             </>
           );
-        } catch(e) { uiLog(`branchMenu render error: ${e}`); return null; } })()}
+        })()}
 
         <NewSessionModal
           isOpen={showNewSession}
@@ -2122,13 +2200,13 @@ export function ChatApp() {
               <div className="flex justify-end gap-2">
                 <Button variant="flat" onPress={() => {
                   setUnsavedClosePrompt(false);
-                  if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+                  if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
                 }}>Don't Save</Button>
                 <Button variant="flat" onPress={() => setUnsavedClosePrompt(false)}>Cancel</Button>
                 <Button onPress={async () => {
                   setUnsavedClosePrompt(false);
                   await handleSaveFileWrapped();
-                  if (activeId) updateState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+                  if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
                 }}>Save</Button>
               </div>
             </div>
