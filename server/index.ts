@@ -219,8 +219,9 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
               content: partialText,
               timestamp: Date.now(),
             };
-            addMessage(sessionId, textMsg);
-            broadcastToSession(sessionId, { type: 'message', sessionId, message: textMsg });
+            if (addMessage(sessionId, textMsg)) {
+              broadcastToSession(sessionId, { type: 'message', sessionId, message: textMsg });
+            }
             partialText = '';
           }
 
@@ -239,8 +240,9 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
               toolName: block.name as string,
               toolInput: block.input,
             };
-            addMessage(sessionId, chatMsg);
-            broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
+            if (addMessage(sessionId, chatMsg)) {
+              broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
+            }
           }
         }
       }
@@ -258,8 +260,9 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
             model: msg.message?.model,
             usage: msg.usage,
           };
-          addMessage(sessionId, finalMsg);
-          broadcastToSession(sessionId, { type: 'message', sessionId, message: finalMsg });
+          if (addMessage(sessionId, finalMsg)) {
+            broadcastToSession(sessionId, { type: 'message', sessionId, message: finalMsg });
+          }
         }
         updateSessionState(sessionId, s => ({ ...s, partialText: '', isStreaming: false }));
         broadcastToSession(sessionId, { type: 'status', sessionId, status: 'turn_complete' });
@@ -291,8 +294,9 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
         durationMs: msg.duration_ms as number | undefined,
         usage: msg.usage as { input_tokens: number; output_tokens: number } | undefined,
       };
-      addMessage(sessionId, chatMsg);
-      broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
+      if (addMessage(sessionId, chatMsg)) {
+        broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
+      }
     }
 
     // Clear any pending permission request
@@ -313,8 +317,9 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
       isToolResult: true,
       isError: msg.is_error as boolean | undefined,
     };
-    addMessage(sessionId, chatMsg);
-    broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
+    if (addMessage(sessionId, chatMsg)) {
+      broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
+    }
     return false;
   }
 
@@ -1035,8 +1040,9 @@ const server = Bun.serve({
               content: state.partialText,
               timestamp: Date.now(),
             };
-            addMessage(sessionId!, finalMsg);
-            broadcastToSession(sessionId!, { type: 'message', sessionId: sessionId!, message: finalMsg });
+            if (addMessage(sessionId!, finalMsg)) {
+              broadcastToSession(sessionId!, { type: 'message', sessionId: sessionId!, message: finalMsg });
+            }
           }
           updateSessionState(sessionId!, s => ({ ...s, isStreaming: false, partialText: '' }));
         }
