@@ -461,7 +461,9 @@ export function ChatApp() {
         },
 
         onStatus: (sid, status) => {
-          setStatuses(prev => ({ ...prev, [sid]: status as ConnectionStatus }));
+          if (status === 'connected' || status === 'disconnected' || status === 'connecting' || status === 'error') {
+            setStatuses(prev => ({ ...prev, [sid]: status as ConnectionStatus }));
+          }
           if (status === 'turn_complete') {
             setSessionStates(prev => {
               const s = prev[sid] || emptyLocalState();
