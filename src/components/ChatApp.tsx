@@ -416,6 +416,8 @@ export function ChatApp() {
             const s = prev[sid] || emptyLocalState();
             // Skip user messages relayed from server — already added locally
             if (msg.role === 'user') return prev;
+            // Deduplicate — message may already exist from session_state restore
+            if (s.messages.some(m => m.id === msg.id)) return prev;
             const contextTokens = msg.usage
               ? msg.usage.input_tokens + msg.usage.output_tokens
               : s.contextTokens;
