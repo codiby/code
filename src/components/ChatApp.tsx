@@ -1283,18 +1283,16 @@ export function ChatApp() {
       if (!activeId || !clientRef.current) return;
       const session = sessions.find(s => s.id === activeId);
       const cwd = active.initInfo?.cwd || session?.cwd || '/';
-      // Unsubscribe from old session
-      clientRef.current.unsubscribe(activeId);
-      subscribedRef.current.delete(activeId);
-      setSessionStates(prev => {
-        const next = { ...prev };
-        delete next[activeId];
-        return next;
-      });
+      const oldId = activeId;
+      // Unsubscribe and delete old session
+      clientRef.current.unsubscribe(oldId);
+      subscribedRef.current.delete(oldId);
+      setSessionStates(prev => { const next = { ...prev }; delete next[oldId]; return next; });
       // Create a fresh session with the same cwd
       try {
         const fresh = await clientRef.current.createSession(cwd);
-        setSessions(prev => prev.filter(s => s.id !== activeId).concat(fresh));
+        await clientRef.current.deleteSession(oldId);
+        setSessions(prev => prev.filter(s => s.id !== oldId).concat(fresh));
         setActiveId(fresh.id);
         clientRef.current.subscribe(fresh.id);
         subscribedRef.current.add(fresh.id);

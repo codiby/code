@@ -28,3 +28,6 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/sidecar/bun
 src-tauri/sidecar/server.log
+
+# Playwright
+.playwright-cli/
