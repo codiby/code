@@ -11,6 +11,7 @@
     "preview": "astro preview",
     "astro": "astro",
     "tauri": "tauri",
+    "tauri:dev": "tauri dev",
     "disable": "astro preferences disable devToolbar"
   },
   "dependencies": {

@@ -34,6 +34,7 @@ import {
   clearSessionState,
 } from './state';
 import type { ChatMessage, PermissionRequest } from './state';
+import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink } from './storage';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -212,6 +213,13 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
         if (block.type === 'text') {
           partialText += block.text as string;
         } else if (block.type === 'tool_use') {
+          // If no text in this message's content, fall back to session state's streaming partialText
+          if (!partialText.trim()) {
+            const state = getSessionState(sessionId);
+            if (state.partialText.trim()) {
+              partialText = state.partialText;
+            }
+          }
           // Commit any accumulated text as a message before the tool use
           if (partialText.trim()) {
             const textMsg: ChatMessage = {
@@ -225,6 +233,8 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
             }
             partialText = '';
           }
+          // Clear session streaming state since text was committed
+          updateSessionState(sessionId, s => ({ ...s, partialText: '', isStreaming: false }));
 
           // TodoWrite — update ui.todos instead of adding a chat message
           if (block.name === 'TodoWrite') {
@@ -251,6 +261,13 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
       // Check if turn is complete
       const stopReason = msg.message?.stop_reason;
       if (stopReason === 'end_turn' || stopReason === 'max_tokens') {
+        // Fall back to session state's streaming text if nothing in this message
+        if (!partialText.trim()) {
+          const state = getSessionState(sessionId);
+          if (state.partialText.trim()) {
+            partialText = state.partialText;
+          }
+        }
         // Commit any remaining partial text as a message
         if (partialText.trim()) {
           const finalMsg: ChatMessage = {
@@ -773,11 +790,10 @@ const server = Bun.serve({
       const filePath = url.searchParams.get('path');
       if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
       try {
-        const content = execSync(`git show HEAD:$(git ls-files --full-name "${filePath}")`, {
-          cwd: dirname(filePath),
-          encoding: 'utf-8',
-          timeout: 5000,
-        });
+        const cwd = dirname(filePath);
+        const relPath = execSync(`git ls-files --full-name "${filePath}"`, { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+        if (!relPath) return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
+        const content = execSync(`git show HEAD:"${relPath}"`, { cwd, encoding: 'utf-8', timeout: 5000 });
         return Response.json({ path: filePath, content }, { headers: corsHeaders });
       } catch {
         return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
@@ -867,6 +883,199 @@ const server = Bun.serve({
     if (url.pathname === '/mcp') {
       return handleMcpRequest(req);
     }
+
+    // ── Architect ──────────────────────────────────────────────────────────
+
+    if (url.pathname === '/architect/credentials' && req.method === 'GET') {
+      const creds = loadArchitectCredentials();
+      return Response.json(creds, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/architect/credentials' && req.method === 'PUT') {
+      const body = await req.json() as { sessionToken: string; gatePassword?: string };
+      saveArchitectCredentials({ sessionToken: body.sessionToken, gatePassword: body.gatePassword ?? null });
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/architect/credentials' && req.method === 'DELETE') {
+      clearArchitectCredentials();
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/architect/boards' && req.method === 'GET') {
+      const creds = loadArchitectCredentials();
+      if (!creds.sessionToken) {
+        return Response.json({ error: 'not_logged_in' }, { status: 401, headers: corsHeaders });
+      }
+      try {
+        let cookie = `__Secure-next-auth.session-token=${creds.sessionToken}`;
+        if (creds.gatePassword) cookie += `; site-gate=${creds.gatePassword}`;
+        const res = await fetch('https://architect-ou79.onrender.com/api/engineering/boards', {
+          headers: { Cookie: cookie },
+        });
+        if (!res.ok) return Response.json({ error: 'fetch_failed' }, { status: res.status, headers: corsHeaders });
+        return Response.json(await res.json(), { headers: corsHeaders });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === '/architect/my-items' && req.method === 'GET') {
+      const creds = loadArchitectCredentials();
+      if (!creds.sessionToken) {
+        return Response.json({ error: 'not_logged_in' }, { status: 401, headers: corsHeaders });
+      }
+      try {
+        let cookie = `__Secure-next-auth.session-token=${creds.sessionToken}`;
+        if (creds.gatePassword) cookie += `; site-gate=${creds.gatePassword}`;
+
+        // Fetch user, boards, then items for each board the user is a member of
+        const [meRes, boardsRes] = await Promise.all([
+          fetch('https://architect-ou79.onrender.com/api/me', { headers: { Cookie: cookie } }),
+          fetch('https://architect-ou79.onrender.com/api/engineering/boards', { headers: { Cookie: cookie } }),
+        ]);
+        if (!meRes.ok || !boardsRes.ok) {
+          return Response.json({ error: 'fetch_failed' }, { status: 502, headers: corsHeaders });
+        }
+        const me = await meRes.json() as { githubUsername: string };
+        const { boards } = await boardsRes.json() as { boards: { id: string; name: string; isMember: boolean; archived: boolean }[] };
+
+        const memberBoards = boards.filter(b => b.isMember && !b.archived);
+        const itemResults = await Promise.all(
+          memberBoards.map(b =>
+            fetch(`https://architect-ou79.onrender.com/api/engineering/items?boardId=${b.id}`, { headers: { Cookie: cookie } })
+              .then(r => r.ok ? r.json() : { items: [] })
+          )
+        );
+
+        const allItems = itemResults.flatMap((r: any) => r.items || []);
+        const myItems = allItems.filter((item: any) =>
+          item.engineerUsername === me.githubUsername ||
+          item.assignments?.some((a: any) => a.githubUsername === me.githubUsername)
+        );
+
+        return Response.json({ items: myItems, username: me.githubUsername }, { headers: corsHeaders });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    const itemDetailMatch = url.pathname.match(/^\/architect\/items\/([^/]+)$/);
+    if (itemDetailMatch && req.method === 'GET') {
+      const creds = loadArchitectCredentials();
+      if (!creds.sessionToken) {
+        return Response.json({ error: 'not_logged_in' }, { status: 401, headers: corsHeaders });
+      }
+      try {
+        let cookie = `__Secure-next-auth.session-token=${creds.sessionToken}`;
+        if (creds.gatePassword) cookie += `; site-gate=${creds.gatePassword}`;
+        const BASE = 'https://architect-ou79.onrender.com';
+        const headers = { Cookie: cookie };
+        const itemId = itemDetailMatch[1];
+
+        // Find the item across boards
+        const boardsRes = await fetch(`${BASE}/api/engineering/boards`, { headers });
+        if (!boardsRes.ok) return Response.json({ error: 'fetch_failed' }, { status: 502, headers: corsHeaders });
+        const { boards } = await boardsRes.json() as { boards: { id: string; archived: boolean }[] };
+
+        let item: any = null;
+        for (const board of boards.filter(b => !b.archived)) {
+          const itemsRes = await fetch(`${BASE}/api/engineering/items?boardId=${board.id}`, { headers });
+          if (!itemsRes.ok) continue;
+          const { items } = await itemsRes.json() as { items: any[] };
+          item = items.find((i: any) => i.id === itemId);
+          if (item) break;
+        }
+        if (!item) return Response.json({ error: 'not_found' }, { status: 404, headers: corsHeaders });
+
+        // Fetch comments, checklist, and activity in parallel
+        const [commentsData, checklistData, activityData] = await Promise.all([
+          fetch(`${BASE}/api/engineering/items/${itemId}/comments`, { headers })
+            .then(r => r.ok ? r.json() : { comments: [] }).catch(() => ({ comments: [] })),
+          fetch(`${BASE}/api/engineering/items/${itemId}/checklist`, { headers })
+            .then(r => r.ok ? r.json() : { items: [] }).catch(() => ({ items: [] })),
+          fetch(`${BASE}/api/engineering/items/${itemId}/activity`, { headers })
+            .then(r => r.ok ? r.json() : { activities: [] }).catch(() => ({ activities: [] })),
+        ]);
+
+        return Response.json({
+          item,
+          comments: commentsData.comments || [],
+          checklist: checklistData.items || [],
+          activity: activityData.activities || [],
+        }, { headers: corsHeaders });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    if (itemDetailMatch && req.method === 'PATCH') {
+      const creds = loadArchitectCredentials();
+      if (!creds.sessionToken) {
+        return Response.json({ error: 'not_logged_in' }, { status: 401, headers: corsHeaders });
+      }
+      try {
+        let cookie = `__Secure-next-auth.session-token=${creds.sessionToken}`;
+        if (creds.gatePassword) cookie += `; site-gate=${creds.gatePassword}`;
+        const body = await req.json();
+        const res = await fetch(`https://architect-ou79.onrender.com/api/engineering/items/${itemDetailMatch[1]}`, {
+          method: 'PATCH',
+          headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) return Response.json(data, { status: res.status, headers: corsHeaders });
+        return Response.json(data, { headers: corsHeaders });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === '/architect/me' && req.method === 'GET') {
+      const creds = loadArchitectCredentials();
+      if (!creds.sessionToken) {
+        return Response.json({ error: 'not_logged_in' }, { status: 401, headers: corsHeaders });
+      }
+      try {
+        let cookie = `__Secure-next-auth.session-token=${creds.sessionToken}`;
+        if (creds.gatePassword) cookie += `; site-gate=${creds.gatePassword}`;
+        const res = await fetch('https://architect-ou79.onrender.com/api/me', {
+          headers: { Cookie: cookie },
+        });
+        if (!res.ok) {
+          return Response.json({ error: 'auth_failed' }, { status: res.status, headers: corsHeaders });
+        }
+        const user = await res.json();
+        return Response.json(user, { headers: corsHeaders });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    // ── Ticket Links ──────────────────────────────────────────────────
+
+    const ticketLinkMatch = url.pathname.match(/^\/ticket-link\/([^/]+)$/);
+    if (ticketLinkMatch && req.method === 'GET') {
+      const link = getTicketLink(ticketLinkMatch[1]!);
+      return Response.json({ link }, { headers: corsHeaders });
+    }
+
+    if (ticketLinkMatch && req.method === 'PUT') {
+      const body = await req.json() as { ticketId: string; humanId: string; title: string };
+      saveTicketLink(ticketLinkMatch[1]!, body);
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (ticketLinkMatch && req.method === 'DELETE') {
+      removeTicketLink(ticketLinkMatch[1]!);
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/ticket-links' && req.method === 'GET') {
+      return Response.json(loadTicketLinks(), { headers: corsHeaders });
+    }
+
+    // ── Health ──────────────────────────────────────────────────────────
 
     if (url.pathname === '/health') {
       return Response.json({ status: 'ok', sessions: sessions.size }, { headers: corsHeaders });

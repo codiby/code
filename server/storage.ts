@@ -47,14 +47,17 @@ export function loadMessages(sessionId: string): unknown[] {
       catch { return null; }
     }).filter(Boolean);
     // Deduplicate by ID and by content+role (CLI replay generates new IDs)
+    // Skip content dedup for tool-use messages — same tool name produces identical content strings
     const seenIds = new Set<string>();
     const seenContent = new Set<string>();
     const deduped = all.filter((m: any) => {
       if (m.id && seenIds.has(m.id)) return false;
-      const contentKey = `${m.role}:${m.toolName || ''}:${m.content}`;
-      if (seenContent.has(contentKey)) return false;
+      if (!m.toolName) {
+        const contentKey = `${m.role}:${m.content}`;
+        if (seenContent.has(contentKey)) return false;
+        seenContent.add(contentKey);
+      }
       if (m.id) seenIds.add(m.id);
-      seenContent.add(contentKey);
       return true;
     });
     // Compact the file if duplicates were found
@@ -115,6 +118,66 @@ export function listSessionDirs(): string[] {
   } catch {
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Architect credentials
+// ---------------------------------------------------------------------------
+
+const ARCHITECT_FILE = join(homedir(), '.claude', 'ui-architect.json');
+
+export function loadArchitectCredentials(): { sessionToken: string | null; gatePassword: string | null } {
+  try {
+    return JSON.parse(readFileSync(ARCHITECT_FILE, 'utf-8'));
+  } catch {
+    return { sessionToken: null, gatePassword: null };
+  }
+}
+
+export function saveArchitectCredentials(creds: { sessionToken: string | null; gatePassword: string | null }) {
+  try {
+    mkdirSync(join(homedir(), '.claude'), { recursive: true });
+    writeFileSync(ARCHITECT_FILE, JSON.stringify(creds, null, 2));
+  } catch {}
+}
+
+export function clearArchitectCredentials() {
+  try {
+    writeFileSync(ARCHITECT_FILE, JSON.stringify({ sessionToken: null, gatePassword: null }));
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Ticket ↔ Session links
+// ---------------------------------------------------------------------------
+
+const TICKET_LINKS_FILE = join(homedir(), '.claude', 'ui-ticket-links.json');
+
+type TicketLink = { ticketId: string; humanId: string; title: string };
+
+export function loadTicketLinks(): Record<string, TicketLink> {
+  try {
+    return JSON.parse(readFileSync(TICKET_LINKS_FILE, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+export function saveTicketLink(sessionId: string, link: TicketLink) {
+  const links = loadTicketLinks();
+  links[sessionId] = link;
+  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  writeFileSync(TICKET_LINKS_FILE, JSON.stringify(links, null, 2));
+}
+
+export function removeTicketLink(sessionId: string) {
+  const links = loadTicketLinks();
+  delete links[sessionId];
+  writeFileSync(TICKET_LINKS_FILE, JSON.stringify(links, null, 2));
+}
+
+export function getTicketLink(sessionId: string): TicketLink | null {
+  return loadTicketLinks()[sessionId] || null;
 }
 
 // ---------------------------------------------------------------------------

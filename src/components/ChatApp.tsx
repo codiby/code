@@ -5,11 +5,14 @@ import { DiffReview, type ReviewComment } from './DiffReview';
 import { Providers } from './Providers';
 import { TabBar } from './TabBar';
 import { FileExplorer } from './FileExplorer';
-import { MessageBubble, AnsiText } from './MessageBubble';
+import { MessageBubble, AgentBubble, groupMessages, AnsiText } from './MessageBubble';
 import { NewSessionModal } from './NewSessionModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
+import { SettingsPanel } from './SettingsPanel';
+import { BoardPanel, type BoardItem } from './BoardPanel';
+import { TicketDetail } from './TicketDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import type { editor as MonacoEditor } from 'monaco-editor';
@@ -287,13 +290,24 @@ export function ChatApp() {
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
-  const [sidebarView, setSidebarView] = useState<'explorer' | 'search'>('explorer');
+  const [sidebarView, setSidebarView] = useState<'explorer' | 'search' | 'board' | 'settings'>('explorer');
+  const [openTicket, setOpenTicket] = useState<BoardItem | null>(null);
+  const [ticketLinks, setTicketLinks] = useState<Record<string, { ticketId: string; humanId: string; title: string }>>({});
+  const [pendingTicketLink, setPendingTicketLink] = useState<BoardItem | null>(null);
+  const [showTicketDropdown, setShowTicketDropdown] = useState(false);
+  const [boardItems, setBoardItems] = useState<BoardItem[]>([]);
 
-  const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string> }>({ staged: new Set(), unstaged: new Set() });
+  const gitModifiedCacheRef = useRef<Record<string, { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>>({});
+  const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const permRequestRef = useRef<HTMLDivElement>(null);
+  const [chatSplitPct, setChatSplitPct] = useState(() => {
+    try { return Number(localStorage.getItem('claude-ui-chat-split')) || 50; }
+    catch { return 50; }
+  });
+  const chatDragging = useRef(false);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -606,6 +620,49 @@ export function ChatApp() {
     return () => { cancelled = true; clientRef.current?.destroy(); };
   }, []);
 
+  // Load ticket links and board items
+  useEffect(() => {
+    async function loadTicketData() {
+      let base: string;
+      try {
+        if ((window as any).__TAURI_INTERNALS__) {
+          const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
+          const port = await invoke<number>('get_bridge_port');
+          base = `http://localhost:${port}`;
+        } else {
+          base = (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
+        }
+      } catch { base = 'http://localhost:3100'; }
+      try {
+        const [linksRes, itemsRes] = await Promise.all([
+          fetch(`${base}/ticket-links`),
+          fetch(`${base}/architect/my-items`).catch(() => null),
+        ]);
+        if (linksRes.ok) setTicketLinks(await linksRes.json());
+        if (itemsRes?.ok) {
+          const data = await itemsRes.json();
+          setBoardItems(data.items || []);
+        }
+      } catch {}
+    }
+    loadTicketData();
+  }, []);
+
+  // Close ticket dropdown on outside click + refresh items when opened
+  useEffect(() => {
+    if (!showTicketDropdown) return;
+    const handler = () => setShowTicketDropdown(false);
+    document.addEventListener('click', handler);
+    // Refresh board items when dropdown opens
+    resolveServerUrl().then(base =>
+      fetch(`${base}/architect/my-items`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data?.items) setBoardItems(data.items); })
+        .catch(() => {})
+    );
+    return () => document.removeEventListener('click', handler);
+  }, [showTicketDropdown]);
+
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -625,7 +682,7 @@ export function ChatApp() {
   const active = getState(activeId);
   const { openFile, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
-  const hasRightPanel = !!openFile || !!openTerminal || !!diffView;
+  const hasRightPanel = !!openFile || !!openTerminal || !!diffView || !!openTicket;
 
   useEffect(() => {
     scrollToBottom();
@@ -693,6 +750,21 @@ export function ChatApp() {
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
+
+      // Link pending ticket if any
+      if (pendingTicketLink) {
+        const link = { ticketId: pendingTicketLink.id, humanId: pendingTicketLink.humanId, title: pendingTicketLink.title };
+        setTicketLinks(prev => ({ ...prev, [session.id]: link }));
+        setPendingTicketLink(null);
+        // Persist to server
+        resolveServerUrl().then(base =>
+          fetch(`${base}/ticket-link/${session.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(link),
+          }).catch(() => {})
+        );
+      }
     } catch {}
   };
 
@@ -1051,11 +1123,16 @@ export function ChatApp() {
     const entries = await client.getGitModified(root);
     const staged = new Set<string>();
     const unstaged = new Set<string>();
+    const untracked = new Set<string>();
     for (const e of entries) {
       if (e.staged) staged.add(e.path);
       else unstaged.add(e.path);
+      if (e.untracked) untracked.add(e.path);
     }
-    setGitModified({ staged, unstaged });
+    const result = { staged, unstaged, untracked };
+    gitModifiedCacheRef.current[root] = result;
+    // Only apply if still on the same root
+    if (explorerRootRef.current === root) setGitModified(result);
   }, [client]);
 
   const untitledCountRef = useRef(0);
@@ -1118,6 +1195,32 @@ export function ChatApp() {
       }
     } catch {}
   };
+
+  const onChatResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    chatDragging.current = true;
+    const container = contentRef.current;
+    if (!container) return;
+    let lastPct = chatSplitPct;
+    const onMove = (ev: MouseEvent) => {
+      if (!chatDragging.current || !container) return;
+      const rect = container.getBoundingClientRect();
+      lastPct = Math.max(25, Math.min(75, ((ev.clientX - rect.left) / rect.width) * 100));
+      setChatSplitPct(lastPct);
+    };
+    const onUp = () => {
+      chatDragging.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try { localStorage.setItem('claude-ui-chat-split', String(lastPct)); } catch {}
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [chatSplitPct]);
 
   const handleCloseCurrentPanel = () => {
     if (!activeId) return;
@@ -1222,8 +1325,15 @@ export function ChatApp() {
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
   explorerRootRef.current = explorerRoot;
 
-  // Load git modified when root changes
+  // Load git modified when root changes — instant from cache, then refresh
   useEffect(() => {
+    if (explorerRoot) {
+      const cached = gitModifiedCacheRef.current[explorerRoot];
+      if (cached) setGitModified(cached);
+      else setGitModified({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
+    } else {
+      setGitModified({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
+    }
     refreshGitModified();
   }, [explorerRoot, refreshGitModified]);
 
@@ -1425,6 +1535,13 @@ export function ChatApp() {
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="7" /><path d="M16 16L21 21" strokeLinecap="round" /></svg>
             </button>
+            <button
+              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'board' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
+              onClick={() => { if (sidebarView === 'board' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('board'); setExplorerCollapsed(false); } }}
+              title="Board"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></svg>
+            </button>
             {hasRightPanel && editorFullWidth && (
               <button
                 className="w-8 h-8 flex items-center justify-center rounded-md transition-colors text-violet-400 hover:text-violet-300 bg-violet-500/10 hover:bg-violet-500/20"
@@ -1434,6 +1551,14 @@ export function ChatApp() {
                 <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
             )}
+            <div className="flex-1" />
+            <button
+              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'settings' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
+              onClick={() => { if (sidebarView === 'settings' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('settings'); setExplorerCollapsed(false); } }}
+              title="Settings"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
+            </button>
           </div>
 
           {/* Side Panel: Explorer or Search */}
@@ -1462,6 +1587,20 @@ export function ChatApp() {
           {/* Search Panel */}
           {activeId && sidebarView === 'search' && !explorerCollapsed && (
             <SearchPanel client={client} rootPath={explorerRoot} onFileOpen={handleFileOpen} onClose={() => setExplorerCollapsed(true)} />
+          )}
+
+          {/* Board Panel */}
+          {sidebarView === 'board' && !explorerCollapsed && (
+            <BoardPanel
+              onClose={() => setExplorerCollapsed(true)}
+              onOpenTicket={(item) => { setOpenTicket(item); if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, diffView: null })); }}
+              onNewSession={(ticket) => { if (ticket) setPendingTicketLink(ticket); setShowNewSession(true); }}
+            />
+          )}
+
+          {/* Settings Panel */}
+          {sidebarView === 'settings' && !explorerCollapsed && (
+            <SettingsPanel onClose={() => setExplorerCollapsed(true)} />
           )}
 
           <div className="flex-1 flex flex-col min-w-0">
@@ -1524,6 +1663,77 @@ export function ChatApp() {
                       v{active.initInfo.version} · {active.initInfo.tools.length} tools
                     </span>
                   )}
+
+                  {/* Ticket badge */}
+                  {activeId && (
+                    <div className="relative">
+                      <button
+                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] transition-colors ${
+                          ticketLinks[activeId]
+                            ? 'bg-blue-500/15 text-blue-400 border border-blue-500/25 hover:bg-blue-500/25'
+                            : 'text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent'
+                        }`}
+                        onClick={(e) => { e.stopPropagation(); setShowTicketDropdown(!showTicketDropdown); }}
+                        title={ticketLinks[activeId]?.title || 'Link a ticket'}
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" />
+                        </svg>
+                        {ticketLinks[activeId] ? ticketLinks[activeId].humanId : 'Link ticket'}
+                      </button>
+
+                      {showTicketDropdown && (
+                        <div
+                          className="absolute left-0 top-7 z-50 w-72 max-h-64 bg-[#2a2a2a] border border-border-light rounded-lg shadow-xl overflow-hidden"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {ticketLinks[activeId] && (
+                            <button
+                              className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-surface-light transition-colors border-b border-border text-left"
+                              onClick={() => {
+                                const sid = activeId!;
+                                setTicketLinks(prev => { const next = { ...prev }; delete next[sid]; return next; });
+                                setShowTicketDropdown(false);
+                                resolveServerUrl().then(base =>
+                                  fetch(`${base}/ticket-link/${sid}`, { method: 'DELETE' }).catch(() => {})
+                                );
+                              }}
+                            >
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" /></svg>
+                              Unlink {ticketLinks[activeId].humanId}
+                            </button>
+                          )}
+                          <div className="overflow-y-auto max-h-52">
+                            {boardItems.length === 0 ? (
+                              <div className="px-3 py-3 text-[11px] text-zinc-600">No board items found. Sign in to The Architect first.</div>
+                            ) : boardItems.filter(i => i.column !== 'done').map(item => (
+                              <button
+                                key={item.id}
+                                className={`w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-surface-light transition-colors ${ticketLinks[activeId]?.ticketId === item.id ? 'bg-blue-500/10' : ''}`}
+                                onClick={() => {
+                                  const sid = activeId!;
+                                  const link = { ticketId: item.id, humanId: item.humanId, title: item.title };
+                                  setTicketLinks(prev => ({ ...prev, [sid]: link }));
+                                  setShowTicketDropdown(false);
+                                  resolveServerUrl().then(base =>
+                                    fetch(`${base}/ticket-link/${sid}`, {
+                                      method: 'PUT',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify(link),
+                                    }).catch(() => {})
+                                  );
+                                }}
+                              >
+                                <span className="text-[9px] font-mono font-medium px-1 py-0.5 rounded bg-zinc-700 text-zinc-300 shrink-0 mt-0.5">{item.humanId}</span>
+                                <span className="text-[11px] text-zinc-300 leading-snug line-clamp-2">{item.title}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <span className="flex-1" />
                   {active.initInfo?.cwd && (
                     <span className="text-xs text-zinc-600 font-mono truncate max-w-sm">
@@ -1534,7 +1744,10 @@ export function ChatApp() {
 
               <div ref={contentRef} className="flex-1 flex min-h-0">
                 {/* Chat panel */}
-                <div className={`flex flex-col min-w-0 overflow-hidden ${hasRightPanel && !editorFullWidth ? 'w-1/2 border-r border-border' : hasRightPanel && editorFullWidth ? 'hidden' : 'flex-1'}`}>
+                <div
+                  className={`flex flex-col min-w-0 overflow-hidden ${hasRightPanel && editorFullWidth ? 'hidden' : hasRightPanel ? 'shrink-0' : 'flex-1'}`}
+                  style={hasRightPanel && !editorFullWidth ? { width: `${chatSplitPct}%` } : undefined}
+                >
                   <div className="flex flex-1 min-h-0">
                   {/* Messages */}
                   <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1">
@@ -1555,9 +1768,12 @@ export function ChatApp() {
                         Show {Math.min(200, active.messages.length - visibleMessageCount)} older messages ({active.messages.length - visibleMessageCount} hidden)
                       </button>
                     )}
-                    {active.messages.slice(-visibleMessageCount).map(msg => (
-                      <MessageBubble key={msg.id} message={msg} onOpenTerminal={handleOpenTerminal} />
-                    ))}
+                    {groupMessages(active.messages.slice(-visibleMessageCount)).map(item => {
+                      if ('agent' in item) {
+                        return <AgentBubble key={item.agent.id} agent={item.agent} children={item.children} onOpenTerminal={handleOpenTerminal} />;
+                      }
+                      return <MessageBubble key={item.id} message={item} onOpenTerminal={handleOpenTerminal} />;
+                    })}
                     {active.isStreaming && !active.partialText && !active.permRequest && (
                       <div className="py-2">
                         <div className="flex items-center gap-1">
@@ -2017,9 +2233,17 @@ export function ChatApp() {
                   </div>
                 </div>
 
+                {/* Resize handle between chat and right panel */}
+                {hasRightPanel && !editorFullWidth && (
+                  <div
+                    className="w-1 shrink-0 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors"
+                    onMouseDown={onChatResizeStart}
+                  />
+                )}
+
                 {/* Right panel: editor or terminal */}
                 {openFile && (
-                  <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
+                  <div className="flex-1 flex flex-col min-w-0">
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className={`text-[12px] font-mono truncate ${gitModified.staged.has(openFile.path) ? 'text-green-400' : gitModified.unstaged.has(openFile.path) ? 'text-amber-400' : 'text-zinc-400'}`}>
@@ -2067,8 +2291,11 @@ export function ChatApp() {
                     </div>
                   </div>
                 )}
-                {!openFile && openTerminal && (
-                  <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
+                {!openFile && openTicket && (
+                  <TicketDetail item={openTicket} onClose={() => setOpenTicket(null)} onItemUpdated={(updated) => { setOpenTicket(updated); setBoardItems(prev => prev.map(i => i.id === updated.id ? updated : i)); }} />
+                )}
+                {!openFile && !openTicket && openTerminal && (
+                  <div className={`flex-1 flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className="text-[10px] text-zinc-500">$</span>
@@ -2091,7 +2318,7 @@ export function ChatApp() {
                   </div>
                 )}
                 {!openFile && !openTerminal && diffView && (
-                  <div className={`${editorFullWidth ? 'flex-1' : 'w-1/2'} flex flex-col min-w-0`}>
+                  <div className={`flex-1 flex flex-col min-w-0`}>
                     {/* Review status bar */}
                     {reviewMode && (
                       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0 bg-surface-light">
