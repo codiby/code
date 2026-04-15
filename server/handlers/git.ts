@@ -11,8 +11,9 @@ export function handleGitModified(root: string): Response {
     const staged = execSync('git diff --name-only --cached', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
     const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
 
-    const result: { path: string; staged: boolean }[] = [];
+    const result: { path: string; staged: boolean; untracked?: boolean }[] = [];
     const stagedSet = new Set<string>();
+    const untrackedSet = new Set(untracked.map(f => resolve(gitTop, f)));
 
     for (const f of staged) {
       const p = resolve(gitTop, f);
@@ -26,7 +27,7 @@ export function handleGitModified(root: string): Response {
       const p = resolve(gitTop, f);
       if (!p.startsWith(root) || unstagedSeen.has(p)) continue;
       unstagedSeen.add(p);
-      result.push({ path: p, staged: false });
+      result.push({ path: p, staged: false, untracked: untrackedSet.has(p) || undefined });
     }
 
     return Response.json(result, { headers: corsHeaders });

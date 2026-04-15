@@ -355,6 +355,17 @@ export const TabBar = memo(function TabBar(props: Props) {
                 Close
               </button>
 
+              {/* Copy Session ID */}
+              {(() => {
+                const s = sessions.find(s => s.id === tabMenu.tabId);
+                return s?.claude_session_id ? (
+                  <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                    onClick={() => { navigator.clipboard.writeText(s.claude_session_id!); setTabMenu(null); }}>
+                    Copy Session ID
+                  </button>
+                ) : null;
+              })()}
+
               <div className="h-px bg-border mx-2 my-1" />
 
               {/* Ungroup (if in a group) */}

@@ -2537,7 +2537,7 @@ export function ChatApp() {
                   <TicketDetail item={openTicket} onClose={() => setOpenTicket(null)} onItemUpdated={(updated) => { setOpenTicket(updated); setBoardItems(prev => prev.map(i => i.id === updated.id ? updated : i)); }} />
                 )}
                 {!openFile && !openTicket && openPR && (
-                  <PRDetail pr={openPR} cwd={active.initInfo?.cwd} onClose={() => setOpenPR(null)} />
+                  <PRDetail pr={openPR} cwd={active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
                 )}
                 {!openFile && !openTicket && !openPR && openTerminal && (
                   <div className={`flex-1 flex flex-col min-w-0`}>

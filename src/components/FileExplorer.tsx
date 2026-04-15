@@ -15,7 +15,7 @@ interface Props {
   onFileOpen: (path: string) => void;
   onFileDiff?: (path: string) => void;
   onFileDiffFullView?: (path: string) => void;
-  gitModified: { staged: Set<string>; unstaged: Set<string> };
+  gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> };
   activeSessionId: string | null;
   onOpenTerminal?: (command: string) => void;
   onStartReview?: () => void;
@@ -23,6 +23,9 @@ interface Props {
   tools?: string[];
   sessionName?: string;
 }
+
+// Module-level cache for instant tab switching
+const filesCache = new Map<string, FileEntry[]>();
 
 const EXT_COLORS: Record<string, string> = {
   ts: 'text-blue-400', tsx: 'text-blue-400', js: 'text-yellow-400', jsx: 'text-yellow-400',
@@ -38,7 +41,7 @@ function getExtColor(name: string): string {
   return EXT_COLORS[ext] || 'text-zinc-600';
 }
 
-function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string> } }) {
+function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> } }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -90,14 +93,15 @@ function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: Fil
   );
 }
 
-function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string> } }) {
+function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> } }) {
   const isStaged = gitModified.staged.has(entry.path);
   const isUnstaged = gitModified.unstaged.has(entry.path);
+  const isUntracked = gitModified.untracked.has(entry.path);
   const isModified = isStaged || isUnstaged;
-  const color = isModified ? (isStaged ? 'text-green-400' : 'text-amber-400') : getExtColor(entry.name);
+  const color = isModified ? (isStaged ? 'text-green-400' : isUntracked ? 'text-green-400' : 'text-amber-400') : getExtColor(entry.name);
   return (
     <div
-      className={`flex items-center gap-1 py-[2px] hover:bg-surface-light/50 cursor-pointer transition-colors ${isModified ? (isStaged ? 'text-green-400/80' : 'text-amber-400/80') : 'text-zinc-500 hover:text-zinc-300'}`}
+      className={`flex items-center gap-1 py-[2px] hover:bg-surface-light/50 cursor-pointer transition-colors ${isModified ? (isStaged ? 'text-green-400/80' : isUntracked ? 'text-green-400/80' : 'text-amber-400/80') : 'text-zinc-500 hover:text-zinc-300'}`}
       style={{ paddingLeft: depth * 12 + 8 }}
       onClick={() => onFileOpen(entry.path)}
     >
@@ -107,7 +111,7 @@ function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry;
   );
 }
 
-function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView, onStartReview, client, onRefresh }: { gitModified: { staged: Set<string>; unstaged: Set<string> }; rootPath: string | null; onFileDiff: (path: string) => void; onFileDiffFullView?: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
+function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView, onStartReview, client, onRefresh }: { gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }; rootPath: string | null; onFileDiff: (path: string) => void; onFileDiffFullView?: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState(true);
   const stagedFiles = [...gitModified.staged].sort();
   const unstagedFiles = [...gitModified.unstaged].sort();
@@ -134,7 +138,9 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
       ? filePath.slice(rootPath.length + 1)
       : filePath;
     const name = filePath.split('/').pop() || filePath;
-    const color = isStaged ? 'text-green-400' : 'text-amber-400';
+    const isUntracked = gitModified.untracked.has(filePath);
+    const color = isStaged ? 'text-green-400' : isUntracked ? 'text-green-400' : 'text-amber-400';
+    const badge = isStaged ? 'S' : isUntracked ? 'U' : 'M';
     return (
       <div
         key={`${filePath}-${isStaged ? 's' : 'u'}`}
@@ -142,7 +148,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
         onClick={() => onFileDiff(filePath)}
         onDoubleClick={() => onFileDiffFullView?.(filePath)}
       >
-        <span className={`text-[10px] w-3 text-center shrink-0 ${color}`}>{isStaged ? 'S' : 'M'}</span>
+        <span className={`text-[10px] w-3 text-center shrink-0 ${color}`}>{badge}</span>
         <span className="truncate text-[12px]">{name}</span>
         <span className="text-[10px] text-zinc-600 font-mono truncate ml-auto shrink-0 max-w-[45%] text-right">{rel}</span>
         <span
@@ -313,7 +319,7 @@ function ProcessesSection({ client, sessionId, onViewTerminal }: { client: Claud
   );
 }
 
-function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string> } }) {
+function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> } }) {
   const [expanded, setExpanded] = useState(true);
   const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
 
@@ -353,6 +359,8 @@ interface PRInfo {
   isDraft: boolean;
 }
 
+const prsCache = new Map<string, PRInfo[]>();
+
 const PR_STATE_COLORS: Record<string, { dot: string; text: string }> = {
   OPEN: { dot: 'bg-green-400', text: 'text-green-400' },
   MERGED: { dot: 'bg-violet-400', text: 'text-violet-400' },
@@ -361,11 +369,19 @@ const PR_STATE_COLORS: Record<string, { dot: string; text: string }> = {
 
 function PRsSection({ client, rootPath, sessionName }: { client: ClaudeClient | null; rootPath: string | null; sessionName?: string }) {
   const [expanded, setExpanded] = useState(false);
-  const [prs, setPrs] = useState<PRInfo[]>([]);
+  const cacheKey = rootPath || '';
+  const [prs, setPrs] = useState<PRInfo[]>(() => prsCache.get(cacheKey) || []);
 
   useEffect(() => {
     if (!client || !rootPath) { setPrs([]); return; }
-    client.listPullRequests(rootPath, sessionName).then(setPrs).catch(() => setPrs([]));
+    // Instant from cache
+    const cached = prsCache.get(rootPath);
+    if (cached) setPrs(cached);
+    // Refresh in background
+    client.listPullRequests(rootPath, sessionName).then(data => {
+      prsCache.set(rootPath, data);
+      setPrs(data);
+    }).catch(() => setPrs([]));
   }, [client, rootPath, sessionName]);
 
   if (prs.length === 0) return null;
@@ -438,16 +454,74 @@ function ToolsSection({ tools }: { tools: string[] }) {
   );
 }
 
+const SIDEBAR_MIN = 160;
+const SIDEBAR_MAX = 480;
+const SIDEBAR_DEFAULT = 240;
+
+function useSidebarWidth() {
+  const [width, setWidth] = useState(() => {
+    try { return Number(localStorage.getItem('claude-ui-sidebar-width')) || SIDEBAR_DEFAULT; }
+    catch { return SIDEBAR_DEFAULT; }
+  });
+  const setAndPersist = useCallback((w: number) => {
+    const clamped = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w));
+    setWidth(clamped);
+    try { localStorage.setItem('claude-ui-sidebar-width', String(clamped)); } catch {}
+  }, []);
+  return [width, setAndPersist] as const;
+}
+
 export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
-  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [entries, setEntries] = useState<FileEntry[]>(() => (rootPath ? filesCache.get(rootPath) : null) || []);
+  const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
+  const dragging = useRef(false);
 
   useEffect(() => {
     if (!client || !rootPath) return;
-    client.listFiles(rootPath).then(setEntries).catch(() => setEntries([]));
+    // Instant from cache
+    const cached = filesCache.get(rootPath);
+    if (cached) setEntries(cached);
+    // Refresh in background
+    client.listFiles(rootPath).then(data => {
+      filesCache.set(rootPath, data);
+      setEntries(data);
+    }).catch(() => setEntries([]));
   }, [client, rootPath]);
 
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      setSidebarWidth(startW + (ev.clientX - startX));
+    };
+    const onUp = () => {
+      dragging.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [sidebarWidth, setSidebarWidth]);
+
   return (
-    <aside className={`border-r border-border bg-[#161616] flex flex-col shrink-0 transition-all ${collapsed ? 'w-0 overflow-hidden' : 'w-60'}`}>
+    <aside
+      className={`relative border-r border-border bg-[#161616] flex flex-col shrink-0 ${collapsed ? 'w-0 overflow-hidden' : ''}`}
+      style={collapsed ? undefined : { width: sidebarWidth }}
+    >
+      {/* Resize handle */}
+      {!collapsed && (
+        <div
+          className="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors"
+          onMouseDown={onResizeStart}
+        />
+      )}
       {/* Header */}
       <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Explorer</span>

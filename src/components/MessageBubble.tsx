@@ -408,6 +408,68 @@ function TerminalBubble({ message, onOpenInPanel }: { message: ChatMessage; onOp
   );
 }
 
+/** Agent tool call card — groups sub-tools inside a collapsible card */
+export function AgentBubble({ agent, children, onOpenTerminal }: { agent: ChatMessage; children: ChatMessage[]; onOpenTerminal?: (msgId: string) => void }) {
+  const [expanded, setExpanded] = useState(true);
+  const input = (agent.toolInput && typeof agent.toolInput === 'object' ? agent.toolInput : {}) as Record<string, unknown>;
+  const description = (input.description as string) || (input.prompt as string)?.slice(0, 80) || 'Agent';
+
+  return (
+    <div className="py-1">
+      <div className="rounded-lg border border-cyan-500/20 overflow-hidden bg-cyan-500/[0.03]">
+        {/* Header */}
+        <div
+          className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none"
+          onClick={() => setExpanded(e => !e)}
+        >
+          <span className="text-[10px] text-zinc-500 w-3 text-center shrink-0">{expanded ? '▾' : '▸'}</span>
+          <span className="text-[11px] font-mono font-medium text-cyan-400">Agent</span>
+          <span className="text-[11px] text-zinc-400 truncate flex-1">{description}</span>
+          {children.length > 0 && (
+            <span className="text-[10px] text-zinc-600 bg-surface-light px-1.5 py-0.5 rounded-full shrink-0">
+              {children.length} tool{children.length !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+
+        {/* Sub-tools */}
+        {expanded && children.length > 0 && (
+          <div className="border-t border-cyan-500/10 px-2 py-1 space-y-0">
+            {children.map(msg => (
+              <MessageBubble key={msg.id} message={msg} onOpenTerminal={onOpenTerminal} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Groups flat messages: Agent tool_use + following tool calls become groups */
+export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: ChatMessage; children: ChatMessage[] })[] {
+  const result: (ChatMessage | { agent: ChatMessage; children: ChatMessage[] })[] = [];
+  let i = 0;
+
+  while (i < messages.length) {
+    const msg = messages[i]!;
+    if (msg.toolName === 'Agent') {
+      const group: { agent: ChatMessage; children: ChatMessage[] } = { agent: msg, children: [] };
+      i++;
+      // Collect subsequent tool messages as children
+      while (i < messages.length && messages[i]!.toolName && messages[i]!.toolName !== 'Agent') {
+        group.children.push(messages[i]!);
+        i++;
+      }
+      result.push(group);
+    } else {
+      result.push(msg);
+      i++;
+    }
+  }
+
+  return result;
+}
+
 export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { BoardItem } from './BoardPanel';
+import { Markdown } from './Markdown';
 
 const COLUMN_LABELS: Record<string, string> = {
   blocked: 'Blocked', product_review: 'Product Review',
@@ -259,21 +260,21 @@ export function TicketDetail({ item, onClose, onItemUpdated }: { item: BoardItem
             {/* Problem Statement */}
             {(detail as any).problemStatement && (
               <Section title="Problem">
-                <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{(detail as any).problemStatement}</p>
+                <Markdown text={(detail as any).problemStatement} />
               </Section>
             )}
 
             {/* Intent */}
             {(detail as any).intent && (
               <Section title="Intent">
-                <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{(detail as any).intent}</p>
+                <Markdown text={(detail as any).intent} />
               </Section>
             )}
 
             {/* Description */}
             {(detail as any).description && (
               <Section title="Description">
-                <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{(detail as any).description}</p>
+                <Markdown text={(detail as any).description} />
               </Section>
             )}
 
@@ -331,7 +332,7 @@ export function TicketDetail({ item, onClose, onItemUpdated }: { item: BoardItem
                         <span className="text-[11px] text-zinc-400 font-mono">@{c.authorUsername}</span>
                         <span className="text-[10px] text-zinc-600 ml-auto">{timeAgo(c.createdAt)}</span>
                       </div>
-                      <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{c.body}</p>
+                      <Markdown text={c.body} />
                     </div>
                   ))}
                 </div>

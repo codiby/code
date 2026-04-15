@@ -333,7 +333,7 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async getGitModified(root: string): Promise<{ path: string; staged: boolean }[]> {
+  async getGitModified(root: string): Promise<{ path: string; staged: boolean; untracked?: boolean }[]> {
     const resp = await fetch(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}`);
     if (!resp.ok) return [];
     return resp.json();

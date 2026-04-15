@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { Markdown } from './Markdown';
 
 interface PRInfo {
   number: number;
@@ -96,10 +97,8 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'detail' | 'commits' | 'reviews'>('detail');
 
-  useEffect(() => {
+  const fetchPR = useCallback(() => {
     setLoading(true);
-    setData(null);
-    setActiveTab('detail');
     resolveServerUrl().then(base => {
       const params = new URLSearchParams({ number: String(pr.number) });
       if (cwd) params.set('cwd', cwd);
@@ -110,6 +109,12 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
         .finally(() => setLoading(false));
     });
   }, [pr.number, cwd]);
+
+  useEffect(() => {
+    setData(null);
+    setActiveTab('detail');
+    fetchPR();
+  }, [fetchPR]);
 
   const detail = data;
 
@@ -124,7 +129,15 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
           <span className="text-[12px] text-zinc-300 truncate">{pr.title}</span>
           {loading && <span className="w-3 h-3 border border-zinc-600 border-t-zinc-300 rounded-full animate-spin shrink-0" />}
         </div>
-        <button className="text-zinc-500 hover:text-zinc-200 text-sm px-1" onClick={onClose}>×</button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button className="text-zinc-500 hover:text-zinc-200 transition-colors px-1" onClick={fetchPR} disabled={loading} title="Reload">
+            <svg className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 12a9 9 0 1 1-3.36-7H14" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M21 3v5h-5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button className="text-zinc-500 hover:text-zinc-200 text-sm px-1" onClick={onClose}>×</button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -201,7 +214,7 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
             {/* Body */}
             {detail.body && (
               <Section title="Description">
-                <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{detail.body}</p>
+                <Markdown text={detail.body} />
               </Section>
             )}
 
@@ -231,7 +244,7 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
                         <span className="text-[11px] text-zinc-400 font-mono">@{c.author?.login}</span>
                         <span className="text-[10px] text-zinc-600 ml-auto">{timeAgo(c.createdAt)}</span>
                       </div>
-                      <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{c.body}</p>
+                      <Markdown text={c.body} />
                     </div>
                   ))}
                 </div>
@@ -280,7 +293,7 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
                       </span>
                       <span className="text-[10px] text-zinc-600 ml-auto">{timeAgo(r.submittedAt)}</span>
                     </div>
-                    <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{r.body}</p>
+                    <Markdown text={r.body} />
                   </div>
                 ))}
                 {detail.comments?.map((c, i) => (
@@ -289,7 +302,7 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
                       <span className="text-[11px] text-zinc-400 font-mono">@{c.author?.login}</span>
                       <span className="text-[10px] text-zinc-600 ml-auto">{timeAgo(c.createdAt)}</span>
                     </div>
-                    <p className="text-[12px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{c.body}</p>
+                    <Markdown text={c.body} />
                   </div>
                 ))}
               </>
