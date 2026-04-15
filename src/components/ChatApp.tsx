@@ -13,6 +13,7 @@ import { CommandPalette, type PaletteAction } from './CommandPalette';
 import { SettingsPanel } from './SettingsPanel';
 import { BoardPanel, type BoardItem } from './BoardPanel';
 import { TicketDetail } from './TicketDetail';
+import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import type { editor as MonacoEditor } from 'monaco-editor';
@@ -297,6 +298,10 @@ export function ChatApp() {
   const [showTicketDropdown, setShowTicketDropdown] = useState(false);
   const [boardItems, setBoardItems] = useState<BoardItem[]>([]);
   const [pullingComments, setPullingComments] = useState(false);
+  const [prLinks, setPrLinks] = useState<Record<string, { prNumber: number; title: string; url: string; headRefName: string; state: string }>>({});
+  const [showPrDropdown, setShowPrDropdown] = useState(false);
+  const [sessionPrs, setSessionPrs] = useState<{ number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[]>([]);
+  const [openPR, setOpenPR] = useState<PRInfo | null>(null);
 
   const gitModifiedCacheRef = useRef<Record<string, { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>>({});
   const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
@@ -635,11 +640,13 @@ export function ChatApp() {
         }
       } catch { base = 'http://localhost:3100'; }
       try {
-        const [linksRes, itemsRes] = await Promise.all([
+        const [linksRes, prLinksRes, itemsRes] = await Promise.all([
           fetch(`${base}/ticket-links`),
+          fetch(`${base}/pr-links`),
           fetch(`${base}/architect/my-items`).catch(() => null),
         ]);
         if (linksRes.ok) setTicketLinks(await linksRes.json());
+        if (prLinksRes.ok) setPrLinks(await prLinksRes.json());
         if (itemsRes?.ok) {
           const data = await itemsRes.json();
           setBoardItems(data.items || []);
@@ -648,6 +655,19 @@ export function ChatApp() {
     }
     loadTicketData();
   }, []);
+
+  // Close PR dropdown on outside click + fetch PRs when opened
+  useEffect(() => {
+    if (!showPrDropdown) return;
+    const handler = () => setShowPrDropdown(false);
+    document.addEventListener('click', handler);
+    // Fetch PRs for current session cwd
+    const cwd = active.initInfo?.cwd;
+    if (cwd && clientRef.current) {
+      clientRef.current.listPullRequests(cwd).then(prs => setSessionPrs(prs)).catch(() => {});
+    }
+    return () => document.removeEventListener('click', handler);
+  }, [showPrDropdown]);
 
   // Close ticket dropdown on outside click + refresh items when opened
   useEffect(() => {
@@ -683,7 +703,7 @@ export function ChatApp() {
   const active = getState(activeId);
   const { openFile, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
-  const hasRightPanel = !!openFile || !!openTerminal || !!diffView || !!openTicket;
+  const hasRightPanel = !!openFile || !!openTerminal || !!diffView || !!openTicket || !!openPR;
 
   useEffect(() => {
     scrollToBottom();
@@ -1864,6 +1884,98 @@ export function ChatApp() {
                     );
                   })()}
 
+                  {/* PR badge */}
+                  {activeId && (
+                    <div className="relative">
+                      {prLinks[activeId] ? (
+                        <button
+                          className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const linked = prLinks[activeId!];
+                            setOpenPR({ number: linked.prNumber, title: linked.title, url: linked.url, headRefName: linked.headRefName, state: linked.state });
+                            if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, diffView: null }));
+                            setOpenTicket(null);
+                          }}
+                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
+                          title={`PR #${prLinks[activeId].prNumber}: ${prLinks[activeId].title} (right-click to change)`}
+                        >
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
+                          #{prLinks[activeId].prNumber}
+                        </button>
+                      ) : (
+                        <button
+                          className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent transition-colors"
+                          onClick={(e) => { e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
+                          title="Link a PR"
+                        >
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
+                          Link PR
+                        </button>
+                      )}
+
+                      {showPrDropdown && (
+                        <div
+                          className="absolute left-0 top-7 z-50 w-80 max-h-64 bg-[#2a2a2a] border border-border-light rounded-lg shadow-xl overflow-hidden"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {prLinks[activeId!] && (
+                            <button
+                              className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-surface-light transition-colors border-b border-border text-left"
+                              onClick={() => {
+                                const sid = activeId!;
+                                setPrLinks(prev => { const next = { ...prev }; delete next[sid]; return next; });
+                                setShowPrDropdown(false);
+                                resolveServerUrl().then(base =>
+                                  fetch(`${base}/pr-link/${sid}`, { method: 'DELETE' }).catch(() => {})
+                                );
+                              }}
+                            >
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" /></svg>
+                              Unlink #{prLinks[activeId!].prNumber}
+                            </button>
+                          )}
+                          <div className="overflow-y-auto max-h-52">
+                            {sessionPrs.length === 0 ? (
+                              <div className="px-3 py-3 text-[11px] text-zinc-600">No pull requests found for this repo.</div>
+                            ) : sessionPrs.map(pr => {
+                              const isLinked = prLinks[activeId!]?.prNumber === pr.number;
+                              const stateColor = pr.isDraft ? 'bg-amber-400' : pr.state === 'OPEN' ? 'bg-green-400' : pr.state === 'MERGED' ? 'bg-violet-400' : 'bg-zinc-500';
+                              return (
+                                <button
+                                  key={pr.number}
+                                  className={`w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-surface-light transition-colors ${isLinked ? 'bg-green-500/10' : ''}`}
+                                  onClick={() => {
+                                    const sid = activeId!;
+                                    const link = { prNumber: pr.number, title: pr.title, url: pr.url, headRefName: pr.headRefName, state: pr.state };
+                                    setPrLinks(prev => ({ ...prev, [sid]: link }));
+                                    setShowPrDropdown(false);
+                                    resolveServerUrl().then(base =>
+                                      fetch(`${base}/pr-link/${sid}`, {
+                                        method: 'PUT',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(link),
+                                      }).catch(() => {})
+                                    );
+                                  }}
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${stateColor}`} />
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] text-green-400 shrink-0">#{pr.number}</span>
+                                      <span className="text-[11px] text-zinc-300 truncate">{pr.title}</span>
+                                    </div>
+                                    <span className="text-[10px] text-zinc-600 font-mono">{pr.headRefName}</span>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <span className="flex-1" />
                   {active.initInfo?.cwd && (
                     <span className="text-xs text-zinc-600 font-mono truncate max-w-sm">
@@ -2424,7 +2536,10 @@ export function ChatApp() {
                 {!openFile && openTicket && (
                   <TicketDetail item={openTicket} onClose={() => setOpenTicket(null)} onItemUpdated={(updated) => { setOpenTicket(updated); setBoardItems(prev => prev.map(i => i.id === updated.id ? updated : i)); }} />
                 )}
-                {!openFile && !openTicket && openTerminal && (
+                {!openFile && !openTicket && openPR && (
+                  <PRDetail pr={openPR} cwd={active.initInfo?.cwd} onClose={() => setOpenPR(null)} />
+                )}
+                {!openFile && !openTicket && !openPR && openTerminal && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">

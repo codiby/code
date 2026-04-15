@@ -34,7 +34,7 @@ import {
   clearSessionState,
 } from './state';
 import type { ChatMessage, PermissionRequest } from './state';
-import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink } from './storage';
+import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink, loadPRLinks, savePRLink, removePRLink, getPRLink } from './storage';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -1089,6 +1089,45 @@ const server = Bun.serve({
 
     if (url.pathname === '/ticket-links' && req.method === 'GET') {
       return Response.json(loadTicketLinks(), { headers: corsHeaders });
+    }
+
+    // ── PR Links ─────────────────────────────────────────────────────
+
+    const prLinkMatch = url.pathname.match(/^\/pr-link\/([^/]+)$/);
+    if (prLinkMatch && req.method === 'GET') {
+      const link = getPRLink(prLinkMatch[1]!);
+      return Response.json({ link }, { headers: corsHeaders });
+    }
+
+    if (prLinkMatch && req.method === 'PUT') {
+      const body = await req.json() as { prNumber: number; title: string; url: string; headRefName: string; state: string };
+      savePRLink(prLinkMatch[1]!, body);
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (prLinkMatch && req.method === 'DELETE') {
+      removePRLink(prLinkMatch[1]!);
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/pr-links' && req.method === 'GET') {
+      return Response.json(loadPRLinks(), { headers: corsHeaders });
+    }
+
+    // PR detail via gh CLI
+    if (url.pathname === '/pr-detail' && req.method === 'GET') {
+      const prNumber = url.searchParams.get('number');
+      const cwd = url.searchParams.get('cwd') || CWD;
+      if (!prNumber) return Response.json({ error: 'missing number' }, { status: 400, headers: corsHeaders });
+      try {
+        const prJson = execSync(
+          `gh pr view ${prNumber} --json number,title,body,headRefName,baseRefName,state,url,isDraft,additions,deletions,changedFiles,commits,reviews,comments,labels,author,createdAt,updatedAt,mergedAt,mergeable`,
+          { cwd, encoding: 'utf-8', timeout: 15000 },
+        );
+        return Response.json(JSON.parse(prJson), { headers: corsHeaders });
+      } catch (e: any) {
+        return Response.json({ error: e.message || String(e) }, { status: 502, headers: corsHeaders });
+      }
     }
 
     // ── Health ──────────────────────────────────────────────────────────

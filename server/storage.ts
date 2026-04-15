@@ -181,6 +181,39 @@ export function getTicketLink(sessionId: string): TicketLink | null {
 }
 
 // ---------------------------------------------------------------------------
+// PR ↔ Session links
+// ---------------------------------------------------------------------------
+
+const PR_LINKS_FILE = join(homedir(), '.claude', 'ui-pr-links.json');
+
+type PRLink = { prNumber: number; title: string; url: string; headRefName: string; state: string };
+
+export function loadPRLinks(): Record<string, PRLink> {
+  try {
+    return JSON.parse(readFileSync(PR_LINKS_FILE, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+export function savePRLink(sessionId: string, link: PRLink) {
+  const links = loadPRLinks();
+  links[sessionId] = link;
+  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  writeFileSync(PR_LINKS_FILE, JSON.stringify(links, null, 2));
+}
+
+export function removePRLink(sessionId: string) {
+  const links = loadPRLinks();
+  delete links[sessionId];
+  writeFileSync(PR_LINKS_FILE, JSON.stringify(links, null, 2));
+}
+
+export function getPRLink(sessionId: string): PRLink | null {
+  return loadPRLinks()[sessionId] || null;
+}
+
+// ---------------------------------------------------------------------------
 // Global preferences (tabs, groups, etc.)
 // ---------------------------------------------------------------------------
 
