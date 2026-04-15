@@ -59,8 +59,8 @@ cat > "$PLIST_PATH" << EOF
     <true/>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PORT</key>
-        <string>3100</string>
+        <key>CLAUDE_UI_PORT</key>
+        <string>3111</string>
         <key>HOME</key>
         <string>$HOME</string>
         <key>PATH</key>
@@ -85,11 +85,11 @@ sleep 1
 if launchctl list | grep -q "$PLIST_NAME"; then
     echo ""
     echo "=== Service installed and running ==="
-    echo "  Port: 3100"
+    echo "  Port: 3111"
     echo "  Logs: $LOG_DIR/"
     echo "  Config: $PLIST_PATH"
     echo ""
-    echo "  Test: curl http://localhost:3100/health"
+    echo "  Test: curl http://localhost:3111/health"
     echo "  Uninstall: ./scripts/uninstall-service.sh"
 else
     echo "Error: Service failed to start. Check logs at $LOG_DIR/"

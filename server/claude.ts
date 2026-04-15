@@ -1,4 +1,7 @@
 import { spawn } from 'child_process';
+import { writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { log, logError } from './logger';
 import { CLAUDE_BIN } from './config';
 import { sessions, saveSessions, broadcast } from './sessions';
@@ -20,6 +23,21 @@ export function spawnClaude(session: Session, port: number, resumeSessionId?: st
   if (session.model) {
     args.push('--model', session.model);
   }
+
+  // Write per-session MCP config file with session ID in header
+  const mcpDir = join(homedir(), '.claude', 'ui-mcp-configs');
+  mkdirSync(mcpDir, { recursive: true });
+  const mcpConfigPath = join(mcpDir, `${session.id}.json`);
+  writeFileSync(mcpConfigPath, JSON.stringify({
+    mcpServers: {
+      'claude-code-ui': {
+        type: 'sse',
+        url: `http://localhost:${port}/mcp`,
+        headers: { 'x-session-id': session.id },
+      },
+    },
+  }, null, 2));
+  args.push('--mcp-config', mcpConfigPath);
 
   const sid = session.id.slice(0, 8);
   const spawnStart = Date.now();

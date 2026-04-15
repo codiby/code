@@ -64,7 +64,7 @@ export interface SessionState {
   // UI state
   input: string;
   inputHistory: string[];
-  openFile: { path: string; content: string } | null;
+  openFile: { path: string; content: string; line?: number } | null;
   openTerminalId: string | null;
   diffView: { path: string; original: string; modified: string } | null;
   editorFullWidth: boolean;
@@ -221,8 +221,8 @@ export class ClaudeClient {
   // Terminal
   // ---------------------------------------------------------------------------
 
-  execCommand(sessionId: string, command: string, cwd: string) {
-    this.send({ type: 'exec', sessionId, command, cwd });
+  execCommand(sessionId: string, command: string, cwd: string, procId?: string) {
+    this.send({ type: 'exec', sessionId, command, cwd, procId });
   }
 
   killProcess(sessionId: string, processId?: string, pid?: number) {
@@ -379,7 +379,7 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async listProcesses(sessionId: string): Promise<{ id: string; pid: number; command: string; cwd: string; startedAt: number; children: { pid: number; command: string }[] }[]> {
+  async listProcesses(sessionId: string): Promise<{ id: string; pid: number; command: string; cwd: string; startedAt: number; exitCode?: number | null; output?: string; children: { pid: number; command: string }[] }[]> {
     const resp = await fetch(`${this.serverUrl}/processes?sessionId=${sessionId}`);
     if (!resp.ok) return [];
     return resp.json();

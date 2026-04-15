@@ -20,4 +20,4 @@ sleep 1
 launchctl load "$PLIST_PATH"
 
 sleep 1
-curl -s http://localhost:3100/health && echo " ✓" || echo " ✗ Service failed to start"
+curl -s http://localhost:3111/health && echo " ✓" || echo " ✗ Service failed to start"

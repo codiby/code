@@ -126,10 +126,19 @@ export function updateSessionState(sessionId: string, fn: (state: SessionState) 
 /** Returns true if message was added, false if duplicate */
 export function addMessage(sessionId: string, msg: ChatMessage): boolean {
   const state = getSessionState(sessionId);
-  // Deduplicate by ID (replays from --resume can resend the same messages)
+  // Deduplicate by ID
   let idSet = messageIdSets.get(sessionId);
   if (!idSet) { idSet = new Set(); messageIdSets.set(sessionId, idSet); }
   if (idSet.has(msg.id)) return false;
+  // Deduplicate by content+role (CLI replay generates new IDs for same content)
+  // Skip for tool-use messages — each invocation is distinct even with same tool name
+  if (!msg.toolName) {
+    const msgs = state.messages;
+    for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 50); i--) {
+      const m = msgs[i];
+      if (m.role === msg.role && m.content === msg.content && !m.toolName) return false;
+    }
+  }
   idSet.add(msg.id);
   state.messages.push(msg);
   appendMessage(sessionId, msg);

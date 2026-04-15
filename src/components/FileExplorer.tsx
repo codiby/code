@@ -14,6 +14,7 @@ interface Props {
   onToggle: () => void;
   onFileOpen: (path: string) => void;
   onFileDiff?: (path: string) => void;
+  onFileDiffFullView?: (path: string) => void;
   gitModified: { staged: Set<string>; unstaged: Set<string> };
   activeSessionId: string | null;
   onOpenTerminal?: (command: string) => void;
@@ -106,7 +107,7 @@ function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry;
   );
 }
 
-function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, client, onRefresh }: { gitModified: { staged: Set<string>; unstaged: Set<string> }; rootPath: string | null; onFileDiff: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
+function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView, onStartReview, client, onRefresh }: { gitModified: { staged: Set<string>; unstaged: Set<string> }; rootPath: string | null; onFileDiff: (path: string) => void; onFileDiffFullView?: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState(true);
   const stagedFiles = [...gitModified.staged].sort();
   const unstagedFiles = [...gitModified.unstaged].sort();
@@ -139,6 +140,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onStartReview, clie
         key={`${filePath}-${isStaged ? 's' : 'u'}`}
         className={`flex items-center gap-1 py-[2px] px-2 ${color}/80 hover:bg-surface-light/50 cursor-pointer transition-colors group/file`}
         onClick={() => onFileDiff(filePath)}
+        onDoubleClick={() => onFileDiffFullView?.(filePath)}
       >
         <span className={`text-[10px] w-3 text-center shrink-0 ${color}`}>{isStaged ? 'S' : 'M'}</span>
         <span className="truncate text-[12px]">{name}</span>
@@ -283,8 +285,8 @@ function ProcessesSection({ client, sessionId, onViewTerminal }: { client: Claud
   }, [refresh]);
 
   const handleKill = async (processId?: string, pid?: number) => {
-    if (!client) return;
-    await client.killProcess(processId, pid);
+    if (!client || !sessionId) return;
+    client.killProcess(sessionId, processId, pid);
     setTimeout(refresh, 500);
   };
 
@@ -436,7 +438,7 @@ function ToolsSection({ tools }: { tools: string[] }) {
   );
 }
 
-export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
+export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
 
   useEffect(() => {
@@ -462,7 +464,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
       <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} />
 
       {/* Changes */}
-      <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
+      <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
 
       {/* Tools */}
       {/* Pull Requests */}

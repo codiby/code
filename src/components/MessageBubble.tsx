@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, lazy, Suspense, memo } from 'react';
+import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
 import type { ChatMessage } from '../lib/claude-client';
 
 const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
@@ -348,12 +348,24 @@ ${running ? '<span class="status run">running...</span>' : exitCode === 0 ? '<sp
 function TerminalBubble({ message, onOpenInPanel }: { message: ChatMessage; onOpenInPanel?: (msgId: string) => void }) {
   const running = message.exitCode === undefined;
   const [collapsed, setCollapsed] = useState(!running && message.content.length > 0);
+  const termRef = useRef<HTMLPreElement>(null);
 
   // Auto-collapse when done
   const prevRunning = useRef(running);
   if (prevRunning.current && !running) {
     prevRunning.current = false;
   }
+
+  // Auto-scroll terminal output to bottom
+  useEffect(() => {
+    if (!termRef.current || collapsed) return;
+    const el = termRef.current;
+    // Use rAF to scroll after the DOM has painted the new content
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [message.content, collapsed]);
 
   return (
     <div className="py-1">
@@ -381,7 +393,7 @@ function TerminalBubble({ message, onOpenInPanel }: { message: ChatMessage; onOp
         {!collapsed && (
           <>
             {message.content && (
-              <pre className="px-3 py-2 text-[12px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-snug max-h-64 overflow-auto m-0 bg-transparent">
+              <pre ref={termRef} className="px-3 py-2 text-[12px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-snug max-h-64 overflow-auto m-0 bg-transparent">
                 <AnsiText text={message.content} />
                 {running && <span className="inline-block w-1.5 h-3 bg-zinc-500/60 animate-pulse ml-0.5 align-text-bottom" />}
               </pre>

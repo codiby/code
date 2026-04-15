@@ -46,12 +46,15 @@ export function loadMessages(sessionId: string): unknown[] {
       try { return JSON.parse(line); }
       catch { return null; }
     }).filter(Boolean);
-    // Deduplicate by ID (replays can cause duplicates in the JSONL file)
-    const seen = new Set<string>();
+    // Deduplicate by ID and by content+role (CLI replay generates new IDs)
+    const seenIds = new Set<string>();
+    const seenContent = new Set<string>();
     const deduped = all.filter((m: any) => {
-      if (!m.id) return true;
-      if (seen.has(m.id)) return false;
-      seen.add(m.id);
+      if (m.id && seenIds.has(m.id)) return false;
+      const contentKey = `${m.role}:${m.toolName || ''}:${m.content}`;
+      if (seenContent.has(contentKey)) return false;
+      if (m.id) seenIds.add(m.id);
+      seenContent.add(contentKey);
       return true;
     });
     // Compact the file if duplicates were found

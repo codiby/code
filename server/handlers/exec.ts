@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { corsHeaders } from '../config';
 import { log } from '../logger';
-import { trackedProcesses } from './processes';
+import { trackedProcesses, saveProcessRegistry, appendProcessOutput } from './processes';
 
 /**
  * POST /exec — Create a terminal process. Returns { procId, pid } immediately.
@@ -22,7 +22,7 @@ export async function handleExecCreate(req: Request): Promise<Response> {
   const proc = spawn(shell, ['-c', init + command], {
     cwd,
     detached: true, // Own process group so kill(-pgid) kills entire tree
-    env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' },
+    env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor', PATH: `/usr/local/sbin:/usr/sbin:/sbin:${process.env.PATH || ''}` },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -39,6 +39,7 @@ export async function handleExecCreate(req: Request): Promise<Response> {
     exitCode: null as number | null,
   };
   trackedProcesses.set(procId, tp);
+  saveProcessRegistry();
 
   log(`[exec] Started process ${procId.slice(0, 8)} (pid=${proc.pid}): ${command.slice(0, 80)}`);
 
@@ -51,8 +52,8 @@ export async function handleExecCreate(req: Request): Promise<Response> {
   proc.stdout.on('data', (chunk: Buffer) => {
     const text = chunk.toString();
     tp.outputBuffer.push(text);
-    // Cap buffer at 500 entries to prevent memory leak
     if (tp.outputBuffer.length > 500) tp.outputBuffer.splice(0, tp.outputBuffer.length - 300);
+    appendProcessOutput(procId, text);
     broadcastToViewers(JSON.stringify({ type: 'data', text }));
   });
 
@@ -60,6 +61,7 @@ export async function handleExecCreate(req: Request): Promise<Response> {
     const text = chunk.toString();
     tp.outputBuffer.push(text);
     if (tp.outputBuffer.length > 500) tp.outputBuffer.splice(0, tp.outputBuffer.length - 300);
+    appendProcessOutput(procId, text);
     broadcastToViewers(JSON.stringify({ type: 'data', text }));
   });
 
@@ -68,14 +70,14 @@ export async function handleExecCreate(req: Request): Promise<Response> {
     log(`[exec] Process ${procId.slice(0, 8)} exited with code ${tp.exitCode}`);
     broadcastToViewers(JSON.stringify({ type: 'exit', code: tp.exitCode }));
     // Keep in trackedProcesses for a bit so viewers can reconnect and see exit code
-    setTimeout(() => trackedProcesses.delete(procId), 30000);
+    setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
   });
 
   proc.on('error', (err) => {
     tp.exitCode = 1;
     log(`[exec] Process ${procId.slice(0, 8)} error: ${err.message}`);
     broadcastToViewers(JSON.stringify({ type: 'exit', code: 1, error: err.message }));
-    setTimeout(() => trackedProcesses.delete(procId), 30000);
+    setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
   });
 
   return Response.json({ procId, pid: proc.pid }, { headers: corsHeaders });

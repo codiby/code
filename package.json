@@ -10,7 +10,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "disable": "astro preferences disable devToolbar"
   },
   "dependencies": {
     "@astrojs/react": "^5.0.3",
@@ -18,6 +19,7 @@
     "@dnd-kit/sortable": "10.0.0",
     "@dnd-kit/utilities": "3.2.2",
     "@heroui/react": "^3.0.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@monaco-editor/react": "4.7.0",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/api": "2.10.1",

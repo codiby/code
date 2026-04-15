@@ -3,6 +3,7 @@ import { basename, dirname, resolve } from 'path';
 import { corsHeaders } from '../config';
 
 export const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.astro', '__pycache__', '.venv', 'vendor', 'coverage', '.cache', '.turbo', 'target', '__snapshots__']);
+const SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 
 export const fileIndexCache = new Map<string, { files: { name: string; path: string; rel: string }[]; ts: number }>();
 export const FILE_INDEX_TTL = 30_000; // 30s cache
@@ -28,7 +29,7 @@ export function handleListDirs(prefix: string): Response {
     const dirs = entries
       .filter(e => {
         if (!e.isDirectory()) return false;
-        if (e.name.startsWith('.')) return false;
+        if (SKIP_DIRS.has(e.name)) return false;
         if (filter && !e.name.toLowerCase().startsWith(filter)) return false;
         return true;
       })
@@ -48,7 +49,7 @@ export function handleListFiles(dirPath: string): Response {
     }
     const entries = readdirSync(dirPath, { withFileTypes: true });
     const items = entries
-      .filter(e => !e.name.startsWith('.'))
+      .filter(e => !(e.isDirectory() ? SKIP_DIRS.has(e.name) : SKIP_FILES.has(e.name)))
       .map(e => ({
         name: e.name,
         type: e.isDirectory() ? 'dir' as const : 'file' as const,
@@ -74,7 +75,7 @@ export function buildFileIndex(root: string): { name: string; path: string; rel:
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
-      if (e.name.startsWith('.')) continue;
+      if (SKIP_FILES.has(e.name)) continue;
       if (files.length >= maxFiles) break;
       const fullPath = resolve(dir, e.name);
       const relPath = rel ? `${rel}/${e.name}` : e.name;

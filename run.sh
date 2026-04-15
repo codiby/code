@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${PORT:-3100}"
+PORT="${CLAUDE_UI_PORT:-3111}"
 ASTRO_PORT="${ASTRO_PORT:-4321}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -16,7 +16,7 @@ trap cleanup EXIT
 # Start bridge server
 echo "Starting bridge server on port $PORT..."
 cd "$DIR"
-PORT="$PORT" bun server/index.ts 2>&1 &
+CLAUDE_UI_PORT="$PORT" bun server/index.ts 2>&1 &
 BRIDGE_PID=$!
 sleep 1
 

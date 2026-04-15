@@ -34,7 +34,7 @@ async function resolveServerUrl(): Promise<string> {
       console.error('Bridge server not found:', e);
     }
   }
-  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
+  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3111';
 }
 
 // Local UI extensions on top of server SessionState
@@ -115,7 +115,7 @@ function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]
   );
 }
 
-function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: ClaudeClient | null; rootPath: string | null; onFileOpen: (path: string) => void; onClose: () => void }) {
+function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: ClaudeClient | null; rootPath: string | null; onFileOpen: (path: string, line?: number) => void; onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<{ file: string; line: number; text: string }[]>([]);
   const [searching, setSearching] = useState(false);
@@ -158,7 +158,7 @@ function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: Claude
             <div
               key={i}
               className="px-2 py-1 hover:bg-surface-light/50 cursor-pointer transition-colors border-b border-border/30"
-              onClick={() => onFileOpen(rootPath ? `${rootPath}/${relFile}` : relFile)}
+              onClick={() => onFileOpen(rootPath ? `${rootPath}/${relFile}` : relFile, r.line)}
             >
               <div className="flex items-center gap-1">
                 <span className="text-[11px] text-zinc-400 truncate">{relFile}</span>
@@ -293,6 +293,7 @@ export function ChatApp() {
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const permRequestRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -372,9 +373,13 @@ export function ChatApp() {
           for (const s of list) {
             if (closed.has(s.id)) continue;
             if (subscribedRef.current.has(s.id)) continue;
+            subscribedRef.current.add(s.id);
             toSubscribe.push(s.id);
             c.subscribe(s.id);
-            subscribedRef.current.add(s.id);
+            // Auto-resume stopped sessions
+            if (s.status === 'stopped') {
+              c.resumeSession(s.id).catch(() => {});
+            }
           }
           if (toSubscribe.length) {
             setStatuses(prev => {
@@ -397,18 +402,47 @@ export function ChatApp() {
         },
 
         onSessionState: (sid, state) => {
-          setSessionStates(prev => ({
-            ...prev,
-            [sid]: {
-              ...emptyLocalState(),
-              ...state,
-              // Preserve local-only fields
-              editorDirty: prev[sid]?.editorDirty ?? false,
-              contextTokens: prev[sid]?.contextTokens ?? 0,
-              // Merge review comments (local-only for now)
-              reviewComments: prev[sid]?.reviewComments ?? {},
-            },
-          }));
+          setSessionStates(prev => {
+            const existing = prev[sid];
+            // Merge messages: keep any local messages not in server state
+            const serverMsgIds = new Set((state.messages || []).map((m: any) => m.id));
+            const localOnly = existing?.messages?.filter(m => !serverMsgIds.has(m.id)) || [];
+            const mergedMessages = [...(state.messages || []), ...localOnly];
+            return {
+              ...prev,
+              [sid]: {
+                ...emptyLocalState(),
+                ...state,
+                messages: mergedMessages,
+                // Preserve local-only fields
+                editorDirty: existing?.editorDirty ?? false,
+                contextTokens: existing?.contextTokens ?? 0,
+                reviewComments: existing?.reviewComments ?? {},
+              },
+            };
+          });
+          // Restore terminal messages from running processes
+          c.listProcesses(sid).then(procs => {
+            if (procs.length === 0) return;
+            setSessionStates(prev => {
+              const s = prev[sid];
+              if (!s) return prev;
+              const existingTermIds = new Set(s.messages.filter(m => m.isTerminal).map(m => m.id));
+              const newTermMsgs = procs
+                .filter(p => !existingTermIds.has(p.id))
+                .map(p => ({
+                  id: p.id,
+                  role: 'system' as const,
+                  content: p.output || '',
+                  isTerminal: true,
+                  terminalCommand: p.command,
+                  exitCode: p.exitCode ?? undefined,
+                  timestamp: p.startedAt,
+                }));
+              if (newTermMsgs.length === 0) return prev;
+              return { ...prev, [sid]: { ...s, messages: [...s.messages, ...newTermMsgs] } };
+            });
+          }).catch(() => {});
         },
 
         onMessage: (sid, msg) => {
@@ -597,11 +631,28 @@ export function ChatApp() {
     scrollToBottom();
   }, [active.messages.length, active.partialText, scrollToBottom]);
 
+  // Jump to line when openFile.line changes (e.g. clicking different search results in same file)
+  useEffect(() => {
+    if (openFile?.line && editorRef.current) {
+      const line = openFile.line;
+      editorRef.current.revealLineInCenter(line);
+      editorRef.current.setPosition({ lineNumber: line, column: 1 });
+      editorRef.current.focus();
+    }
+  }, [openFile?.line, openFile?.path]);
+
   // Scroll when permission request appears (with delay for Monaco to mount)
   useEffect(() => {
     if (active.permRequest) {
-      scrollToBottom();
-      const t = setTimeout(scrollToBottom, 300);
+      const scrollPermIntoView = () => {
+        if (permRequestRef.current) {
+          permRequestRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } else {
+          scrollToBottom();
+        }
+      };
+      scrollPermIntoView();
+      const t = setTimeout(scrollPermIntoView, 300);
       return () => clearTimeout(t);
     }
   }, [active.permRequest, scrollToBottom]);
@@ -840,7 +891,7 @@ export function ChatApp() {
       setInput('');
 
       // Server sends terminal_data/terminal_exit keyed by procId=msgId
-      clientRef.current.execCommand(activeId, command, cwd);
+      clientRef.current.execCommand(activeId, command, cwd, msgId);
       return;
     }
 
@@ -877,10 +928,40 @@ export function ChatApp() {
     updateLocalState(activeId, s => ({ ...s, isStreaming: false }));
   };
 
-  const handleFileOpen = async (path: string) => {
-    if (!client) return;
+  const contentRef = useRef<HTMLDivElement>(null);
+  const termPanelRef = useRef<HTMLPreElement>(null);
+
+  // Auto-scroll terminal panel to bottom
+  useEffect(() => {
+    if (!termPanelRef.current || !openTerminal) return;
+    const el = termPanelRef.current;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [openTerminal?.content]);
+
+  const handleFileOpen = async (path: string, line?: number) => {
+    if (!client || !activeId) return;
     const file = await client.readFile(path);
-    if (file) setOpenFile(file);
+    if (!file) return;
+    // If the content area is too narrow for a split view, open editor fullscreen
+    const contentWidth = contentRef.current?.offsetWidth ?? 1200;
+    const needsFullWidth = contentWidth < 800;
+    setSessionStates(prev => {
+      const s = prev[activeId] || emptyLocalState();
+      return {
+        ...prev,
+        [activeId]: {
+          ...s,
+          openFile: line ? { ...file, line } : file,
+          openTerminalId: null,
+          diffView: null,
+          editorFullWidth: needsFullWidth ? true : s.editorFullWidth,
+          editorDirty: false,
+        },
+      };
+    });
   };
 
   const handleFileDiff = async (path: string) => {
@@ -892,6 +973,18 @@ export function ChatApp() {
     ]);
     if (file) {
       updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: null, diffView: { path, original, modified: file.content } }));
+    }
+  };
+
+  const handleFileDiffFullView = async (path: string) => {
+    if (!client || !activeId) return;
+    const sid = activeId;
+    const [file, original] = await Promise.all([
+      client.readFile(path),
+      client.readFileOriginal(path),
+    ]);
+    if (file) {
+      updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: null, diffView: { path, original, modified: file.content }, editorFullWidth: !s.editorFullWidth }));
     }
   };
 
@@ -1235,6 +1328,15 @@ export function ChatApp() {
 
   const handleEditorMount = useCallback((editor: MonacoEditor.IStandaloneCodeEditor, monaco: Monaco) => {
     editorRef.current = editor;
+    // Jump to line if specified (e.g. from search results)
+    if (openFile?.line) {
+      const line = openFile.line;
+      setTimeout(() => {
+        editor.revealLineInCenter(line);
+        editor.setPosition({ lineNumber: line, column: 1 });
+        editor.focus();
+      }, 50);
+    }
     // Cmd+Option+K: reference file/selection in chat
     editor.addAction({
       id: 'reference-in-chat',
@@ -1325,6 +1427,15 @@ export function ChatApp() {
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="7" /><path d="M16 16L21 21" strokeLinecap="round" /></svg>
             </button>
+            {hasRightPanel && editorFullWidth && (
+              <button
+                className="w-8 h-8 flex items-center justify-center rounded-md transition-colors text-violet-400 hover:text-violet-300 bg-violet-500/10 hover:bg-violet-500/20"
+                onClick={() => { if (activeId) updateLocalState(activeId, s => ({ ...s, editorFullWidth: false })); }}
+                title="Show Chat"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            )}
           </div>
 
           {/* Side Panel: Explorer or Search */}
@@ -1336,6 +1447,7 @@ export function ChatApp() {
             onToggle={() => setExplorerCollapsed(c => !c)}
             onFileOpen={handleFileOpen}
             onFileDiff={handleFileDiff}
+            onFileDiffFullView={handleFileDiffFullView}
             gitModified={gitModified}
             activeSessionId={activeId}
             onOpenTerminal={(command) => {
@@ -1422,7 +1534,7 @@ export function ChatApp() {
                   )}
                 </div>
 
-              <div className="flex-1 flex min-h-0">
+              <div ref={contentRef} className="flex-1 flex min-h-0">
                 {/* Chat panel */}
                 <div className={`flex flex-col min-w-0 overflow-hidden ${hasRightPanel && !editorFullWidth ? 'w-1/2 border-r border-border' : hasRightPanel && editorFullWidth ? 'hidden' : 'flex-1'}`}>
                   <div className="flex flex-1 min-h-0">
@@ -1486,7 +1598,7 @@ export function ChatApp() {
                       const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
 
                       return (
-                        <div className={`py-1 pl-3 ml-1 border-l-2 ${isAskUser ? 'border-violet-500/50' : 'border-amber-500/50'}`}>
+                        <div ref={permRequestRef} className={`py-1 pl-3 ml-1 border-l-2 ${isAskUser ? 'border-violet-500/50' : 'border-amber-500/50'}`}>
                           <div className="flex items-center gap-2 mb-1">
                             <span className="text-[11px] font-mono text-violet-400">{isAskUser ? 'Question' : req.toolName}</span>
                             {!isAskUser && <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>}
@@ -1974,7 +2086,7 @@ export function ChatApp() {
                         &times;
                       </button>
                     </div>
-                    <pre className="flex-1 overflow-auto px-3 py-2 text-[12px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-snug m-0 bg-transparent">
+                    <pre ref={termPanelRef} className="flex-1 overflow-auto px-3 py-2 text-[12px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-snug m-0 bg-transparent">
                       <AnsiText text={openTerminal.content} />
                       {openTerminal.exitCode === undefined && <span className="inline-block w-1.5 h-3 bg-zinc-500/60 animate-pulse ml-0.5 align-text-bottom" />}
                     </pre>
