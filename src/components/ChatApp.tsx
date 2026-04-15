@@ -296,6 +296,7 @@ export function ChatApp() {
   const [pendingTicketLink, setPendingTicketLink] = useState<BoardItem | null>(null);
   const [showTicketDropdown, setShowTicketDropdown] = useState(false);
   const [boardItems, setBoardItems] = useState<BoardItem[]>([]);
+  const [pullingComments, setPullingComments] = useState(false);
 
   const gitModifiedCacheRef = useRef<Record<string, { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>>({});
   const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
@@ -988,6 +989,92 @@ export function ChatApp() {
     clientRef.current.sendMessage(activeId, text || ' ', images);
   };
 
+  const handlePullComments = async () => {
+    if (!activeId || !clientRef.current || pullingComments) return;
+    const link = ticketLinks[activeId];
+    if (!link) return;
+
+    setPullingComments(true);
+    try {
+      const base = await resolveServerUrl();
+      const res = await fetch(`${base}/architect/items/${link.ticketId}`);
+      if (!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+      const allComments: any[] = data.comments || [];
+      const checklist = data.checklist || [];
+      const item = data.item || {};
+
+      // Filter out already-reviewed comments
+      const reviewedIds = new Set(link.reviewedCommentIds || []);
+      const newComments = allComments.filter((c: any) => !reviewedIds.has(c.id));
+
+      const isFirstReview = reviewedIds.size === 0;
+
+      // Build the message
+      const parts: string[] = [];
+
+      if (isFirstReview) {
+        // First time: include full ticket context
+        parts.push(`# Ticket ${link.humanId}: ${link.title}\n`);
+        if (item.problemStatement) parts.push(`## Problem\n${item.problemStatement}\n`);
+        if (item.intent) parts.push(`## Intent\n${item.intent}\n`);
+        if (checklist.length > 0) {
+          parts.push(`## Acceptance Criteria`);
+          checklist.forEach((c: any) => parts.push(`- [${c.completed ? 'x' : ' '}] ${c.label}`));
+          parts.push('');
+        }
+      }
+
+      if (newComments.length > 0) {
+        parts.push(isFirstReview
+          ? `## Comments (${newComments.length})\n`
+          : `## ${newComments.length} New Comment${newComments.length > 1 ? 's' : ''} on ${link.humanId}\n`
+        );
+        newComments.forEach((c: any, i: number) => {
+          parts.push(`### Comment by @${c.authorUsername} (${new Date(c.createdAt).toLocaleString()})`);
+          parts.push(c.body);
+          parts.push('');
+        });
+        parts.push(`---\nPlease review each comment. For each one, provide your opinion: do you agree, have concerns, or want to suggest changes?`);
+      } else if (isFirstReview) {
+        parts.push(`---\nNo comments on this ticket yet. Please summarize the ticket and suggest how to approach it.`);
+      } else {
+        // No new comments
+        setPullingComments(false);
+        return;
+      }
+
+      const text = parts.join('\n');
+
+      // Add as user message and send to Claude
+      const userMsg = {
+        id: crypto.randomUUID(),
+        role: 'user' as const,
+        content: text,
+        timestamp: Date.now(),
+      };
+      updateLocalState(activeId, s => ({
+        ...s,
+        messages: [...s.messages, userMsg],
+        isStreaming: true,
+        partialText: '',
+      }));
+      clientRef.current.sendMessage(activeId, text);
+
+      // Mark all comments (old + new) as reviewed
+      const allIds = allComments.map((c: any) => c.id);
+      const updatedLink = { ...link, lastReviewedAt: new Date().toISOString(), reviewedCommentIds: allIds };
+      setTicketLinks(prev => ({ ...prev, [activeId]: updatedLink }));
+      fetch(`${base}/ticket-link/${activeId}/reviewed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commentIds: allIds }),
+      }).catch(() => {});
+    } catch {} finally {
+      setPullingComments(false);
+    }
+  };
+
   const handlePermission = (requestId: string, allow: boolean, updatedInput?: Record<string, unknown>) => {
     if (!activeId || !clientRef.current) return;
     clientRef.current.respondToPermission(activeId, requestId, allow, updatedInput);
@@ -1667,20 +1754,38 @@ export function ChatApp() {
                   {/* Ticket badge */}
                   {activeId && (
                     <div className="relative">
-                      <button
-                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] transition-colors ${
-                          ticketLinks[activeId]
-                            ? 'bg-blue-500/15 text-blue-400 border border-blue-500/25 hover:bg-blue-500/25'
-                            : 'text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent'
-                        }`}
-                        onClick={(e) => { e.stopPropagation(); setShowTicketDropdown(!showTicketDropdown); }}
-                        title={ticketLinks[activeId]?.title || 'Link a ticket'}
-                      >
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" />
-                        </svg>
-                        {ticketLinks[activeId] ? ticketLinks[activeId].humanId : 'Link ticket'}
-                      </button>
+                      {ticketLinks[activeId] ? (
+                        <button
+                          className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] bg-blue-500/15 text-blue-400 border border-blue-500/25 hover:bg-blue-500/25 transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const linked = ticketLinks[activeId!];
+                            const boardItem = boardItems.find(i => i.id === linked.ticketId);
+                            if (boardItem) {
+                              setOpenTicket(boardItem);
+                              if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, diffView: null }));
+                            }
+                          }}
+                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setShowTicketDropdown(!showTicketDropdown); }}
+                          title={`${ticketLinks[activeId].humanId}: ${ticketLinks[activeId].title} (right-click to change)`}
+                        >
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" />
+                          </svg>
+                          {ticketLinks[activeId].humanId}
+                        </button>
+                      ) : (
+                        <button
+                          className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent transition-colors"
+                          onClick={(e) => { e.stopPropagation(); setShowTicketDropdown(!showTicketDropdown); }}
+                          title="Link a ticket"
+                        >
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" />
+                          </svg>
+                          Link ticket
+                        </button>
+                      )}
 
                       {showTicketDropdown && (
                         <div
@@ -1733,6 +1838,31 @@ export function ChatApp() {
                       )}
                     </div>
                   )}
+
+                  {/* Pull comments pill */}
+                  {activeId && ticketLinks[activeId] && (() => {
+                    const tl = ticketLinks[activeId];
+                    const hasReviewed = tl.reviewedCommentIds && tl.reviewedCommentIds.length > 0;
+                    return (
+                      <button
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border transition-colors disabled:opacity-50 ${
+                          hasReviewed
+                            ? 'text-zinc-500 bg-zinc-800/50 border-zinc-700 hover:bg-zinc-700/50 hover:text-zinc-300'
+                            : 'text-violet-400 bg-violet-500/10 border-violet-500/20 hover:bg-violet-500/20'
+                        }`}
+                        onClick={handlePullComments}
+                        disabled={pullingComments}
+                        title={hasReviewed ? 'Check for new comments' : 'Pull ticket comments into chat for review'}
+                      >
+                        {pullingComments ? (
+                          <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" strokeLinecap="round" /></svg>
+                        ) : (
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                        )}
+                        {hasReviewed ? 'Check new' : 'Review comments'}
+                      </button>
+                    );
+                  })()}
 
                   <span className="flex-1" />
                   {active.initInfo?.cwd && (

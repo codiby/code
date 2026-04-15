@@ -153,7 +153,7 @@ export function clearArchitectCredentials() {
 
 const TICKET_LINKS_FILE = join(homedir(), '.claude', 'ui-ticket-links.json');
 
-type TicketLink = { ticketId: string; humanId: string; title: string };
+type TicketLink = { ticketId: string; humanId: string; title: string; lastReviewedAt?: string; reviewedCommentIds?: string[] };
 
 export function loadTicketLinks(): Record<string, TicketLink> {
   try {

@@ -1071,6 +1071,22 @@ const server = Bun.serve({
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
+    const ticketReviewMatch = url.pathname.match(/^\/ticket-link\/([^/]+)\/reviewed$/);
+    if (ticketReviewMatch && req.method === 'POST') {
+      const body = await req.json() as { commentIds: string[] };
+      const link = getTicketLink(ticketReviewMatch[1]!);
+      if (link) {
+        const existing = new Set(link.reviewedCommentIds || []);
+        body.commentIds.forEach(id => existing.add(id));
+        saveTicketLink(ticketReviewMatch[1]!, {
+          ...link,
+          lastReviewedAt: new Date().toISOString(),
+          reviewedCommentIds: [...existing],
+        });
+      }
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
     if (url.pathname === '/ticket-links' && req.method === 'GET') {
       return Response.json(loadTicketLinks(), { headers: corsHeaders });
     }
