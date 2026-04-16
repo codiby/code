@@ -27,6 +27,7 @@ import {
   type SessionInitInfo,
   type SessionState,
 } from '../lib/claude-client';
+import { LspClient } from '../lib/lsp-client';
 
 // Local UI extensions on top of server SessionState
 type LocalSessionState = SessionState & {
@@ -296,6 +297,11 @@ export function ChatApp() {
   });
   const chatDragging = useRef(false);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const lspClientRef = useRef<LspClient | null>(null);
+  const lspSessionIdRef = useRef<string | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
+  const [lspStatus, setLspStatus] = useState<'off' | 'connecting' | 'running' | 'error'>('off');
+  const [lspMenu, setLspMenu] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const emptyLocalState = (): LocalSessionState => ({
@@ -1575,8 +1581,13 @@ export function ChatApp() {
     setInput(`${before}@${file.rel} `);
   };
 
+  // LSP language IDs that we support
+  const LSP_LANGUAGES = new Set(['typescript', 'typescriptreact', 'javascript', 'javascriptreact']);
+
   const handleEditorMount = useCallback((editor: MonacoEditor.IStandaloneCodeEditor, monaco: Monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
+
     // Jump to line if specified (e.g. from search results)
     if (openFile?.line) {
       const line = openFile.line;
@@ -1621,7 +1632,172 @@ export function ChatApp() {
         setTimeout(() => inputRef.current?.focus(), 50);
       },
     });
-  }, [openFile, explorerRoot]);
+
+    // --- Fix with AI (quick fix + context menu) ---
+    const fixWithAiCommandId = 'fix-with-ai-' + Math.random().toString(36).slice(2);
+    monaco.editor.registerCommand(fixWithAiCommandId, (_accessor: any, message: string) => {
+      setInput(message);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    });
+
+    monaco.languages.registerCodeActionProvider('*', {
+      provideCodeActions(model, _range, context) {
+        const diagnostics = context.markers.filter(m => m.severity >= monaco.MarkerSeverity.Warning);
+        if (diagnostics.length === 0) return { actions: [], dispose() {} };
+
+        const filePath = openFile?.path || '';
+        const relativePath = explorerRoot && filePath.startsWith(explorerRoot)
+          ? filePath.slice(explorerRoot.length + 1)
+          : filePath;
+
+        // Deduplicate by message to avoid showing identical quick fixes
+        const seen = new Set<string>();
+        const actions: any[] = [];
+        for (const marker of diagnostics) {
+          if (seen.has(marker.message)) continue;
+          seen.add(marker.message);
+          const line = marker.startLineNumber;
+          const message = `Fix this error in @${relativePath}:L${line}\n\`\`\`\n${marker.message}\n\`\`\``;
+          actions.push({
+            title: `Fix with AI: ${marker.message.slice(0, 60)}${marker.message.length > 60 ? '…' : ''}`,
+            kind: 'quickfix',
+            diagnostics: [marker],
+            command: { id: fixWithAiCommandId, title: 'Fix with AI', arguments: [message] },
+          });
+        }
+
+        return { actions, dispose() {} };
+      },
+    });
+
+    // Keybinding: Cmd+Shift+. to fix the error at cursor with AI
+    editor.addAction({
+      id: 'fix-error-with-ai',
+      label: 'Fix with AI',
+      keybindings: [
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Period,
+      ],
+      precondition: undefined,
+      run: (ed) => {
+        const position = ed.getPosition();
+        const model = ed.getModel();
+        if (!position || !model) return;
+        const markers = monaco.editor.getModelMarkers({ resource: model.uri })
+          .filter(m => m.severity >= monaco.MarkerSeverity.Warning &&
+            position.lineNumber >= m.startLineNumber && position.lineNumber <= m.endLineNumber);
+        if (markers.length === 0) return;
+        const filePath = openFile?.path || '';
+        const relativePath = explorerRoot && filePath.startsWith(explorerRoot)
+          ? filePath.slice(explorerRoot.length + 1) : filePath;
+        const seen = new Set<string>();
+        const errors: string[] = [];
+        for (const m of markers) {
+          if (seen.has(m.message)) continue;
+          seen.add(m.message);
+          errors.push(m.message);
+        }
+        const line = position.lineNumber;
+        setInput(`Fix this error in @${relativePath}:L${line}\n\`\`\`\n${errors.join('\n')}\n\`\`\``);
+        setTimeout(() => inputRef.current?.focus(), 50);
+      },
+    });
+
+    // --- LSP integration ---
+    // Disable Monaco's built-in TS/JS diagnostics — LSP provides its own
+    monaco.languages.typescript?.typescriptDefaults?.setDiagnosticsOptions({
+      noSemanticValidation: true, noSyntaxValidation: true,
+    });
+    monaco.languages.typescript?.javascriptDefaults?.setDiagnosticsOptions({
+      noSemanticValidation: true, noSyntaxValidation: true,
+    });
+
+    // Determine language from file extension
+    const model = editor.getModel();
+    const langId = model?.getLanguageId();
+    if (langId && LSP_LANGUAGES.has(langId) && activeId) {
+      // Start LSP client for this session if not already running
+      const needsNewClient = !lspClientRef.current || lspSessionIdRef.current !== activeId;
+      if (needsNewClient) {
+        lspClientRef.current?.dispose();
+        const sessionCwd = active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd || '/';
+        setLspStatus('connecting');
+        resolveServerUrl().then(serverUrl => {
+          const lsp = new LspClient({ serverUrl, sessionId: activeId!, languageId: 'typescript', rootUri: `file://${sessionCwd}`, monaco });
+          lspClientRef.current = lsp;
+          lspSessionIdRef.current = activeId;
+          lsp.start().then(() => {
+            setLspStatus('running');
+            // Open the current document
+            if (openFile) {
+              lsp.openDocument(openFile.path, openFile.content, langId);
+            }
+          }).catch((e) => {
+            console.warn('LSP start failed:', e);
+            setLspStatus('error');
+          });
+        });
+      } else if (lspClientRef.current && openFile) {
+        // LSP already running — just open this document
+        lspClientRef.current.openDocument(openFile.path, openFile.content, langId);
+      }
+
+      // Listen for content changes to sync with LSP
+      const changeDisposable = editor.onDidChangeModelContent(() => {
+        const content = editor.getModel()?.getValue();
+        if (content !== undefined && openFile?.path && lspClientRef.current) {
+          lspClientRef.current.changeDocument(openFile.path, content);
+        }
+      });
+      // Clean up on next mount
+      return () => changeDisposable.dispose();
+    }
+  }, [openFile, explorerRoot, activeId]);
+
+  // Track previous openFile path to close documents in LSP when switching files
+  const prevOpenFilePathRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prevPath = prevOpenFilePathRef.current;
+    const newPath = openFile?.path || null;
+    if (prevPath && prevPath !== newPath && lspClientRef.current) {
+      lspClientRef.current.closeDocument(prevPath);
+    }
+    prevOpenFilePathRef.current = newPath;
+  }, [openFile?.path]);
+
+  const restartLsp = useCallback(async () => {
+    if (!activeId || !monacoRef.current) return;
+    lspClientRef.current?.dispose();
+    lspClientRef.current = null;
+    lspSessionIdRef.current = null;
+    setLspStatus('connecting');
+    const sessionCwd = active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd || '/';
+    const serverUrl = await resolveServerUrl();
+    const monaco = monacoRef.current;
+    const lsp = new LspClient({ serverUrl, sessionId: activeId, languageId: 'typescript', rootUri: `file://${sessionCwd}`, monaco });
+    lspClientRef.current = lsp;
+    lspSessionIdRef.current = activeId;
+    try {
+      await lsp.start();
+      setLspStatus('running');
+      if (openFile) {
+        const langId = monaco.editor.getModel(monaco.Uri.file(openFile.path))?.getLanguageId();
+        lsp.openDocument(openFile.path, openFile.content, langId);
+      }
+    } catch (e) {
+      console.warn('LSP restart failed:', e);
+      setLspStatus('error');
+    }
+  }, [activeId, active.initInfo?.cwd, openFile]);
+
+  // Dispose LSP client when session changes or component unmounts
+  useEffect(() => {
+    return () => {
+      lspClientRef.current?.dispose();
+      lspClientRef.current = null;
+      lspSessionIdRef.current = null;
+      setLspStatus('off');
+    };
+  }, []);
 
   return (
     <Providers>
@@ -2725,6 +2901,50 @@ export function ChatApp() {
             {activeSession?.permission_mode && activeSession.permission_mode !== 'default' && (
               <span className={`px-1 rounded ${activeSession.permission_mode === 'plan' ? 'text-violet-400 bg-violet-400/10' : activeSession.permission_mode === 'acceptEdits' ? 'text-green-400 bg-green-400/10' : 'text-amber-400 bg-amber-400/10'}`}>
                 {activeSession.permission_mode}
+              </span>
+            )}
+            {lspStatus !== 'off' && (
+              <span className="relative">
+                <button
+                  className={`flex items-center gap-1 px-1 rounded text-[11px] cursor-pointer hover:brightness-125 transition-all ${
+                    lspStatus === 'running' ? 'text-blue-400 bg-blue-400/10' :
+                    lspStatus === 'connecting' ? 'text-amber-400 bg-amber-400/10' :
+                    'text-red-400 bg-red-400/10'
+                  }`}
+                  onClick={() => setLspMenu(m => !m)}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    lspStatus === 'running' ? 'bg-blue-400' :
+                    lspStatus === 'connecting' ? 'bg-amber-400 animate-pulse' :
+                    'bg-red-400'
+                  }`} />
+                  LSP
+                </button>
+                {lspMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setLspMenu(false)} />
+                    <div className="absolute bottom-6 right-0 z-50 bg-[#2a2a2a] border border-border-light rounded-lg shadow-xl py-1 min-w-[140px]">
+                      <button
+                        className="w-full px-3 py-1.5 text-left text-[12px] text-zinc-300 hover:bg-surface-light transition-colors"
+                        onClick={() => { setLspMenu(false); restartLsp(); }}
+                      >
+                        Restart LSP Server
+                      </button>
+                      <button
+                        className="w-full px-3 py-1.5 text-left text-[12px] text-zinc-300 hover:bg-surface-light transition-colors"
+                        onClick={() => {
+                          setLspMenu(false);
+                          lspClientRef.current?.dispose();
+                          lspClientRef.current = null;
+                          lspSessionIdRef.current = null;
+                          setLspStatus('off');
+                        }}
+                      >
+                        Stop LSP Server
+                      </button>
+                    </div>
+                  </>
+                )}
               </span>
             )}
             {active.contextTokens > 0 && (() => {

@@ -22,6 +22,7 @@ import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTr
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout } from './handlers/git';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree } from './handlers/worktree';
+import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { registerShutdownHandlers } from './shutdown';
 import { ensureMcpConfig } from './ensure-mcp-config';
 import { handleMcpRequest, setMcpServerPort } from './mcp';
@@ -678,6 +679,14 @@ const server = Bun.serve({
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
+    // LSP WebSocket — /lsp/ws/{sessionId}/{languageId}
+    const lspWsMatch = url.pathname.match(/^\/lsp\/ws\/([^/]+)\/([^/]+)$/);
+    if (lspWsMatch) {
+      const [, sessionId, languageId] = lspWsMatch;
+      const upgraded = server.upgrade(req, { data: { type: 'lsp', sessionId, languageId } });
+      return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
+    }
+
     // -----------------------------------------------------------------------
     // Sessions
     // -----------------------------------------------------------------------
@@ -1146,6 +1155,12 @@ const server = Bun.serve({
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
+    // ── LSP ─────────────────────────────────────────────────────────────
+
+    if (url.pathname === '/lsp/languages' && req.method === 'GET') {
+      return Response.json(supportedLanguages(), { headers: corsHeaders });
+    }
+
     // ── Health ──────────────────────────────────────────────────────────
 
     if (url.pathname === '/health') {
@@ -1223,6 +1238,16 @@ const server = Bun.serve({
         return;
       }
 
+      // LSP WebSocket
+      if (type === 'lsp') {
+        const { sessionId: sid, languageId } = ws.data as any;
+        const lsp = getOrCreateLsp(sid, languageId);
+        if (!lsp) { ws.close(4002, 'No language server available'); return; }
+        addLspClient(lsp, ws);
+        log(`[LSP] Client connected session=${sid?.slice(0, 8)} lang=${languageId}`);
+        return;
+      }
+
       // Claude CLI WebSocket
       if (type === 'claude') {
         const session = sessions.get(sessionId!);
@@ -1248,6 +1273,18 @@ const server = Bun.serve({
       const { type, sessionId, procId } = ws.data as { type: string; sessionId?: string; procId?: string };
 
       if (type === 'terminal') return;
+
+      // LSP — forward message to language server stdin
+      if (type === 'lsp') {
+        const { sessionId: sid, languageId } = ws.data as any;
+        const lsp = getOrCreateLsp(sid, languageId);
+        if (!lsp) return;
+        try {
+          const json = JSON.parse(typeof message === 'string' ? message : new TextDecoder().decode(message as ArrayBuffer));
+          sendToLsp(lsp, json);
+        } catch {}
+        return;
+      }
 
       // Multiplexed frontend WebSocket
       if (type === 'frontend') {
@@ -1297,6 +1334,14 @@ const server = Bun.serve({
         frontendClients.delete(ws);
         subscriptions.delete(ws);
         log(`[/ws] Frontend client disconnected (${frontendClients.size} remaining)`);
+        return;
+      }
+
+      if (type === 'lsp') {
+        const { sessionId: sid, languageId } = ws.data as any;
+        const lsp = getOrCreateLsp(sid, languageId);
+        if (lsp) removeLspClient(lsp, ws);
+        log(`[LSP] Client disconnected session=${sid?.slice(0, 8)} lang=${languageId}`);
         return;
       }
 

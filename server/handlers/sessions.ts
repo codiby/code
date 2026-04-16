@@ -4,6 +4,7 @@ import { spawnClaude } from '../claude';
 import { corsHeaders, CWD, PORT } from '../config';
 import { log } from '../logger';
 import { trackedProcesses, killProcessTree, saveProcessRegistry } from './processes';
+import { killSessionLsp } from './lsp';
 import type { Session } from '../types';
 
 export async function handleCreateSession(req: Request, port: number): Promise<Response> {
@@ -114,6 +115,9 @@ export function handleStopSession(sessionId: string): Response {
   }
   saveProcessRegistry();
 
+  // Kill LSP servers for this session
+  killSessionLsp(sessionId);
+
   session.ready = false;
   session.status = 'stopped';
   saveSessions();
@@ -137,6 +141,7 @@ export function handleDeleteSession(sessionId: string): Response {
   if (session.claudeWs) {
     (session.claudeWs as any).close();
   }
+  killSessionLsp(sessionId);
   sessions.delete(sessionId);
   saveSessions();
   log(`[${sessionId.slice(0, 8)}] Session deleted`);
