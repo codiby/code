@@ -199,6 +199,7 @@ function renderMarkdown(source: string): string {
 }
 
 export function Markdown({ text, className }: { text: string; className?: string }) {
+  if (!text) return null;
   const html = renderMarkdown(text);
   return (
     <div

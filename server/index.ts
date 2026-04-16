@@ -15,7 +15,7 @@ import { spawn } from 'child_process';
 import { PORT, CLAUDE_BIN, corsHeaders, ACCEPT_EDITS_TOOLS, CWD } from './config';
 import { log } from './logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON } from './sessions';
-import { handleCreateSession, handleResumeSession, handleRenameSession, handleDeleteSession } from './handlers/sessions';
+import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession } from './handlers/sessions';
 import { handleListDirs, handleListFiles, handleFileIndex } from './handlers/files';
 import { handleExecCreate, terminalWsOpen, terminalWsClose } from './handlers/exec';
 import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput } from './handlers/processes';
@@ -34,7 +34,7 @@ import {
   clearSessionState,
 } from './state';
 import type { ChatMessage, PermissionRequest } from './state';
-import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink, loadPRLinks, savePRLink, removePRLink, getPRLink } from './storage';
+import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink, loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences } from './storage';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -607,12 +607,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!session) return;
     session.permissionMode = mode;
     saveSessions();
-    // Notify all subscribed clients
-    broadcastToSession(sessionId, {
-      type: 'session_state',
-      sessionId,
-      state: getStateForClient(sessionId),
-    });
+    broadcastSessionList();
     return;
   }
 }
@@ -702,6 +697,13 @@ const server = Bun.serve({
     const resumeMatch = url.pathname.match(/^\/sessions\/(.+)\/resume$/);
     if (resumeMatch && req.method === 'POST') {
       const resp = handleResumeSession(resumeMatch[1]!, server.port);
+      broadcastSessionList();
+      return resp;
+    }
+
+    const stopMatch = url.pathname.match(/^\/sessions\/(.+)\/stop$/);
+    if (stopMatch && req.method === 'POST') {
+      const resp = handleStopSession(stopMatch[1]!);
       broadcastSessionList();
       return resp;
     }
@@ -1128,6 +1130,20 @@ const server = Bun.serve({
       } catch (e: any) {
         return Response.json({ error: e.message || String(e) }, { status: 502, headers: corsHeaders });
       }
+    }
+
+    // ── Preferences ──────────────────────────────────────────────────
+
+    if (url.pathname === '/preferences' && req.method === 'GET') {
+      return Response.json(loadPreferences(), { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/preferences' && req.method === 'PUT') {
+      const body = await req.json() as Record<string, unknown>;
+      const prefs = loadPreferences();
+      Object.assign(prefs, body);
+      savePreferences(prefs);
+      return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
     // ── Health ──────────────────────────────────────────────────────────

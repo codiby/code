@@ -94,8 +94,8 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, turnCompl
   );
 }
 
-function SortableGroupTab({ group, memberCount, isExpanded, hasActive, onToggle, onRename, onMenuOpen }: {
-  group: TabGroup; memberCount: number; isExpanded: boolean; hasActive: boolean;
+function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivity, onToggle, onRename, onMenuOpen }: {
+  group: TabGroup; memberCount: number; isExpanded: boolean; hasActive: boolean; hasActivity?: boolean;
   onToggle: () => void; onRename: (name: string) => void; onMenuOpen: (rect: DOMRect) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isOver } = useSortable({ id: `group::${group.id}` });
@@ -112,7 +112,7 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, onToggle,
       className={`group relative flex items-center gap-1.5 px-3 h-[30px] text-[12px] cursor-pointer shrink-0 rounded-md transition-colors ${colors.bg} border ${colors.border} ${isOver ? `ring-1 ${colors.ring}` : ''} ${hasActive && !isExpanded ? 'text-zinc-200' : 'text-zinc-400 hover:text-zinc-300'}`}
       onClick={onToggle}
     >
-      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colors.dot}`} />
+      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colors.dot} ${hasActivity ? 'animate-pulse' : ''}`} />
       {editing ? (
         <input ref={inputRef} value={name} onChange={e => setName(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') { onRename(name); setEditing(false); } if (e.key === 'Escape') setEditing(false); }}
@@ -245,6 +245,7 @@ export const TabBar = memo(function TabBar(props: Props) {
                 <div key={`grp-${item.groupId}`} className={`flex items-center gap-0.5 ${isExpanded ? `rounded-lg ${colors.bg} px-0.5` : ''}`}>
                   <SortableGroupTab
                     group={group} memberCount={item.members.length} isExpanded={isExpanded} hasActive={hasActive}
+                    hasActivity={!isExpanded && item.members.some(m => sessionHasPermission[m.id])}
                     onToggle={() => onToggleGroup(item.groupId)}
                     onRename={name => onRenameGroup(item.groupId, name)}
                     onMenuOpen={rect => setGroupMenu({ groupId: item.groupId, rect })}

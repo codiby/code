@@ -3,6 +3,7 @@ import { sessions, saveSessions, sessionToJSON } from '../sessions';
 import { spawnClaude } from '../claude';
 import { corsHeaders, CWD, PORT } from '../config';
 import { log } from '../logger';
+import { trackedProcesses, killProcessTree, saveProcessRegistry } from './processes';
 import type { Session } from '../types';
 
 export async function handleCreateSession(req: Request, port: number): Promise<Response> {
@@ -81,6 +82,44 @@ export async function handleRenameSession(sessionId: string, req: Request): Prom
     saveSessions();
   } catch {}
   return Response.json(sessionToJSON(session, PORT), { headers: corsHeaders });
+}
+
+export function handleStopSession(sessionId: string): Response {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
+  }
+
+  // Kill Claude process
+  if (session.process) {
+    session.process.kill('SIGTERM');
+    session.process = null;
+  }
+  // Close Claude WebSocket
+  if (session.claudeWs) {
+    try { (session.claudeWs as any).close(); } catch {}
+    session.claudeWs = null;
+  }
+  // Close browser WebSockets
+  for (const ws of session.browserWs) {
+    try { ws.close(); } catch {}
+  }
+  session.browserWs.clear();
+  // Kill tracked terminal processes for this session
+  for (const [id, tp] of trackedProcesses) {
+    if (tp.sessionId !== sessionId) continue;
+    killProcessTree(tp.pid);
+    try { tp.proc?.kill('SIGKILL'); } catch {}
+    trackedProcesses.delete(id);
+  }
+  saveProcessRegistry();
+
+  session.ready = false;
+  session.status = 'stopped';
+  saveSessions();
+  log(`[${sessionId.slice(0, 8)}] Session stopped (tab closed)`);
+
+  return Response.json({ ok: true }, { headers: corsHeaders });
 }
 
 export function handleDeleteSession(sessionId: string): Response {

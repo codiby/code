@@ -3,6 +3,19 @@
  * All state lives on the server. The client is a stateless viewer.
  */
 
+export async function resolveServerUrl(): Promise<string> {
+  if ((window as any).__TAURI_INTERNALS__) {
+    try {
+      const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
+      const port = await invoke<number>('get_bridge_port');
+      return `http://localhost:${port}`;
+    } catch (e) {
+      console.error('Bridge server not found:', e);
+    }
+  }
+  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3111';
+}
+
 export type MessageRole = 'user' | 'assistant' | 'system';
 
 export interface ChatMessage {
@@ -273,6 +286,10 @@ export class ClaudeClient {
     });
     if (!resp.ok) throw new Error(`Failed to rename: ${resp.status}`);
     return resp.json();
+  }
+
+  async stopSession(sessionId: string): Promise<void> {
+    await fetch(`${this.serverUrl}/sessions/${sessionId}/stop`, { method: 'POST' });
   }
 
   async deleteSession(sessionId: string): Promise<void> {

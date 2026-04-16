@@ -19,6 +19,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from '@tauri
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   ClaudeClient,
+  resolveServerUrl,
   type ChatMessage,
   type ConnectionStatus,
   type PermissionRequest,
@@ -26,20 +27,6 @@ import {
   type SessionInitInfo,
   type SessionState,
 } from '../lib/claude-client';
-
-async function resolveServerUrl(): Promise<string> {
-  // Check if running inside Tauri
-  if ((window as any).__TAURI_INTERNALS__) {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const port = await invoke<number>('get_bridge_port');
-      return `http://localhost:${port}`;
-    } catch (e) {
-      console.error('Bridge server not found:', e);
-    }
-  }
-  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3111';
-}
 
 // Local UI extensions on top of server SessionState
 type LocalSessionState = SessionState & {
@@ -179,30 +166,24 @@ function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: Claude
 
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  // TODO: move to server
-  const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
-    catch { return new Set(); }
-  });
+  const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(new Set());
+  const closedIdsRef = useRef(closedSessionIds);
   const [activeId, setActiveId] = useState<string | null>(null);
-  // TODO: move to server
-  const [tabOrder, setTabOrder] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('claude-ui-tab-order') || '[]'); }
-    catch { return []; }
-  });
-  // Tab groups — TODO: move to server
-  const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string }>>(() => {
-    try { return JSON.parse(localStorage.getItem('claude-ui-tab-groups') || '{}').groups || {}; }
-    catch { return {}; }
-  });
-  const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>(() => {
-    try { return JSON.parse(localStorage.getItem('claude-ui-tab-groups') || '{}').map || {}; }
-    catch { return {}; }
-  });
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
+  const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string }>>({});
+  const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
 
-  const persistGroups = (groups: typeof tabGroups, map: typeof tabGroupMap) => {
-    try { localStorage.setItem('claude-ui-tab-groups', JSON.stringify({ groups, map })); } catch {}
+  // Preferences are loaded inside the client connection effect below (before WS connect)
+
+  const persistPrefs = (patch: Record<string, unknown>) => {
+    resolveServerUrl().then(base =>
+      fetch(`${base}/preferences`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      }).catch(() => {})
+    );
   };
 
   const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
@@ -217,7 +198,7 @@ export function ChatApp() {
     setTabGroups(newGroups);
     setTabGroupMap(newMap);
     setExpandedGroupId(groupId);
-    persistGroups(newGroups, newMap);
+    persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
   };
 
   const handleGroupTabs = (tabIdA: string, tabIdB: string) => {
@@ -228,7 +209,7 @@ export function ChatApp() {
     const newMap = { ...tabGroupMap, [tabId]: groupId };
     setTabGroupMap(newMap);
     setExpandedGroupId(groupId);
-    persistGroups(tabGroups, newMap);
+    persistPrefs({ tabGroupMap: newMap });
   };
 
   const handleUngroupTab = (tabId: string) => {
@@ -243,7 +224,7 @@ export function ChatApp() {
     }
     setTabGroupMap(newMap);
     setTabGroups(newGroups);
-    persistGroups(newGroups, newMap);
+    persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
   };
 
   const lastActivePerGroup = useRef<Record<string, string>>({});
@@ -270,13 +251,13 @@ export function ChatApp() {
   const handleRenameGroup = (groupId: string, name: string) => {
     const newGroups = { ...tabGroups, [groupId]: { ...tabGroups[groupId]!, name } };
     setTabGroups(newGroups);
-    persistGroups(newGroups, tabGroupMap);
+    persistPrefs({ tabGroups: newGroups });
   };
 
   const handleChangeGroupColor = (groupId: string, color: string) => {
     const newGroups = { ...tabGroups, [groupId]: { ...tabGroups[groupId]!, color } };
     setTabGroups(newGroups);
-    persistGroups(newGroups, tabGroupMap);
+    persistPrefs({ tabGroups: newGroups });
   };
 
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
@@ -378,20 +359,28 @@ export function ChatApp() {
 
   useEffect(() => {
     let cancelled = false;
-    resolveServerUrl().then(serverUrl => {
+    resolveServerUrl().then(async serverUrl => {
+      if (cancelled) return;
+
+      // Load preferences before connecting so closedIdsRef is populated
+      try {
+        const prefs = await fetch(`${serverUrl}/preferences`).then(r => r.ok ? r.json() : {});
+        if (cancelled) return;
+        if (prefs.closedSessionIds) { const s = new Set<string>(prefs.closedSessionIds); setClosedSessionIds(s); closedIdsRef.current = s; }
+        if (prefs.tabOrder) setTabOrder(prefs.tabOrder);
+        if (prefs.tabGroups) setTabGroups(prefs.tabGroups);
+        if (prefs.tabGroupMap) setTabGroupMap(prefs.tabGroupMap);
+      } catch {}
+
       if (cancelled) return;
 
       const c = new ClaudeClient(serverUrl, {
         onSessions: (list) => {
           setSessions(list);
           // Subscribe to open sessions that aren't already subscribed
-          let closed: Set<string>;
-          try { closed = new Set(JSON.parse(localStorage.getItem('claude-ui-closed-tabs') || '[]')); }
-          catch { closed = new Set(); }
-
           const toSubscribe: string[] = [];
           for (const s of list) {
-            if (closed.has(s.id)) continue;
+            if (closedIdsRef.current.has(s.id)) continue;
             if (subscribedRef.current.has(s.id)) continue;
             subscribedRef.current.add(s.id);
             toSubscribe.push(s.id);
@@ -410,7 +399,7 @@ export function ChatApp() {
           }
 
           // Select first open session
-          const openList = list.filter(s => !closed.has(s.id));
+          const openList = list.filter(s => !closedIdsRef.current.has(s.id));
           setActiveId(prev => {
             if (prev) return prev;
             // Restore session from URL hash
@@ -629,16 +618,7 @@ export function ChatApp() {
   // Load ticket links and board items
   useEffect(() => {
     async function loadTicketData() {
-      let base: string;
-      try {
-        if ((window as any).__TAURI_INTERNALS__) {
-          const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
-          const port = await invoke<number>('get_bridge_port');
-          base = `http://localhost:${port}`;
-        } else {
-          base = (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
-        }
-      } catch { base = 'http://localhost:3100'; }
+      const base = await resolveServerUrl();
       try {
         const [linksRes, prLinksRes, itemsRes] = await Promise.all([
           fetch(`${base}/ticket-links`),
@@ -767,7 +747,6 @@ export function ChatApp() {
     if (!c) return;
     try {
       const session = await c.createSession(cwd);
-      setSessions(prev => [session, ...prev]);
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
@@ -829,7 +808,8 @@ export function ChatApp() {
   const updateClosedIds = (fn: (prev: Set<string>) => Set<string>) => {
     setClosedSessionIds(prev => {
       const next = fn(prev);
-      try { localStorage.setItem('claude-ui-closed-tabs', JSON.stringify([...next])); } catch {}
+      closedIdsRef.current = next;
+      persistPrefs({ closedSessionIds: [...next] });
       return next;
     });
   };
@@ -837,31 +817,34 @@ export function ChatApp() {
   const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
   const [unsavedClosePrompt, setUnsavedClosePrompt] = useState(false);
 
+  const closeTab = (id: string) => {
+    clientRef.current?.unsubscribe(id);
+    subscribedRef.current.delete(id);
+    clientRef.current?.stopSession(id).catch(() => {});
+    setSessionStates(prev => { const next = { ...prev }; delete next[id]; return next; });
+    updateClosedIds(prev => new Set(prev).add(id));
+    if (activeId === id) {
+      const openSessions = sessions.filter(s => s.id !== id && !closedSessionIds.has(s.id));
+      setActiveId(openSessions.length > 0 ? openSessions[0]!.id : null);
+    }
+  };
+
   const handleCloseTab = (id: string) => {
-    setClosingSessionId(id);
+    const state = getState(id);
+    const hasRunningProcesses = state.isStreaming ||
+      state.messages.some(m => m.isTerminal && m.exitCode === undefined && m.terminalCommand);
+    if (hasRunningProcesses) {
+      setClosingSessionId(id);
+    } else {
+      closeTab(id);
+    }
   };
 
   const confirmCloseTab = async () => {
     const id = closingSessionId;
     if (!id) return;
     setClosingSessionId(null);
-
-    // Save running terminal commands
-    const state = getState(id);
-    const runningCmds = state.messages
-      .filter(m => m.isTerminal && m.exitCode === undefined && m.terminalCommand)
-      .map(m => m.terminalCommand!);
-    if (clientRef.current && runningCmds.length > 0) {
-      await clientRef.current.saveCommands(id, runningCmds);
-    }
-
-    clientRef.current?.unsubscribe(id);
-    subscribedRef.current.delete(id);
-    updateClosedIds(prev => new Set(prev).add(id));
-    if (activeId === id) {
-      const openSessions = sessions.filter(s => s.id !== id && !closedSessionIds.has(s.id));
-      setActiveId(openSessions.length > 0 ? openSessions[0]!.id : null);
-    }
+    closeTab(id);
   };
 
   const [restoreSessionId, setRestoreSessionId] = useState<string | null>(null);
@@ -1424,7 +1407,7 @@ export function ChatApp() {
       if (fromIdx === -1 || toIdx === -1) return prev;
       order.splice(fromIdx, 1);
       order.splice(toIdx, 0, fromId);
-      try { localStorage.setItem('claude-ui-tab-order', JSON.stringify(order)); } catch {}
+      persistPrefs({ tabOrder: order });
       return order;
     });
   };
@@ -1509,11 +1492,62 @@ export function ChatApp() {
       try {
         const fresh = await clientRef.current.createSession(cwd);
         await clientRef.current.deleteSession(oldId);
-        setSessions(prev => prev.filter(s => s.id !== oldId).concat(fresh));
         setActiveId(fresh.id);
         clientRef.current.subscribe(fresh.id);
         subscribedRef.current.add(fresh.id);
       } catch {}
+    } },
+    { id: 'organize-tabs', label: 'Organize Tabs by Folder', section: 'Sessions', onRun: async () => {
+      const c = clientRef.current;
+      if (!c) return;
+      const openSessions = sessions.filter(s => !closedSessionIds.has(s.id));
+      // Resolve the main repo path for each session's cwd via git info
+      const cwds = openSessions.map(s => getState(s.id).initInfo?.cwd || s.cwd || '/');
+      const uniqueCwds = [...new Set(cwds)];
+      const gitInfos = await Promise.all(uniqueCwds.map(cwd => c.getGitInfo(cwd).catch(() => ({ is_git: false as const }))));
+      const cwdToFolder: Record<string, string> = {};
+      for (let i = 0; i < uniqueCwds.length; i++) {
+        const info = gitInfos[i]!;
+        let repoPath: string;
+        if (info.is_git && info.worktrees?.length) {
+          // First worktree is always the main repo
+          repoPath = info.worktrees[0]!.path;
+        } else if (info.is_git && info.top_level) {
+          repoPath = info.top_level;
+        } else {
+          repoPath = uniqueCwds[i]!;
+        }
+        cwdToFolder[uniqueCwds[i]!] = repoPath.split('/').filter(Boolean).pop() || '/';
+      }
+      // Group sessions by resolved folder name
+      const folderMap: Record<string, string[]> = {};
+      for (const s of openSessions) {
+        const cwd = getState(s.id).initInfo?.cwd || s.cwd || '/';
+        const folder = cwdToFolder[cwd] || cwd.split('/').filter(Boolean).pop() || '/';
+        (folderMap[folder] ||= []).push(s.id);
+      }
+      const newGroups = { ...tabGroups };
+      const newMap = { ...tabGroupMap };
+      // Remove existing group assignments for open sessions
+      for (const s of openSessions) delete newMap[s.id];
+      // Clean up now-empty groups
+      const usedGroupIds = new Set(Object.values(newMap));
+      for (const gid of Object.keys(newGroups)) {
+        if (!usedGroupIds.has(gid)) delete newGroups[gid];
+      }
+      for (const [folder, ids] of Object.entries(folderMap)) {
+        if (ids.length < 1) continue;
+        let groupId = Object.keys(newGroups).find(gid => newGroups[gid]!.name === folder);
+        if (!groupId) {
+          groupId = crypto.randomUUID();
+          const color = GROUP_COLORS[groupColorIdx++ % GROUP_COLORS.length]!;
+          newGroups[groupId] = { id: groupId, name: folder, color };
+        }
+        for (const id of ids) newMap[id] = groupId;
+      }
+      setTabGroups(newGroups);
+      setTabGroupMap(newMap);
+      persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
     } },
     { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
     ...(activeId && active.isStreaming ? [{ id: 'stop', label: 'Stop Generation', keys: ['escape'] as string[], section: 'Session', onRun: handleInterrupt }] : []),

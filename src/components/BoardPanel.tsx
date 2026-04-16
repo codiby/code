@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { resolveServerUrl } from '../lib/claude-client';
 
 interface BoardItem {
   id: string;
@@ -46,17 +47,6 @@ const COLUMN_DOTS: Record<string, string> = {
   uat: 'bg-orange-400',
   done: 'bg-green-400',
 };
-
-async function resolveServerUrl(): Promise<string> {
-  if ((window as any).__TAURI_INTERNALS__) {
-    try {
-      const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
-      const port = await invoke<number>('get_bridge_port');
-      return `http://localhost:${port}`;
-    } catch {}
-  }
-  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
-}
 
 export function BoardPanel({ onClose, onOpenTicket, onNewSession }: {
   onClose: () => void;

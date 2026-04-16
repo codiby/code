@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Markdown } from './Markdown';
+import { resolveServerUrl } from '../lib/claude-client';
 
 interface PRInfo {
   number: number;
@@ -39,17 +40,6 @@ const STATE_COLORS: Record<string, string> = {
   MERGED: 'bg-violet-500',
   CLOSED: 'bg-zinc-600',
 };
-
-async function resolveServerUrl(): Promise<string> {
-  if ((window as any).__TAURI_INTERNALS__) {
-    try {
-      const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
-      const port = await invoke<number>('get_bridge_port');
-      return `http://localhost:${port}`;
-    } catch {}
-  }
-  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
-}
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();

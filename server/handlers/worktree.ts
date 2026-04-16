@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
-import { existsSync } from 'fs';
-import { basename } from 'path';
+import { existsSync, mkdirSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { corsHeaders } from '../config';
 
 /**
@@ -29,7 +29,9 @@ export async function handleCreateWorktree(req: Request): Promise<Response> {
   }
 
   const safeBranch = branchName.replace(/[^a-zA-Z0-9_\-/.]/g, '-');
-  const wtPath = `${repoPath}/../${basename(repoPath)}-wt-${safeBranch}`;
+  const wtDir = join(dirname(repoPath), '.wt');
+  if (!existsSync(wtDir)) mkdirSync(wtDir, { recursive: true });
+  const wtPath = join(wtDir, safeBranch);
 
   const stream = new ReadableStream({
     async start(controller) {

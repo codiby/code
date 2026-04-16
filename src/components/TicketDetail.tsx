@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { BoardItem } from './BoardPanel';
 import { Markdown } from './Markdown';
+import { resolveServerUrl } from '../lib/claude-client';
 
 const COLUMN_LABELS: Record<string, string> = {
   blocked: 'Blocked', product_review: 'Product Review',
@@ -52,17 +53,6 @@ interface FullItemData {
   comments: Comment[];
   checklist: ChecklistItem[];
   activity: Activity[];
-}
-
-async function resolveServerUrl(): Promise<string> {
-  if ((window as any).__TAURI_INTERNALS__) {
-    try {
-      const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
-      const port = await invoke<number>('get_bridge_port');
-      return `http://localhost:${port}`;
-    } catch {}
-  }
-  return (import.meta as any).env?.PUBLIC_CLAUDE_SERVER_URL || 'http://localhost:3100';
 }
 
 function timeAgo(dateStr: string): string {
