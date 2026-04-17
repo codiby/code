@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { sessions, saveSessions, sessionToJSON } from '../sessions';
 import { spawnClaude } from '../claude';
-import { corsHeaders, CWD, PORT } from '../config';
+import { corsHeaders, CWD, PORT, MAIN_SESSION_ID } from '../config';
 import { log } from '../logger';
 import { trackedProcesses, killProcessTree, saveProcessRegistry } from './processes';
 import { killSessionLsp } from './lsp';
@@ -127,6 +127,9 @@ export function handleStopSession(sessionId: string): Response {
 }
 
 export function handleDeleteSession(sessionId: string): Response {
+  if (sessionId === MAIN_SESSION_ID) {
+    return Response.json({ error: 'Cannot delete main session' }, { status: 403, headers: corsHeaders });
+  }
   const session = sessions.get(sessionId);
   if (!session) {
     return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });

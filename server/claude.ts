@@ -4,7 +4,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { log, logError } from './logger';
 import { CLAUDE_BIN } from './config';
-import { sessions, saveSessions, broadcast } from './sessions';
+import { sessions, broadcast } from './sessions';
 import type { Session } from './types';
 
 export function spawnClaude(session: Session, port: number, resumeSessionId?: string) {

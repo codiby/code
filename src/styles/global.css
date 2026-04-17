@@ -75,3 +75,26 @@ code {
 .monaco-editor .margin-view-overlays .glyph-margin {
   cursor: pointer;
 }
+
+/* Debugger decorations */
+.debug-breakpoint {
+  background: #e51400;
+  border-radius: 50%;
+  width: 10px !important;
+  height: 10px !important;
+  margin-left: 4px;
+  margin-top: 5px;
+}
+
+.debug-current-line {
+  background: rgba(255, 200, 0, 0.12) !important;
+}
+
+.debug-current-arrow {
+  background: #ffcc00;
+  clip-path: polygon(20% 0%, 100% 50%, 20% 100%);
+  width: 10px !important;
+  height: 10px !important;
+  margin-left: 4px;
+  margin-top: 5px;
+}

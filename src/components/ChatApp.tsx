@@ -28,6 +28,7 @@ import {
   type SessionState,
 } from '../lib/claude-client';
 import { LspClient } from '../lib/lsp-client';
+import { DebugPanel } from './DebugPanel';
 
 // Local UI extensions on top of server SessionState
 type LocalSessionState = SessionState & {
@@ -289,6 +290,7 @@ export function ChatApp() {
   const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
+  const serverUrlRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const permRequestRef = useRef<HTMLDivElement>(null);
   const [chatSplitPct, setChatSplitPct] = useState(() => {
@@ -302,6 +304,10 @@ export function ChatApp() {
   const monacoRef = useRef<Monaco | null>(null);
   const [lspStatus, setLspStatus] = useState<'off' | 'connecting' | 'running' | 'error'>('off');
   const [lspMenu, setLspMenu] = useState(false);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  const [debugBreakpoints, setDebugBreakpoints] = useState<{ file: string; line: number; enabled: boolean }[]>([]);
+  const [debugLine, setDebugLine] = useState<{ file: string; line: number } | null>(null);
+  const debugDecorationsRef = useRef<string[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const emptyLocalState = (): LocalSessionState => ({
@@ -367,6 +373,7 @@ export function ChatApp() {
     let cancelled = false;
     resolveServerUrl().then(async serverUrl => {
       if (cancelled) return;
+      serverUrlRef.current = serverUrl;
 
       // Load preferences before connecting so closedIdsRef is populated
       try {
@@ -463,10 +470,13 @@ export function ChatApp() {
         onMessage: (sid, msg) => {
           setSessionStates(prev => {
             const s = prev[sid] || emptyLocalState();
-            // Skip user messages relayed from server — already added locally
-            if (msg.role === 'user') return prev;
-            // Deduplicate — message may already exist from session_state restore
+            // Deduplicate by ID — message may already exist from session_state restore
             if (s.messages.some(m => m.id === msg.id)) return prev;
+            // For user messages, also skip if we already added an equivalent one
+            // locally (optimistic UI uses a different client-generated ID).
+            if (msg.role === 'user' && s.messages.some(m =>
+              m.role === 'user' && m.content === msg.content && Math.abs(m.timestamp - msg.timestamp) < 5000
+            )) return prev;
             const contextTokens = msg.usage
               ? msg.usage.input_tokens + msg.usage.output_tokens
               : s.contextTokens;
@@ -1702,6 +1712,21 @@ export function ChatApp() {
       },
     });
 
+    // --- Breakpoint gutter ---
+    editor.onMouseDown((e) => {
+      if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && e.target.position) {
+        const line = e.target.position.lineNumber;
+        const filePath = openFile?.path;
+        if (filePath) {
+          setDebugBreakpoints(prev => {
+            const existing = prev.find(bp => bp.file === filePath && bp.line === line);
+            if (existing) return prev.filter(bp => bp !== existing);
+            return [...prev, { file: filePath, line, enabled: true }];
+          });
+        }
+      }
+    });
+
     // --- LSP integration ---
     // Disable Monaco's built-in TS/JS diagnostics — LSP provides its own
     monaco.languages.typescript?.typescriptDefaults?.setDiagnosticsOptions({
@@ -1763,6 +1788,44 @@ export function ChatApp() {
     }
     prevOpenFilePathRef.current = newPath;
   }, [openFile?.path]);
+
+  // Update breakpoint + debug line decorations in the editor
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+    const filePath = openFile?.path;
+    if (!filePath) return;
+
+    const decorations: any[] = [];
+
+    // Breakpoint dots
+    for (const bp of debugBreakpoints) {
+      if (bp.file !== filePath || !bp.enabled) continue;
+      decorations.push({
+        range: new monaco.Range(bp.line, 1, bp.line, 1),
+        options: {
+          isWholeLine: false,
+          glyphMarginClassName: 'debug-breakpoint',
+          glyphMarginHoverMessage: { value: 'Breakpoint' },
+        },
+      });
+    }
+
+    // Current debug line
+    if (debugLine && debugLine.file === filePath) {
+      decorations.push({
+        range: new monaco.Range(debugLine.line, 1, debugLine.line, 1),
+        options: {
+          isWholeLine: true,
+          className: 'debug-current-line',
+          glyphMarginClassName: 'debug-current-arrow',
+        },
+      });
+    }
+
+    debugDecorationsRef.current = editor.deltaDecorations(debugDecorationsRef.current, decorations);
+  }, [debugBreakpoints, debugLine, openFile?.path]);
 
   const restartLsp = useCallback(async () => {
     if (!activeId || !monacoRef.current) return;
@@ -2714,6 +2777,13 @@ export function ChatApp() {
                           </button>
                         )}
                         <button
+                          className={`text-[11px] px-1.5 transition-colors ${showDebugPanel ? 'text-amber-400' : 'text-zinc-500 hover:text-zinc-200'}`}
+                          onClick={() => setShowDebugPanel(v => !v)}
+                          title="Toggle Debugger"
+                        >
+                          Bug
+                        </button>
+                        <button
                           className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
                           onClick={() => { setOpenFile(null); }}
                         >
@@ -2721,7 +2791,7 @@ export function ChatApp() {
                         </button>
                       </div>
                     </div>
-                    <div className="flex-1">
+                    <div className={showDebugPanel ? 'flex-1 min-h-0' : 'flex-1'} style={showDebugPanel ? { flex: '1 1 60%' } : undefined}>
                       <Editor
                         key={openFile.path}
                         path={openFile.path}
@@ -2738,9 +2808,27 @@ export function ChatApp() {
                           scrollBeyondLastLine: false,
                           wordWrap: 'on',
                           padding: { top: 8 },
+                          glyphMargin: true,
                         }}
                       />
                     </div>
+                    {showDebugPanel && (
+                      <div style={{ flex: '0 0 250px' }} className="min-h-0 overflow-hidden">
+                        <DebugPanel
+                          serverUrl={serverUrlRef.current || ''}
+                          onNavigate={(filePath, line) => handleFileOpen(filePath, line)}
+                          onClose={() => setShowDebugPanel(false)}
+                          breakpoints={debugBreakpoints}
+                          onToggleBreakpoint={(file, line) => {
+                            setDebugBreakpoints(prev => {
+                              const existing = prev.find(bp => bp.file === file && bp.line === line);
+                              if (existing) return prev.map(bp => bp === existing ? { ...bp, enabled: !bp.enabled } : bp);
+                              return [...prev, { file, line, enabled: true }];
+                            });
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
                 {!openFile && openTicket && (

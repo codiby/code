@@ -23,7 +23,9 @@ import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handl
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree } from './handlers/worktree';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
+import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
 import { registerShutdownHandlers } from './shutdown';
+import { startTelegramBot, notifyTelegramIfMainSession, restartTelegramBot, isTelegramBotRunning, setTelegramBroadcaster } from './telegram';
 import { ensureMcpConfig } from './ensure-mcp-config';
 import { handleMcpRequest, setMcpServerPort } from './mcp';
 import {
@@ -35,7 +37,7 @@ import {
   clearSessionState,
 } from './state';
 import type { ChatMessage, PermissionRequest } from './state';
-import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink, loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences } from './storage';
+import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink, loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadTelegramSettings, saveTelegramSettings } from './storage';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -285,6 +287,7 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
         }
         updateSessionState(sessionId, s => ({ ...s, partialText: '', isStreaming: false }));
         broadcastToSession(sessionId, { type: 'status', sessionId, status: 'turn_complete' });
+        notifyTelegramIfMainSession(sessionId);
         session.replayDone = true;
       } else if (partialText && session.replayDone) {
         // Only update streaming state for live (non-replay) messages
@@ -321,6 +324,7 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
     // Clear any pending permission request
     updateSessionState(sessionId, s => ({ ...s, permRequest: null }));
     broadcastToSession(sessionId, { type: 'status', sessionId, status: 'turn_complete' });
+    notifyTelegramIfMainSession(sessionId);
     return false;
   }
 
@@ -430,6 +434,52 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     const session = sessions.get(sessionId);
     if (!session || !session.claudeWs) return;
     session.replayDone = true;
+
+    // Intercept /model command — switch Claude model in-place via control_request.
+    const modelMatch = msgText.match(/^\/model(?:\s+(.+))?$/);
+    if (modelMatch) {
+      const finishIntercept = (confirmText: string) => {
+        const reply: ChatMessage = {
+          id: randomUUID(),
+          role: 'system',
+          content: confirmText,
+          timestamp: Date.now(),
+        };
+        if (addMessage(sessionId, reply)) {
+          broadcastToSession(sessionId, { type: 'message', sessionId, message: reply });
+        }
+        updateSessionState(sessionId, s => ({ ...s, isStreaming: false, partialText: '' }));
+        broadcastToSession(sessionId, { type: 'status', sessionId, status: 'turn_complete' });
+      };
+
+      const arg = (modelMatch[1] || '').trim();
+      if (!arg) {
+        const current = session.model || 'default';
+        finishIntercept(`Current model: ${current}\nUsage: /model <opus|sonnet|haiku|claude-opus-4-7|default>`);
+        return;
+      }
+      const newModel = arg.toLowerCase() === 'default' ? null : arg;
+      session.model = newModel;
+      saveSessions();
+      broadcastSessionList();
+
+      let confirmText = `Model preference saved: ${newModel ?? 'default'}`;
+      if (newModel) {
+        const ctrl = JSON.stringify({
+          type: 'control_request',
+          request_id: randomUUID(),
+          request: { subtype: 'set_model', model: newModel },
+        }) + '\n';
+        try {
+          (session.claudeWs as any).send(ctrl);
+          confirmText = `Model set to: ${newModel}`;
+        } catch (err) {
+          confirmText = `Failed to switch model: ${err}`;
+        }
+      }
+      finishIntercept(confirmText);
+      return;
+    }
 
     const payload: any = {
       type: 'user',
@@ -687,6 +737,16 @@ const server = Bun.serve({
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
+    // CDP Debug WebSocket — /debug/ws/{connectionId}
+    const cdpWsMatch = url.pathname.match(/^\/debug\/ws\/(.+)$/);
+    if (cdpWsMatch) {
+      const connectionId = decodeURIComponent(cdpWsMatch[1]!);
+      const conn = getConnection(connectionId);
+      if (!conn) return new Response('Debug connection not found', { status: 404 });
+      const upgraded = server.upgrade(req, { data: { type: 'cdp', connectionId } });
+      return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
+    }
+
     // -----------------------------------------------------------------------
     // Sessions
     // -----------------------------------------------------------------------
@@ -911,6 +971,27 @@ const server = Bun.serve({
     if (url.pathname === '/architect/credentials' && req.method === 'DELETE') {
       clearArchitectCredentials();
       return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    // ── Telegram ────────────────────────────────────────────────────────
+
+    if (url.pathname === '/telegram/settings' && req.method === 'GET') {
+      const settings = loadTelegramSettings();
+      return Response.json({
+        botToken: settings.botToken,
+        chatId: settings.chatId,
+        running: isTelegramBotRunning(),
+      }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/telegram/settings' && req.method === 'PUT') {
+      const body = await req.json() as { botToken?: string; chatId?: string };
+      saveTelegramSettings({
+        botToken: (body.botToken ?? '').trim(),
+        chatId: (body.chatId ?? '').trim(),
+      });
+      restartTelegramBot();
+      return Response.json({ ok: true, running: isTelegramBotRunning() }, { headers: corsHeaders });
     }
 
     if (url.pathname === '/architect/boards' && req.method === 'GET') {
@@ -1161,6 +1242,32 @@ const server = Bun.serve({
       return Response.json(supportedLanguages(), { headers: corsHeaders });
     }
 
+    // ── Debug (CDP) ──────────────────────────────────────────────────────
+
+    if (url.pathname === '/debug/targets' && req.method === 'GET') {
+      const host = url.searchParams.get('host') || '127.0.0.1';
+      const port = parseInt(url.searchParams.get('port') || '9229', 10);
+      const targets = await discoverTargets(host, port);
+      return Response.json(targets, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/debug/connect' && req.method === 'POST') {
+      const body = await req.json() as Record<string, unknown>;
+      const host = (body.host as string) || '127.0.0.1';
+      const port = (body.port as number) || 9229;
+      const targetId = body.targetId as string | undefined;
+      const conn = await connectToTarget(host, port, targetId);
+      if (!conn) return Response.json({ error: 'Failed to connect' }, { status: 502, headers: corsHeaders });
+      return Response.json({ connectionId: conn.id, host: conn.host, port: conn.port, targetId: conn.targetId }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/debug/disconnect' && req.method === 'POST') {
+      const body = await req.json() as Record<string, unknown>;
+      const connectionId = body.connectionId as string;
+      if (connectionId) disconnectTarget(connectionId);
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
     // ── Health ──────────────────────────────────────────────────────────
 
     if (url.pathname === '/health') {
@@ -1248,6 +1355,16 @@ const server = Bun.serve({
         return;
       }
 
+      // CDP Debug WebSocket
+      if (type === 'cdp') {
+        const { connectionId } = ws.data as any;
+        const conn = getConnection(connectionId);
+        if (!conn) { ws.close(4003, 'Debug connection not found'); return; }
+        addCdpClient(conn, ws);
+        log(`[CDP] Client connected to ${connectionId}`);
+        return;
+      }
+
       // Claude CLI WebSocket
       if (type === 'claude') {
         const session = sessions.get(sessionId!);
@@ -1273,6 +1390,16 @@ const server = Bun.serve({
       const { type, sessionId, procId } = ws.data as { type: string; sessionId?: string; procId?: string };
 
       if (type === 'terminal') return;
+
+      // CDP — forward message to debug target
+      if (type === 'cdp') {
+        const { connectionId } = ws.data as any;
+        const conn = getConnection(connectionId);
+        if (!conn) return;
+        const data = typeof message === 'string' ? message : new TextDecoder().decode(message as ArrayBuffer);
+        sendCdpMessage(conn, data);
+        return;
+      }
 
       // LSP — forward message to language server stdin
       if (type === 'lsp') {
@@ -1334,6 +1461,14 @@ const server = Bun.serve({
         frontendClients.delete(ws);
         subscriptions.delete(ws);
         log(`[/ws] Frontend client disconnected (${frontendClients.size} remaining)`);
+        return;
+      }
+
+      if (type === 'cdp') {
+        const { connectionId } = ws.data as any;
+        const conn = getConnection(connectionId);
+        if (conn) removeCdpClient(conn, ws);
+        log(`[CDP] Client disconnected from ${connectionId}`);
         return;
       }
 
@@ -1407,3 +1542,5 @@ log(`Claude binary: ${CLAUDE_BIN}`);
 log(`Working directory: ${CWD}`);
 console.log(`BRIDGE_SERVER_PORT:${server.port}`);
 setMcpServerPort(server.port);
+setTelegramBroadcaster(broadcastToSession);
+startTelegramBot(server.port);

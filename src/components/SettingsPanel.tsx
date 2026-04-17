@@ -17,7 +17,56 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
 
+  // Telegram settings
+  const [tgBotToken, setTgBotToken] = useState('');
+  const [tgChatId, setTgChatId] = useState('');
+  const [tgRunning, setTgRunning] = useState(false);
+  const [tgSaving, setTgSaving] = useState(false);
+  const [tgLoaded, setTgLoaded] = useState(false);
+  const [tgShowToken, setTgShowToken] = useState(false);
+  const [tgSaved, setTgSaved] = useState(false);
+  const [tgError, setTgError] = useState<string | null>(null);
+
   useEffect(() => { resolveServerUrl().then(setServerUrl); }, []);
+
+  useEffect(() => {
+    if (!serverUrl) return;
+    (async () => {
+      try {
+        const res = await fetch(`${serverUrl}/telegram/settings`);
+        if (res.ok) {
+          const data = await res.json();
+          setTgBotToken(data.botToken || '');
+          setTgChatId(data.chatId || '');
+          setTgRunning(!!data.running);
+        }
+      } catch {}
+      setTgLoaded(true);
+    })();
+  }, [serverUrl]);
+
+  const handleTelegramSave = async () => {
+    if (!serverUrl) return;
+    setTgSaving(true);
+    setTgError(null);
+    setTgSaved(false);
+    try {
+      const res = await fetch(`${serverUrl}/telegram/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ botToken: tgBotToken.trim(), chatId: tgChatId.trim() }),
+      });
+      if (!res.ok) throw new Error(`Save failed (${res.status})`);
+      const data = await res.json();
+      setTgRunning(!!data.running);
+      setTgSaved(true);
+      setTimeout(() => setTgSaved(false), 2000);
+    } catch (e) {
+      setTgError(String(e));
+    } finally {
+      setTgSaving(false);
+    }
+  };
 
   const fetchStatus = async () => {
     if (!serverUrl) return;
@@ -185,6 +234,84 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           {error && (
             <div className="mt-2 text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
               {error}
+            </div>
+          )}
+        </div>
+
+        {/* Telegram Section */}
+        <div className="pt-4 border-t border-border">
+          <div className="flex items-center gap-2 mb-3">
+            <svg className="w-4 h-4 text-zinc-400" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M9.04 16.62l-.39 4.33c.56 0 .8-.24 1.1-.53l2.63-2.5 5.46 4c1 .55 1.72.26 1.98-.93l3.59-16.84.01-.01c.31-1.48-.54-2.06-1.52-1.7L1.4 9.6c-1.46.57-1.44 1.38-.25 1.75l5.1 1.59L18.1 5.68c.55-.37 1.06-.17.64.2L9.04 16.62z" />
+            </svg>
+            <span className="text-[12px] font-medium text-zinc-300">Telegram Bot</span>
+            {tgRunning && (
+              <span className="ml-auto flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Running</span>
+              </span>
+            )}
+          </div>
+
+          <p className="text-[12px] text-zinc-500 px-1 mb-3">
+            Chat with Claude from Telegram. Create a bot with{' '}
+            <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-zinc-300 hover:text-white underline">
+              @BotFather
+            </a>{' '}
+            to get a token.
+          </p>
+
+          {!tgLoaded ? (
+            <div className="text-[12px] text-zinc-600 px-1">Loading...</div>
+          ) : (
+            <div className="space-y-2.5">
+              <div>
+                <label className="block text-[11px] text-zinc-500 mb-1 px-1">Bot Token</label>
+                <div className="relative">
+                  <input
+                    type={tgShowToken ? 'text' : 'password'}
+                    value={tgBotToken}
+                    onChange={(e) => setTgBotToken(e.target.value)}
+                    placeholder="123456:ABC-DEF..."
+                    className="w-full text-[12px] px-2.5 py-1.5 pr-14 rounded-md bg-surface-light border border-border focus:border-border-light focus:outline-none text-zinc-200 placeholder:text-zinc-600 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setTgShowToken((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                  >
+                    {tgShowToken ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-zinc-500 mb-1 px-1">Chat ID (optional)</label>
+                <input
+                  type="text"
+                  value={tgChatId}
+                  onChange={(e) => setTgChatId(e.target.value)}
+                  placeholder="Restrict to a single chat"
+                  className="w-full text-[12px] px-2.5 py-1.5 rounded-md bg-surface-light border border-border focus:border-border-light focus:outline-none text-zinc-200 placeholder:text-zinc-600 font-mono"
+                />
+                <p className="mt-1 text-[10px] text-zinc-600 px-1">
+                  Leave blank to accept any chat. Send /start to the bot to see your chat ID.
+                </p>
+              </div>
+
+              <button
+                onClick={handleTelegramSave}
+                disabled={tgSaving}
+                className="w-full text-[12px] px-3 py-1.5 rounded-md font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {tgSaving ? 'Saving...' : tgSaved ? 'Saved' : 'Save & Restart Bot'}
+              </button>
+
+              {tgError && (
+                <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
+                  {tgError}
+                </div>
+              )}
             </div>
           )}
         </div>

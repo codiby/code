@@ -23,6 +23,10 @@ export const SESSIONS_FILE = join(homedir(), '.claude', 'ui-sessions.json');
 
 export const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'Read', 'Glob', 'Grep', 'NotebookEdit']);
 
+export const MAIN_SESSION_ID = 'main-session';
+export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+export const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',

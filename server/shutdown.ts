@@ -1,5 +1,6 @@
 import { log } from './logger';
 import { sessions } from './sessions';
+import { stopTelegramBot } from './telegram';
 
 export function killAllClaudeProcesses() {
   let killed = 0;
@@ -13,8 +14,9 @@ export function killAllClaudeProcesses() {
 }
 
 export function registerShutdownHandlers() {
-  process.on('SIGINT', () => { killAllClaudeProcesses(); process.exit(0); });
-  process.on('SIGTERM', () => { killAllClaudeProcesses(); process.exit(0); });
-  process.on('exit', () => { killAllClaudeProcesses(); });
-  process.on('SIGUSR2', () => { killAllClaudeProcesses(); });
+  const cleanup = () => { killAllClaudeProcesses(); stopTelegramBot(); };
+  process.on('SIGINT', () => { cleanup(); process.exit(0); });
+  process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+  process.on('exit', () => { cleanup(); });
+  process.on('SIGUSR2', () => { cleanup(); });
 }

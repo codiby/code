@@ -214,6 +214,28 @@ export function getPRLink(sessionId: string): PRLink | null {
 }
 
 // ---------------------------------------------------------------------------
+// Telegram settings
+// ---------------------------------------------------------------------------
+
+const TELEGRAM_FILE = join(homedir(), '.claude', 'ui-telegram.json');
+
+export type TelegramSettings = { botToken: string; chatId: string };
+
+export function loadTelegramSettings(): TelegramSettings {
+  try {
+    const parsed = JSON.parse(readFileSync(TELEGRAM_FILE, 'utf-8'));
+    return { botToken: parsed.botToken ?? '', chatId: parsed.chatId ?? '' };
+  } catch {
+    return { botToken: '', chatId: '' };
+  }
+}
+
+export function saveTelegramSettings(settings: TelegramSettings) {
+  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  writeFileSync(TELEGRAM_FILE, JSON.stringify(settings, null, 2));
+}
+
+// ---------------------------------------------------------------------------
 // Global preferences (tabs, groups, etc.)
 // ---------------------------------------------------------------------------
 
