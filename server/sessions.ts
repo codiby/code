@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { log, logError } from './logger';
 import { SESSIONS_FILE } from './config';
+import { DEFAULT_PROVIDER } from './provider/registry';
 import type { Session, PersistedSession } from './types';
 
 export const sessions = new Map<string, Session>();
@@ -11,7 +12,7 @@ export function saveSessions() {
   const data: PersistedSession[] = [...sessions.values()].map(s => ({
     id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt,
     claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands,
-    model: s.model, permissionMode: s.permissionMode,
+    model: s.model, permissionMode: s.permissionMode, provider: s.provider,
   }));
   try {
     mkdirSync(join(homedir(), '.claude'), { recursive: true });
@@ -26,12 +27,20 @@ export function loadSessions() {
     const data: PersistedSession[] = JSON.parse(readFileSync(SESSIONS_FILE, 'utf-8'));
     for (const p of data) {
       sessions.set(p.id, {
-        ...p,
+        id: p.id,
+        name: p.name,
+        cwd: p.cwd,
+        createdAt: p.createdAt,
+        claudeSessionId: p.claudeSessionId,
         savedCommands: p.savedCommands || [],
         model: p.model || null,
         permissionMode: p.permissionMode || 'default',
-        claudeWs: null, browserWs: new Set(), process: null,
-        ready: false, status: 'stopped', replayDone: false, pendingMessages: [],
+        provider: p.provider || DEFAULT_PROVIDER,
+        browserWs: new Set(),
+        providerSession: null,
+        ready: false,
+        status: 'stopped',
+        replayDone: false,
       });
     }
     log(`[persist] Loaded ${data.length} sessions`);
@@ -59,5 +68,6 @@ export function sessionToJSON(s: Session, port: number) {
     saved_commands: s.savedCommands || [],
     model: s.model || null,
     permission_mode: s.permissionMode || 'default',
+    provider: s.provider || 'claudeAgent',
   };
 }

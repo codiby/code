@@ -29,6 +29,15 @@ cd "$PROJECT_DIR"
 # Patch for dynamic port allocation (sidecar uses port 0)
 sed -i '' 's/"3100"/"0"/g' "$SIDECAR_DIR/server.js"
 
+# Copy PTY helper + node-pty for the interactive /terminal command.
+# The helper is a plain Node script (Bun shells out to Node for PTY support).
+echo "Copying pty-helper.mjs and node-pty..."
+cp "$PROJECT_DIR/server/pty-helper.mjs" "$SIDECAR_DIR/pty-helper.mjs"
+mkdir -p "$SIDECAR_DIR/node_modules"
+rm -rf "$SIDECAR_DIR/node_modules/node-pty"
+cp -R "$PROJECT_DIR/node_modules/node-pty" "$SIDECAR_DIR/node_modules/node-pty"
+find "$SIDECAR_DIR/node_modules/node-pty/prebuilds" -name spawn-helper -exec chmod +x {} \; 2>/dev/null || true
+
 # Ensure BRIDGE_SERVER_PORT output exists for Tauri to read
 if ! grep -q 'BRIDGE_SERVER_PORT' "$SIDECAR_DIR/server.js"; then
   # Append at the very end — server.port is available after Bun.serve()

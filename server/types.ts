@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'child_process';
+import type { ProviderSession } from './provider/types';
 
 export type Session = {
   id: string;
@@ -6,16 +7,15 @@ export type Session = {
   cwd: string;
   createdAt: number;
   claudeSessionId: string | null;
-  claudeWs: WebSocket | null;
   browserWs: Set<any>;
-  process: ChildProcess | null;
+  providerSession: ProviderSession | null;
   ready: boolean;
   status: 'starting' | 'running' | 'stopped';
   replayDone: boolean;
-  pendingMessages: string[];
   savedCommands: string[];
   model: string | null;
   permissionMode: string;
+  provider: string;
 };
 
 export type PersistedSession = {
@@ -27,6 +27,7 @@ export type PersistedSession = {
   savedCommands?: string[];
   model?: string | null;
   permissionMode?: string;
+  provider?: string;
 };
 
 export interface TrackedProcess {
@@ -41,4 +42,13 @@ export interface TrackedProcess {
   viewers: Set<any>;
   outputBuffer: string[];
   exitCode: number | null;
+  // Interactive PTY sessions (spawned via exec_shell):
+  //   kind === 'pty' — long-lived shell that accepts stdin via terminal_input.
+  //   kind === undefined/'oneshot' — legacy `>` one-shot command.
+  kind?: 'oneshot' | 'pty';
+  cols?: number;
+  rows?: number;
+  // Writes JSON control messages ({type:'write'|'resize'|'kill', ...}) to the
+  // Node pty-helper subprocess. Only set when kind === 'pty'.
+  writeControl?: (obj: { type: string; [k: string]: unknown }) => void;
 }

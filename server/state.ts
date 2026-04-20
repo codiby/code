@@ -5,24 +5,27 @@
  */
 
 import { loadMessages, loadUIState, saveUIState, appendMessage } from './storage';
-import { log } from './logger';
 
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  seq?: number;
   images?: { media_type: string; data: string }[];
   toolName?: string;
   toolInput?: unknown;
   isToolResult?: boolean;
+  toolUseId?: string;
+  autoApproved?: boolean;
   isError?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;
   costUsd?: number;
   durationMs?: number;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: { input_tokens?: number; output_tokens?: number };
+  model?: string;
 }
 
 export interface PermissionRequest {
@@ -66,6 +69,7 @@ export interface SessionState {
 
 const sessionStates = new Map<string, SessionState>();
 const messageIdSets = new Map<string, Set<string>>();
+const sessionSeqCounters = new Map<string, number>();
 
 // Debounce timers for saving UI state
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -106,8 +110,13 @@ export function getSessionState(sessionId: string): SessionState {
     if (msgs.length > 0) {
       state.messages = msgs;
       const idSet = new Set<string>();
-      for (const m of msgs) if (m.id) idSet.add(m.id);
+      let maxSeq = 0;
+      for (const m of msgs) {
+        if (m.id) idSet.add(m.id);
+        if (typeof m.seq === 'number' && m.seq > maxSeq) maxSeq = m.seq;
+      }
       messageIdSets.set(sessionId, idSet);
+      sessionSeqCounters.set(sessionId, maxSeq);
     }
     const uiData = loadUIState(sessionId) as Partial<SessionUIState>;
     state.ui = { ...emptyUIState(), ...uiData };
@@ -126,20 +135,17 @@ export function updateSessionState(sessionId: string, fn: (state: SessionState) 
 /** Returns true if message was added, false if duplicate */
 export function addMessage(sessionId: string, msg: ChatMessage): boolean {
   const state = getSessionState(sessionId);
-  // Deduplicate by ID
+  // Deduplicate by ID only. A prior content+role scan (inherited from the
+  // pre-SDK CLI-pipe architecture) was dropping legitimate repeats — e.g.
+  // identical short assistant texts or tool-results with matching stdout,
+  // which happens constantly in bypassPermissions mode.
   let idSet = messageIdSets.get(sessionId);
   if (!idSet) { idSet = new Set(); messageIdSets.set(sessionId, idSet); }
   if (idSet.has(msg.id)) return false;
-  // Deduplicate by content+role (CLI replay generates new IDs for same content)
-  // Skip for tool-use messages — each invocation is distinct even with same tool name
-  if (!msg.toolName) {
-    const msgs = state.messages;
-    for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 50); i--) {
-      const m = msgs[i];
-      if (m.role === msg.role && m.content === msg.content && !m.toolName) return false;
-    }
-  }
   idSet.add(msg.id);
+  const nextSeq = (sessionSeqCounters.get(sessionId) ?? 0) + 1;
+  sessionSeqCounters.set(sessionId, nextSeq);
+  msg.seq = nextSeq;
   state.messages.push(msg);
   appendMessage(sessionId, msg);
   return true;
@@ -151,13 +157,14 @@ export function updateUIState(sessionId: string, partial: Partial<SessionUIState
   // Debounced persist
   clearTimeout(saveTimers.get(sessionId));
   saveTimers.set(sessionId, setTimeout(() => {
-    saveUIState(sessionId, state.ui);
+    saveUIState(sessionId, state.ui as unknown as Record<string, unknown>);
   }, 500));
 }
 
 export function clearSessionState(sessionId: string) {
   sessionStates.delete(sessionId);
   messageIdSets.delete(sessionId);
+  sessionSeqCounters.delete(sessionId);
   clearTimeout(saveTimers.get(sessionId));
 }
 

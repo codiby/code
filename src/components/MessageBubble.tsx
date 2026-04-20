@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
-import type { ChatMessage } from '../lib/claude-client';
+import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
+import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 
 const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
 const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.default })));
@@ -7,6 +8,13 @@ const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m
 interface Props {
   message: ChatMessage;
   onOpenTerminal?: (msgId: string) => void;
+  isLast?: boolean;
+  onAnswerAskUser?: (answers: Record<string, string>) => void;
+  // Only required for interactive PTY bubbles (/terminal slash command).
+  sessionId?: string;
+  client?: ClaudeClient;
+  interactiveMinimized?: boolean;
+  onToggleInteractiveMinimize?: (msgId: string) => void;
 }
 
 function parseTableRows(raw: string): { headers: string[]; rows: string[][] } | null {
@@ -128,6 +136,9 @@ function toolSummary(message: ChatMessage): string {
   const input = message.toolInput;
   if (!input) return '';
   if (typeof input === 'string') return input.slice(0, 80);
+  if (Array.isArray((input as any).questions) && (input as any).questions[0]?.question) {
+    return String((input as any).questions[0].question).slice(0, 80);
+  }
   if (input.plan) return 'Plan';
   if (input.command) return String(input.command).slice(0, 80);
   if (input.file_path) return String(input.file_path);
@@ -167,14 +178,25 @@ const MONACO_SHARED_OPTS = {
   domReadOnly: true,
 };
 
-function ToolBubble({ message }: { message: ChatMessage }) {
-  const [expanded, setExpanded] = useState(false);
-  const summary = toolSummary(message);
+function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage; isLast?: boolean; onAnswerAskUser?: (answers: Record<string, string>) => void }) {
   const input = (message.toolInput && typeof message.toolInput === 'object' ? message.toolInput : null) as Record<string, unknown> | null;
   const isEdit = message.toolName === 'Edit' && input && typeof input.old_string === 'string' && typeof input.new_string === 'string';
   const isWrite = message.toolName === 'Write' && input && typeof input.content === 'string';
   const isBash = message.toolName === 'Bash' && input && typeof input.command === 'string';
   const isPlan = message.toolName === 'ExitPlanMode' && input && typeof input.plan === 'string';
+  const isAskUser = message.toolName === 'AskUserQuestion' && input && Array.isArray((input as any).questions);
+  const askQuestions = isAskUser ? ((input as any).questions as { question: string; header?: string; options?: { label: string; description?: string }[] }[]) : [];
+  let askAnswers: Record<string, string> | null = null;
+  if (isAskUser) {
+    if ((input as any).answers && typeof (input as any).answers === 'object') {
+      askAnswers = (input as any).answers as Record<string, string>;
+    } else if (message.toolResult?.content) {
+      try {
+        const parsed = JSON.parse(message.toolResult.content);
+        if (parsed && typeof parsed.answers === 'object') askAnswers = parsed.answers as Record<string, string>;
+      } catch {}
+    }
+  }
   const planContent = isPlan ? input!.plan as string : '';
   const filePath = input && typeof input.file_path === 'string' ? input.file_path as string : null;
   const lang = filePath ? langFromPath(filePath) : 'plaintext';
@@ -186,6 +208,19 @@ function ToolBubble({ message }: { message: ChatMessage }) {
   const writeHeight = isWrite ? Math.min(writeLines * 19 + 20, 250) : 0;
   const planLines = isPlan ? planContent.split('\n').length : 0;
   const planHeight = isPlan ? Math.min(planLines * 19 + 20, 400) : 0;
+  const unansweredAsk = !!isAskUser && askQuestions.some((_, i) => !askAnswers || !askAnswers[String(i)]);
+  const summary = toolSummary(message);
+  const [expanded, setExpanded] = useState(!!isLast && unansweredAsk);
+  const [askSelections, setAskSelections] = useState<Record<string, string>>({});
+  const canAnswer = !!onAnswerAskUser && !!isAskUser && unansweredAsk;
+  const handleAskSelect = (qIdx: number, label: string) => {
+    if (!canAnswer) return;
+    const key = String(qIdx);
+    const next = { ...askSelections, [key]: label };
+    setAskSelections(next);
+    if (askQuestions.length === 1) onAnswerAskUser!(next);
+  };
+  const allAskAnswered = askQuestions.every((_, i) => askSelections[String(i)]);
 
   return (
     <div className="py-0.5 pl-3 ml-1 border-l-2 border-border select-none">
@@ -197,6 +232,14 @@ function ToolBubble({ message }: { message: ChatMessage }) {
         <span className="text-[11px] font-mono text-violet-400">{message.toolName}</span>
         {!expanded && summary && (
           <span className="text-[11px] text-zinc-600 font-mono truncate max-w-md">{summary}</span>
+        )}
+        {message.autoApproved && (
+          <span
+            className="ml-auto shrink-0 text-[9px] uppercase tracking-wider text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded font-mono"
+            title="Auto-approved by the current permission mode"
+          >
+            auto
+          </span>
         )}
       </div>
       {expanded && (
@@ -253,12 +296,85 @@ function ToolBubble({ message }: { message: ChatMessage }) {
             </div>
           )}
 
-          {!isEdit && !isWrite && !isBash && !isPlan && message.toolInput && (
+          {isAskUser && (
+            <div className="space-y-2 mb-1">
+              {askQuestions.map((q, i) => {
+                const answer = askAnswers ? askAnswers[String(i)] : undefined;
+                return (
+                  <div key={i}>
+                    {q.header && (
+                      <span className="inline-block text-[10px] font-semibold text-violet-400 bg-violet-400/10 px-1.5 py-0.5 rounded mb-1">
+                        {q.header}
+                      </span>
+                    )}
+                    <p className="text-[12px] text-zinc-300 leading-relaxed mb-1">{q.question}</p>
+                    {q.options && q.options.length > 0 && (
+                      <div className="space-y-0.5">
+                        {q.options.map((opt, j) => {
+                          const selected = canAnswer
+                            ? askSelections[String(i)] === opt.label
+                            : answer === opt.label;
+                          const baseCls = `w-full text-left px-2 py-1 rounded border text-[11px] transition-colors ${
+                            selected
+                              ? 'border-violet-400/50 bg-violet-500/10'
+                              : canAnswer
+                                ? 'border-border/60 bg-transparent hover:border-zinc-600 hover:bg-surface-light/50'
+                                : 'border-border/60 bg-transparent'
+                          }`;
+                          const inner = (
+                            <div className="flex items-start gap-2">
+                              <span className={`w-3 h-3 rounded-full border flex items-center justify-center shrink-0 mt-0.5 ${selected ? 'border-violet-400' : 'border-zinc-700'}`}>
+                                {selected && <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />}
+                              </span>
+                              <div className="min-w-0">
+                                <span className={`${selected ? 'text-zinc-200 font-medium' : 'text-zinc-400'}`}>{opt.label}</span>
+                                {opt.description && <p className="text-[10px] text-zinc-600 mt-0.5 leading-snug">{opt.description}</p>}
+                              </div>
+                            </div>
+                          );
+                          return canAnswer ? (
+                            <button key={j} type="button" onClick={() => handleAskSelect(i, opt.label)} className={baseCls}>
+                              {inner}
+                            </button>
+                          ) : (
+                            <div key={j} className={baseCls}>{inner}</div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {canAnswer && askQuestions.length > 1 && (
+                <button
+                  type="button"
+                  disabled={!allAskAnswered}
+                  onClick={() => onAnswerAskUser!(askSelections)}
+                  className="px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors disabled:opacity-40"
+                >
+                  Submit answers
+                </button>
+              )}
+            </div>
+          )}
+
+          {!isEdit && !isWrite && !isBash && !isPlan && !isAskUser && message.toolInput && (
             <pre className="text-[11px] text-zinc-600 whitespace-pre-wrap break-all m-0 bg-transparent p-0 max-h-24 overflow-auto leading-tight">
               {typeof message.toolInput === 'string'
                 ? message.toolInput
                 : JSON.stringify(message.toolInput, null, 2)}
             </pre>
+          )}
+
+          {message.toolResult && !isAskUser && (
+            <div className={`mt-1.5 rounded border ${message.toolResult.isError ? 'border-red-500/30 bg-red-950/10' : 'border-border bg-surface/40'} overflow-hidden`}>
+              <div className={`text-[10px] font-mono px-2 py-0.5 ${message.toolResult.isError ? 'text-red-400' : 'text-zinc-500'} border-b ${message.toolResult.isError ? 'border-red-500/20' : 'border-border'}`}>
+                {message.toolResult.isError ? 'error' : 'result'}
+              </div>
+              <pre className="text-[11px] font-mono text-zinc-400 whitespace-pre-wrap break-all m-0 px-2 py-1.5 max-h-64 overflow-auto leading-snug">
+                {message.toolResult.content}
+              </pre>
+            </div>
           )}
         </div>
       )}
@@ -445,24 +561,43 @@ export function AgentBubble({ agent, children, onOpenTerminal }: { agent: ChatMe
   );
 }
 
-/** Groups flat messages: Agent tool_use + following tool calls become groups */
+/** Groups flat messages: Agent tool_use + following tool calls become groups.
+ *  Also attaches each tool_result to the tool_use that produced it (by id),
+ *  so results render inside the tool card instead of as a separate bubble. */
 export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: ChatMessage; children: ChatMessage[] })[] {
+  // Index tool results by the id of the tool_use they answer.
+  const resultByToolId = new Map<string, ChatMessage>();
+  for (const m of messages) {
+    if (m.isToolResult && m.toolUseId) resultByToolId.set(m.toolUseId, m);
+  }
+  const attach = (msg: ChatMessage): ChatMessage => {
+    if (!msg.toolName) return msg;
+    const res = resultByToolId.get(msg.id);
+    return res ? { ...msg, toolResult: res } : msg;
+  };
+
   const result: (ChatMessage | { agent: ChatMessage; children: ChatMessage[] })[] = [];
   let i = 0;
 
   while (i < messages.length) {
     const msg = messages[i]!;
+    // Skip tool_result messages that were paired with a tool_use above;
+    // they're rendered inside that card.
+    if (msg.isToolResult && msg.toolUseId && resultByToolId.has(msg.toolUseId)) {
+      i++;
+      continue;
+    }
     if (msg.toolName === 'Agent') {
-      const group: { agent: ChatMessage; children: ChatMessage[] } = { agent: msg, children: [] };
+      const group: { agent: ChatMessage; children: ChatMessage[] } = { agent: attach(msg), children: [] };
       i++;
       // Collect subsequent tool messages as children
       while (i < messages.length && messages[i]!.toolName && messages[i]!.toolName !== 'Agent') {
-        group.children.push(messages[i]!);
+        group.children.push(attach(messages[i]!));
         i++;
       }
       result.push(group);
     } else {
-      result.push(msg);
+      result.push(attach(msg));
       i++;
     }
   }
@@ -470,10 +605,23 @@ export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: 
   return result;
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, interactiveMinimized, onToggleInteractiveMinimize }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
+
+  // Interactive PTY (/terminal, /t) must be checked before the one-shot isTerminal.
+  if (message.isInteractiveTerminal && sessionId && client) {
+    return (
+      <InteractiveTerminalBubble
+        message={message}
+        sessionId={sessionId}
+        client={client}
+        minimized={interactiveMinimized}
+        onToggleMinimize={onToggleInteractiveMinimize ? () => onToggleInteractiveMinimize(message.id) : undefined}
+      />
+    );
+  }
 
   if (message.isTerminal) {
     return <TerminalBubble message={message} onOpenInPanel={onOpenTerminal} />;
@@ -501,7 +649,7 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
   }
 
   if (isToolUse) {
-    return <ToolBubble message={message} />;
+    return <ToolBubble message={message} isLast={isLast} onAnswerAskUser={onAnswerAskUser} />;
   }
 
   if (isUser) {

@@ -46,22 +46,23 @@ export function loadMessages(sessionId: string): unknown[] {
       try { return JSON.parse(line); }
       catch { return null; }
     }).filter(Boolean);
-    // Deduplicate by ID and by content+role (CLI replay generates new IDs)
-    // Skip content dedup for tool-use messages — same tool name produces identical content strings
+    // Deduplicate by ID only. The previous content+role dedup (inherited
+    // from the CLI-pipe era) collapsed legitimate repeats — identical short
+    // assistant texts, tool-results with matching stdout — which happens
+    // regularly in bypassPermissions mode.
     const seenIds = new Set<string>();
-    const seenContent = new Set<string>();
     const deduped = all.filter((m: any) => {
       if (m.id && seenIds.has(m.id)) return false;
-      if (!m.toolName) {
-        const contentKey = `${m.role}:${m.content}`;
-        if (seenContent.has(contentKey)) return false;
-        seenContent.add(contentKey);
-      }
       if (m.id) seenIds.add(m.id);
       return true;
     });
-    // Compact the file if duplicates were found
-    if (deduped.length < all.length) {
+    // Backfill missing `seq` for pre-seq data, preserving file order.
+    let backfilled = false;
+    deduped.forEach((m: any, i) => {
+      if (typeof m.seq !== 'number') { m.seq = i + 1; backfilled = true; }
+    });
+    // Compact the file if duplicates were found or seq was backfilled
+    if (deduped.length < all.length || backfilled) {
       try {
         const compacted = deduped.map(m => JSON.stringify(m)).join('\n') + '\n';
         writeFileSync(file, compacted);

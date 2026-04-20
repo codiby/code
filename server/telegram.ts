@@ -3,7 +3,8 @@ import { randomUUID } from 'crypto';
 import { log, logError } from './logger';
 import { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, MAIN_SESSION_ID, CWD } from './config';
 import { sessions, saveSessions } from './sessions';
-import { spawnClaude } from './claude';
+import { startProviderSession } from './provider/lifecycle';
+import { DEFAULT_PROVIDER } from './provider/registry';
 import { getSessionState, addMessage, type ChatMessage } from './state';
 import { loadTelegramSettings } from './storage';
 import type { Session } from './types';
@@ -85,16 +86,15 @@ function ensureMainSession(): Session {
       cwd: CWD,
       createdAt: Date.now(),
       claudeSessionId: null,
-      claudeWs: null,
       browserWs: new Set(),
-      process: null,
+      providerSession: null,
       ready: false,
       status: 'stopped',
       replayDone: true,
-      pendingMessages: [],
       savedCommands: [],
       model: null,
       permissionMode: 'bypassPermissions',
+      provider: DEFAULT_PROVIDER,
     };
     sessions.set(MAIN_SESSION_ID, session);
     saveSessions();
@@ -125,13 +125,13 @@ export function startTelegramBot(port: number) {
     ? state.messages[state.messages.length - 1].id
     : null;
 
-  // Spawn Claude if not already running
-  if (!session.process) {
+  // Start the provider session if not already running
+  if (!session.providerSession) {
     if (session.claudeSessionId) {
       session.replayDone = false;
-      spawnClaude(session, port, session.claudeSessionId);
+      startProviderSession(session, port, session.claudeSessionId);
     } else {
-      spawnClaude(session, port);
+      startProviderSession(session, port);
     }
   }
 
@@ -174,16 +174,11 @@ export function startTelegramBot(port: number) {
     saveSessions();
     log(`[telegram] Model changed to: ${newModel ?? 'default'}`);
 
-    // Hot-swap via Claude CLI control_request — no process restart needed.
-    if (session.claudeWs && newModel) {
-      const ctrl = JSON.stringify({
-        type: 'control_request',
-        request_id: randomUUID(),
-        request: { subtype: 'set_model', model: newModel },
-      }) + '\n';
+    // Hot-swap via provider session — no restart needed.
+    if (session.providerSession) {
       try {
-        (session.claudeWs as any).send(ctrl);
-        ctx.reply(`Model set to: ${newModel}`);
+        await session.providerSession.setModel(newModel);
+        ctx.reply(`Model set to: ${newModel ?? 'default'}`);
       } catch (err) {
         ctx.reply(`Failed to switch model: ${err}`);
       }
@@ -192,22 +187,22 @@ export function startTelegramBot(port: number) {
     }
   });
 
-  /** Get the running main session, restarting Claude if needed. Returns null if not ready. */
-  const getReadySession = async (ctx: any) => {
+  /** Get the running main session, restarting it if needed. Returns null if not ready. */
+  const getReadySession = async (ctx: any): Promise<Session | null> => {
     const session = sessions.get(MAIN_SESSION_ID);
     if (!session) {
       ctx.reply('Main session not found. Restarting...');
       ensureMainSession();
       return null;
     }
-    if (!session.claudeWs || !session.ready) {
+    if (!session.providerSession || !session.ready) {
       ctx.reply('Session is starting up, please wait...');
-      if (!session.process) {
+      if (!session.providerSession) {
         if (session.claudeSessionId) {
           session.replayDone = false;
-          spawnClaude(session, port, session.claudeSessionId);
+          startProviderSession(session, port, session.claudeSessionId);
         } else {
-          spawnClaude(session, port);
+          startProviderSession(session, port);
         }
       }
       return null;
@@ -215,12 +210,12 @@ export function startTelegramBot(port: number) {
     return session;
   };
 
-  /** Forward a (possibly multi-modal) user message to Claude. */
-  const sendToClaude = (
-    session: ReturnType<typeof sessions.get> & {},
+  /** Forward a (possibly multi-modal) user message through the provider. */
+  const sendToProvider = async (
+    session: Session,
     text: string,
     images: { media_type: string; data: string }[],
-  ) => {
+  ): Promise<void> => {
     session.replayDone = true;
 
     // Persist the user message so it shows up in the UI chat history.
@@ -236,31 +231,15 @@ export function startTelegramBot(port: number) {
       broadcastToSession(MAIN_SESSION_ID, { type: 'message', sessionId: MAIN_SESSION_ID, message: userMsg });
     }
 
-    // Mark the cutoff to the last message currently in state. notify only sends
-    // assistant messages added AFTER this point. Note: addMessage may dedup the
-    // user message (same content+role within last 50), so we anchor to whatever
-    // is actually the tail of the array.
+    // Mark the cutoff so notifyTelegramIfMainSession only sends assistant
+    // messages added AFTER this point.
     const state = getSessionState(MAIN_SESSION_ID);
     lastNotifiedMessageId = state.messages.length > 0
       ? state.messages[state.messages.length - 1].id
       : null;
 
-    const content = images.length > 0
-      ? [
-          ...images.map(img => ({
-            type: 'image',
-            source: { type: 'base64', media_type: img.media_type, data: img.data },
-          })),
-          ...(text ? [{ type: 'text', text }] : []),
-        ]
-      : text;
-
-    const payload = JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content },
-    }) + '\n';
-
-    (session.claudeWs as any).send(payload);
+    if (!session.providerSession) return;
+    await session.providerSession.sendUserMessage({ text, images });
   };
 
   bot.on('text', async (ctx) => {
@@ -277,7 +256,7 @@ export function startTelegramBot(port: number) {
     const text = ctx.message.text;
     log(`[telegram] Message from ${chatId}: ${text.slice(0, 80)}`);
     try {
-      sendToClaude(session, text, []);
+      await sendToProvider(session, text, []);
     } catch (err) {
       logError(`[telegram] Failed to send message to Claude: ${err}`);
       ctx.reply('Failed to send message. The session may have disconnected.');
@@ -307,7 +286,7 @@ export function startTelegramBot(port: number) {
       const caption = (ctx.message.caption || '').trim();
 
       log(`[telegram] Photo from ${chatId} (${buf.length} bytes)${caption ? ` caption: ${caption.slice(0, 60)}` : ''}`);
-      sendToClaude(session, caption, [{ media_type: 'image/jpeg', data }]);
+      await sendToProvider(session, caption, [{ media_type: 'image/jpeg', data }]);
     } catch (err) {
       logError(`[telegram] Failed to forward photo: ${err}`);
       ctx.reply('Failed to send image to Claude.');

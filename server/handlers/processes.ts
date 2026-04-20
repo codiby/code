@@ -13,7 +13,7 @@ const PROC_REGISTRY = join(PROC_DIR, 'registry.json');
 
 try { mkdirSync(PROC_DIR, { recursive: true }); } catch {}
 
-type PersistedProc = { id: string; pid: number; command: string; cwd: string; sessionId: string; startedAt: number };
+type PersistedProc = { id: string; pid: number; command: string; cwd: string; sessionId: string; startedAt: number; kind?: 'oneshot' | 'pty' };
 
 function isPidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -42,12 +42,14 @@ function removeProcessOutput(procId: string) {
 export function saveProcessRegistry() {
   const entries: PersistedProc[] = [];
   for (const [, tp] of trackedProcesses) {
-    entries.push({ id: tp.id, pid: tp.pid, command: tp.command, cwd: tp.cwd, sessionId: tp.sessionId, startedAt: tp.startedAt });
+    entries.push({ id: tp.id, pid: tp.pid, command: tp.command, cwd: tp.cwd, sessionId: tp.sessionId, startedAt: tp.startedAt, kind: tp.kind });
   }
   try { writeFileSync(PROC_REGISTRY, JSON.stringify(entries)); } catch {}
 }
 
-/** On startup, re-adopt processes that are still alive */
+/** On startup, re-adopt processes that are still alive. PTY sessions are
+ *  intentionally NOT re-adopted — the helper's stdin pipe is lost when the
+ *  server restarts, so the shell becomes a zombie. Kill them instead. */
 export function restoreProcessRegistry() {
   let entries: PersistedProc[];
   try { entries = JSON.parse(readFileSync(PROC_REGISTRY, 'utf-8')); } catch { return; }
@@ -57,6 +59,19 @@ export function restoreProcessRegistry() {
     if (!isPidAlive(entry.pid)) {
       changed = true;
       removeProcessOutput(entry.id);
+      continue;
+    }
+    // PTY sessions cannot be re-adopted across server restarts — kill and drop.
+    if (entry.kind === 'pty') {
+      try { process.kill(-entry.pid, 'SIGHUP'); } catch {}
+      try { process.kill(entry.pid, 'SIGHUP'); } catch {}
+      setTimeout(() => {
+        try { process.kill(-entry.pid, 'SIGKILL'); } catch {}
+        try { process.kill(entry.pid, 'SIGKILL'); } catch {}
+      }, 500);
+      removeProcessOutput(entry.id);
+      changed = true;
+      log(`[proc] Dropped stale PTY ${entry.id.slice(0, 8)} (pid=${entry.pid})`);
       continue;
     }
     if (trackedProcesses.has(entry.id)) continue;
@@ -72,6 +87,7 @@ export function restoreProcessRegistry() {
       viewers: new Set(),
       outputBuffer: output ? [output] : [],
       exitCode: null,
+      kind: entry.kind || 'oneshot',
     });
     log(`[proc] Re-adopted process ${entry.id.slice(0, 8)} (pid=${entry.pid}): ${entry.command.slice(0, 60)}`);
   }
@@ -137,7 +153,10 @@ export function handleKillProcess(processId: string, pid?: number): Response {
   }
   const tp = trackedProcesses.get(processId);
   if (!tp) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
-  killProcessTree(tp.pid);
+  if (tp.kind === 'pty' && tp.writeControl) {
+    try { tp.writeControl({ type: 'kill', signal: 'SIGHUP' }); } catch {}
+  }
+  if (tp.pid) killProcessTree(tp.pid);
   try { tp.proc?.kill('SIGKILL'); } catch {}
   trackedProcesses.delete(processId);
   removeProcessOutput(processId);

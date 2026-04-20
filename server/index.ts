@@ -5,17 +5,22 @@
  * Run as MCP server (stdio):    bun run server/index.ts --mcp
  */
 
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
 
-import { PORT, CLAUDE_BIN, corsHeaders, ACCEPT_EDITS_TOOLS, PLAN_READ_ONLY_TOOLS, PLAN_DENY_TOOLS, CWD } from './config';
+import { PORT, CLAUDE_BIN, corsHeaders, CWD } from './config';
 import { log } from './logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON } from './sessions';
 import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession } from './handlers/sessions';
+import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
+import { registerProvider } from './provider/registry';
+import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
+import { resolvePermissionDecision } from './provider/bridge';
 import { handleListDirs, handleListFiles, handleFileIndex } from './handlers/files';
 import { handleExecCreate, terminalWsOpen, terminalWsClose } from './handlers/exec';
 import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput } from './handlers/processes';
@@ -36,12 +41,15 @@ import {
   getStateForClient,
   clearSessionState,
 } from './state';
-import type { ChatMessage, PermissionRequest } from './state';
+import type { ChatMessage } from './state';
 import { loadArchitectCredentials, saveArchitectCredentials, clearArchitectCredentials, loadTicketLinks, saveTicketLink, removeTicketLink, getTicketLink, loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadTelegramSettings, saveTelegramSettings } from './storage';
 
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
+
+// Register provider adapters before loading sessions (so default provider exists)
+registerProvider(ClaudeAdapter);
 
 loadSessions();
 restoreProcessRegistry();
@@ -78,313 +86,157 @@ function broadcastSessionList() {
 }
 
 // ---------------------------------------------------------------------------
-// Claude message processing
+// PTY helper (interactive /terminal command)
 // ---------------------------------------------------------------------------
 
 /**
- * Process a raw message from the Claude CLI WebSocket, update server state,
- * and broadcast structured events to subscribed frontend clients.
- *
- * Returns true if the message was auto-accepted (no relay to browser needed
- * for raw format — structured events are always emitted).
+ * Locate a Node binary. Bun cannot load node-pty's native binding directly,
+ * so the server shells out to a tiny Node helper for each interactive PTY.
+ * Caches the result once found.
  */
-function processClaudeMessage(sessionId: string, data: string): boolean {
-  const session = sessions.get(sessionId);
-  if (!session) return false;
-
-  let msg: any;
+let cachedNodeBin: string | null = null;
+function findNodeBin(): string | null {
+  if (cachedNodeBin) return cachedNodeBin;
+  // 1. Try PATH via `command -v` (covers nvm/fnm/homebrew/etc)
   try {
-    msg = JSON.parse(data);
-  } catch {
-    // Not JSON — relay as-is (legacy)
-    broadcastToSession(sessionId, { type: 'raw', sessionId, data });
-    return false;
-  }
-
-  // ------------------------------------------------------------------
-  // Auto-accept / auto-deny permission requests
-  // ------------------------------------------------------------------
-  if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
-    const toolName = msg.request.tool_name as string;
-    const mode = session.permissionMode || 'default';
-    const requestId = msg.request_id as string;
-    const input = (msg.request.input as Record<string, unknown>) || {};
-
-    // Plan mode: auto-deny write tools so Claude stays in planning
-    if (mode === 'plan' && PLAN_DENY_TOOLS.has(toolName)) {
-      const response =
-        JSON.stringify({
-          type: 'control_response',
-          response: {
-            subtype: 'success',
-            request_id: requestId,
-            response: { behavior: 'deny', message: `Denied: session is in plan mode. Do not attempt to use ${toolName} — only read the codebase and write your plan to the plan file, then call ExitPlanMode.` },
-          },
-        }) + '\n';
-      if (session.claudeWs) {
-        (session.claudeWs as any).send(response);
-      }
-      log(`[${session.id.slice(0, 8)}] Auto-denied ${toolName} (plan mode)`);
-      return true;
+    const fromPath = execSync('command -v node 2>/dev/null || which node 2>/dev/null', {
+      encoding: 'utf-8',
+      shell: '/bin/bash',
+      timeout: 2000,
+    }).trim();
+    if (fromPath && existsSync(fromPath)) { cachedNodeBin = fromPath; return fromPath; }
+  } catch {}
+  // 2. Try common absolute locations
+  const candidates = [
+    '/usr/local/bin/node',
+    '/opt/homebrew/bin/node',
+    `${process.env.HOME || ''}/.volta/bin/node`,
+  ];
+  try {
+    // nvm installations
+    const nvmDir = `${process.env.HOME || ''}/.nvm/versions/node`;
+    if (existsSync(nvmDir)) {
+      const versions = execSync(`ls -1 ${nvmDir} 2>/dev/null | sort -rV`, { encoding: 'utf-8', timeout: 1000 })
+        .trim().split('\n').filter(Boolean);
+      for (const v of versions) candidates.push(`${nvmDir}/${v}/bin/node`);
     }
-
-    const shouldAutoAccept =
-      mode === 'bypassPermissions' ||
-      (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(toolName)) ||
-      (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(toolName));
-
-    if (shouldAutoAccept) {
-      // Send allow response directly to Claude CLI
-      const response =
-        JSON.stringify({
-          type: 'control_response',
-          response: {
-            subtype: 'success',
-            request_id: requestId,
-            response: { behavior: 'allow', updatedInput: {} },
-          },
-        }) + '\n';
-      if (session.claudeWs) {
-        (session.claudeWs as any).send(response);
-      }
-
-      // Notify subscribed frontend clients
-      broadcastToSession(sessionId, {
-        type: 'auto_approved',
-        sessionId,
-        toolName,
-        filePath: input.file_path || input.path || null,
-        command: input.command || null,
-      });
-
-      log(`[${session.id.slice(0, 8)}] Auto-approved ${toolName} (mode=${mode})`);
-      return true; // auto-accepted
-    }
+  } catch {}
+  for (const p of candidates) {
+    if (p && existsSync(p)) { cachedNodeBin = p; return p; }
   }
-
-  // ------------------------------------------------------------------
-  // Capture claude session id
-  // ------------------------------------------------------------------
-  if (msg.type === 'system' && msg.subtype === 'init' && msg.session_id) {
-    session.claudeSessionId = msg.session_id as string;
-    saveSessions();
-
-    // Capture init info and emit to frontend
-    const tools: string[] = [];
-    const slashCommands: string[] = [];
-    if (Array.isArray(msg.tools)) {
-      for (const t of msg.tools) {
-        if (t?.name) tools.push(t.name as string);
-      }
-    }
-    const initInfo = {
-      tools,
-      cwd: session.cwd,
-      version: (msg.claudeVersion as string) || '',
-      slashCommands,
-      model: session.model || '',
-      permissionMode: session.permissionMode || 'default',
-    };
-    updateSessionState(sessionId, s => ({ ...s, initInfo }));
-    broadcastToSession(sessionId, { type: 'init_info', sessionId, info: initInfo });
-  }
-
-  // ------------------------------------------------------------------
-  // Auto-name session from first assistant text
-  // ------------------------------------------------------------------
-  if (msg.type === 'assistant' && session.name.startsWith('Session ')) {
-    const content = msg.message?.content;
-    if (Array.isArray(content)) {
-      const textBlock = content.find((b: any) => b.type === 'text');
-      if (textBlock?.text) {
-        const newName = (textBlock.text as string).slice(0, 40).replace(/\n/g, ' ');
-        session.name = newName;
-        saveSessions();
-        broadcastToSession(sessionId, { type: 'session_name', sessionId, name: newName });
-        broadcastSessionList();
-      }
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // Permission request (control_request / can_use_tool — not auto-accepted)
-  // ------------------------------------------------------------------
-  if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
-    const permRequest: PermissionRequest = {
-      requestId: msg.request_id as string,
-      toolName: msg.request.tool_name as string,
-      displayName: msg.request.tool_display_name as string | undefined,
-      description: msg.request.description as string | undefined,
-      input: (msg.request.input as Record<string, unknown>) || {},
-      title: msg.request.title as string | undefined,
-    };
-    updateSessionState(sessionId, s => ({ ...s, permRequest }));
-    broadcastToSession(sessionId, { type: 'permission_request', sessionId, request: permRequest });
-    return false;
-  }
-
-  // ------------------------------------------------------------------
-  // Assistant message (streaming text / tool use)
-  // ------------------------------------------------------------------
-  if (msg.type === 'assistant') {
-    const content = msg.message?.content;
-    if (Array.isArray(content)) {
-      let partialText = '';
-
-      for (const block of content) {
-        if (block.type === 'text') {
-          partialText += block.text as string;
-        } else if (block.type === 'tool_use') {
-          // If no text in this message's content, fall back to session state's streaming partialText
-          if (!partialText.trim()) {
-            const state = getSessionState(sessionId);
-            if (state.partialText.trim()) {
-              partialText = state.partialText;
-            }
-          }
-          // Commit any accumulated text as a message before the tool use
-          if (partialText.trim()) {
-            const textMsg: ChatMessage = {
-              id: randomUUID(),
-              role: 'assistant',
-              content: partialText,
-              timestamp: Date.now(),
-            };
-            if (addMessage(sessionId, textMsg)) {
-              broadcastToSession(sessionId, { type: 'message', sessionId, message: textMsg });
-            }
-            partialText = '';
-          }
-          // Clear session streaming state since text was committed
-          updateSessionState(sessionId, s => ({ ...s, partialText: '', isStreaming: false }));
-
-          // TodoWrite — update ui.todos instead of adding a chat message
-          if (block.name === 'TodoWrite') {
-            const todos = (block.input as any)?.todos || [];
-            updateUIState(sessionId, { todos });
-            broadcastToSession(sessionId, { type: 'todos', sessionId, todos });
-          } else {
-            // Regular tool use — add as chat message
-            const chatMsg: ChatMessage = {
-              id: block.id || randomUUID(),
-              role: 'assistant',
-              content: `Using tool: **${block.name}**`,
-              timestamp: Date.now(),
-              toolName: block.name as string,
-              toolInput: block.input,
-            };
-            if (addMessage(sessionId, chatMsg)) {
-              broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
-            }
-          }
-        }
-      }
-
-      // Check if turn is complete
-      const stopReason = msg.message?.stop_reason;
-      if (stopReason === 'end_turn' || stopReason === 'max_tokens') {
-        // Fall back to session state's streaming text if nothing in this message
-        if (!partialText.trim()) {
-          const state = getSessionState(sessionId);
-          if (state.partialText.trim()) {
-            partialText = state.partialText;
-          }
-        }
-        // Commit any remaining partial text as a message
-        if (partialText.trim()) {
-          const finalMsg: ChatMessage = {
-            id: randomUUID(),
-            role: 'assistant',
-            content: partialText,
-            timestamp: Date.now(),
-            model: msg.message?.model,
-            usage: msg.usage,
-          };
-          if (addMessage(sessionId, finalMsg)) {
-            broadcastToSession(sessionId, { type: 'message', sessionId, message: finalMsg });
-          }
-        }
-        updateSessionState(sessionId, s => ({ ...s, partialText: '', isStreaming: false }));
-        broadcastToSession(sessionId, { type: 'status', sessionId, status: 'turn_complete' });
-        notifyTelegramIfMainSession(sessionId);
-        session.replayDone = true;
-      } else if (partialText && session.replayDone) {
-        // Only update streaming state for live (non-replay) messages
-        updateSessionState(sessionId, s => ({ ...s, partialText, isStreaming: true }));
-        broadcastToSession(sessionId, { type: 'partial_text', sessionId, text: partialText });
-      }
-    }
-    return false;
-  }
-
-  // ------------------------------------------------------------------
-  // Result message (tool result / final response)
-  // ------------------------------------------------------------------
-  if (msg.type === 'result') {
-    session.replayDone = true;
-    updateSessionState(sessionId, s => ({ ...s, isStreaming: false, partialText: '' }));
-
-    const content = msg.result;
-    if (content) {
-      const chatMsg: ChatMessage = {
-        id: randomUUID(),
-        role: 'assistant',
-        content: typeof content === 'string' ? content : JSON.stringify(content),
-        timestamp: Date.now(),
-        costUsd: msg.cost_usd as number | undefined,
-        durationMs: msg.duration_ms as number | undefined,
-        usage: msg.usage as { input_tokens: number; output_tokens: number } | undefined,
-      };
-      if (addMessage(sessionId, chatMsg)) {
-        broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
-      }
-    }
-
-    // Clear any pending permission request
-    updateSessionState(sessionId, s => ({ ...s, permRequest: null }));
-    broadcastToSession(sessionId, { type: 'status', sessionId, status: 'turn_complete' });
-    notifyTelegramIfMainSession(sessionId);
-    return false;
-  }
-
-  // ------------------------------------------------------------------
-  // Tool result (from tool_use)
-  // ------------------------------------------------------------------
-  if (msg.type === 'tool_result') {
-    const chatMsg: ChatMessage = {
-      id: randomUUID(),
-      role: 'assistant',
-      content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-      timestamp: Date.now(),
-      isToolResult: true,
-      isError: msg.is_error as boolean | undefined,
-    };
-    if (addMessage(sessionId, chatMsg)) {
-      broadcastToSession(sessionId, { type: 'message', sessionId, message: chatMsg });
-    }
-    return false;
-  }
-
-  // ------------------------------------------------------------------
-  // User message echo — save to JSONL only (frontend already has it)
-  // ------------------------------------------------------------------
-  if (msg.type === 'user') {
-    const content = msg.message?.content;
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        if (block.type === 'text' && block.text) {
-          addMessage(sessionId, { id: randomUUID(), role: 'user', content: block.text as string, timestamp: Date.now() });
-        }
-      }
-    } else if (typeof content === 'string') {
-      addMessage(sessionId, { id: randomUUID(), role: 'user', content, timestamp: Date.now() });
-    }
-    return false;
-  }
-
-  // Fallback — relay raw for anything not explicitly handled
-  return false;
+  return null;
 }
+
+/**
+ * Resolve the pty-helper.mjs path. When running the source tree it lives next
+ * to this file; when bundled as sidecar/service we ship it alongside the
+ * bundled `server.js` in the same dir.
+ */
+function findPtyHelperPath(): string | null {
+  const candidates: string[] = [];
+  // Bundled layouts (install-service.sh + bundle-bun.sh copy next to server.js)
+  try {
+    const scriptDir = dirname(process.argv[1] || '');
+    if (scriptDir) candidates.push(join(scriptDir, 'pty-helper.mjs'));
+  } catch {}
+  // Source tree
+  candidates.push(join(dirname(new URL(import.meta.url).pathname), 'pty-helper.mjs'));
+  candidates.push(join(process.cwd(), 'server', 'pty-helper.mjs'));
+  for (const p of candidates) {
+    try { if (existsSync(p)) return p; } catch {}
+  }
+  return null;
+}
+
+/**
+ * Spawn a Node pty-helper subprocess for an interactive shell. Returns null
+ * on failure (e.g. Node not installed).
+ */
+function spawnPtyHelper(opts: {
+  cwd: string;
+  cols: number;
+  rows: number;
+  shell?: string;
+}): {
+  proc: ChildProcess;
+  writeControl: (obj: { type: string; [k: string]: unknown }) => void;
+  onData: (cb: (text: string) => void) => void;
+  onReady: (cb: (pid: number) => void) => void;
+  onExit: (cb: (code: number) => void) => void;
+  onError: (cb: (err: string) => void) => void;
+} | null {
+  const nodeBin = findNodeBin();
+  if (!nodeBin) { log('[pty] Node binary not found — install Node to use /terminal'); return null; }
+  const helperPath = findPtyHelperPath();
+  if (!helperPath) { log('[pty] pty-helper.mjs not found'); return null; }
+
+  const args = [
+    helperPath,
+    '--shell', opts.shell || process.env.SHELL || '/bin/bash',
+    '--cwd', opts.cwd,
+    '--cols', String(opts.cols),
+    '--rows', String(opts.rows),
+  ];
+
+  const proc = spawn(nodeBin, args, {
+    cwd: opts.cwd,
+    detached: true,
+    env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  const writeControl = (obj: { type: string; [k: string]: unknown }) => {
+    try { proc.stdin?.write(JSON.stringify(obj) + '\n'); } catch {}
+  };
+
+  // Line-buffered JSON parser on helper stdout
+  let stdoutBuf = '';
+  const dataListeners: ((t: string) => void)[] = [];
+  const readyListeners: ((pid: number) => void)[] = [];
+  const exitListeners: ((code: number) => void)[] = [];
+  const errListeners: ((e: string) => void)[] = [];
+  proc.stdout?.on('data', (chunk: Buffer) => {
+    stdoutBuf += chunk.toString();
+    let idx;
+    while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
+      const line = stdoutBuf.slice(0, idx);
+      stdoutBuf = stdoutBuf.slice(idx + 1);
+      if (!line.trim()) continue;
+      let m: any;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m.type === 'data' && typeof m.data === 'string') dataListeners.forEach(cb => cb(m.data));
+      else if (m.type === 'ready' && typeof m.pid === 'number') readyListeners.forEach(cb => cb(m.pid));
+      else if (m.type === 'exit') exitListeners.forEach(cb => cb(m.code ?? 0));
+    }
+  });
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    const text = chunk.toString();
+    log(`[pty-helper stderr] ${text.trim().slice(0, 200)}`);
+    errListeners.forEach(cb => cb(text));
+  });
+  proc.on('exit', (code) => exitListeners.forEach(cb => cb(code ?? 0)));
+  proc.on('error', (err) => { log(`[pty-helper] error: ${err}`); errListeners.forEach(cb => cb(String(err))); });
+
+  return {
+    proc,
+    writeControl,
+    onData: (cb) => { dataListeners.push(cb); },
+    onReady: (cb) => { readyListeners.push(cb); },
+    onExit: (cb) => { exitListeners.push(cb); },
+    onError: (cb) => { errListeners.push(cb); },
+  };
+}
+
+// Provider runtime events are handled by `provider/bridge.ts`. No raw Claude
+// CLI messages are parsed here — the SDK runs in-process and emits structured
+// events that the bridge translates into state updates + WebSocket broadcasts.
+
+// Wire bridge dependencies (used by provider/lifecycle.ts at spawn time)
+setBridgeDeps({
+  broadcastToSession,
+  broadcastSessionList,
+  notifyTelegramIfMainSession,
+});
 
 // ---------------------------------------------------------------------------
 // Frontend WS message handler
@@ -451,10 +303,33 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     const { sessionId, text: msgText, images } = msg as { sessionId: string; text: string; images?: { media_type: string; data: string }[] };
     if (!sessionId || !msgText) return;
     const session = sessions.get(sessionId);
-    if (!session || !session.claudeWs) return;
+    if (!session) return;
+    // Auto-start the provider if the session is idle (e.g. after a stop, SDK
+    // exit, or pre-resume race). Messages would otherwise be silently dropped.
+    if (!session.providerSession) {
+      log(`[${session.id.slice(0, 8)}] Auto-starting provider on send_message (session was stopped/idle)`);
+      startProviderSession(session, server.port, session.claudeSessionId ?? null);
+      saveSessions();
+    }
+    if (!session.providerSession) {
+      log(`[${session.id.slice(0, 8)}] Auto-start failed — dropping message`);
+      return;
+    }
     session.replayDone = true;
 
-    // Intercept /model command — switch Claude model in-place via control_request.
+    // Echo user message to persistence + frontend
+    const userMsg: ChatMessage = {
+      id: randomUUID(),
+      role: 'user',
+      content: msgText,
+      timestamp: Date.now(),
+      images,
+    };
+    if (addMessage(sessionId, userMsg)) {
+      broadcastToSession(sessionId, { type: 'message', sessionId, message: userMsg });
+    }
+
+    // Intercept /model command — switch model via provider session.
     const modelMatch = msgText.match(/^\/model(?:\s+(.+))?$/);
     if (modelMatch) {
       const finishIntercept = (confirmText: string) => {
@@ -483,40 +358,21 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       broadcastSessionList();
 
       let confirmText = `Model preference saved: ${newModel ?? 'default'}`;
-      if (newModel) {
-        const ctrl = JSON.stringify({
-          type: 'control_request',
-          request_id: randomUUID(),
-          request: { subtype: 'set_model', model: newModel },
-        }) + '\n';
-        try {
-          (session.claudeWs as any).send(ctrl);
-          confirmText = `Model set to: ${newModel}`;
-        } catch (err) {
-          confirmText = `Failed to switch model: ${err}`;
-        }
+      try {
+        await session.providerSession!.setModel(newModel);
+        confirmText = `Model set to: ${newModel ?? 'default'}`;
+      } catch (err) {
+        confirmText = `Failed to switch model: ${err}`;
       }
       finishIntercept(confirmText);
       return;
     }
 
-    const payload: any = {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: images && images.length > 0
-          ? [
-              ...images.map((img: { media_type: string; data: string }) => ({
-                type: 'image',
-                source: { type: 'base64', media_type: img.media_type, data: img.data },
-              })),
-              { type: 'text', text: msgText },
-            ]
-          : msgText,
-      },
-    };
-    const line = JSON.stringify(payload) + '\n';
-    (session.claudeWs as any).send(line);
+    try {
+      await session.providerSession!.sendUserMessage({ text: msgText, images });
+    } catch (err) {
+      log(`[${sessionId.slice(0, 8)}] sendUserMessage failed: ${err}`);
+    }
     return;
   }
 
@@ -530,23 +386,51 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     };
     if (!sessionId || !requestId) return;
     const session = sessions.get(sessionId);
-    if (!session || !session.claudeWs) return;
+    if (!session) return;
 
-    const response = JSON.stringify({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: requestId,
-        response: allow
-          ? { behavior: 'allow', updatedInput: updatedInput || {} }
-          : { behavior: 'deny' },
-      },
-    }) + '\n';
-    (session.claudeWs as any).send(response);
+    resolvePermissionDecision(
+      requestId,
+      allow
+        ? { allow: true, updatedInput: updatedInput || {} }
+        : { allow: false, interrupt: true },
+    );
 
-    // When user denies a tool, also interrupt so Claude stops instead of retrying
-    if (!allow) {
-      (session.claudeWs as any).send(JSON.stringify({ type: 'interrupt' }) + '\n');
+    // When user denies a tool, also interrupt so the model stops retrying.
+    if (!allow && session.providerSession) {
+      try { await session.providerSession.interrupt(); } catch {}
+    }
+
+    // AskUserQuestion doesn't produce a normal tool_result from the SDK — the
+    // answer lives only in the permission updatedInput. Persist it as a
+    // synthetic tool_result so reloads can show which option was selected.
+    // Works for both live (permRequest still set) and stale (permission lost
+    // but tool_use still in history) cases.
+    if (
+      allow &&
+      updatedInput &&
+      updatedInput.answers &&
+      typeof updatedInput.answers === 'object'
+    ) {
+      const state = getSessionState(sessionId);
+      const isAsk =
+        state.permRequest?.toolName === 'AskUserQuestion' ||
+        state.messages.some(m => m.id === requestId && m.toolName === 'AskUserQuestion');
+      if (isAsk) {
+        const already = state.messages.some(m => m.isToolResult && m.toolUseId === requestId);
+        if (!already) {
+          const resultMsg: ChatMessage = {
+            id: randomUUID(),
+            role: 'assistant',
+            content: JSON.stringify({ answers: updatedInput.answers }),
+            timestamp: Date.now(),
+            isToolResult: true,
+            toolUseId: requestId,
+          };
+          if (addMessage(sessionId, resultMsg)) {
+            broadcastToSession(sessionId, { type: 'message', sessionId, message: resultMsg });
+          }
+        }
+      }
     }
 
     // Handle ExitPlanMode approval — transition out of plan mode
@@ -556,6 +440,9 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
         session.permissionMode = 'acceptEdits';
         saveSessions();
         broadcastSessionList();
+        if (session.providerSession) {
+          try { await session.providerSession.setPermissionMode('acceptEdits'); } catch {}
+        }
         log(`[${session.id.slice(0, 8)}] ExitPlanMode approved — switched to acceptEdits`);
       }
     }
@@ -570,9 +457,10 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     const { sessionId } = msg as { sessionId: string };
     if (!sessionId) return;
     const session = sessions.get(sessionId);
-    if (!session || !session.claudeWs) return;
-    const line = JSON.stringify({ type: 'interrupt' }) + '\n';
-    (session.claudeWs as any).send(line);
+    if (!session || !session.providerSession) return;
+    try { await session.providerSession.interrupt(); } catch (err) {
+      log(`[${sessionId.slice(0, 8)}] interrupt failed: ${err}`);
+    }
     return;
   }
 
@@ -642,6 +530,117 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     return;
   }
 
+  // ---- exec_shell ----------------------------------------------------------
+  // Spawn a long-lived interactive PTY shell. Client (xterm.js) streams
+  // keystrokes via `terminal_input` and receives output via `terminal_data`.
+  if (type === 'exec_shell') {
+    const { sessionId, procId: clientProcId, cwd, cols, rows } = msg as {
+      sessionId: string; procId?: string; cwd?: string; cols?: number; rows?: number;
+    };
+    if (!sessionId) return;
+
+    const procId = clientProcId || randomUUID();
+    const execCwd = cwd || process.env.HOME || '/';
+    const execCols = Math.max(1, Math.min(500, Number(cols) || 120));
+    const execRows = Math.max(1, Math.min(200, Number(rows) || 30));
+
+    const helper = spawnPtyHelper({ cwd: execCwd, cols: execCols, rows: execRows });
+    if (!helper) {
+      broadcastToSession(sessionId, {
+        type: 'terminal_data', sessionId, procId,
+        text: '\r\n\x1b[31m[/terminal unavailable: Node binary or pty-helper.mjs not found on server]\x1b[0m\r\n',
+      });
+      broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: 127 });
+      return;
+    }
+
+    const tp = {
+      id: procId,
+      pid: 0, // filled in on helper 'ready'
+      command: '(interactive shell)',
+      cwd: execCwd,
+      sessionId,
+      startedAt: Date.now(),
+      proc: helper.proc,
+      viewers: new Set<any>(),
+      outputBuffer: [] as string[],
+      exitCode: null as number | null,
+      kind: 'pty' as const,
+      cols: execCols,
+      rows: execRows,
+      writeControl: helper.writeControl,
+    };
+    trackedProcesses.set(procId, tp);
+    saveProcessRegistry();
+    log(`[exec_shell] spawned pty helper procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)} cwd=${execCwd}`);
+
+    helper.onReady((pid) => {
+      tp.pid = pid;
+      saveProcessRegistry();
+      log(`[exec_shell] pty ready procId=${procId.slice(0, 8)} pid=${pid}`);
+    });
+    helper.onData((text) => {
+      tp.outputBuffer.push(text);
+      if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
+      appendProcessOutput(procId, text);
+      broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
+    });
+    helper.onExit((code) => {
+      if (tp.exitCode !== null) return; // already handled
+      tp.exitCode = code;
+      log(`[exec_shell] pty exited procId=${procId.slice(0, 8)} code=${code}`);
+      broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
+      setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
+    });
+
+    // Acknowledge so the client can correlate immediately
+    ws.send(JSON.stringify({ type: 'terminal_data', sessionId, procId, text: '' }));
+    return;
+  }
+
+  // ---- terminal_input ------------------------------------------------------
+  // Write raw keystrokes (already encoded by xterm) to an interactive PTY.
+  if (type === 'terminal_input') {
+    const { procId, data } = msg as { procId: string; data: string };
+    if (!procId || typeof data !== 'string') return;
+    const tp = trackedProcesses.get(procId);
+    if (!tp || tp.kind !== 'pty' || tp.exitCode !== null) return;
+    tp.writeControl?.({ type: 'write', data });
+    return;
+  }
+
+  // ---- terminal_resize -----------------------------------------------------
+  if (type === 'terminal_resize') {
+    const { procId, cols, rows } = msg as { procId: string; cols: number; rows: number };
+    if (!procId || !Number.isFinite(cols) || !Number.isFinite(rows)) return;
+    const tp = trackedProcesses.get(procId);
+    if (!tp || tp.kind !== 'pty' || tp.exitCode !== null) return;
+    tp.cols = cols; tp.rows = rows;
+    tp.writeControl?.({ type: 'resize', cols, rows });
+    return;
+  }
+
+  // ---- terminal_kill -------------------------------------------------------
+  // Gracefully end an interactive shell (SIGHUP), falling back to process group
+  // kill if the helper doesn't exit within 500ms.
+  if (type === 'terminal_kill') {
+    const { procId } = msg as { procId: string };
+    if (!procId) return;
+    const tp = trackedProcesses.get(procId);
+    if (!tp) return;
+    if (tp.kind === 'pty' && tp.writeControl) {
+      tp.writeControl({ type: 'kill', signal: 'SIGHUP' });
+      setTimeout(() => {
+        if (tp.exitCode !== null) return;
+        try { tp.proc?.kill('SIGTERM'); } catch {}
+        if (tp.pid) killProcessTree(tp.pid);
+      }, 500);
+    } else if (tp.pid) {
+      killProcessTree(tp.pid);
+    }
+    return;
+  }
+
   // ---- kill_process --------------------------------------------------------
   if (type === 'kill_process') {
     const { sessionId, processId, pid } = msg as { sessionId: string; processId?: string; pid?: number };
@@ -651,7 +650,10 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     } else if (processId) {
       const tp = trackedProcesses.get(processId);
       if (tp) {
-        killProcessTree(tp.pid);
+        if (tp.kind === 'pty' && tp.writeControl) {
+          tp.writeControl({ type: 'kill', signal: 'SIGHUP' });
+        }
+        if (tp.pid) killProcessTree(tp.pid);
         try { tp.proc?.kill('SIGKILL'); } catch {}
         trackedProcesses.delete(processId);
         saveProcessRegistry();
@@ -676,6 +678,9 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!session) return;
     session.model = model || null;
     saveSessions();
+    if (session.providerSession) {
+      try { await session.providerSession.setModel(session.model); } catch {}
+    }
     // Notify all subscribed clients
     broadcastToSession(sessionId, {
       type: 'session_state',
@@ -693,6 +698,9 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!session) return;
     session.permissionMode = mode;
     saveSessions();
+    if (session.providerSession) {
+      try { await session.providerSession.setPermissionMode(mode as any); } catch {}
+    }
     broadcastSessionList();
     return;
   }
@@ -742,18 +750,6 @@ const server = Bun.serve({
       }
       const upgraded = server.upgrade(req, { data: { type: 'browser', sessionId } });
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
-    }
-
-    // Claude CLI WebSocket connection (sdk-url endpoint)
-    if (url.pathname.match(/\/v2\/session_ingress\/ws\/.+/)) {
-      const sessionId = url.pathname.split('/v2/session_ingress/ws/')[1];
-      const session = sessions.get(sessionId!);
-      if (!session) {
-        return new Response('Session not found', { status: 404 });
-      }
-      const upgraded = server.upgrade(req, { data: { type: 'claude', sessionId } });
-      if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 });
-      return undefined;
     }
 
     // Terminal viewer WebSocket
@@ -1325,10 +1321,9 @@ const server = Bun.serve({
         id: s.id,
         status: s.status,
         ready: s.ready,
+        provider: s.provider,
+        hasProviderSession: !!s.providerSession,
         browserWsCount: s.browserWs.size,
-        hasClaudeWs: !!s.claudeWs,
-        pendingCount: s.pendingMessages.length,
-        pendingPreview: s.pendingMessages.map(m => m.slice(0, 80)),
         frontendClientsCount: frontendClients.size,
         subscribedCount: [...subscriptions.values()].filter(subs => subs.has(debugMatch[1]!)).length,
       }, { headers: corsHeaders });
@@ -1362,7 +1357,8 @@ const server = Bun.serve({
         return;
       }
 
-      // Legacy per-session browser WebSocket
+      // Legacy per-session browser WebSocket (kept for compatibility with the
+      // older frontend socket; new clients use the multiplexed /ws endpoint).
       if (type === 'browser') {
         const session = sessions.get(sessionId!);
         if (!session) { ws.close(4001, 'Session not found'); return; }
@@ -1370,12 +1366,6 @@ const server = Bun.serve({
         log(`[${sessionId!.slice(0, 8)}] Legacy browser WS connected (${session.browserWs.size} total)`);
         if (session.ready) {
           ws.send(JSON.stringify({ type: 'bridge', status: 'claude_connected' }) + '\n');
-        }
-        for (const msg of session.pendingMessages) {
-          ws.send(msg);
-        }
-        if (session.browserWs.size === 1) {
-          session.pendingMessages = [];
         }
         return;
       }
@@ -1397,26 +1387,6 @@ const server = Bun.serve({
         if (!conn) { ws.close(4003, 'Debug connection not found'); return; }
         addCdpClient(conn, ws);
         log(`[CDP] Client connected to ${connectionId}`);
-        return;
-      }
-
-      // Claude CLI WebSocket
-      if (type === 'claude') {
-        const session = sessions.get(sessionId!);
-        if (!session) { ws.close(4001, 'Session not found'); return; }
-        session.claudeWs = ws as unknown as WebSocket;
-        session.ready = true;
-        session.status = 'running';
-        // Reset streaming state — if a previous CLI disconnected mid-stream, clear it
-        updateSessionState(sessionId!, s => ({ ...s, isStreaming: false, partialText: '' }));
-        log(`[${sessionId!.slice(0, 8)}] Claude CLI WS connected! Broadcasting to frontend clients`);
-        // Notify legacy browser WS clients
-        for (const bws of session.browserWs) {
-          try { bws.send(JSON.stringify({ type: 'bridge', status: 'claude_connected' }) + '\n'); } catch {}
-        }
-        // Notify new-style frontend clients
-        broadcastToSession(sessionId!, { type: 'status', sessionId: sessionId!, status: 'connected' });
-        broadcastSessionList();
         return;
       }
     },
@@ -1454,34 +1424,9 @@ const server = Bun.serve({
         return;
       }
 
-      // Legacy browser / Claude relay
-      const session = sessions.get(sessionId!);
-      if (!session) return;
-
-      const data = typeof message === 'string' ? message : new TextDecoder().decode(message as ArrayBuffer);
-
-      if (type === 'browser') {
-        if (session.claudeWs) {
-          const line = data.endsWith('\n') ? data : data + '\n';
-          (session.claudeWs as any).send(line);
-        }
-        return;
-      }
-
-      if (type === 'claude') {
-        const autoAccepted = processClaudeMessage(sessionId!, data);
-
-        if (!autoAccepted) {
-          // Also relay raw to legacy browser WS clients (for backwards compat)
-          if (session.browserWs.size > 0) {
-            for (const bws of session.browserWs) {
-              try { bws.send(data); } catch {}
-            }
-          } else {
-            session.pendingMessages.push(data);
-          }
-        }
-      }
+      // Legacy per-session browser WebSocket — messages are ignored.
+      // New clients use the multiplexed frontend socket; this endpoint remains
+      // open only for older clients that expect a one-way event feed.
     },
 
     close(ws) {
@@ -1522,37 +1467,6 @@ const server = Bun.serve({
         session.browserWs.delete(ws);
         log(`[${sessionId!.slice(0, 8)}] Legacy browser WS disconnected (${session.browserWs.size} remaining)`);
         return;
-      }
-
-      if (type === 'claude') {
-        log(`[${sessionId!.slice(0, 8)}] Claude CLI disconnected`);
-        session.claudeWs = null;
-        session.ready = false;
-        session.status = 'stopped';
-        // Reset streaming state — CLI disconnected mid-stream
-        const state = getSessionState(sessionId!);
-        if (state.isStreaming || state.partialText) {
-          // Commit partial text as a message if any
-          if (state.partialText.trim()) {
-            const finalMsg: ChatMessage = {
-              id: randomUUID(),
-              role: 'assistant',
-              content: state.partialText,
-              timestamp: Date.now(),
-            };
-            if (addMessage(sessionId!, finalMsg)) {
-              broadcastToSession(sessionId!, { type: 'message', sessionId: sessionId!, message: finalMsg });
-            }
-          }
-          updateSessionState(sessionId!, s => ({ ...s, isStreaming: false, partialText: '' }));
-        }
-        // Legacy relay
-        for (const bws of session.browserWs) {
-          try { bws.send(JSON.stringify({ type: 'bridge', status: 'claude_disconnected' }) + '\n'); } catch {}
-        }
-        // New-style frontend clients
-        broadcastToSession(sessionId!, { type: 'status', sessionId: sessionId!, status: 'disconnected' });
-        broadcastSessionList();
       }
     },
   },

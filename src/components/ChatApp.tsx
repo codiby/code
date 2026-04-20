@@ -269,6 +269,20 @@ export function ChatApp() {
   const historyDraftRef = useRef('');
   const subscribedRef = useRef(new Set<string>());
   const [pastedImages, setPastedImages] = useState<{ media_type: string; data: string; preview: string }[]>([]);
+  // Per-message-id set of interactive terminals the user has minimized via the
+  // shells badge bar or bubble header. Transient UI state; not persisted.
+  const [minimizedShells, setMinimizedShells] = useState<Set<string>>(new Set());
+  const toggleShellMinimized = useCallback((msgId: string) => {
+    setMinimizedShells(prev => {
+      const next = new Set(prev);
+      if (next.has(msgId)) next.delete(msgId); else next.add(msgId);
+      return next;
+    });
+  }, []);
+  // Which interactive terminal's xterm is currently visible in the sticky bottom
+  // panel. Switching the active shell keeps all the others mounted (hidden) so
+  // scrollback + running processes survive. Per-session via a map keyed by sessionId.
+  const [activeShellBySession, setActiveShellBySession] = useState<Record<string, string>>({});
   const [visibleMessageCount, setVisibleMessageCount] = useState(200);
   const [showNewSession, setShowNewSession] = useState(false);
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
@@ -472,14 +486,22 @@ export function ChatApp() {
             const s = prev[sid] || emptyLocalState();
             // Deduplicate by ID — message may already exist from session_state restore
             if (s.messages.some(m => m.id === msg.id)) return prev;
-            // For user messages, also skip if we already added an equivalent one
-            // locally (optimistic UI uses a different client-generated ID).
-            if (msg.role === 'user' && s.messages.some(m =>
-              m.role === 'user' && m.content === msg.content && Math.abs(m.timestamp - msg.timestamp) < 5000
-            )) return prev;
             const contextTokens = msg.usage
               ? msg.usage.input_tokens + msg.usage.output_tokens
               : s.contextTokens;
+            // If this is the server echo of an optimistic user message, upgrade
+            // the local entry in place so it picks up the authoritative `seq`
+            // and sorts into the correct timeline slot.
+            if (msg.role === 'user' && msg.seq != null) {
+              const idx = s.messages.findIndex(m =>
+                m.role === 'user' && m.seq == null && m.content === msg.content
+              );
+              if (idx !== -1) {
+                const next = [...s.messages];
+                next[idx] = msg;
+                return { ...prev, [sid]: { ...s, messages: next, partialText: '', contextTokens } };
+              }
+            }
             return {
               ...prev,
               [sid]: {
@@ -581,25 +603,11 @@ export function ChatApp() {
           });
         },
 
-        onAutoApproved: (sid, toolName, filePath, command) => {
-          const label = filePath ? `${toolName}: ${filePath.split('/').pop()}` : command ? `${toolName}: ${command.slice(0, 40)}` : toolName;
-          setSessionStates(prev => {
-            const s = prev[sid] || emptyLocalState();
-            return {
-              ...prev,
-              [sid]: {
-                ...s,
-                messages: [...s.messages, {
-                  id: crypto.randomUUID(),
-                  role: 'system' as const,
-                  content: `Auto-approved ${label}`,
-                  timestamp: Date.now(),
-                  toolName,
-                }],
-              },
-            };
-          });
-        },
+        // The auto-approved indicator is now baked into the tool_use ChatMessage
+        // itself (`autoApproved: true`) and rendered as a badge in the ToolBubble
+        // header — no separate system message is created. The callback remains
+        // for protocol compatibility but is a no-op.
+        onAutoApproved: () => {},
 
         onSessionName: (sid, name) => {
           setSessions(prev => prev.map(s => s.id === sid && s.name.startsWith('Session ') ? { ...s, name } : s));
@@ -962,28 +970,66 @@ export function ChatApp() {
       historyDraftRef.current = '';
     }
 
+    // Interactive PTY terminal: /terminal [initial cmd]   or   /t [initial cmd]
+    // Client-side only — never sent to Claude. Mirrors the `>` intercept below
+    // but spawns a long-lived shell rendered inline via InteractiveTerminalBubble.
+    const slashTermMatch = text.match(/^\/(terminal|t)(?:\s+([\s\S]*))?$/);
+    if (slashTermMatch) {
+      const initialCmd = slashTermMatch[2]?.trim() || '';
+      const procId = crypto.randomUUID();
+      const cwd = active.initInfo?.cwd || activeSession?.cwd || '/';
+      updateLocalState(activeId, s => ({
+        ...s,
+        messages: [...s.messages, {
+          id: procId,
+          role: 'system' as const,
+          content: '',
+          isInteractiveTerminal: true,
+          procId,
+          terminalCommand: initialCmd || undefined,
+          terminalCwd: cwd,
+          timestamp: Date.now(),
+        }],
+      }));
+      // Auto-activate + ensure expanded in the sticky panel.
+      setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
+      setMinimizedShells(prev => { const n = new Set(prev); n.delete(procId); return n; });
+      setInput('');
+      // The InteractiveTerminalBubble (mounted next render) calls execShell itself
+      // once its xterm instance has sized — we don't call it from here to avoid
+      // a cols/rows mismatch with the rendered terminal.
+      return;
+    }
+
     // Terminal command: > command
+    // Opens an interactive PTY bubble and runs the command as its first input,
+    // so the user can Ctrl+C out of long-running commands or keep typing more
+    // commands in the same shell after the first one exits.
     if (text.startsWith('>')) {
       const command = text.slice(1).trim();
       if (!command) return;
-      const msgId = crypto.randomUUID();
+      const procId = crypto.randomUUID();
       const cwd = active.initInfo?.cwd || activeSession?.cwd || '/';
 
       updateLocalState(activeId, s => ({
         ...s,
         messages: [...s.messages, {
-          id: msgId,
+          id: procId,
           role: 'system' as const,
           content: '',
-          isTerminal: true,
+          isInteractiveTerminal: true,
+          procId,
           terminalCommand: command,
+          terminalCwd: cwd,
           timestamp: Date.now(),
         }],
       }));
+      // Auto-activate this new shell + force it expanded in the sticky panel.
+      setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
+      setMinimizedShells(prev => { const n = new Set(prev); n.delete(procId); return n; });
       setInput('');
-
-      // Server sends terminal_data/terminal_exit keyed by procId=msgId
-      clientRef.current.execCommand(activeId, command, cwd, msgId);
+      // InteractiveTerminalBubble will call execShell on mount and auto-send
+      // `command + \r` once the PTY produces its first output.
       return;
     }
 
@@ -1483,7 +1529,10 @@ export function ChatApp() {
     }).catch(() => setGitBranch(null));
   }, [client, explorerRoot]);
 
-  const slashCommands = active.initInfo?.slashCommands || [];
+  // Client-side builtin slash commands (intercepted in handleSend, never sent to Claude).
+  const BUILTIN_SLASH_COMMANDS = ['terminal', 't'];
+  const sdkSlashCommands = active.initInfo?.slashCommands || [];
+  const slashCommands = [...BUILTIN_SLASH_COMMANDS, ...sdkSlashCommands.filter((c: string) => !BUILTIN_SLASH_COMMANDS.includes(c))];
   const slash = useSlashCommands(input, slashCommands);
   const fileIndex = useFileIndex(client, explorerRoot);
   const fileMention = useFileMention(input, fileIndex);
@@ -2283,12 +2332,61 @@ export function ChatApp() {
                         Show {Math.min(200, active.messages.length - visibleMessageCount)} older messages ({active.messages.length - visibleMessageCount} hidden)
                       </button>
                     )}
-                    {groupMessages(active.messages.slice(-visibleMessageCount)).map(item => {
-                      if ('agent' in item) {
-                        return <AgentBubble key={item.agent.id} agent={item.agent} children={item.children} onOpenTerminal={handleOpenTerminal} />;
-                      }
-                      return <MessageBubble key={item.id} message={item} onOpenTerminal={handleOpenTerminal} />;
-                    })}
+                    {(() => {
+                      // Interactive terminals live in the sticky bottom panel, not the chat stream.
+                      const grouped = groupMessages(
+                        [...active.messages]
+                          .filter(m => !m.isInteractiveTerminal)
+                          .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))
+                          .slice(-visibleMessageCount)
+                      );
+                      const activeAskId = active.permRequest?.toolName === 'AskUserQuestion' ? active.permRequest.requestId : null;
+                      return grouped.map((item, i) => {
+                        const isLast = i === grouped.length - 1;
+                        if ('agent' in item) {
+                          return <AgentBubble key={item.agent.id} agent={item.agent} children={item.children} onOpenTerminal={handleOpenTerminal} />;
+                        }
+                        // Provide the answer callback for every unanswered AskUserQuestion that's last in view —
+                        // if the pending permission is still alive, resolve it; otherwise post the answers as a
+                        // follow-up user message so the agent can continue.
+                        const isAskTool = item.toolName === 'AskUserQuestion' && Array.isArray((item.toolInput as any)?.questions);
+                        const hasResult = !!(item as any).toolResult;
+                        const answerCb = isLast && isAskTool && !hasResult
+                          ? (answers: Record<string, string>) => {
+                              if (activeAskId && item.id === activeAskId && active.permRequest) {
+                                handlePermission(active.permRequest.requestId, true, { ...active.permRequest.input, answers });
+                                return;
+                              }
+                              if (!clientRef.current || !activeId) return;
+                              // Stale: no live pending permission. Ask the server to persist a
+                              // synthetic tool_result for this tool_use (so the card flips to
+                              // answered), then send the answers as a follow-up user message so
+                              // the agent can continue the conversation.
+                              clientRef.current.respondToPermission(activeId, item.id, true, { ...(item.toolInput as object), answers });
+                              const questions = ((item.toolInput as any)?.questions || []) as { question: string }[];
+                              const lines = Object.entries(answers).map(([k, v]) => {
+                                const q = questions[Number(k)]?.question || `Q${Number(k) + 1}`;
+                                return `- ${q} → ${v}`;
+                              });
+                              clientRef.current.sendMessage(activeId, lines.join('\n'));
+                            }
+                          : undefined;
+                        return (
+                          <div key={item.id} id={`msg-${item.id}`}>
+                            <MessageBubble
+                              message={item}
+                              onOpenTerminal={handleOpenTerminal}
+                              isLast={isLast}
+                              onAnswerAskUser={answerCb}
+                              sessionId={activeId}
+                              client={clientRef.current || undefined}
+                              interactiveMinimized={item.isInteractiveTerminal ? minimizedShells.has(item.id) : undefined}
+                              onToggleInteractiveMinimize={item.isInteractiveTerminal ? toggleShellMinimized : undefined}
+                            />
+                          </div>
+                        );
+                      });
+                    })()}
                     {active.isStreaming && !active.partialText && !active.permRequest && (
                       <div className="py-2">
                         <div className="flex items-center gap-1">
@@ -2306,8 +2404,8 @@ export function ChatApp() {
                         </p>
                       </div>
                     )}
-                    {/* Inline permission request */}
-                    {active.permRequest && (() => {
+                    {/* Inline permission request — skip for AskUserQuestion, the tool card renders it inline */}
+                    {active.permRequest && active.permRequest.toolName !== 'AskUserQuestion' && (() => {
                       const req = active.permRequest;
                       const input = req.input;
                       const isEdit = req.toolName === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string';
@@ -2527,6 +2625,115 @@ export function ChatApp() {
                     </div>
                   )}
                   </div>
+
+                  {/* Interactive terminals: sticky bottom panel (badges + active xterm).
+                      All shells are mounted (hidden via `display:none`) so their xterm
+                      state survives switching. */}
+                  {(() => {
+                    const shells = active.messages.filter(m => m.isInteractiveTerminal);
+                    if (shells.length === 0 || !activeId) return null;
+                    const activeShellId = activeShellBySession[activeId] || shells[shells.length - 1]!.id;
+                    const activeMinimized = minimizedShells.has(activeShellId);
+                    return (
+                      <div className="shrink-0 border-t border-border bg-surface/40">
+                        {/* Badge bar */}
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto">
+                          <span className="text-[10px] text-zinc-600 shrink-0 font-mono pr-1">shells</span>
+                          {shells.map(sh => {
+                            const running = sh.exitCode === undefined && !sh.terminalExited;
+                            const code = sh.terminalExitCode ?? sh.exitCode;
+                            const label = sh.terminalCommand || (sh.terminalCwd ? sh.terminalCwd.split('/').filter(Boolean).pop() || '/' : 'shell');
+                            const isActive = sh.id === activeShellId;
+                            const shellMinimized = minimizedShells.has(sh.id);
+                            const visuallyMinimized = isActive && shellMinimized;
+                            return (
+                              <button
+                                key={sh.id}
+                                className={`group shrink-0 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-mono transition-colors ${
+                                  isActive ? 'ring-1 ring-green-400/40 ' : ''
+                                }${
+                                  visuallyMinimized ? 'opacity-60 ' : ''
+                                }${
+                                  running
+                                    ? 'border-green-900/60 bg-green-500/10 text-green-300 hover:bg-green-500/20'
+                                    : code === 0
+                                      ? 'border-border-light bg-surface-light text-zinc-400 hover:text-zinc-200'
+                                      : 'border-red-900/50 bg-red-500/10 text-red-300 hover:bg-red-500/20'
+                                }`}
+                                onClick={() => {
+                                  if (isActive) {
+                                    // Click the currently-active shell's badge → toggle minimize.
+                                    toggleShellMinimized(sh.id);
+                                  } else {
+                                    // Clicking a different shell → activate it and ensure expanded.
+                                    setActiveShellBySession(prev => ({ ...prev, [activeId]: sh.id }));
+                                    setMinimizedShells(prev => { const n = new Set(prev); n.delete(sh.id); return n; });
+                                  }
+                                }}
+                                title={
+                                  isActive
+                                    ? (shellMinimized ? 'Click to expand shell' : 'Click to minimize shell')
+                                    : 'Click to switch to this shell'
+                                }
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                  running ? 'bg-green-400 animate-pulse' : code === 0 ? 'bg-zinc-600' : 'bg-red-400'
+                                }`} />
+                                <span className="truncate max-w-[160px]">{label}</span>
+                                {!running && code !== undefined && (
+                                  <span className="text-[9px] opacity-70 shrink-0">exit {code}</span>
+                                )}
+                                {running && clientRef.current && (
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 shrink-0 transition-opacity"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      clientRef.current!.killTerminal(activeId, sh.procId || sh.id);
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        clientRef.current!.killTerminal(activeId, sh.procId || sh.id);
+                                      }
+                                    }}
+                                    title="Kill shell"
+                                  >
+                                    ×
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {/* Active xterm panel — always mounted so every shell's xterm state
+                            (scrollback, cursor, running processes) survives switching and
+                            minimize/expand. Wrapper uses display:none when minimized. */}
+                        <div
+                          className="border-t border-border px-3 pt-1 pb-2"
+                          style={activeMinimized ? { display: 'none' } : undefined}
+                        >
+                          {shells.map(sh => (
+                            <div
+                              key={sh.id}
+                              style={sh.id === activeShellId ? undefined : { display: 'none' }}
+                            >
+                              <MessageBubble
+                                message={sh}
+                                onOpenTerminal={handleOpenTerminal}
+                                sessionId={activeId}
+                                client={clientRef.current || undefined}
+                                interactiveMinimized={false}
+                                onToggleInteractiveMinimize={toggleShellMinimized}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Input */}
                   <div className="border-t border-border p-3 shrink-0">

@@ -1,10 +1,12 @@
 import { randomUUID } from 'crypto';
 import { sessions, saveSessions, sessionToJSON } from '../sessions';
-import { spawnClaude } from '../claude';
+import { startProviderSession } from '../provider/lifecycle';
 import { corsHeaders, CWD, PORT, MAIN_SESSION_ID } from '../config';
 import { log } from '../logger';
 import { trackedProcesses, killProcessTree, saveProcessRegistry } from './processes';
 import { killSessionLsp } from './lsp';
+import { DEFAULT_PROVIDER } from '../provider/registry';
+import { clearPendingDecisionsForSession } from '../provider/bridge';
 import type { Session } from '../types';
 
 export async function handleCreateSession(req: Request, port: number): Promise<Response> {
@@ -12,12 +14,14 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   let name = '';
   let model: string | null = null;
   let permissionMode = 'default';
+  let provider = DEFAULT_PROVIDER;
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
     if (body.name && typeof body.name === 'string') name = body.name;
     if (body.model && typeof body.model === 'string') model = body.model;
     if (body.permissionMode && typeof body.permissionMode === 'string') permissionMode = body.permissionMode;
+    if (body.provider && typeof body.provider === 'string') provider = body.provider;
   } catch {}
 
   const session: Session = {
@@ -26,21 +30,20 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     cwd,
     createdAt: Date.now(),
     claudeSessionId: null,
-    claudeWs: null,
     browserWs: new Set(),
-    process: null,
+    providerSession: null,
     ready: false,
     status: 'starting',
     replayDone: true,
-    pendingMessages: [],
     savedCommands: [],
     model,
     permissionMode,
+    provider,
   };
   sessions.set(session.id, session);
 
-  log(`[${session.id.slice(0,8)}] Creating new session, cwd=${cwd}`);
-  spawnClaude(session, port);
+  log(`[${session.id.slice(0,8)}] Creating new session, cwd=${cwd}, provider=${provider}`);
+  startProviderSession(session, port);
   saveSessions();
 
   return Response.json(sessionToJSON(session, port), { headers: corsHeaders });
@@ -51,17 +54,17 @@ export function handleResumeSession(sessionId: string, port: number): Response {
   if (!session) {
     return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
   }
-  if (session.process) {
+  if (session.providerSession) {
     return Response.json({ error: 'Session already running' }, { status: 409, headers: corsHeaders });
   }
   if (!session.claudeSessionId) {
-    log(`[${sessionId.slice(0,8)}] Resuming session (no claude_session_id, starting fresh)`);
+    log(`[${sessionId.slice(0,8)}] Resuming session (no provider session id, starting fresh)`);
     session.replayDone = true;
-    spawnClaude(session, port);
+    startProviderSession(session, port);
   } else {
-    log(`[${sessionId.slice(0,8)}] Resuming session with claude_session_id=${session.claudeSessionId}`);
+    log(`[${sessionId.slice(0,8)}] Resuming session with provider_session_id=${session.claudeSessionId}`);
     session.replayDone = false;
-    spawnClaude(session, port, session.claudeSessionId);
+    startProviderSession(session, port, session.claudeSessionId);
   }
   saveSessions();
   return Response.json(sessionToJSON(session, port), { headers: corsHeaders });
@@ -85,22 +88,20 @@ export async function handleRenameSession(sessionId: string, req: Request): Prom
   return Response.json(sessionToJSON(session, PORT), { headers: corsHeaders });
 }
 
-export function handleStopSession(sessionId: string): Response {
+export async function handleStopSession(sessionId: string): Promise<Response> {
   const session = sessions.get(sessionId);
   if (!session) {
     return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
   }
 
-  // Kill Claude process
-  if (session.process) {
-    session.process.kill('SIGTERM');
-    session.process = null;
+  // Close provider session
+  if (session.providerSession) {
+    try { await session.providerSession.close(); } catch {}
+    session.providerSession = null;
   }
-  // Close Claude WebSocket
-  if (session.claudeWs) {
-    try { (session.claudeWs as any).close(); } catch {}
-    session.claudeWs = null;
-  }
+  // Resolve any pending permission prompts so nothing hangs
+  clearPendingDecisionsForSession(sessionId, 'Session stopped');
+
   // Close browser WebSockets
   for (const ws of session.browserWs) {
     try { ws.close(); } catch {}
@@ -126,7 +127,7 @@ export function handleStopSession(sessionId: string): Response {
   return Response.json({ ok: true }, { headers: corsHeaders });
 }
 
-export function handleDeleteSession(sessionId: string): Response {
+export async function handleDeleteSession(sessionId: string): Promise<Response> {
   if (sessionId === MAIN_SESSION_ID) {
     return Response.json({ error: 'Cannot delete main session' }, { status: 403, headers: corsHeaders });
   }
@@ -135,14 +136,12 @@ export function handleDeleteSession(sessionId: string): Response {
     return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
   }
 
-  if (session.process) {
-    session.process.kill('SIGTERM');
+  if (session.providerSession) {
+    try { await session.providerSession.close(); } catch {}
   }
+  clearPendingDecisionsForSession(sessionId, 'Session deleted');
   for (const ws of session.browserWs) {
     try { ws.close(); } catch {}
-  }
-  if (session.claudeWs) {
-    (session.claudeWs as any).close();
   }
   killSessionLsp(sessionId);
   sessions.delete(sessionId);

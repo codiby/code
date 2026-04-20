@@ -23,14 +23,24 @@ export interface ChatMessage {
   role: MessageRole;
   content: string;
   timestamp: number;
+  seq?: number;
   images?: { media_type: string; data: string }[];
   toolName?: string;
   toolInput?: unknown;
   isToolResult?: boolean;
+  toolUseId?: string;
+  toolResult?: ChatMessage;
+  autoApproved?: boolean;
   isError?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;
+  // Interactive PTY terminal (spawned via /terminal or /t slash command).
+  isInteractiveTerminal?: boolean;
+  procId?: string;
+  terminalExited?: boolean;
+  terminalExitCode?: number;
+  terminalCwd?: string;
   costUsd?: number;
   durationMs?: number;
   usage?: { input_tokens: number; output_tokens: number };
@@ -113,6 +123,12 @@ export class ClaudeClient {
   private callbacks: ClientCallbacks;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
+  // Per-procId listeners for interactive terminals (xterm.js subscribers).
+  // Populated by `onTerminalDataForProc` / `onTerminalExitForProc`; fired
+  // from the WS message handler so xterm receives the raw byte stream
+  // without going through React state.
+  private termDataSubs = new Map<string, Set<(text: string) => void>>();
+  private termExitSubs = new Map<string, Set<(code: number) => void>>();
 
   constructor(serverUrl: string, callbacks: ClientCallbacks) {
     this.serverUrl = serverUrl;
@@ -178,12 +194,22 @@ export class ClaudeClient {
       case 'status':
         this.callbacks.onStatus(sessionId, msg.status as string);
         break;
-      case 'terminal_data':
-        this.callbacks.onTerminalData(sessionId, msg.procId as string, msg.text as string);
+      case 'terminal_data': {
+        const procId = msg.procId as string;
+        const text = msg.text as string;
+        this.callbacks.onTerminalData(sessionId, procId, text);
+        const subs = this.termDataSubs.get(procId);
+        if (subs) for (const cb of subs) { try { cb(text); } catch {} }
         break;
-      case 'terminal_exit':
-        this.callbacks.onTerminalExit(sessionId, msg.procId as string, msg.code as number);
+      }
+      case 'terminal_exit': {
+        const procId = msg.procId as string;
+        const code = msg.code as number;
+        this.callbacks.onTerminalExit(sessionId, procId, code);
+        const subs = this.termExitSubs.get(procId);
+        if (subs) for (const cb of subs) { try { cb(code); } catch {} }
         break;
+      }
       case 'todos':
         this.callbacks.onTodos(sessionId, msg.todos as any[]);
         break;
@@ -240,6 +266,48 @@ export class ClaudeClient {
 
   killProcess(sessionId: string, processId?: string, pid?: number) {
     this.send({ type: 'kill_process', sessionId, processId, pid });
+  }
+
+  // ---- Interactive PTY (/terminal slash command) ----
+  execShell(sessionId: string, procId: string, cwd: string, cols: number, rows: number) {
+    this.send({ type: 'exec_shell', sessionId, procId, cwd, cols, rows });
+  }
+
+  sendTerminalInput(sessionId: string, procId: string, data: string) {
+    this.send({ type: 'terminal_input', sessionId, procId, data });
+  }
+
+  resizeTerminal(sessionId: string, procId: string, cols: number, rows: number) {
+    this.send({ type: 'terminal_resize', sessionId, procId, cols, rows });
+  }
+
+  killTerminal(sessionId: string, procId: string) {
+    this.send({ type: 'terminal_kill', sessionId, procId });
+  }
+
+  /** Subscribe to raw terminal_data chunks for a specific procId. Used by
+   *  InteractiveTerminalBubble to stream bytes straight into xterm.js.
+   *  Returns an unsubscribe function. */
+  onTerminalDataForProc(procId: string, cb: (text: string) => void): () => void {
+    let subs = this.termDataSubs.get(procId);
+    if (!subs) { subs = new Set(); this.termDataSubs.set(procId, subs); }
+    subs.add(cb);
+    return () => {
+      const s = this.termDataSubs.get(procId);
+      s?.delete(cb);
+      if (s && s.size === 0) this.termDataSubs.delete(procId);
+    };
+  }
+
+  onTerminalExitForProc(procId: string, cb: (code: number) => void): () => void {
+    let subs = this.termExitSubs.get(procId);
+    if (!subs) { subs = new Set(); this.termExitSubs.set(procId, subs); }
+    subs.add(cb);
+    return () => {
+      const s = this.termExitSubs.get(procId);
+      s?.delete(cb);
+      if (s && s.size === 0) this.termExitSubs.delete(procId);
+    };
   }
 
   // ---------------------------------------------------------------------------

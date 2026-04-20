@@ -32,6 +32,15 @@ echo "Copying Bun binary..."
 cp "$BUN_PATH" "$SERVICE_DIR/bun"
 chmod +x "$SERVICE_DIR/bun"
 
+# Copy PTY helper + its node-pty dependency for the interactive /terminal command.
+# The helper is a plain Node script (Bun shells out to Node for PTY support).
+echo "Copying pty-helper.mjs and node-pty..."
+cp "$PROJECT_DIR/server/pty-helper.mjs" "$SERVICE_DIR/pty-helper.mjs"
+mkdir -p "$SERVICE_DIR/node_modules"
+rm -rf "$SERVICE_DIR/node_modules/node-pty"
+cp -R "$PROJECT_DIR/node_modules/node-pty" "$SERVICE_DIR/node_modules/node-pty"
+find "$SERVICE_DIR/node_modules/node-pty/prebuilds" -name spawn-helper -exec chmod +x {} \; 2>/dev/null || true
+
 # Unload existing service if running
 if launchctl list | grep -q "$PLIST_NAME"; then
     echo "Stopping existing service..."
