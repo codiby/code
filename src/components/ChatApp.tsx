@@ -2467,7 +2467,12 @@ export function ChatApp() {
                           {!isAskUser && <div className="flex items-center gap-2">
                             <button
                               className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-green-600/15 text-green-400 hover:bg-green-600/25 transition-colors"
-                              onClick={() => handlePermission(req.requestId, true)}
+                              onClick={() => {
+                                handlePermission(req.requestId, true);
+                                if (isPlan && activeId && clientRef.current) {
+                                  setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: 'acceptEdits' } : s));
+                                }
+                              }}
                             >
                               Allow
                             </button>

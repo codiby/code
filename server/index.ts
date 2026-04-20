@@ -12,7 +12,7 @@ import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 
-import { PORT, CLAUDE_BIN, corsHeaders, ACCEPT_EDITS_TOOLS, CWD } from './config';
+import { PORT, CLAUDE_BIN, corsHeaders, ACCEPT_EDITS_TOOLS, PLAN_READ_ONLY_TOOLS, PLAN_DENY_TOOLS, CWD } from './config';
 import { log } from './logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON } from './sessions';
 import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession } from './handlers/sessions';
@@ -102,19 +102,38 @@ function processClaudeMessage(sessionId: string, data: string): boolean {
   }
 
   // ------------------------------------------------------------------
-  // Auto-accept permission requests
+  // Auto-accept / auto-deny permission requests
   // ------------------------------------------------------------------
   if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
     const toolName = msg.request.tool_name as string;
     const mode = session.permissionMode || 'default';
+    const requestId = msg.request_id as string;
+    const input = (msg.request.input as Record<string, unknown>) || {};
+
+    // Plan mode: auto-deny write tools so Claude stays in planning
+    if (mode === 'plan' && PLAN_DENY_TOOLS.has(toolName)) {
+      const response =
+        JSON.stringify({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: requestId,
+            response: { behavior: 'deny', message: `Denied: session is in plan mode. Do not attempt to use ${toolName} — only read the codebase and write your plan to the plan file, then call ExitPlanMode.` },
+          },
+        }) + '\n';
+      if (session.claudeWs) {
+        (session.claudeWs as any).send(response);
+      }
+      log(`[${session.id.slice(0, 8)}] Auto-denied ${toolName} (plan mode)`);
+      return true;
+    }
+
     const shouldAutoAccept =
       mode === 'bypassPermissions' ||
-      (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(toolName));
+      (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(toolName)) ||
+      (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(toolName));
 
     if (shouldAutoAccept) {
-      const requestId = msg.request_id as string;
-      const input = (msg.request.input as Record<string, unknown>) || {};
-
       // Send allow response directly to Claude CLI
       const response =
         JSON.stringify({
@@ -524,6 +543,22 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       },
     }) + '\n';
     (session.claudeWs as any).send(response);
+
+    // When user denies a tool, also interrupt so Claude stops instead of retrying
+    if (!allow) {
+      (session.claudeWs as any).send(JSON.stringify({ type: 'interrupt' }) + '\n');
+    }
+
+    // Handle ExitPlanMode approval — transition out of plan mode
+    if (allow) {
+      const state = getSessionState(sessionId);
+      if (state.permRequest?.toolName === 'ExitPlanMode' && session.permissionMode === 'plan') {
+        session.permissionMode = 'acceptEdits';
+        saveSessions();
+        broadcastSessionList();
+        log(`[${session.id.slice(0, 8)}] ExitPlanMode approved — switched to acceptEdits`);
+      }
+    }
 
     // Clear permission request from state
     updateSessionState(sessionId, s => ({ ...s, permRequest: null }));

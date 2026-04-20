@@ -22,6 +22,8 @@ export const CWD = process.env.CLAUDE_CWD || process.cwd();
 export const SESSIONS_FILE = join(homedir(), '.claude', 'ui-sessions.json');
 
 export const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'Read', 'Glob', 'Grep', 'NotebookEdit']);
+export const PLAN_READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+export const PLAN_DENY_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash']);
 
 export const MAIN_SESSION_ID = 'main-session';
 export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
