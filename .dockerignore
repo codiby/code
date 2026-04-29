@@ -1,0 +1,14 @@
+node_modules
+dist
+.astro
+src-tauri/target
+src-tauri/gen
+src-tauri/sidecar
+.playwright-cli
+*.log
+.DS_Store
+.env
+src
+public
+astro.config.mjs
+tsconfig.json

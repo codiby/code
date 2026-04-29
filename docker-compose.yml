@@ -1,0 +1,15 @@
+services:
+  bridge:
+    build: .
+    container_name: claude-bridge
+    restart: unless-stopped
+    ports:
+      - "${CLAUDE_UI_PORT:-3111}:3111"
+    volumes:
+      - ${HOME}/.claude:/root/.claude
+      - ${HOME}:/workspace
+    environment:
+      - CLAUDE_UI_PORT=3111
+      - CLAUDE_CWD=/workspace
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}

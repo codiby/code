@@ -1,0 +1,18 @@
+{
+  "name": "Codiby Code",
+  "short_name": "Codiby Code",
+  "description": "Mobile companion for the Codiby Code bridge server",
+  "id": "/m",
+  "start_url": "/m",
+  "scope": "/m",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    { "src": "/brand/codiby-app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/brand/codiby-app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

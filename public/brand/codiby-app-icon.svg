@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="codiby-grad-dark" x1="0" y1="452.05" x2="310.21" y2="452.05" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#112c43"/>
+      <stop offset="1" stop-color="#244c80"/>
+    </linearGradient>
+    <linearGradient id="codiby-grad-light" x1="248.42" y1="224.43" x2="558.63" y2="224.43" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2975d3"/>
+      <stop offset="1" stop-color="#3697f5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="#ffffff"/>
+  <g transform="translate(173.6 102.4) scale(1.2110)">
+    <path fill="url(#codiby-grad-dark)" d="M307.45,246.5l-150.57,183.68c-3.79,4.44-3.63,11.03.38,15.28l94.84,113.92c3.2,3.4,4.02,8.4,2.06,12.64l-51.16,97.79c-3.57,7.75-14.06,9.01-19.37,2.33L2.48,443.9c-3.35-4.22-3.3-10.21.11-14.37l154.51-197.71c2.17-2.66,5.43-4.2,8.86-4.2h132.78c9.77,0,15.05,11.45,8.71,18.88Z"/>
+    <path fill="url(#codiby-grad-light)" d="M251.18,429.99l150.57-183.68c3.79-4.44,3.63-11.03-.38-15.28l-94.84-113.92c-3.2-3.4-4.02-8.4-2.06-12.64L355.63,6.66c3.57-7.75,14.06-9.01,19.37-2.33l181.15,228.25c3.35,4.22,3.3,10.21-.11,14.37l-154.51,197.71c-2.17,2.66-5.43,4.2-8.86,4.2h-132.78c-9.77,0-15.05-11.45-8.71-18.88Z"/>
+  </g>
+</svg>

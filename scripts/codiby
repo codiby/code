@@ -1,0 +1,99 @@
+#!/bin/bash
+# codiby — spawn a new Codiby Code session in the given directory.
+#
+# Usage:
+#   codiby [path]     # path defaults to "."
+#
+# Looks for a running bridge server (LaunchAgent or app-spawned sidecar). If
+# none is healthy, launches the desktop app — which spawns its own sidecar —
+# waits for it to come up, then POSTs the new session and brings the app to
+# the foreground.
+set -euo pipefail
+
+TARGET="${1:-.}"
+if [ ! -d "$TARGET" ]; then
+    echo "codiby: not a directory: $TARGET" >&2
+    exit 1
+fi
+
+CWD="$(cd "$TARGET" && pwd)"
+NAME="$(basename "$CWD")"
+
+SERVICE_PORT_FILE="${CODIBY_CODE_PORT_FILE:-$HOME/.codiby/server.port}"
+APP_PORT_FILE="$HOME/.codiby/app-server.port"
+
+read_port() {
+    local f="$1"
+    [ -f "$f" ] || return 1
+    local p
+    p="$(tr -d '[:space:]' < "$f" 2>/dev/null || true)"
+    [ -n "$p" ] || return 1
+    printf '%s' "$p"
+}
+
+healthy() {
+    local p="$1"
+    curl -fsS --max-time 2 "http://localhost:$p/health" >/dev/null 2>&1
+}
+
+discover_port() {
+    local p
+    for f in "$SERVICE_PORT_FILE" "$APP_PORT_FILE"; do
+        if p="$(read_port "$f")" && healthy "$p"; then
+            printf '%s' "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+PORT=""
+if PORT="$(discover_port)"; then
+    :
+else
+    if [ "$(uname)" != "Darwin" ]; then
+        echo "codiby: no running bridge server and auto-launch is macOS-only." >&2
+        exit 1
+    fi
+    # Launching the .app boots its own sidecar bridge, which writes
+    # $APP_PORT_FILE once /health is ready. Stale file from a previous run is
+    # cleaned up by the Rust shell on Exit, but clear it here too as a guard.
+    rm -f "$APP_PORT_FILE" 2>/dev/null || true
+    if ! open -a "Codiby Code" 2>/dev/null; then
+        echo "codiby: 'Codiby Code' app not found. Install the desktop app first." >&2
+        exit 1
+    fi
+    # Poll up to ~30s for the sidecar to come up.
+    for _ in $(seq 1 60); do
+        if PORT="$(discover_port)"; then
+            break
+        fi
+        sleep 0.5
+    done
+    if [ -z "$PORT" ]; then
+        echo "codiby: timed out waiting for Codiby Code bridge server to start." >&2
+        exit 1
+    fi
+fi
+
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
+PAYLOAD="{\"cwd\":\"$(json_escape "$CWD")\",\"name\":\"$(json_escape "$NAME")\"}"
+
+if ! curl -fsS \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -d "$PAYLOAD" \
+        "http://localhost:$PORT/sessions?focus=1" >/dev/null; then
+    echo "codiby: failed to create session on bridge server (port $PORT)." >&2
+    exit 1
+fi
+
+if [ "$(uname)" = "Darwin" ]; then
+    open -a "Codiby Code" 2>/dev/null || true
+fi
