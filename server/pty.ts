@@ -74,10 +74,23 @@ export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
   env.COLORTERM = env.COLORTERM || 'truecolor';
   env.LANG = env.LANG || 'en_US.UTF-8';
 
+  // Spawn as a login shell so the user's profile (`/etc/zprofile`,
+  // `~/.zprofile`, `~/.profile`, etc.) runs and PATH gets populated with
+  // `/usr/local/bin`, `/opt/homebrew/bin`, and entries from `/etc/paths.d/*`.
+  // Without this, a Tauri-launched app inherits launchd's minimal PATH and
+  // common user tools (bun, node, git from Homebrew) are missing.
+  const cmd: string[] = [shell];
+  if (!isWin) {
+    const base = shell.split('/').pop() || '';
+    if (base === 'zsh' || base === 'bash' || base === 'sh' || base === 'fish' || base === 'dash') {
+      cmd.push('-l');
+    }
+  }
+
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn({
-      cmd: [shell],
+      cmd,
       cwd: opts.cwd,
       env,
       terminal,
