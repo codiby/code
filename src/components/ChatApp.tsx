@@ -1784,7 +1784,7 @@ export function ChatApp() {
     // for the drain effect. Lets the user line up follow-ups without
     // waiting for Claude — the bubble flips to a normal user message and
     // ships when the in-flight turn completes.
-    const streamingNow = active.isStreaming || sessionStreaming[activeId];
+    const streamingNow = active.isStreaming;
     if (streamingNow) {
       const pendingId = crypto.randomUUID();
       const pendingMsg = {
@@ -3520,7 +3520,7 @@ export function ChatApp() {
                       {(() => {
                         const isTerminalMode = input.startsWith('>');
                         const cmdText = isTerminalMode ? input.slice(1).replace(/^ /, '') : input;
-                        const streaming = active.isStreaming || (activeId ? sessionStreaming[activeId] : false);
+                        const streaming = active.isStreaming;
                         return (
                           <div className="flex gap-2 items-center">
                             {streaming && (
