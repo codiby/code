@@ -2,6 +2,36 @@ import { homedir, networkInterfaces } from 'os';
 import { join } from 'path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'fs';
 import { randomBytes } from 'crypto';
+import { execSync } from 'child_process';
+
+// Enrich `process.env.PATH` so anything we spawn downstream — the Claude SDK's
+// `claude` binary, the Bash tool's child processes, `git`, `sudo`, `bun`, etc.
+// — can resolve user-installed binaries. When the bridge is launched from the
+// Tauri app (Finder/Dock) it inherits launchd's minimal PATH
+// (`/usr/bin:/bin:/usr/sbin:/sbin`); user paths from `/opt/homebrew/bin`,
+// `~/.local/bin`, `~/.cargo/bin`, etc. are missing. The PTY shell handles its
+// own login-mode profile load (see `pty.ts`), but Bun.spawn / Node spawn
+// invocations from the bridge inherit `process.env.PATH` directly — so we
+// enrich it here once at module load.
+//
+// Skipped when PATH already looks rich (running outside Tauri, e.g. `bun run`
+// from a real terminal) so we don't pay the shell-spawn cost unnecessarily.
+(function enrichPathFromUserShell() {
+  const cur = process.env.PATH || '';
+  if (/\/opt\/homebrew\/bin|\.local\/bin|\.cargo\/bin|\.bun\/bin/.test(cur)) return;
+  const shell = process.env.SHELL || '/bin/zsh';
+  try {
+    const out = execSync(`${shell} -lic 'printf "<<<PATH>>>%s<<</PATH>>>" "$PATH"'`, {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const m = out.match(/<<<PATH>>>([^<]*)<<<\/PATH>>>/);
+    if (m && m[1] && m[1].length > cur.length) {
+      process.env.PATH = m[1];
+    }
+  } catch {}
+})();
 
 export const PORT = parseInt(process.env.CLAUDE_UI_PORT || '3111', 10);
 /**
