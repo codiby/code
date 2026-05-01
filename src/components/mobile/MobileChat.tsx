@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import gsap from 'gsap';
 import { ChevronDown, ChevronRight, ArrowDown, LayoutGrid, X as XIcon } from 'lucide-react';
 import type { ChatMessage, ClaudeClient, PermissionRequest, SessionInfo } from '../../lib/claude-client';
 import { getAuthToken, resolveServerUrl } from '../../lib/claude-client';
@@ -119,6 +120,51 @@ export function MobileChat({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerBoxRef = useRef<HTMLDivElement>(null);
   const chromeBoxRef = useRef<HTMLDivElement>(null);
+
+  // Message-list arrival animation. We animate only DOM children that mount
+  // *after* the initial hydration burst — so opening a 200-message session
+  // doesn't stagger-animate the whole history. `readyToAnimate` flips ~50 ms
+  // after `hydrated` so the bulk render commits unanimated; from then on,
+  // any new <li> appended to the UL fades + slides in. The watermark
+  // (`lastChildCountRef`) tracks how many children we've already accounted
+  // for so we only animate the trailing additions. Resets on session change.
+  const ulRef = useRef<HTMLUListElement>(null);
+  const lastChildCountRef = useRef(0);
+  const [readyToAnimate, setReadyToAnimate] = useState(false);
+  useEffect(() => {
+    setReadyToAnimate(false);
+    lastChildCountRef.current = 0;
+    if (!hydrated) return;
+    const t = setTimeout(() => {
+      if (ulRef.current) lastChildCountRef.current = ulRef.current.children.length;
+      setReadyToAnimate(true);
+    }, 50);
+    return () => clearTimeout(t);
+  }, [session?.id, hydrated]);
+  useLayoutEffect(() => {
+    if (!readyToAnimate || !ulRef.current) return;
+    const ul = ulRef.current;
+    const count = ul.children.length;
+    if (count <= lastChildCountRef.current) {
+      // Children removed (partialText unmounted on turn complete, etc.) or
+      // unchanged — just resync the watermark, no animation.
+      lastChildCountRef.current = count;
+      return;
+    }
+    const reduceMotion = typeof window !== 'undefined'
+      && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion) {
+      const fresh = Array.from(ul.children).slice(lastChildCountRef.current);
+      gsap.from(fresh, {
+        opacity: 0,
+        y: 12,
+        duration: 0.28,
+        ease: 'power2.out',
+        stagger: 0.04,
+      });
+    }
+    lastChildCountRef.current = count;
+  }, [messages.length, pending.length, readyToAnimate]);
   // Actual pixel height of the whole bottom chrome column (dock + attachments
   // + recorder + composer) — fed to the scroll area's paddingBottom so the
   // last message and inline permission cards never sit underneath the floating
@@ -358,6 +404,16 @@ export function MobileChat({
 
     if (!onChromeHiddenChange) { lastScrollTopRef.current = el.scrollTop; return; }
 
+    // While the composer textarea has focus (keyboard open), the user is in
+    // "send mode" — don't let scroll events triggered by message-arrival
+    // reflow / visualViewport shifts toggle chrome under them. Resume the
+    // normal swipe-to-toggle behaviour as soon as focus leaves the textarea.
+    if (document.activeElement === taRef.current) {
+      lastScrollTopRef.current = el.scrollTop;
+      accumDeltaRef.current = 0;
+      return;
+    }
+
     // Lockout window after a recent toggle — accept that scrollTop has shifted
     // because of the padding change and reset our reference so the next real
     // user gesture computes a fresh delta.
@@ -421,9 +477,17 @@ export function MobileChat({
     setAttachments([]);
     setAttachError(null);
     stickToBottomRef.current = true;
+    // Suppress chrome auto-toggle for 800 ms — covers the scroll/reflow churn
+    // from the user-message echo + auto-scroll-to-bottom that follows send.
+    chromeLockUntilRef.current = Date.now() + 800;
+    accumDeltaRef.current = 0;
     setTimeout(() => {
       const ta = taRef.current;
       if (ta) { ta.style.height = 'auto'; }
+      // Restore focus so the keyboard stays up after send (matches iMessage/
+      // Telegram behaviour). `preventScroll` keeps iOS from jumping the
+      // viewport when refocusing under the keyboard.
+      ta?.focus({ preventScroll: true });
     }, 0);
   };
 
@@ -666,7 +730,7 @@ export function MobileChat({
           </div>
         )}
 
-        <ul className="flex flex-col gap-1 py-3">
+        <ul ref={ulRef} className="flex flex-col gap-1 py-3">
           {(() => {
             // Build toolUseId → result map and a set of tool_use ids we have
             // results for. Then SKIP standalone tool_result rows whose parent
@@ -1102,6 +1166,13 @@ export function MobileChat({
                 <button
                   type="button"
                   onClick={send}
+                  // Keep the textarea focused on tap so iOS/Android don't
+                  // dismiss the keyboard mid-send (which reflows the chat
+                  // and obscures the new bubble's arrival animation).
+                  // PointerDown fires on both mouse + touch and — unlike
+                  // touchstart — preventDefault here doesn't cancel the
+                  // subsequent click.
+                  onPointerDown={(e) => e.preventDefault()}
                   disabled={!session}
                   className="shrink-0 w-9 h-9 rounded-full bg-indigo-500 text-white flex items-center justify-center font-semibold disabled:opacity-30 disabled:bg-white/10 active:bg-indigo-600 transition"
                   aria-label="Send"
