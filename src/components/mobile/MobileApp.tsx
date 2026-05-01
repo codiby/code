@@ -29,6 +29,9 @@ type SessionRuntime = {
   /** Last turn died without onTurnComplete — drives the red dot. */
   wasInterrupted: boolean;
   permRequest: PermissionRequest | null;
+  /** False until the first `session_state` snapshot lands; drives the
+   *  bottom loader bar while the active session's history is fetching. */
+  hydrated: boolean;
 };
 
 const EMPTY_RUNTIME: SessionRuntime = {
@@ -37,6 +40,7 @@ const EMPTY_RUNTIME: SessionRuntime = {
   isStreaming: false,
   wasInterrupted: false,
   permRequest: null,
+  hydrated: false,
 };
 
 export function MobileApp() {
@@ -202,6 +206,7 @@ export function MobileApp() {
             isStreaming: !!state.isStreaming,
             wasInterrupted: !!state.wasInterrupted,
             permRequest: state.permRequest,
+            hydrated: true,
           },
         }));
       },
@@ -662,8 +667,14 @@ export function MobileApp() {
     );
   }
 
+  const indicatorStatus: ConnectionStatus | 'loading' =
+    connection !== 'connected'
+      ? connection
+      : (activeId && !runtime[activeId]?.hydrated ? 'loading' : 'connected');
+
   return (
     <div className="relative min-h-[100dvh] bg-zinc-950">
+      <BottomLoader status={indicatorStatus} />
       {activeSession ? (
         <MobileChat
           client={clientRef.current!}
@@ -673,6 +684,7 @@ export function MobileApp() {
           isStreaming={activeRuntime.isStreaming}
           permRequest={activeRuntime.permRequest}
           status={activeStatus}
+          hydrated={activeRuntime.hydrated}
           onOpenSessions={() => setTab('sessions')}
           onLocalClearPerm={(reqId) => {
             if (!activeId) return;
@@ -783,6 +795,38 @@ function FullscreenMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-[100dvh] flex items-center justify-center px-6 bg-zinc-950 text-zinc-200">
       {children}
+    </div>
+  );
+}
+
+function BottomLoader({ status }: { status: ConnectionStatus | 'loading' }) {
+  const visible = status !== 'connected';
+  const sliderClass =
+    status === 'connecting' ? 'bg-gradient-to-r from-amber-400/0 via-amber-400 to-amber-400/0' :
+    status === 'loading' ? 'bg-gradient-to-r from-indigo-400/0 via-indigo-400 to-indigo-400/0' :
+    'bg-gradient-to-r from-red-400/0 via-red-400 to-red-400/0';
+  const label =
+    status === 'connecting' ? 'Connecting…' :
+    status === 'loading' ? 'Loading session…' :
+    status === 'error' ? 'Connection error' :
+    'Disconnected';
+  return (
+    <div
+      aria-hidden={!visible}
+      role="status"
+      aria-label={label}
+      className="fixed left-3 right-3 z-30 h-[3px] overflow-hidden rounded-full bg-zinc-800/40 transition-opacity duration-200"
+      style={{
+        // Sit flush above the GlassNav (~60 px pill at bottom-3 + safe area)
+        // with a 4 px breathing gap. Above-nav placement keeps the bar visible
+        // on iOS PWA — at `env(safe-area-inset-bottom)` it lands in the home-
+        // indicator zone where the system overlay hides it.
+        bottom: 'calc(0.75rem + env(safe-area-inset-bottom) + 60px + 4px)',
+        opacity: visible ? 1 : 0,
+        pointerEvents: 'none',
+      }}
+    >
+      <div className={`connection-bar-slider absolute top-0 bottom-0 w-1/3 rounded-full ${sliderClass}`} />
     </div>
   );
 }

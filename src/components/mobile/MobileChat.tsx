@@ -29,6 +29,10 @@ interface Props {
   isStreaming: boolean;
   permRequest: PermissionRequest | null;
   status: string;
+  /** False until the first `session_state` snapshot lands. While false,
+   *  empty-state placeholders are suppressed — the BottomLoader bar is the
+   *  canonical loading affordance. */
+  hydrated: boolean;
   /** Called when the user taps the header to open the sessions sheet. */
   onOpenSessions: () => void;
   /** Called after the user taps Allow/Deny so the caller can clear the
@@ -75,6 +79,7 @@ export function MobileChat({
   isStreaming,
   permRequest,
   status,
+  hydrated,
   onOpenSessions,
   onLocalClearPerm,
   chromeHidden,
@@ -655,7 +660,7 @@ export function MobileChat({
           </div>
         )}
 
-        {session && messages.length === 0 && !partialText && !permRequest && (
+        {session && hydrated && messages.length === 0 && !partialText && !permRequest && (
           <div className="px-6 py-12 text-center text-zinc-600 text-sm">
             <p>Start by typing a message below.</p>
           </div>

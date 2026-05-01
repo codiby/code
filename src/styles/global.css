@@ -136,3 +136,16 @@ code {
     blob-drift 18s ease-in-out infinite,
     blob-hue   20s linear infinite;
 }
+
+/* ---------------------------------------------------------------------------
+   Mobile WS connection indicator — indeterminate progress bar that slides a
+   gradient sliver across a thin track. Fades in while the WebSocket is
+   connecting / disconnected and fades out once `'connected'`.
+   --------------------------------------------------------------------------- */
+@keyframes connection-bar-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.connection-bar-slider {
+  animation: connection-bar-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
