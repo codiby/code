@@ -18,7 +18,7 @@ import { execSync } from 'child_process';
 // from a real terminal) so we don't pay the shell-spawn cost unnecessarily.
 (function enrichPathFromUserShell() {
   const cur = process.env.PATH || '';
-  if (/\/opt\/homebrew\/bin|\.local\/bin|\.cargo\/bin|\.bun\/bin/.test(cur)) return;
+  if (/\/opt\/homebrew\/bin|\/\.local\/bin|\/\.cargo\/bin|\/\.bun\/bin/.test(cur)) return;
   const shell = process.env.SHELL || '/bin/zsh';
   try {
     const out = execSync(`${shell} -lic 'printf "<<<PATH>>>%s<<</PATH>>>" "$PATH"'`, {
@@ -27,8 +27,11 @@ import { execSync } from 'child_process';
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const m = out.match(/<<<PATH>>>([^<]*)<<<\/PATH>>>/);
-    if (m && m[1] && m[1].length > cur.length) {
-      process.env.PATH = m[1];
+    if (m && m[1]) {
+      // Prepend the user shell's PATH (don't drop the existing one — the SDK
+      // and claude-plugins append their own bin dirs after first run, and
+      // those need to stay reachable).
+      process.env.PATH = `${m[1]}:${cur}`;
     }
   } catch {}
 })();

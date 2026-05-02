@@ -79,12 +79,31 @@ export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
   // `/usr/local/bin`, `/opt/homebrew/bin`, and entries from `/etc/paths.d/*`.
   // Without this, a Tauri-launched app inherits launchd's minimal PATH and
   // common user tools (bun, node, git from Homebrew) are missing.
-  const cmd: string[] = [shell];
+  const shellArgs: string[] = [shell];
   if (!isWin) {
     const base = shell.split('/').pop() || '';
     if (base === 'zsh' || base === 'bash' || base === 'sh' || base === 'fish' || base === 'dash') {
-      cmd.push('-l');
+      shellArgs.push('-l');
     }
+  }
+
+  // Wrap the shell in `script(1)` on macOS/Linux so the spawned process gets
+  // a real CONTROLLING TTY (not just a PTY wired to stdin/stdout). Without
+  // this, `open("/dev/tty")` fails with ENXIO and `sudo`, `gpg`, ssh's
+  // password prompt, etc. break with "a terminal is required". `Bun.Terminal`
+  // currently uses `openpty()` but doesn't run `login_tty()` (setsid +
+  // TIOCSCTTY) in the child, leaving the slave PTY un-promoted to ctty.
+  // `script -q /dev/null …` re-allocates a pty, runs setsid + TIOCSCTTY
+  // for us, and discards the typescript log. macOS BSD syntax differs from
+  // util-linux — handle both.
+  let cmd: string[];
+  if (isWin) {
+    cmd = shellArgs;
+  } else if (process.platform === 'darwin') {
+    cmd = ['/usr/bin/script', '-q', '/dev/null', ...shellArgs];
+  } else {
+    // Linux util-linux script
+    cmd = ['/usr/bin/script', '-qfc', shellArgs.join(' '), '/dev/null'];
   }
 
   let proc: ReturnType<typeof Bun.spawn>;
