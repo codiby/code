@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { Send as SendIcon } from 'lucide-react';
-import { Button, Select, SelectTrigger, SelectValue, SelectPopover, ListBox, ListBoxItem } from '@heroui/react';
+import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
 import { Providers } from './Providers';
@@ -596,6 +596,9 @@ export function ChatApp() {
   const historyDraftRef = useRef('');
   const subscribedRef = useRef(new Set<string>());
   const [pastedImages, setPastedImages] = useState<{ media_type: string; data: string; preview: string }[]>([]);
+  // Provider-supplied model lists (currently only opencode), keyed by sessionId.
+  // null = not yet fetched, [] = fetched and empty (no connected providers).
+  const [providerModels, setProviderModels] = useState<Record<string, Array<{ id: string; label: string; providerName: string }> | null>>({});
   // Per-message-id set of interactive terminals the user has minimized via the
   // shells badge bar or bubble header. Transient UI state; not persisted.
   const [minimizedShells, setMinimizedShells] = useState<Set<string>>(new Set());
@@ -661,7 +664,7 @@ export function ChatApp() {
 
   const emptyLocalState = (): LocalSessionState => ({
     messages: [], partialText: '', isStreaming: false, wasInterrupted: false, initInfo: null, permRequest: null,
-    openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false,
+    openFile: null, openMockup: null, openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
     input: '', inputHistory: [],
     editorDirty: false, contextTokens: 0,
@@ -984,6 +987,22 @@ export function ChatApp() {
           updateLocalState(sid, s => ({
             ...s,
             openFile: line != null ? { ...file, line } : file,
+            openMockup: null,
+            openTerminalId: null,
+            diffView: null,
+            editorDirty: false,
+          }));
+        },
+
+        // Server-initiated "open mockup preview" — triggered by the
+        // in-process SDK tools `mockup_write` / `mockup_edit`. Drops the
+        // HTML into the side panel where it renders inside a sandboxed
+        // iframe.
+        onOpenMockup: (sid, name, html) => {
+          updateLocalState(sid, s => ({
+            ...s,
+            openMockup: { name, html },
+            openFile: null,
             openTerminalId: null,
             diffView: null,
             editorDirty: false,
@@ -1135,13 +1154,29 @@ export function ChatApp() {
   }, [activeId]);
 
   const active = getState(activeId);
-  const { openFile, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
+  const { openFile, openMockup, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
-  const hasRightPanel = !!openFile || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+  const hasRightPanel = !!openFile || !!openMockup || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
 
   useEffect(() => {
     scrollToBottom();
   }, [active.messages.length, active.partialText, scrollToBottom]);
+
+  // For opencode sessions, fetch the model list off the running server
+  // once it's ready. Other providers use a hardcoded list and don't need
+  // a fetch. Refetch is keyed on sessionId + ready, so swapping tabs or
+  // a session restart triggers a fresh pull.
+  useEffect(() => {
+    if (!activeId || !clientRef.current) return;
+    const sess = sessions.find(s => s.id === activeId);
+    if (!sess || sess.provider !== 'opencode' || !sess.ready) return;
+    if (providerModels[activeId] !== undefined) return;
+    const sid = activeId;
+    setProviderModels(prev => ({ ...prev, [sid]: null }));
+    clientRef.current.listSessionModels(sid)
+      .then(models => setProviderModels(prev => ({ ...prev, [sid]: models })))
+      .catch(() => setProviderModels(prev => ({ ...prev, [sid]: [] })));
+  }, [activeId, sessions, providerModels]);
 
   // Jump to line when openFile.line changes (e.g. clicking different search results in same file)
   useEffect(() => {
@@ -2881,6 +2916,14 @@ export function ChatApp() {
                       &#x2630;
                     </button>
                   )}
+                  {activeSession?.provider && (
+                    <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-light text-zinc-300 font-semibold">
+                      {activeSession.provider === 'claudeAgent' ? 'Claude'
+                        : activeSession.provider === 'codex' ? 'Codex'
+                        : activeSession.provider === 'opencode' ? 'OpenCode'
+                        : activeSession.provider}
+                    </span>
+                  )}
                   {active.initInfo && (
                     <span className="text-xs text-zinc-600">
                       v{active.initInfo.version} · {active.initInfo.tools.length} tools
@@ -3446,108 +3489,65 @@ export function ChatApp() {
                           onSelect={handleFileMentionSelect}
                         />
                       )}
-                      {/* File reference chips */}
-                      {(() => {
-                        const refs = input.match(/@[\w.\/\-:]+/g);
-                        if (!refs || refs.length === 0) return null;
-                        return (
-                          <div className="flex flex-wrap gap-1.5 mb-2">
-                            {refs.map((ref, i) => (
-                              <span
-                                key={i}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-light text-[11px] font-mono text-amber-400/80 border border-border-light"
-                              >
-                                {ref}
-                                <button
-                                  className="text-zinc-500 hover:text-zinc-300 ml-0.5"
-                                  onClick={() => setInput(prev => prev.replace(ref, '').replace(/  +/g, ' ').trim())}
-                                >
-                                  &times;
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        );
-                      })()}
-                      {/* Image previews */}
-                      {pastedImages.length > 0 && (
-                        <div className="flex gap-2 mb-2 flex-wrap">
-                          {pastedImages.map((img, i) => (
-                            <div key={i} className="relative group">
-                              <img src={img.preview} alt="" className="h-16 rounded border border-border object-cover" />
-                              <button
-                                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-zinc-700 text-zinc-300 text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                                onClick={() => setPastedImages(prev => prev.filter((_, j) => j !== i))}
-                              >
-                                &times;
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {/* Model & plan mode */}
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <Select
-                          aria-label="Model"
-                          selectedKey={activeSession?.model || 'default'}
-                          onSelectionChange={(key) => {
-                            if (!activeId || !clientRef.current) return;
-                            const modelId = key === 'default' ? '' : String(key);
-                            if (modelId) {
-                              clientRef.current.setModel(activeId, modelId);
-                            }
-                            setSessions(prev => prev.map(s => s.id === activeId ? { ...s, model: modelId || null } : s));
-                          }}
-                          className="w-32"
-                        >
-                          <SelectTrigger className="h-6 text-[11px]"><SelectValue /></SelectTrigger>
-                          <SelectPopover>
-                            <ListBox>
-                              <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
-                              <ListBoxItem key="claude-sonnet-4-6" id="claude-sonnet-4-6" textValue="Sonnet 4.6"><span className="text-xs">Sonnet 4.6</span></ListBoxItem>
-                              <ListBoxItem key="claude-opus-4-6" id="claude-opus-4-6" textValue="Opus 4.6"><span className="text-xs">Opus 4.6</span></ListBoxItem>
-                              <ListBoxItem key="claude-haiku-4-5-20251001" id="claude-haiku-4-5-20251001" textValue="Haiku 4.5"><span className="text-xs">Haiku 4.5</span></ListBoxItem>
-                            </ListBox>
-                          </SelectPopover>
-                        </Select>
-                        <Select
-                          aria-label="Permission mode"
-                          selectedKey={activeSession?.permission_mode || 'default'}
-                          onSelectionChange={(key) => {
-                            if (!activeId || !clientRef.current) return;
-                            const mode = String(key);
-                            setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: mode } : s));
-                            clientRef.current.setPermissionMode(activeId, mode);
-                            clientRef.current.updateSession(activeId, { permissionMode: mode }).catch(() => {});
-                          }}
-                          className="w-36"
-                        >
-                          <SelectTrigger className="h-6 text-[11px]"><SelectValue /></SelectTrigger>
-                          <SelectPopover>
-                            <ListBox>
-                              <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
-                              <ListBoxItem key="acceptEdits" id="acceptEdits" textValue="Accept Edits"><span className="text-xs">Accept Edits</span></ListBoxItem>
-                              <ListBoxItem key="plan" id="plan" textValue="Plan"><span className="text-xs">Plan</span></ListBoxItem>
-                              <ListBoxItem key="bypassPermissions" id="bypassPermissions" textValue="Bypass"><span className="text-xs">Bypass All</span></ListBoxItem>
-                            </ListBox>
-                          </SelectPopover>
-                        </Select>
-                      </div>
                       {(() => {
                         const isTerminalMode = input.startsWith('>');
                         const cmdText = isTerminalMode ? input.slice(1).replace(/^ /, '') : input;
                         const streaming = active.isStreaming;
+                        const refs = input.match(/@[\w.\/\-:]+/g);
+                        const isOpenCode = activeSession?.provider === 'opencode';
+                        const ocModels = activeId ? providerModels[activeId] : undefined;
+                        const ocLoading = isOpenCode && ocModels === null;
+                        const sendDisabled = isTerminalMode
+                          ? !cmdText.trim() || activeStatus !== 'connected'
+                          : !input.trim() || activeStatus !== 'connected';
+                        const triggerCls =
+                          'min-h-0 h-7 py-0 px-2.5 rounded-full bg-transparent hover:bg-surface-light data-[hovered]:bg-surface-light text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors';
                         return (
-                          <div className="flex gap-2 items-center">
-                            {streaming && (
-                              <Button size="sm" variant="flat" onPress={handleInterrupt}
-                                className="shrink-0 text-amber-400">
-                                Stop
-                              </Button>
+                          <div
+                            className={`relative rounded-2xl border transition-colors shadow-lg shadow-black/30 ${
+                              isTerminalMode
+                                ? 'bg-[#141414] border-green-900/50 focus-within:border-green-700/60'
+                                : 'bg-surface border-border focus-within:border-zinc-500/60'
+                            }`}
+                          >
+                            {refs && refs.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+                                {refs.map((ref, i) => (
+                                  <span
+                                    key={i}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-light text-[11px] font-mono text-amber-400/80 border border-border-light"
+                                  >
+                                    {ref}
+                                    <button
+                                      className="text-zinc-500 hover:text-zinc-300 ml-0.5"
+                                      onClick={() => setInput(prev => prev.replace(ref, '').replace(/  +/g, ' ').trim())}
+                                    >
+                                      &times;
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
                             )}
-                            <div className={`flex-1 flex items-end rounded-lg transition-colors ${isTerminalMode ? 'border bg-[#141414] border-green-900/50' : ''}`}>
+
+                            {pastedImages.length > 0 && (
+                              <div className="flex gap-2 px-3 pt-2.5 flex-wrap">
+                                {pastedImages.map((img, i) => (
+                                  <div key={i} className="relative group">
+                                    <img src={img.preview} alt="" className="h-16 rounded border border-border object-cover" />
+                                    <button
+                                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-zinc-700 text-zinc-300 text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                                      onClick={() => setPastedImages(prev => prev.filter((_, j) => j !== i))}
+                                    >
+                                      &times;
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="flex items-start px-3.5 pt-3 pb-1">
                               {isTerminalMode && (
-                                <span className="text-green-500 text-sm font-mono pl-3 pr-1 py-2 select-none shrink-0">&gt;</span>
+                                <span className="text-green-500 text-sm font-mono pr-1 py-0.5 select-none shrink-0">&gt;</span>
                               )}
                               <textarea
                                 ref={inputRef}
@@ -3561,15 +3561,13 @@ export function ChatApp() {
                                   }
                                 }}
                                 disabled={activeStatus !== 'connected'}
-                                placeholder={isTerminalMode ? 'command...' : (streaming ? 'Queue a follow-up message…' : 'Send a message... (/ commands, @ files)')}
+                                placeholder={isTerminalMode ? 'command...' : (streaming ? 'Queue a follow-up message…' : 'Send a message...')}
                                 onKeyDown={(e) => {
-                                  // Exit terminal mode on backspace when command is empty
                                   if (isTerminalMode && e.key === 'Backspace' && !cmdText) {
                                     e.preventDefault();
                                     setInput('');
                                     return;
                                   }
-                                  // Input history navigation (arrow up/down when input is single line)
                                   if (e.key === 'ArrowUp' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
                                     const el = e.currentTarget;
                                     if (el.selectionStart === 0 && el.selectionEnd === 0) {
@@ -3612,8 +3610,10 @@ export function ChatApp() {
                                 }}
                                 autoFocus
                                 rows={1}
-                                className={`flex-1 rounded-lg py-2 text-sm placeholder:text-zinc-600 resize-none outline-none transition-colors disabled:opacity-50 ${isTerminalMode ? 'bg-transparent border-0 font-mono text-green-300 pl-0 pr-3' : 'bg-surface border border-border text-zinc-200 focus:border-zinc-500 px-3'}`}
-                                style={{ minHeight: 38, maxHeight: 200 }}
+                                className={`flex-1 bg-transparent border-0 outline-none resize-none text-[14px] leading-6 placeholder:text-zinc-500 disabled:opacity-50 ${
+                                  isTerminalMode ? 'font-mono text-green-300' : 'text-zinc-200'
+                                }`}
+                                style={{ minHeight: 24, maxHeight: 200 }}
                                 onPaste={(e) => {
                                   const items = e.clipboardData?.items;
                                   if (!items) return;
@@ -3640,15 +3640,101 @@ export function ChatApp() {
                                 }}
                               />
                             </div>
-                            <Button
-                              isIconOnly
-                              onPress={handleSend}
-                              isDisabled={isTerminalMode ? !cmdText.trim() || activeStatus !== 'connected' : !input.trim() || activeStatus !== 'connected'}
-                              aria-label={isTerminalMode ? 'Run' : (streaming ? 'Queue message' : 'Send message')}
-                              className={`shrink-0 ${isTerminalMode ? 'bg-green-600 text-white' : ''}`}
-                            >
-                              <SendIcon className="w-4 h-4" />
-                            </Button>
+
+                            <div className="flex items-center gap-1 px-2 pb-2 pt-1">
+                              <Select
+                                aria-label="Model"
+                                selectedKey={activeSession?.model || 'default'}
+                                onSelectionChange={(key) => {
+                                  if (!activeId || !clientRef.current) return;
+                                  const modelId = key === 'default' ? '' : String(key);
+                                  if (modelId) {
+                                    clientRef.current.setModel(activeId, modelId);
+                                  }
+                                  setSessions(prev => prev.map(s => s.id === activeId ? { ...s, model: modelId || null } : s));
+                                }}
+                                className={isOpenCode ? 'w-56' : 'w-32'}
+                                isDisabled={ocLoading}
+                              >
+                                <SelectTrigger className={triggerCls}>
+                                  <SelectValue />
+                                  <SelectIndicator className="size-3.5" />
+                                </SelectTrigger>
+                                <SelectPopover>
+                                  <ListBox>
+                                    <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
+                                    {isOpenCode ? (
+                                      (ocModels ?? []).map(m => (
+                                        <ListBoxItem key={m.id} id={m.id} textValue={`${m.providerName} ${m.label}`}>
+                                          <span className="text-xs">
+                                            <span className="text-zinc-500">{m.providerName}</span>{' '}
+                                            {m.label}
+                                          </span>
+                                        </ListBoxItem>
+                                      ))
+                                    ) : (
+                                      <>
+                                        <ListBoxItem key="claude-sonnet-4-6" id="claude-sonnet-4-6" textValue="Sonnet 4.6"><span className="text-xs">Sonnet 4.6</span></ListBoxItem>
+                                        <ListBoxItem key="claude-opus-4-6" id="claude-opus-4-6" textValue="Opus 4.6"><span className="text-xs">Opus 4.6</span></ListBoxItem>
+                                        <ListBoxItem key="claude-haiku-4-5-20251001" id="claude-haiku-4-5-20251001" textValue="Haiku 4.5"><span className="text-xs">Haiku 4.5</span></ListBoxItem>
+                                      </>
+                                    )}
+                                  </ListBox>
+                                </SelectPopover>
+                              </Select>
+
+                              <Select
+                                aria-label="Permission mode"
+                                selectedKey={activeSession?.permission_mode || 'default'}
+                                onSelectionChange={(key) => {
+                                  if (!activeId || !clientRef.current) return;
+                                  const mode = String(key);
+                                  setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: mode } : s));
+                                  clientRef.current.setPermissionMode(activeId, mode);
+                                  clientRef.current.updateSession(activeId, { permissionMode: mode }).catch(() => {});
+                                }}
+                                className="w-36"
+                              >
+                                <SelectTrigger className={triggerCls}>
+                                  <SelectValue />
+                                  <SelectIndicator className="size-3.5" />
+                                </SelectTrigger>
+                                <SelectPopover>
+                                  <ListBox>
+                                    <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
+                                    <ListBoxItem key="acceptEdits" id="acceptEdits" textValue="Accept Edits"><span className="text-xs">Accept Edits</span></ListBoxItem>
+                                    <ListBoxItem key="plan" id="plan" textValue="Plan"><span className="text-xs">Plan</span></ListBoxItem>
+                                    <ListBoxItem key="bypassPermissions" id="bypassPermissions" textValue="Bypass"><span className="text-xs">Bypass All</span></ListBoxItem>
+                                  </ListBox>
+                                </SelectPopover>
+                              </Select>
+
+                              <div className="flex-1" />
+
+                              {streaming && (
+                                <button
+                                  type="button"
+                                  onClick={handleInterrupt}
+                                  className="text-amber-400 hover:text-amber-300 text-[12px] h-7 px-3 rounded-full hover:bg-surface-light transition-colors"
+                                >
+                                  Stop
+                                </button>
+                              )}
+
+                              <Button
+                                isIconOnly
+                                onPress={handleSend}
+                                isDisabled={sendDisabled}
+                                aria-label={isTerminalMode ? 'Run' : (streaming ? 'Queue message' : 'Send message')}
+                                className={`rounded-full w-8 h-8 min-w-8 min-h-0 p-0 flex items-center justify-center transition-colors disabled:bg-surface-light disabled:text-zinc-600 ${
+                                  isTerminalMode
+                                    ? 'bg-green-600 hover:bg-green-500 text-white'
+                                    : 'bg-zinc-100 text-zinc-900 hover:bg-white'
+                                }`}
+                              >
+                                <SendIcon className="w-4 h-4" />
+                              </Button>
+                            </div>
                           </div>
                         );
                       })()}
@@ -3739,13 +3825,42 @@ export function ChatApp() {
                     )}
                   </div>
                 )}
-                {!openFile && pluginDetailOpen && (
+                {!openFile && openMockup && (
+                  <div className="flex-1 flex flex-col min-w-0">
+                    <div
+                      className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface"
+                      onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
+                    >
+                      <div className="flex items-center gap-1.5 truncate cursor-default">
+                        <span className="text-[10px] text-violet-400 shrink-0">▣</span>
+                        <span className="text-[12px] font-mono text-violet-300 truncate">mockup · {openMockup.name}</span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
+                          onClick={() => activeId && updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false }))}
+                          title="Close mockup"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    </div>
+                    <iframe
+                      key={openMockup.name}
+                      title={`mockup-${openMockup.name}`}
+                      srcDoc={openMockup.html}
+                      sandbox="allow-scripts allow-forms allow-popups"
+                      className="flex-1 w-full bg-white border-0"
+                    />
+                  </div>
+                )}
+                {!openFile && !openMockup && pluginDetailOpen && (
                   <PluginDetailView />
                 )}
-                {!openFile && !pluginDetailOpen && openPR && (
+                {!openFile && !openMockup && !pluginDetailOpen && openPR && (
                   <PRDetail pr={openPR} cwd={active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
                 )}
-                {!openFile && !pluginDetailOpen && !openPR && openTerminal && (
+                {!openFile && !openMockup && !pluginDetailOpen && !openPR && openTerminal && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
@@ -3768,7 +3883,7 @@ export function ChatApp() {
                     </pre>
                   </div>
                 )}
-                {!openFile && !openTerminal && diffView && (
+                {!openFile && !openMockup && !openTerminal && diffView && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     {/* Review status bar */}
                     {reviewMode && (
