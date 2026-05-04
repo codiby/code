@@ -1,6 +1,6 @@
 [package]
 name = "codiby-code"
-version = "0.0.5"
+version = "0.1.0"
 description = "Codiby Code"
 authors = ["you"]
 edition = "2021"

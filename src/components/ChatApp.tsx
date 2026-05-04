@@ -372,6 +372,7 @@ export function ChatApp() {
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string; cwd?: string; icon?: string }>>({});
   const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
   const [autoGroupSessions, setAutoGroupSessions] = useState(false);
 
@@ -576,6 +577,16 @@ export function ChatApp() {
     const newGroups = { ...tabGroups, [groupId]: next };
     setTabGroups(newGroups);
     persistPrefs({ tabGroups: newGroups });
+  };
+
+  const handleTogglePin = (sessionId: string) => {
+    setPinnedSessionIds(prev => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      persistPrefs({ pinnedSessionIds: [...next] });
+      return next;
+    });
   };
 
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
@@ -1004,6 +1015,9 @@ export function ChatApp() {
           if (prefs.tabGroupMap && typeof prefs.tabGroupMap === 'object') {
             setTabGroupMap(prefs.tabGroupMap as any);
           }
+          if (Array.isArray(prefs.pinnedSessionIds)) {
+            setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
+          }
           if (typeof prefs.autoGroupSessions === 'boolean') {
             setAutoGroupSessions(prefs.autoGroupSessions);
           }
@@ -1223,11 +1237,11 @@ export function ChatApp() {
     persistPrefs({ autoGroupSessions: next });
   };
 
-  const handleCreateSession = async (cwd: string) => {
+  const handleCreateSession = async (cwd: string, provider?: string) => {
     const c = clientRef.current;
     if (!c) return;
     try {
-      const session = await c.createSession(cwd);
+      const session = await c.createSession(cwd, { provider });
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
@@ -2719,6 +2733,8 @@ export function ChatApp() {
             sessionTurnComplete={turnCompleteIds}
             sessionHasPermission={sessionHasPermission}
             sessionLastMessageAt={sessionLastMessageAt}
+            pinnedSessionIds={pinnedSessionIds}
+            onTogglePin={handleTogglePin}
             onSelect={handleSelectSession}
             onNew={handleNewSession}
             onClose={handleCloseTab}

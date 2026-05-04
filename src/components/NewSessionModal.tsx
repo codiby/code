@@ -9,9 +9,22 @@ import {
 import type { ClaudeClient } from '../lib/claude-client';
 
 const RECENT_KEY = 'claude-ui-recent-dirs';
+const PROVIDER_KEY = 'claude-ui-last-provider';
 const MAX_RECENT = 10;
 const PM_OPTIONS = ['bun', 'npm', 'yarn', 'pnpm'] as const;
 type PackageManager = typeof PM_OPTIONS[number];
+
+const PROVIDER_OPTIONS = [
+  { key: 'claudeAgent', label: 'Claude' },
+  { key: 'codex', label: 'Codex' },
+  { key: 'opencode', label: 'OpenCode' },
+] as const;
+type ProviderKey = typeof PROVIDER_OPTIONS[number]['key'];
+
+function getLastProvider(): ProviderKey {
+  const v = localStorage.getItem(PROVIDER_KEY);
+  return PROVIDER_OPTIONS.some(o => o.key === v) ? (v as ProviderKey) : 'claudeAgent';
+}
 
 function getRecentDirs(): string[] {
   try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }
@@ -36,7 +49,7 @@ interface Props {
   isOpen: boolean;
   client: ClaudeClient | null;
   onClose: () => void;
-  onCreate: (cwd: string) => void;
+  onCreate: (cwd: string, provider: string) => void;
 }
 
 export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
@@ -57,6 +70,8 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
   const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
   const [consoleStatus, setConsoleStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const consoleRef = useRef<HTMLDivElement>(null);
+
+  const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider());
 
   const loadDir = useCallback(async (path: string) => {
     if (!client) return;
@@ -108,7 +123,8 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
 
   const handleCreate = () => {
     addRecentDir(cwd);
-    onCreate(cwd);
+    localStorage.setItem(PROVIDER_KEY, provider);
+    onCreate(cwd, provider);
     onClose();
   };
 
@@ -367,7 +383,21 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
         {/* Footer */}
         <div className="px-5 py-3 border-t border-border flex items-center justify-between shrink-0">
           <span className="text-xs text-zinc-600 font-mono truncate max-w-[360px]" title={cwd}>{cwd}</span>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-500">Provider</span>
+            <Select aria-label="Provider" selectedKey={provider}
+              onSelectionChange={(key) => setProvider(key as ProviderKey)}>
+              <SelectTrigger className="h-8 text-xs w-28"><SelectValue /></SelectTrigger>
+              <SelectPopover>
+                <ListBox>
+                  {PROVIDER_OPTIONS.map(opt => (
+                    <ListBoxItem key={opt.key} id={opt.key} textValue={opt.label}>
+                      <span className="text-sm">{opt.label}</span>
+                    </ListBoxItem>
+                  ))}
+                </ListBox>
+              </SelectPopover>
+            </Select>
             <Button variant="flat" onPress={onClose} isDisabled={creatingWt}>Cancel</Button>
             <Button onPress={handleCreate} isDisabled={creatingWt}>Open here</Button>
           </div>

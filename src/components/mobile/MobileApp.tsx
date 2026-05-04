@@ -171,6 +171,7 @@ export function MobileApp() {
   const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string }>>({});
   const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
   const [tabOrder, setTabOrder] = useState<string[]>([]);
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
   const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(new Set());
   // See ChatApp.tsx for the open / closed / archived lifecycle. The mobile
   // sessions sheet only renders the closed bucket; archived sessions are
@@ -377,6 +378,9 @@ export function MobileApp() {
       }
       if (Array.isArray(prefs.tabOrder)) {
         setTabOrder(prefs.tabOrder as string[]);
+      }
+      if (Array.isArray(prefs.pinnedSessionIds)) {
+        setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
       }
       if (Array.isArray(prefs.closedSessionIds)) {
         setClosedSessionIds(new Set(prefs.closedSessionIds as string[]));
@@ -754,6 +758,7 @@ export function MobileApp() {
           tabGroups={tabGroups}
           tabGroupMap={tabGroupMap}
           tabOrder={tabOrder}
+          pinnedSessionIds={pinnedSessionIds}
           closedSessionIds={closedSessionIds}
           archivedSessionIds={archivedSessionIds}
         />

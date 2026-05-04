@@ -3,7 +3,7 @@ import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type D
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  ChevronDown, ChevronRight, PanelLeft, Search, Archive, X,
+  ChevronDown, ChevronRight, PanelLeft, Search, Archive, X, Pin,
   type LucideIcon,
 } from 'lucide-react';
 import type { SessionInfo, ConnectionStatus } from '../lib/claude-client';
@@ -25,6 +25,11 @@ interface Props {
   /** Per-session timestamp (epoch ms) of the most recent message — used to
    *  render a "5m ago" hint inside vertical tabs. */
   sessionLastMessageAt?: Record<string, number>;
+  /** Sessions pinned to the top of their group. Pinned tabs always sort
+   *  above non-pinned ones regardless of last-message recency. */
+  pinnedSessionIds?: Set<string>;
+  /** Toggle pin state for a session. Persisted globally in preferences. */
+  onTogglePin?: (sessionId: string) => void;
   onSelect: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
@@ -108,9 +113,10 @@ function getDotClass(connStatus: string, isStreaming: boolean, turnComplete: boo
   return 'bg-zinc-600';
 }
 
-function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, groupColor: _groupColor, compact, ageLabel, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onContextMenu }: {
+function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, groupColor: _groupColor, compact, ageLabel, isPinned, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onContextMenu }: {
   id: string; session: SessionInfo; isActive: boolean; connStatus: string; isStreaming: boolean; wasInterrupted: boolean; turnComplete?: boolean; hasPermission: boolean; groupColor?: string; compact?: boolean;
   ageLabel?: string;
+  isPinned?: boolean;
   editingId: string | null; editName: string; editRef: React.RefObject<HTMLInputElement | null>;
   setEditName: (v: string) => void; startRename: (s: SessionInfo) => void; commitRename: () => void; setEditingId: (id: string | null) => void;
   onSelect: (id: string) => void; onClose: (id: string) => void;
@@ -135,6 +141,16 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
           onBlur={commitRename} className="bg-transparent border-none outline-none text-[12px] text-zinc-200 w-full min-w-0" />
       ) : (
         <span className="truncate flex-1" onDoubleClick={e => { e.stopPropagation(); startRename(session); }}>{session.name}</span>
+      )}
+      {/* Pinned indicator — small filled pin next to the name. Hidden while
+          renaming so the input has room to breathe. */}
+      {isPinned && editingId !== session.id && (
+        <Pin
+          size={10}
+          strokeWidth={2.25}
+          className="shrink-0 text-zinc-500 fill-current"
+          aria-label="Pinned to top"
+        />
       )}
       {/* Age chip — only shown on inactive tabs, replaced by close button on hover. */}
       {ageLabel && editingId !== session.id && !isActive && (
@@ -330,6 +346,7 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
 
 export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionLastMessageAt,
+    pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
     collapsed, onToggleCollapsed } = props;
@@ -424,13 +441,17 @@ export const TabBar = memo(function TabBar(props: Props) {
     if (gid && tabGroups[gid]) {
       if (!renderedGroups.has(gid)) {
         renderedGroups.add(gid);
-        // Sort group members by last-message recency (newest at top). Falls
-        // back to the existing tabOrder position when timestamps are missing
-        // or equal so the order stays stable across renders.
+        // Sort group members: pinned sessions first (in tabOrder), then the
+        // rest by last-message recency (newest at top). Falls back to the
+        // existing tabOrder position when timestamps are missing or equal so
+        // the order stays stable across renders.
         const members = sessions
           .filter(m => tabGroupMap[m.id] === gid)
           .slice()
           .sort((a, b) => {
+            const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
+            const pb = pinnedSessionIds?.has(b.id) ? 1 : 0;
+            if (pa !== pb) return pb - pa;
             const ta = sessionLastMessageAt?.[a.id] || 0;
             const tb = sessionLastMessageAt?.[b.id] || 0;
             if (tb !== ta) return tb - ta;
@@ -482,6 +503,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     hasPermission: sessionHasPermission[s.id] || false,
     groupColor, compact,
     ageLabel: formatTabAge(sessionLastMessageAt?.[s.id], nowMs),
+    isPinned: pinnedSessionIds?.has(s.id) || false,
     editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose,
     onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); setTabMenu({ tabId: s.id, x: e.clientX, y: e.clientY }); },
   });
@@ -765,6 +787,16 @@ export const TabBar = memo(function TabBar(props: Props) {
                 }}>
                 Rename
               </button>
+
+              {/* Pin / Unpin (only for grouped tabs — pin order only matters
+                  inside a group, where group members sort by recency). */}
+              {isGrouped && onTogglePin && (
+                <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                  onClick={() => { onTogglePin(tabMenu.tabId); setTabMenu(null); }}>
+                  <Pin size={11} strokeWidth={2.25} className={pinnedSessionIds?.has(tabMenu.tabId) ? 'fill-current text-zinc-300' : ''} />
+                  {pinnedSessionIds?.has(tabMenu.tabId) ? 'Unpin from top' : 'Pin to top'}
+                </button>
+              )}
 
               {/* Close */}
               <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"

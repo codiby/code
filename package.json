@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "bun run scripts/build.ts --watch",
@@ -19,8 +19,9 @@
     "@dnd-kit/utilities": "3.2.2",
     "@heroui/react": "^3.0.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex-sdk": "0.128.0",
     "@monaco-editor/react": "4.7.0",
+    "@openai/codex-sdk": "0.128.0",
+    "@opencode-ai/sdk": "1.14.33",
     "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-notification": "2",
     "@tauri-apps/plugin-opener": "2.5.3",

@@ -6,7 +6,20 @@ import { MobileWorktreeModal } from './MobileWorktreeModal';
 // Shared with the desktop NewSessionModal so "recent projects" stay in sync
 // across the two entry points.
 const RECENT_KEY = 'claude-ui-recent-dirs';
+const PROVIDER_KEY = 'claude-ui-last-provider';
 const MAX_RECENT = 10;
+
+const PROVIDER_OPTIONS = [
+  { key: 'claudeAgent', label: 'Claude' },
+  { key: 'codex', label: 'Codex' },
+  { key: 'opencode', label: 'OpenCode' },
+] as const;
+type ProviderKey = typeof PROVIDER_OPTIONS[number]['key'];
+
+function getLastProvider(): ProviderKey {
+  const v = localStorage.getItem(PROVIDER_KEY);
+  return PROVIDER_OPTIONS.some(o => o.key === v) ? (v as ProviderKey) : 'claudeAgent';
+}
 
 function getRecentDirs(): string[] {
   try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }
@@ -57,6 +70,7 @@ export function MobileNewSessionModal({ open, onClose, client, onCreated }: Prop
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
+  const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider());
 
   const loadDir = useCallback(async (path: string) => {
     setLoading(true);
@@ -102,8 +116,9 @@ export function MobileNewSessionModal({ open, onClose, client, onCreated }: Prop
     setCreating(true);
     setError(null);
     try {
-      const session = await client.createSession(cwd || '/', { name: name.trim() || undefined });
+      const session = await client.createSession(cwd || '/', { name: name.trim() || undefined, provider });
       addRecentDir(cwd);
+      localStorage.setItem(PROVIDER_KEY, provider);
       onCreated(session.id);
       onClose();
     } catch (err) {
@@ -311,6 +326,22 @@ export function MobileNewSessionModal({ open, onClose, client, onCreated }: Prop
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">cwd</span>
           <span className="text-[12px] font-mono text-zinc-400 truncate" title={cwd}>{cwd}</span>
+        </div>
+        <div className="flex items-center gap-1.5 -mx-1">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold px-1">Provider</span>
+          {PROVIDER_OPTIONS.map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => setProvider(opt.key)}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
+                provider === opt.key
+                  ? 'bg-indigo-500/20 text-indigo-200 border border-indigo-500/40'
+                  : 'bg-white/5 text-zinc-400 border border-white/10 active:bg-white/10'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
         <input
           type="text"

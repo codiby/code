@@ -19,6 +19,8 @@ import { log } from './logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON } from './sessions';
 import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession } from './handlers/sessions';
 import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
+import { CodexAdapter } from './provider/adapters/CodexAdapter';
+import { OpenCodeAdapter } from './provider/adapters/OpenCodeAdapter';
 import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision } from './provider/bridge';
@@ -56,6 +58,8 @@ import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunn
 
 // Register provider adapters before loading sessions (so default provider exists)
 registerProvider(ClaudeAdapter);
+registerProvider(CodexAdapter);
+registerProvider(OpenCodeAdapter);
 
 // `--spawned-by=app|service` (or `CODIBY_SPAWN_MODE=app|service`) tells the
 // server who launched it. In `service` mode (default) we proactively spawn a

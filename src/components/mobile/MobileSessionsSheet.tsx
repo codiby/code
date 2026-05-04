@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ChevronDown, ChevronRight, Plus } from 'lucide-react';
+import { Archive, ChevronDown, ChevronRight, Pin, Plus } from 'lucide-react';
 import { BottomSheet } from './BottomSheet';
 import { MobileNewSessionModal } from './MobileNewSessionModal';
 import type { ClaudeClient, ConnectionStatus, SessionInfo } from '../../lib/claude-client';
@@ -37,6 +37,8 @@ interface Props {
   tabGroupMap: Record<string, string>;
   /** Persisted tab order. */
   tabOrder: string[];
+  /** Sessions pinned to the top of their group (shared with desktop). */
+  pinnedSessionIds?: Set<string>;
   /** Sessions hidden from the open list (still in registry). */
   closedSessionIds: Set<string>;
   /** Sessions hidden from BOTH the open list and the closed-sessions
@@ -70,7 +72,7 @@ function getDotClass(connStatus: string, isStreaming: boolean, turnComplete: boo
 export function MobileSessionsSheet({
   open, onClose, client, sessions, activeId, onSelect, onCloseSession, onReopenSession, onArchiveSession,
   statuses, streaming, interrupted, hasPermission, turnComplete,
-  tabGroups, tabGroupMap, tabOrder, closedSessionIds, archivedSessionIds,
+  tabGroups, tabGroupMap, tabOrder, pinnedSessionIds, closedSessionIds, archivedSessionIds,
 }: Props) {
   const [newModalOpen, setNewModalOpen] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
@@ -152,7 +154,15 @@ export function MobileSessionsSheet({
       if (gid && tabGroups[gid]) {
         if (!seenGroups.has(gid)) {
           seenGroups.add(gid);
-          const members = openSessions.filter((m) => tabGroupMap[m.id] === gid);
+          const members = openSessions
+            .filter((m) => tabGroupMap[m.id] === gid)
+            .slice()
+            .sort((a, b) => {
+              // Pinned first, otherwise preserve openSessions order (tabOrder).
+              const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
+              const pb = pinnedSessionIds?.has(b.id) ? 1 : 0;
+              return pb - pa;
+            });
           list.push({ kind: 'group', group: tabGroups[gid]!, members });
         }
       } else {
@@ -160,7 +170,7 @@ export function MobileSessionsSheet({
       }
     }
     return list;
-  }, [openSessions, tabGroupMap, tabGroups]);
+  }, [openSessions, tabGroupMap, tabGroups, pinnedSessionIds]);
 
   const toggleGroup = (groupId: string) => {
     setCollapsedGroupIds((prev) => {
@@ -229,6 +239,14 @@ export function MobileSessionsSheet({
             />
           ) : (
             <span className="truncate flex-1">{s.name}</span>
+          )}
+          {pinnedSessionIds?.has(s.id) && !isEditing && (
+            <Pin
+              size={11}
+              strokeWidth={2.25}
+              className="shrink-0 text-zinc-500 fill-current"
+              aria-label="Pinned to top"
+            />
           )}
           {pending && !isActive && !isEditing && (
             <span className="shrink-0 relative inline-flex w-2.5 h-2.5">
