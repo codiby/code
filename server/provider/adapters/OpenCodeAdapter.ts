@@ -28,10 +28,13 @@
  *    `events.onPermissionRequest` and answers via
  *    `POST /session/{id}/permissions/{permissionID}` once the bridge
  *    resolves. allow → `"once"`, deny → `"reject"`.
- *  - `setModel` / `setPermissionMode` cannot be live-updated. They take
- *    effect on the next session restart (effective after /clear). The
- *    session record's model/permissionMode fields drive the next spawn,
- *    so persisting via the bridge is enough.
+ *  - `setModel` IS live: opencode's prompt API takes a per-turn
+ *    `body.model`, so changing the model just updates an in-memory
+ *    field that the next `sendUserMessage` reads. No server restart.
+ *  - `setPermissionMode` is NOT live — Config.permission is locked at
+ *    server start. The bridge persists the new value on the session
+ *    record so it's picked up on the next spawn (effective after
+ *    /clear).
  *
  * Model format: opencode requires `{ providerID, modelID }` pairs (e.g.
  * `anthropic/claude-3-5-sonnet-20241022`). If the user's model string
@@ -151,7 +154,10 @@ class OpenCodeProviderSession implements ProviderSession {
 
   private readonly events: ProviderEvents;
   private readonly cwd: string;
-  private readonly model: string | null;
+  // Mutable: setModel updates this in place. The next sendUserMessage
+  // attaches it to the prompt body so the change takes effect on the
+  // very next turn — no session restart needed.
+  private model: string | null;
   private readonly permissionMode: PermissionMode;
 
   private readonly readyPromise: Promise<{
@@ -167,6 +173,11 @@ class OpenCodeProviderSession implements ProviderSession {
   private readonly pendingText = new Map<string, string>();
   // callID set so we only emit onToolUse once per tool invocation.
   private readonly toolUseEmitted = new Set<string>();
+  // messageIDs we know belong to user-role messages. Their parts must
+  // not be emitted as assistant output (the prompt API echoes the user
+  // text back as a part, which would otherwise show up as a duplicated
+  // reply in the chat log).
+  private readonly userMessageIds = new Set<string>();
 
   constructor(opts: SpawnOptions, events: ProviderEvents) {
     this.sessionId = opts.sessionId;
@@ -267,6 +278,7 @@ class OpenCodeProviderSession implements ProviderSession {
       case 'message.updated': {
         const info = ev.properties.info;
         if (info.sessionID !== openSessionId) return;
+        if (info.role === 'user') this.userMessageIds.add(info.id);
         if (info.role === 'assistant' && info.time?.completed && info.error) {
           const err = info.error;
           const msg =
@@ -326,6 +338,10 @@ class OpenCodeProviderSession implements ProviderSession {
   }
 
   private handlePart(part: Part): void {
+    // Drop parts attached to user messages — opencode emits a TextPart
+    // for the user's prompt itself, and forwarding it would echo the
+    // user's input back as if the agent had replied with it.
+    if (this.userMessageIds.has(part.messageID)) return;
     switch (part.type) {
       case 'text':
         this.handleTextPart(part);
@@ -455,10 +471,43 @@ class OpenCodeProviderSession implements ProviderSession {
     }
   }
 
-  async setModel(_model: string | null): Promise<void> {
-    // opencode bakes the model into Config at server start. The bridge
-    // already persists the new value on the session record; it'll be
-    // picked up the next time the session is spawned.
+  async listModels(): Promise<Array<{ id: string; label: string; providerName: string }>> {
+    const { client } = await this.readyPromise;
+    const result = await client.provider.list({ throwOnError: true });
+    const data = (result as { data?: { all?: unknown[]; connected?: string[] } }).data;
+    const all = (data?.all ?? []) as Array<{
+      id: string;
+      name: string;
+      models: Record<string, { id: string; name: string; status?: string }>;
+    }>;
+    const connected = new Set(data?.connected ?? []);
+    const out: Array<{ id: string; label: string; providerName: string }> = [];
+    for (const provider of all) {
+      // Only surface providers the user is actually authenticated for —
+      // listing 200+ models from every backend just to grey them out
+      // would be more confusing than useful.
+      if (!connected.has(provider.id)) continue;
+      for (const [, model] of Object.entries(provider.models)) {
+        if (model.status === 'deprecated') continue;
+        out.push({
+          id: `${provider.id}/${model.id}`,
+          label: model.name,
+          providerName: provider.name,
+        });
+      }
+    }
+    out.sort((a, b) => {
+      if (a.providerName !== b.providerName) return a.providerName.localeCompare(b.providerName);
+      return a.label.localeCompare(b.label);
+    });
+    return out;
+  }
+
+  async setModel(model: string | null): Promise<void> {
+    // opencode supports a per-prompt model override (SessionPromptData
+    // body.model), so we just stash the new value and the next
+    // sendUserMessage will pass it through. No server restart needed.
+    this.model = model;
   }
 
   async setPermissionMode(_mode: PermissionMode): Promise<void> {

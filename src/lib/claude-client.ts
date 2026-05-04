@@ -574,6 +574,12 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  async listSessionModels(sessionId: string): Promise<Array<{ id: string; label: string; providerName: string }>> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/models`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
   async updateSession(sessionId: string, updates: { permissionMode?: string; name?: string }): Promise<SessionInfo> {
     const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}`, {
       method: 'PATCH',

@@ -1102,6 +1102,23 @@ const server = Bun.serve({
       return resp;
     }
 
+    const modelsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/models$/);
+    if (modelsMatch && req.method === 'GET') {
+      const session = sessions.get(modelsMatch[1]!);
+      if (!session) return new Response('Session not found', { status: 404, headers: corsHeaders });
+      const ps = session.providerSession as { listModels?: () => Promise<Array<{ id: string; label: string; providerName: string }>> } | null;
+      if (!ps || typeof ps.listModels !== 'function') {
+        return Response.json([], { headers: corsHeaders });
+      }
+      try {
+        const models = await ps.listModels();
+        return Response.json(models, { headers: corsHeaders });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return new Response(message, { status: 500, headers: corsHeaders });
+      }
+    }
+
     const stopMatch = url.pathname.match(/^\/sessions\/(.+)\/stop$/);
     if (stopMatch && req.method === 'POST') {
       const resp = handleStopSession(stopMatch[1]!);
