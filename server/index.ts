@@ -24,7 +24,7 @@ import { OpenCodeAdapter } from './provider/adapters/OpenCodeAdapter';
 import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision } from './provider/bridge';
-import { handleListDirs, handleListFiles, handleFileIndex } from './handlers/files';
+import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleExecCreate, terminalWsOpen, terminalWsClose } from './handlers/exec';
 import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput } from './handlers/processes';
 import type { TrackedProcess } from './types';
@@ -1182,6 +1182,42 @@ const server = Bun.serve({
         if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
         writeFileSync(body.path, body.content, 'utf-8');
         return Response.json({ ok: true }, { headers: corsHeaders });
+      } catch (e: any) {
+        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === '/file-content' && req.method === 'DELETE') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+      return handleDeletePath(filePath);
+    }
+
+    if (url.pathname === '/file-rename' && req.method === 'POST') {
+      try {
+        const body = await req.json() as { from: string; to: string };
+        if (!body.from || !body.to) return Response.json({ error: 'from and to required' }, { status: 400, headers: corsHeaders });
+        return handleRenamePath(body.from, body.to);
+      } catch (e: any) {
+        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === '/file-new' && req.method === 'POST') {
+      try {
+        const body = await req.json() as { path: string; kind: 'file' | 'dir' };
+        if (!body.path || !body.kind) return Response.json({ error: 'path and kind required' }, { status: 400, headers: corsHeaders });
+        return body.kind === 'dir' ? handleCreateDir(body.path) : handleCreateFile(body.path);
+      } catch (e: any) {
+        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === '/file-reveal' && req.method === 'POST') {
+      try {
+        const body = await req.json() as { path: string };
+        if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+        return handleRevealInFinder(body.path);
       } catch (e: any) {
         return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
       }

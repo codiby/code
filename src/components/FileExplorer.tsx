@@ -1,13 +1,19 @@
-import { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useState, useEffect, useCallback, useRef, memo, createContext, useContext } from 'react';
 import {
   ArrowUpRight,
   ChevronDown,
   ChevronRight,
   CornerDownRight,
+  Copy,
+  Edit2,
+  ExternalLink,
   File as FileIcon,
+  FilePlus,
+  FolderPlus,
   Minus,
   Play,
   Plus,
+  Trash2,
   X,
 } from 'lucide-react';
 import type { ClaudeClient } from '../lib/claude-client';
@@ -16,6 +22,38 @@ interface FileEntry {
   name: string;
   type: 'file' | 'dir';
   path: string;
+}
+
+function pathDirname(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i <= 0 ? '/' : p.slice(0, i);
+}
+function pathJoin(a: string, b: string): string {
+  return a.endsWith('/') ? a + b : a + '/' + b;
+}
+
+type CreatingIn = { path: string; kind: 'file' | 'dir' } | null;
+type MenuState = { entry: FileEntry; parentPath: string; x: number; y: number; confirmingDelete: boolean } | null;
+
+interface ExplorerCtxValue {
+  client: ClaudeClient | null;
+  onFileOpen: (path: string) => void;
+  gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> };
+  openMenu: (e: React.MouseEvent, entry: FileEntry, parentPath: string) => void;
+  editingPath: string | null;
+  beginRename: (path: string) => void;
+  cancelRename: () => void;
+  commitRename: (entry: FileEntry, parentPath: string, newName: string) => Promise<string | null>;
+  creatingIn: CreatingIn;
+  cancelCreate: () => void;
+  commitCreate: (parentPath: string, name: string, kind: 'file' | 'dir') => Promise<string | null>;
+}
+
+const ExplorerCtx = createContext<ExplorerCtxValue | null>(null);
+function useExplorer(): ExplorerCtxValue {
+  const v = useContext(ExplorerCtx);
+  if (!v) throw new Error('ExplorerCtx missing');
+  return v;
 }
 
 interface Props {
@@ -35,8 +73,18 @@ interface Props {
   sessionName?: string;
 }
 
-// Module-level cache for instant tab switching
+// Module-level cache for instant tab switching. Keyed by directory path:
+// rootPath for the top-level entries, child dir paths for expanded DirNodes.
 const filesCache = new Map<string, FileEntry[]>();
+
+// Refresh emitter: any directory listener registered here is invoked when
+// `refreshDir(path)` is called. Used to re-render after a mutation invalidates
+// the cache for a particular parent directory.
+const dirRefreshListeners = new Set<(path: string) => void>();
+function refreshDir(path: string): void {
+  filesCache.delete(path);
+  dirRefreshListeners.forEach(fn => fn(path));
+}
 
 const EXT_COLORS: Record<string, string> = {
   ts: 'text-blue-400', tsx: 'text-blue-400', js: 'text-yellow-400', jsx: 'text-yellow-400',
@@ -52,50 +100,157 @@ function getExtColor(name: string): string {
   return EXT_COLORS[ext] || 'text-zinc-600';
 }
 
-function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: FileEntry; client: ClaudeClient | null; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> } }) {
+function NodeNameInput({
+  initial, onCommit, onCancel, autoSelect,
+}: { initial: string; onCommit: (name: string) => Promise<string | null>; onCancel: () => void; autoSelect: 'baseName' | 'all' }) {
+  const [value, setValue] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    if (autoSelect === 'all') {
+      el.select();
+    } else {
+      const dot = initial.lastIndexOf('.');
+      el.setSelectionRange(0, dot > 0 ? dot : initial.length);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const submit = async () => {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === initial) { onCancel(); return; }
+    if (trimmed.includes('/')) { setError('Name cannot contain /'); return; }
+    const err = await onCommit(trimmed);
+    if (err) setError(err);
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      value={value}
+      onChange={e => { setValue(e.target.value); if (error) setError(null); }}
+      onBlur={submit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+        e.stopPropagation();
+      }}
+      onClick={e => e.stopPropagation()}
+      className={`flex-1 min-w-0 bg-[#1f1f1f] text-[12px] text-zinc-100 px-1 py-0 rounded outline-none ${error ? 'border border-red-500' : 'border border-blue-500/60'}`}
+      title={error || undefined}
+    />
+  );
+}
+
+function DirNode({ entry, depth, parentPath: _parentPath }: { entry: FileEntry; depth: number; parentPath: string }) {
+  const ctx = useExplorer();
+  const { client, openMenu, editingPath, cancelRename, commitRename, creatingIn, cancelCreate, commitCreate } = ctx;
   const [expanded, setExpanded] = useState(false);
-  const [children, setChildren] = useState<FileEntry[]>([]);
+  const [children, setChildren] = useState<FileEntry[]>(() => filesCache.get(entry.path) || []);
   const [loading, setLoading] = useState(false);
 
-  const toggle = useCallback(async () => {
-    if (expanded) {
-      setExpanded(false);
-      return;
-    }
+  const fetchChildren = useCallback(async () => {
     if (!client) return;
     setLoading(true);
     try {
       const items = await client.listFiles(entry.path);
+      filesCache.set(entry.path, items);
       setChildren(items);
     } catch {
       setChildren([]);
     }
     setLoading(false);
+  }, [client, entry.path]);
+
+  const toggle = useCallback(async () => {
+    if (expanded) { setExpanded(false); return; }
+    const cached = filesCache.get(entry.path);
+    if (cached) {
+      setChildren(cached);
+      setExpanded(true);
+      // Also refresh in background to catch external changes.
+      fetchChildren();
+      return;
+    }
+    await fetchChildren();
     setExpanded(true);
-  }, [expanded, client, entry.path]);
+  }, [expanded, entry.path, fetchChildren]);
+
+  // Subscribe to refresh events for our own path.
+  useEffect(() => {
+    const fn = (path: string) => {
+      if (path !== entry.path) return;
+      if (expanded) {
+        fetchChildren();
+      } else {
+        // Clear stale local copy so the next expand re-fetches fresh.
+        setChildren([]);
+      }
+    };
+    dirRefreshListeners.add(fn);
+    return () => { dirRefreshListeners.delete(fn); };
+  }, [entry.path, expanded, fetchChildren]);
+
+  // Auto-expand when an inline-create targets this directory.
+  useEffect(() => {
+    if (creatingIn?.path === entry.path && !expanded) {
+      toggle();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creatingIn]);
+
+  const isEditing = editingPath === entry.path;
+  const isCreatingHere = creatingIn?.path === entry.path;
 
   return (
     <div>
-      <button
-        className="flex items-center gap-1 w-full text-left py-[2px] hover:bg-surface-light/50 text-zinc-400 hover:text-zinc-200 transition-colors"
+      <div
+        className="flex items-center gap-1 w-full text-left py-[2px] hover:bg-surface-light/50 text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
         style={{ paddingLeft: depth * 12 + 8 }}
-        onClick={toggle}
+        onClick={isEditing ? undefined : toggle}
+        onContextMenu={e => { e.preventDefault(); openMenu(e, entry, _parentPath); }}
       >
         <span className="w-4 flex items-center justify-center shrink-0 text-zinc-300">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
-        <span className="truncate text-[12px]">{entry.name}</span>
-      </button>
+        {isEditing ? (
+          <NodeNameInput
+            initial={entry.name}
+            autoSelect="all"
+            onCancel={cancelRename}
+            onCommit={async name => commitRename(entry, _parentPath, name)}
+          />
+        ) : (
+          <span className="truncate text-[12px]">{entry.name}</span>
+        )}
+      </div>
       {expanded && (
         <div>
-          {loading && (
+          {isCreatingHere && (
+            <div className="flex items-center gap-1 py-[2px]" style={{ paddingLeft: (depth + 1) * 12 + 8 }}>
+              <span className="w-4 flex items-center justify-center shrink-0 text-zinc-500">
+                {creatingIn!.kind === 'dir' ? <ChevronRight size={12} /> : <FileIcon size={11} />}
+              </span>
+              <NodeNameInput
+                initial=""
+                autoSelect="all"
+                onCancel={cancelCreate}
+                onCommit={async name => commitCreate(entry.path, name, creatingIn!.kind)}
+              />
+            </div>
+          )}
+          {loading && children.length === 0 && (
             <span className="text-[11px] text-zinc-600 block" style={{ paddingLeft: (depth + 1) * 12 + 20 }}>...</span>
           )}
           {children.map(child =>
             child.type === 'dir' ? (
-              <DirNode key={child.path} entry={child} client={client} depth={depth + 1} onFileOpen={onFileOpen} gitModified={gitModified} />
+              <DirNode key={child.path} entry={child} depth={depth + 1} parentPath={entry.path} />
             ) : (
-              <FileNode key={child.path} entry={child} depth={depth + 1} onFileOpen={onFileOpen} gitModified={gitModified} />
+              <FileNode key={child.path} entry={child} depth={depth + 1} parentPath={entry.path} />
             )
           )}
         </div>
@@ -104,22 +259,34 @@ function DirNode({ entry, client, depth, onFileOpen, gitModified }: { entry: Fil
   );
 }
 
-function FileNode({ entry, depth, onFileOpen, gitModified }: { entry: FileEntry; depth: number; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> } }) {
+function FileNode({ entry, depth, parentPath }: { entry: FileEntry; depth: number; parentPath: string }) {
+  const { onFileOpen, gitModified, openMenu, editingPath, cancelRename, commitRename } = useExplorer();
   const isStaged = gitModified.staged.has(entry.path);
   const isUnstaged = gitModified.unstaged.has(entry.path);
   const isUntracked = gitModified.untracked.has(entry.path);
   const isModified = isStaged || isUnstaged;
   const color = isModified ? (isStaged ? 'text-green-400' : isUntracked ? 'text-green-400' : 'text-amber-400') : getExtColor(entry.name);
+  const isEditing = editingPath === entry.path;
   return (
     <div
       className={`flex items-center gap-1 py-[2px] hover:bg-surface-light/50 cursor-pointer transition-colors ${isModified ? (isStaged ? 'text-green-400/80' : isUntracked ? 'text-green-400/80' : 'text-amber-400/80') : 'text-zinc-500 hover:text-zinc-300'}`}
       style={{ paddingLeft: depth * 12 + 8 }}
-      onClick={() => onFileOpen(entry.path)}
+      onClick={isEditing ? undefined : () => onFileOpen(entry.path)}
+      onContextMenu={e => { e.preventDefault(); openMenu(e, entry, parentPath); }}
     >
       <span className={`w-3 flex items-center justify-center shrink-0 ${color}`}>
         <FileIcon size={11} />
       </span>
-      <span className="truncate text-[12px]">{entry.name}</span>
+      {isEditing ? (
+        <NodeNameInput
+          initial={entry.name}
+          autoSelect="baseName"
+          onCancel={cancelRename}
+          onCommit={async name => commitRename(entry, parentPath, name)}
+        />
+      ) : (
+        <span className="truncate text-[12px]">{entry.name}</span>
+      )}
     </div>
   );
 }
@@ -336,31 +503,64 @@ function ProcessesSection({ client, sessionId, onViewTerminal }: { client: Claud
   );
 }
 
-function FileTreeSection({ rootPath, entries, client, onFileOpen, gitModified }: { rootPath: string | null; entries: FileEntry[]; client: ClaudeClient | null; onFileOpen: (path: string) => void; gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> } }) {
+function FileTreeSection({ rootPath, entries, onNewAtRoot }: { rootPath: string | null; entries: FileEntry[]; onNewAtRoot: (kind: 'file' | 'dir') => void }) {
+  const { creatingIn, cancelCreate, commitCreate } = useExplorer();
   const [expanded, setExpanded] = useState(true);
   const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
+  const isCreatingAtRoot = !!rootPath && creatingIn?.path === rootPath;
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <button
-        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors border-b border-border/50 shrink-0"
+      <div
+        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors border-b border-border/50 shrink-0 group cursor-pointer"
         onClick={() => setExpanded(e => !e)}
       >
         <span className="w-3 flex items-center justify-center shrink-0 text-zinc-400">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider truncate">{label}</span>
-      </button>
+        {rootPath && (
+          <span className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              className="text-zinc-600 hover:text-zinc-300 flex items-center"
+              onClick={e => { e.stopPropagation(); onNewAtRoot('file'); }}
+              title="New file"
+            >
+              <FilePlus size={12} />
+            </button>
+            <button
+              className="text-zinc-600 hover:text-zinc-300 flex items-center"
+              onClick={e => { e.stopPropagation(); onNewAtRoot('dir'); }}
+              title="New folder"
+            >
+              <FolderPlus size={12} />
+            </button>
+          </span>
+        )}
+      </div>
       {expanded && (
         <div className="flex-1 overflow-y-auto py-1">
           {!rootPath && (
             <p className="text-[11px] text-zinc-600 px-3 py-4 text-center">No session active</p>
           )}
+          {isCreatingAtRoot && (
+            <div className="flex items-center gap-1 py-[2px]" style={{ paddingLeft: 8 }}>
+              <span className="w-4 flex items-center justify-center shrink-0 text-zinc-500">
+                {creatingIn!.kind === 'dir' ? <ChevronRight size={12} /> : <FileIcon size={11} />}
+              </span>
+              <NodeNameInput
+                initial=""
+                autoSelect="all"
+                onCancel={cancelCreate}
+                onCommit={async name => commitCreate(rootPath!, name, creatingIn!.kind)}
+              />
+            </div>
+          )}
           {entries.map(entry =>
             entry.type === 'dir' ? (
-              <DirNode key={entry.path} entry={entry} client={client} depth={0} onFileOpen={onFileOpen} gitModified={gitModified} />
+              <DirNode key={entry.path} entry={entry} depth={0} parentPath={rootPath || ''} />
             ) : (
-              <FileNode key={entry.path} entry={entry} depth={0} onFileOpen={onFileOpen} gitModified={gitModified} />
+              <FileNode key={entry.path} entry={entry} depth={0} parentPath={rootPath || ''} />
             )
           )}
         </div>
@@ -499,17 +699,129 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const dragging = useRef(false);
 
-  useEffect(() => {
+  const [menu, setMenu] = useState<MenuState>(null);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [creatingIn, setCreatingIn] = useState<CreatingIn>(null);
+  const deleteConfirmTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const fetchRoot = useCallback(async () => {
     if (!client || !rootPath) return;
-    // Instant from cache
-    const cached = filesCache.get(rootPath);
-    if (cached) setEntries(cached);
-    // Refresh in background
-    client.listFiles(rootPath).then(data => {
+    try {
+      const data = await client.listFiles(rootPath);
       filesCache.set(rootPath, data);
       setEntries(data);
-    }).catch(() => setEntries([]));
+    } catch {
+      setEntries([]);
+    }
   }, [client, rootPath]);
+
+  useEffect(() => {
+    if (!client || !rootPath) return;
+    const cached = filesCache.get(rootPath);
+    if (cached) setEntries(cached);
+    fetchRoot();
+  }, [client, rootPath, fetchRoot]);
+
+  // Refresh subscription for root.
+  useEffect(() => {
+    const fn = (path: string) => {
+      if (rootPath && path === rootPath) fetchRoot();
+    };
+    dirRefreshListeners.add(fn);
+    return () => { dirRefreshListeners.delete(fn); };
+  }, [rootPath, fetchRoot]);
+
+  const openMenu = useCallback((e: React.MouseEvent, entry: FileEntry, parentPath: string) => {
+    setMenu({ entry, parentPath, x: e.clientX, y: e.clientY, confirmingDelete: false });
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    setMenu(null);
+    if (deleteConfirmTimer.current) clearTimeout(deleteConfirmTimer.current);
+  }, []);
+
+  const beginRename = useCallback((path: string) => {
+    setEditingPath(path);
+    setCreatingIn(null);
+  }, []);
+  const cancelRename = useCallback(() => setEditingPath(null), []);
+
+  const commitRename = useCallback(async (entry: FileEntry, parentPath: string, newName: string): Promise<string | null> => {
+    if (!client) return 'No client';
+    const newPath = pathJoin(pathDirname(entry.path), newName);
+    const res = await client.renamePath(entry.path, newPath);
+    if (!res.ok) return res.error || 'Rename failed';
+    setEditingPath(null);
+    refreshDir(parentPath);
+    onRefreshGit?.();
+    return null;
+  }, [client, onRefreshGit]);
+
+  const cancelCreate = useCallback(() => setCreatingIn(null), []);
+
+  const commitCreate = useCallback(async (parentPath: string, name: string, kind: 'file' | 'dir'): Promise<string | null> => {
+    if (!client) return 'No client';
+    const newPath = pathJoin(parentPath, name);
+    const res = kind === 'dir' ? await client.createDir(newPath) : await client.createFile(newPath);
+    if (!res.ok) return res.error || 'Create failed';
+    setCreatingIn(null);
+    refreshDir(parentPath);
+    onRefreshGit?.();
+    if (kind === 'file') onFileOpen(newPath);
+    return null;
+  }, [client, onFileOpen, onRefreshGit]);
+
+  const handleDelete = useCallback(async () => {
+    if (!menu || !client) return;
+    const { entry, parentPath } = menu;
+    if (!menu.confirmingDelete) {
+      setMenu({ ...menu, confirmingDelete: true });
+      if (deleteConfirmTimer.current) clearTimeout(deleteConfirmTimer.current);
+      deleteConfirmTimer.current = setTimeout(() => {
+        setMenu(m => (m && m.entry.path === entry.path ? { ...m, confirmingDelete: false } : m));
+      }, 3000);
+      return;
+    }
+    closeMenu();
+    const res = await client.deletePath(entry.path);
+    if (!res.ok) {
+      // Surface the error; keep this minimal — a toast system isn't wired here.
+      // eslint-disable-next-line no-alert
+      alert(`Delete failed: ${res.error}`);
+      return;
+    }
+    refreshDir(parentPath);
+    onRefreshGit?.();
+  }, [menu, client, closeMenu, onRefreshGit]);
+
+  const handleReveal = useCallback(async () => {
+    if (!menu || !client) return;
+    const path = menu.entry.path;
+    closeMenu();
+    const res = await client.revealInFinder(path);
+    if (!res.ok) {
+      // eslint-disable-next-line no-alert
+      alert(`Reveal failed: ${res.error}`);
+    }
+  }, [menu, client, closeMenu]);
+
+  const handleCopyPath = useCallback(() => {
+    if (!menu) return;
+    navigator.clipboard.writeText(menu.entry.path).catch(() => {});
+    closeMenu();
+  }, [menu, closeMenu]);
+
+  const handleNewAtRoot = useCallback((kind: 'file' | 'dir') => {
+    if (!rootPath) return;
+    setCreatingIn({ path: rootPath, kind });
+  }, [rootPath]);
+
+  const ctxValue: ExplorerCtxValue = {
+    client, onFileOpen, gitModified,
+    openMenu,
+    editingPath, beginRename, cancelRename, commitRename,
+    creatingIn, cancelCreate, commitCreate,
+  };
 
   const onResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -534,43 +846,118 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   }, [sidebarWidth, setSidebarWidth]);
 
   return (
-    <aside
-      className={`relative border-r border-border bg-[#161616] flex flex-col shrink-0 ${collapsed ? 'w-0 overflow-hidden' : ''}`}
-      style={collapsed ? undefined : { width: sidebarWidth }}
-    >
-      {/* Resize handle */}
-      {!collapsed && (
-        <div
-          className="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors"
-          onMouseDown={onResizeStart}
-        />
-      )}
-      {/* Header */}
-      <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
-        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Explorer</span>
-        <button
-          className="text-zinc-600 hover:text-zinc-300 flex items-center"
-          onClick={onToggle}
-          title="Toggle file explorer"
-        >
-          <X size={14} />
-        </button>
-      </div>
+    <ExplorerCtx.Provider value={ctxValue}>
+      <aside
+        className={`relative border-r border-border bg-[#161616] flex flex-col shrink-0 ${collapsed ? 'w-0 overflow-hidden' : ''}`}
+        style={collapsed ? undefined : { width: sidebarWidth }}
+      >
+        {/* Resize handle */}
+        {!collapsed && (
+          <div
+            className="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors"
+            onMouseDown={onResizeStart}
+          />
+        )}
+        {/* Header */}
+        <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
+          <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Explorer</span>
+          <button
+            className="text-zinc-600 hover:text-zinc-300 flex items-center"
+            onClick={onToggle}
+            title="Toggle file explorer"
+          >
+            <X size={14} />
+          </button>
+        </div>
 
-      {/* Processes */}
-      <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} />
+        {/* Processes */}
+        <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} />
 
-      {/* Changes */}
-      <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
+        {/* Changes */}
+        <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
 
-      {/* Tools */}
-      {/* Pull Requests */}
-      <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} />
+        {/* Tools */}
+        {/* Pull Requests */}
+        <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} />
 
-      <ToolsSection tools={tools || []} />
+        <ToolsSection tools={tools || []} />
 
-      {/* File tree (collapsible) */}
-      <FileTreeSection rootPath={rootPath} entries={entries} client={client} onFileOpen={onFileOpen} gitModified={gitModified} />
-    </aside>
+        {/* File tree (collapsible) */}
+        <FileTreeSection rootPath={rootPath} entries={entries} onNewAtRoot={handleNewAtRoot} />
+
+        {/* Right-click context menu */}
+        {menu && (
+          <>
+            <div
+              className="fixed inset-0 z-40"
+              onClick={closeMenu}
+              onContextMenu={e => { e.preventDefault(); closeMenu(); }}
+            />
+            <div
+              className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl min-w-[200px] py-1"
+              style={{ top: menu.y, left: menu.x }}
+            >
+              {menu.entry.type === 'file' && (
+                <MenuItem
+                  icon={<ExternalLink size={11} />}
+                  label="Open"
+                  onClick={() => { onFileOpen(menu.entry.path); closeMenu(); }}
+                />
+              )}
+              {menu.entry.type === 'dir' && (
+                <>
+                  <MenuItem
+                    icon={<FilePlus size={11} />}
+                    label="New File"
+                    onClick={() => { setCreatingIn({ path: menu.entry.path, kind: 'file' }); closeMenu(); }}
+                  />
+                  <MenuItem
+                    icon={<FolderPlus size={11} />}
+                    label="New Folder"
+                    onClick={() => { setCreatingIn({ path: menu.entry.path, kind: 'dir' }); closeMenu(); }}
+                  />
+                  <div className="h-px bg-border mx-2 my-1" />
+                </>
+              )}
+              <MenuItem
+                icon={<Edit2 size={11} />}
+                label="Rename"
+                onClick={() => { beginRename(menu.entry.path); closeMenu(); }}
+              />
+              <MenuItem
+                icon={<Copy size={11} />}
+                label="Copy Path"
+                onClick={handleCopyPath}
+              />
+              <MenuItem
+                icon={<ExternalLink size={11} />}
+                label="Reveal in Finder"
+                onClick={handleReveal}
+              />
+              <div className="h-px bg-border mx-2 my-1" />
+              <MenuItem
+                icon={<Trash2 size={11} />}
+                label={menu.confirmingDelete ? 'Click again to delete' : 'Delete'}
+                danger
+                onClick={handleDelete}
+              />
+            </div>
+          </>
+        )}
+      </aside>
+    </ExplorerCtx.Provider>
   );
 });
+
+function MenuItem({ icon, label, onClick, danger }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+  const base = 'w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 transition-colors';
+  const tone = danger
+    ? 'text-red-400 hover:bg-red-500/15 hover:text-red-300'
+    : 'text-zinc-400 hover:bg-surface-light hover:text-zinc-200';
+  return (
+    <button className={`${base} ${tone}`} onClick={onClick}>
+      <span className="w-3 flex items-center justify-center shrink-0 opacity-70">{icon}</span>
+      {label}
+    </button>
+  );
+}

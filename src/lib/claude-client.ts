@@ -600,7 +600,7 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async listFiles(dirPath: string): Promise<{ name: string; path: string; type: string }[]> {
+  async listFiles(dirPath: string): Promise<{ name: string; path: string; type: 'file' | 'dir' }[]> {
     const resp = await authedFetch(`${this.serverUrl}/files?path=${encodeURIComponent(dirPath)}`);
     if (!resp.ok) return [];
     return resp.json();
@@ -619,6 +619,57 @@ export class ClaudeClient {
       body: JSON.stringify({ path, content }),
     });
     return resp.ok;
+  }
+
+  async deletePath(path: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+    if (resp.ok) return { ok: true };
+    const data = await resp.json().catch(() => ({})) as { error?: string };
+    return { ok: false, error: data.error || `HTTP ${resp.status}` };
+  }
+
+  async renamePath(from: string, to: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/file-rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from, to }),
+    });
+    if (resp.ok) return { ok: true };
+    const data = await resp.json().catch(() => ({})) as { error?: string };
+    return { ok: false, error: data.error || `HTTP ${resp.status}` };
+  }
+
+  async createFile(path: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/file-new`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path, kind: 'file' }),
+    });
+    if (resp.ok) return { ok: true };
+    const data = await resp.json().catch(() => ({})) as { error?: string };
+    return { ok: false, error: data.error || `HTTP ${resp.status}` };
+  }
+
+  async createDir(path: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/file-new`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path, kind: 'dir' }),
+    });
+    if (resp.ok) return { ok: true };
+    const data = await resp.json().catch(() => ({})) as { error?: string };
+    return { ok: false, error: data.error || `HTTP ${resp.status}` };
+  }
+
+  async revealInFinder(path: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/file-reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (resp.ok) return { ok: true };
+    const data = await resp.json().catch(() => ({})) as { error?: string };
+    return { ok: false, error: data.error || `HTTP ${resp.status}` };
   }
 
   async readFileOriginal(path: string): Promise<string> {

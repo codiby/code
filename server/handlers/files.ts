@@ -1,5 +1,7 @@
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { basename, dirname, join, resolve, sep } from 'path';
+import { platform } from 'os';
 import { corsHeaders } from '../config';
 
 /** True when `s` ends with a path separator for the current OS (either `/` or,
@@ -112,6 +114,90 @@ export function handleFileIndex(root: string): Response {
     return Response.json(files, { headers: corsHeaders });
   } catch {
     return Response.json([], { headers: corsHeaders });
+  }
+}
+
+function invalidateIndexFor(path: string): void {
+  for (const root of fileIndexCache.keys()) {
+    if (path === root || path.startsWith(root + sep) || path.startsWith(root + '/')) {
+      fileIndexCache.delete(root);
+    }
+  }
+}
+
+export function handleDeletePath(path: string): Response {
+  try {
+    if (!existsSync(path)) {
+      return Response.json({ error: 'Path does not exist' }, { status: 404, headers: corsHeaders });
+    }
+    rmSync(path, { recursive: true, force: true });
+    invalidateIndexFor(path);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+}
+
+export function handleRenamePath(from: string, to: string): Response {
+  try {
+    if (!existsSync(from)) {
+      return Response.json({ error: 'Source does not exist' }, { status: 404, headers: corsHeaders });
+    }
+    if (existsSync(to)) {
+      return Response.json({ error: 'Target already exists' }, { status: 409, headers: corsHeaders });
+    }
+    renameSync(from, to);
+    invalidateIndexFor(from);
+    invalidateIndexFor(to);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+}
+
+export function handleCreateFile(path: string): Response {
+  try {
+    if (existsSync(path)) {
+      return Response.json({ error: 'Already exists' }, { status: 409, headers: corsHeaders });
+    }
+    writeFileSync(path, '', 'utf-8');
+    invalidateIndexFor(path);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+}
+
+export function handleCreateDir(path: string): Response {
+  try {
+    if (existsSync(path)) {
+      return Response.json({ error: 'Already exists' }, { status: 409, headers: corsHeaders });
+    }
+    mkdirSync(path, { recursive: false });
+    invalidateIndexFor(path);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+}
+
+export function handleRevealInFinder(path: string): Response {
+  try {
+    if (!existsSync(path)) {
+      return Response.json({ error: 'Path does not exist' }, { status: 404, headers: corsHeaders });
+    }
+    const os = platform();
+    if (os === 'darwin') {
+      execFileSync('open', ['-R', path], { timeout: 5000 });
+    } else if (os === 'win32') {
+      execFileSync('explorer', ['/select,', path], { timeout: 5000 });
+    } else {
+      // Linux / other: open the parent directory
+      execFileSync('xdg-open', [dirname(path)], { timeout: 5000 });
+    }
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
   }
 }
 
