@@ -30,6 +30,8 @@ import {
 } from '../lib/claude-client';
 import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
+import { type MockupComment } from '../lib/mockup-inspector';
+import { MockupPanel } from './MockupPanel';
 
 type PendingMessage = {
   id: string;
@@ -42,6 +44,17 @@ type LocalSessionState = SessionState & {
   editorDirty: boolean;
   contextTokens: number;
   pendingMessages: PendingMessage[];
+  // Live HTML mockup preview shown in the side panel. UI-only — the bridge
+  // server doesn't track this field, so the merge in `onSessionState` must
+  // preserve `openMockup`/`lastMockup` from the existing local state.
+  openMockup: { name: string; html: string } | null;
+  // Most recent mockup, kept after the user closes the panel so the chat
+  // header can offer a one-click "reopen" button.
+  lastMockup: { name: string; html: string } | null;
+  // Inspector comments per mockup name. Keyed by mockup name so they
+  // survive `mockup_edit` re-broadcasts and tab switches.
+  mockupComments: Record<string, MockupComment[]>;
+  mockupInspect: boolean;
 };
 
 type AskQuestion = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
@@ -664,11 +677,13 @@ export function ChatApp() {
 
   const emptyLocalState = (): LocalSessionState => ({
     messages: [], partialText: '', isStreaming: false, wasInterrupted: false, initInfo: null, permRequest: null,
-    openFile: null, openMockup: null, openTerminalId: null, diffView: null, editorFullWidth: false,
+    openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
     input: '', inputHistory: [],
     editorDirty: false, contextTokens: 0,
     pendingMessages: [],
+    openMockup: null, lastMockup: null,
+    mockupComments: {}, mockupInspect: false,
   });
 
   const getState = (id: string | null): LocalSessionState => {
@@ -786,10 +801,17 @@ export function ChatApp() {
                 ...emptyLocalState(),
                 ...state,
                 messages: mergedMessages,
-                // Preserve local-only fields
+                // Preserve local-only fields (server doesn't track these,
+                // so the spread of `state` would otherwise wipe them every
+                // time we re-subscribe — e.g. switching to another tab and
+                // back).
                 editorDirty: existing?.editorDirty ?? false,
                 contextTokens: existing?.contextTokens ?? 0,
                 reviewComments: existing?.reviewComments ?? {},
+                openMockup: existing?.openMockup ?? null,
+                lastMockup: existing?.lastMockup ?? null,
+                mockupComments: existing?.mockupComments ?? {},
+                mockupInspect: false,
               },
             };
           });
@@ -1002,6 +1024,7 @@ export function ChatApp() {
           updateLocalState(sid, s => ({
             ...s,
             openMockup: { name, html },
+            lastMockup: { name, html },
             openFile: null,
             openTerminalId: null,
             diffView: null,
@@ -3026,6 +3049,35 @@ export function ChatApp() {
                     </div>
                   )}
 
+                  {active.lastMockup && (
+                    <button
+                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
+                        active.openMockup
+                          ? 'bg-violet-500/15 text-violet-300 border-violet-500/30 hover:bg-violet-500/25'
+                          : 'bg-surface-light text-zinc-400 border-border hover:text-violet-300 hover:border-violet-500/30'
+                      }`}
+                      onClick={() => {
+                        if (!activeId) return;
+                        updateLocalState(activeId, s => {
+                          if (s.openMockup) return { ...s, openMockup: null, editorFullWidth: false };
+                          if (!s.lastMockup) return s;
+                          return {
+                            ...s,
+                            openMockup: s.lastMockup,
+                            openFile: null,
+                            openTerminalId: null,
+                            diffView: null,
+                            editorDirty: false,
+                          };
+                        });
+                      }}
+                      title={active.openMockup ? `Hide mockup "${active.lastMockup.name}"` : `Reopen mockup "${active.lastMockup.name}"`}
+                    >
+                      <span className="text-[10px]">▣</span>
+                      <span className="truncate max-w-[12rem]">{active.lastMockup.name}</span>
+                    </button>
+                  )}
+
                   <span className="flex-1" />
                   {active.initInfo?.cwd && (
                     <span className="text-xs text-zinc-600 font-mono truncate max-w-sm">
@@ -3825,34 +3877,70 @@ export function ChatApp() {
                     )}
                   </div>
                 )}
-                {!openFile && openMockup && (
-                  <div className="flex-1 flex flex-col min-w-0">
-                    <div
-                      className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface"
-                      onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
-                    >
-                      <div className="flex items-center gap-1.5 truncate cursor-default">
-                        <span className="text-[10px] text-violet-400 shrink-0">▣</span>
-                        <span className="text-[12px] font-mono text-violet-300 truncate">mockup · {openMockup.name}</span>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
-                          onClick={() => activeId && updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false }))}
-                          title="Close mockup"
-                        >
-                          &times;
-                        </button>
-                      </div>
-                    </div>
-                    <iframe
-                      key={openMockup.name}
-                      title={`mockup-${openMockup.name}`}
-                      srcDoc={openMockup.html}
-                      sandbox="allow-scripts allow-forms allow-popups"
-                      className="flex-1 w-full bg-white border-0"
-                    />
-                  </div>
+                {!openFile && openMockup && activeId && (
+                  <MockupPanel
+                    name={openMockup.name}
+                    html={openMockup.html}
+                    inspect={active.mockupInspect}
+                    comments={active.mockupComments[openMockup.name] || []}
+                    onSetInspect={(next) => updateLocalState(activeId, s => ({ ...s, mockupInspect: next }))}
+                    onSetComments={(next) => updateLocalState(activeId, s => ({
+                      ...s,
+                      mockupComments: { ...s.mockupComments, [openMockup.name]: next },
+                    }))}
+                    onSendToChat={(md) => {
+                      // Fire the message immediately and clear the comment
+                      // dots — mirrors handleSend's queue-vs-direct branching
+                      // so a feedback round-trip works mid-turn too.
+                      if (!clientRef.current) return;
+                      const mockupName = openMockup.name;
+                      const streamingNow = active.isStreaming;
+                      if (streamingNow) {
+                        const pendingId = crypto.randomUUID();
+                        const pendingMsg = {
+                          id: pendingId,
+                          role: 'user' as const,
+                          content: md,
+                          timestamp: Date.now(),
+                          isPending: true,
+                        };
+                        updateLocalState(activeId, s => ({
+                          ...s,
+                          messages: [...s.messages, pendingMsg],
+                          pendingMessages: [...s.pendingMessages, { id: pendingId, text: md }],
+                          mockupInspect: false,
+                          mockupComments: { ...s.mockupComments, [mockupName]: [] },
+                        }));
+                      } else {
+                        const userMsg = {
+                          id: crypto.randomUUID(),
+                          role: 'user' as const,
+                          content: md,
+                          timestamp: Date.now(),
+                        };
+                        updateLocalState(activeId, s => ({
+                          ...s,
+                          messages: [...s.messages, userMsg],
+                          isStreaming: true,
+                          wasInterrupted: false,
+                          partialText: '',
+                          mockupInspect: false,
+                          mockupComments: { ...s.mockupComments, [mockupName]: [] },
+                        }));
+                        clientRef.current.sendMessage(activeId, md);
+                      }
+                    }}
+                    onWriteToChat={(md) => {
+                      // Dropdown option: stuff the markdown into the input
+                      // field without firing it, leave the dots in place so
+                      // the user can keep iterating before they hit Send.
+                      setInput(prev => prev ? prev + (prev.endsWith('\n') ? '' : '\n\n') + md : md);
+                      updateLocalState(activeId, s => ({ ...s, mockupInspect: false }));
+                      inputRef.current?.focus();
+                    }}
+                    onClose={() => updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false, mockupInspect: false }))}
+                    onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
+                  />
                 )}
                 {!openFile && !openMockup && pluginDetailOpen && (
                   <PluginDetailView />

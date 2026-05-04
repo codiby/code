@@ -313,6 +313,7 @@ export function MobileApp() {
       },
       onInitInfo: () => {},
       onOpenFile: () => {},
+      onOpenMockup: () => {},
       onPreferences: () => {},
       onFocusSession: (sid) => setActiveId(sid),
       onWelcome: () => {/* Mobile resumes sessions on user action only */},

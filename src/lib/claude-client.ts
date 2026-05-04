@@ -177,6 +177,7 @@ type ClientCallbacks = {
   onSessionName: (sessionId: string, name: string) => void;
   onInitInfo: (sessionId: string, info: SessionInitInfo) => void;
   onOpenFile: (sessionId: string, path: string, line: number | null) => void;
+  onOpenMockup: (sessionId: string, name: string, html: string) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
   onFocusSession: (sessionId: string) => void;
   onWelcome: (info: { spawnMode: SpawnMode }) => void;
@@ -369,6 +370,9 @@ export class ClaudeClient {
         break;
       case 'open_file':
         this.callbacks.onOpenFile(sessionId, msg.path as string, (msg.line as number | null) ?? null);
+        break;
+      case 'open_mockup':
+        this.callbacks.onOpenMockup(sessionId, msg.name as string, msg.html as string);
         break;
       case 'preferences':
         this.callbacks.onPreferences(msg.preferences as Record<string, unknown>);

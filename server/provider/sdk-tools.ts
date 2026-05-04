@@ -9,7 +9,8 @@
 
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
-import { extname } from 'path';
+import { homedir } from 'os';
+import { dirname, extname, join } from 'path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
@@ -25,6 +26,68 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
+
+// HTML mockups are written to disk under ~/.codiby/mockups/<sessionId>/<name>.html
+// so they survive a bridge restart. The in-memory map mirrors disk for fast
+// reads and to keep the iframe-broadcast hot path synchronous; on miss we fall
+// back to disk and rehydrate.
+const MOCKUPS_ROOT = join(homedir(), '.codiby', 'mockups');
+const mockupStore = new Map<string, Map<string, string>>();
+function mockupsFor(sessionId: string): Map<string, string> {
+  let m = mockupStore.get(sessionId);
+  if (!m) { m = new Map(); mockupStore.set(sessionId, m); }
+  return m;
+}
+
+/**
+ * Strip path separators / dot-traversal / control chars so a model-supplied
+ * mockup name can't escape the per-session mockup directory. Returns null
+ * when the name has nothing usable left.
+ */
+function sanitizeMockupName(raw: string): string | null {
+  const name = raw.trim();
+  if (!name) return null;
+  if (name === '.' || name === '..') return null;
+  // Allow letters, digits, dot, dash, underscore, space — nothing that could
+  // mean "directory" or "parent" on either POSIX or Windows.
+  if (!/^[A-Za-z0-9._\- ]{1,80}$/.test(name)) return null;
+  return name;
+}
+
+function mockupFilePath(sessionId: string, name: string): string {
+  return join(MOCKUPS_ROOT, sessionId, `${name}.html`);
+}
+
+async function persistMockup(sessionId: string, name: string, html: string): Promise<void> {
+  const file = mockupFilePath(sessionId, name);
+  await fs.mkdir(dirname(file), { recursive: true });
+  await fs.writeFile(file, html, 'utf-8');
+}
+
+/** Read mockup html, preferring the in-memory copy and falling back to disk.
+ *  On a disk hit the value is rehydrated into memory so subsequent reads are
+ *  cheap. Returns null when the mockup doesn't exist anywhere. */
+async function loadMockup(sessionId: string, name: string): Promise<string | null> {
+  const mem = mockupsFor(sessionId).get(name);
+  if (mem != null) return mem;
+  try {
+    const html = await fs.readFile(mockupFilePath(sessionId, name), 'utf-8');
+    mockupsFor(sessionId).set(name, html);
+    return html;
+  } catch {
+    return null;
+  }
+}
+
+async function listPersistedMockups(sessionId: string): Promise<string[]> {
+  try {
+    const dir = join(MOCKUPS_ROOT, sessionId);
+    const files = await fs.readdir(dir);
+    return files.filter(f => f.endsWith('.html')).map(f => f.slice(0, -5));
+  } catch {
+    return [];
+  }
+}
 
 export type SdkToolDeps = {
   broadcastToSession: (sessionId: string, msg: object) => void;
@@ -145,6 +208,115 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const sizeKb = Math.max(1, Math.round(buf.length / 1024));
           const tail = args.caption ? ` — "${args.caption}"` : '';
           return { content: [{ type: 'text', text: `Posted ${mediaType} (${sizeKb} KB) from ${args.path}${tail}.` }] };
+        },
+      ),
+      tool(
+        'mockup_write',
+        'Create or replace an HTML mockup and open it in the live preview side-panel. Use when the user asks for a UI mockup, sketch, or "mock up X" — you author a self-contained HTML document (inline CSS/JS, no external assets unless from a CDN) and it renders in a sandboxed iframe next to the chat. Replaces any existing mockup with the same `name`. Persisted to ~/.codiby/mockups/<sessionId>/<name>.html so it survives a bridge restart.',
+        {
+          name: z.string().min(1).max(80).describe('Identifier for this mockup (e.g. "chatbar", "settings-modal"). Letters, digits, dot, dash, underscore, space only — no slashes. Reuse the same name to update the same preview.'),
+          html: z.string().min(1).describe('Full HTML document (start with <!doctype html>). Inline all CSS/JS — the iframe is sandboxed and cannot reach the parent. Network access works for CDN scripts/fonts.'),
+        },
+        async (args) => {
+          const name = sanitizeMockupName(args.name);
+          if (!name) {
+            return { content: [{ type: 'text', text: `Invalid mockup name "${args.name}". Use letters, digits, dot, dash, underscore, or space (1–80 chars), no slashes.` }], isError: true };
+          }
+          mockupsFor(sessionId).set(name, args.html);
+          try {
+            await persistMockup(sessionId, name, args.html);
+          } catch (e) {
+            const err = e instanceof Error ? e.message : String(e);
+            return { content: [{ type: 'text', text: `Mockup "${name}" rendered but failed to persist to disk: ${err}` }], isError: true };
+          }
+          deps.broadcastToSession(sessionId, {
+            type: 'open_mockup',
+            sessionId,
+            name,
+            html: args.html,
+          });
+          const sizeKb = Math.max(1, Math.round(Buffer.byteLength(args.html, 'utf8') / 1024));
+          return { content: [{ type: 'text', text: `Mockup "${name}" rendered and saved (${sizeKb} KB).` }] };
+        },
+      ),
+      tool(
+        'mockup_edit',
+        'Edit an existing HTML mockup by replacing a string, then re-render the live preview and rewrite the file on disk. Behaves like the standard Edit tool: `old_string` must occur exactly once unless `replace_all` is true. Use to iterate on a mockup created earlier with `mockup_write` without re-emitting the entire document. Falls back to ~/.codiby/mockups/<sessionId>/<name>.html when the in-memory copy was lost (e.g. after a bridge restart).',
+        {
+          name: z.string().min(1).max(80).describe('Name of the mockup to edit (must already exist on disk or in memory).'),
+          old_string: z.string().min(1).describe('Exact substring to replace. Must match uniquely unless replace_all is true.'),
+          new_string: z.string().describe('Replacement text (may be empty to delete).'),
+          replace_all: z.boolean().optional().describe('Replace every occurrence instead of requiring uniqueness.'),
+        },
+        async (args) => {
+          const name = sanitizeMockupName(args.name);
+          if (!name) {
+            return { content: [{ type: 'text', text: `Invalid mockup name "${args.name}".` }], isError: true };
+          }
+          const current = await loadMockup(sessionId, name);
+          if (current == null) {
+            return { content: [{ type: 'text', text: `Mockup "${name}" not found in memory or on disk. Create it with mockup_write first.` }], isError: true };
+          }
+          if (args.old_string === args.new_string) {
+            return { content: [{ type: 'text', text: 'old_string and new_string are identical — nothing to do.' }], isError: true };
+          }
+          let next: string;
+          let count: number;
+          if (args.replace_all) {
+            const parts = current.split(args.old_string);
+            count = parts.length - 1;
+            if (count === 0) {
+              return { content: [{ type: 'text', text: `old_string not found in mockup "${name}".` }], isError: true };
+            }
+            next = parts.join(args.new_string);
+          } else {
+            const idx = current.indexOf(args.old_string);
+            if (idx === -1) {
+              return { content: [{ type: 'text', text: `old_string not found in mockup "${name}".` }], isError: true };
+            }
+            const second = current.indexOf(args.old_string, idx + args.old_string.length);
+            if (second !== -1) {
+              return { content: [{ type: 'text', text: `old_string is not unique in mockup "${name}" (matched at least twice). Pass replace_all: true or include more surrounding context.` }], isError: true };
+            }
+            next = current.slice(0, idx) + args.new_string + current.slice(idx + args.old_string.length);
+            count = 1;
+          }
+          mockupsFor(sessionId).set(name, next);
+          try {
+            await persistMockup(sessionId, name, next);
+          } catch (e) {
+            const err = e instanceof Error ? e.message : String(e);
+            return { content: [{ type: 'text', text: `Mockup "${name}" updated in memory but failed to persist to disk: ${err}` }], isError: true };
+          }
+          deps.broadcastToSession(sessionId, {
+            type: 'open_mockup',
+            sessionId,
+            name,
+            html: next,
+          });
+          return { content: [{ type: 'text', text: `Mockup "${name}" updated (${count} replacement${count === 1 ? '' : 's'}) and saved.` }] };
+        },
+      ),
+      tool(
+        'mockup_read',
+        'Read the current HTML source of a mockup previously created with `mockup_write`. Useful before calling `mockup_edit` so you can see exactly what to target. Looks in memory first, then falls back to ~/.codiby/mockups/<sessionId>/<name>.html.',
+        {
+          name: z.string().min(1).max(80).describe('Name of the mockup to read.'),
+        },
+        async (args) => {
+          const name = sanitizeMockupName(args.name);
+          if (!name) {
+            return { content: [{ type: 'text', text: `Invalid mockup name "${args.name}".` }], isError: true };
+          }
+          const html = await loadMockup(sessionId, name);
+          if (html == null) {
+            const inMem = [...mockupsFor(sessionId).keys()];
+            const onDisk = await listPersistedMockups(sessionId);
+            const available = [...new Set([...inMem, ...onDisk])].sort();
+            const tail = available.length ? ` Available: ${available.join(', ')}.` : ' No mockups exist in this session yet.';
+            return { content: [{ type: 'text', text: `Mockup "${name}" not found.${tail}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: html }] };
         },
       ),
       // Plugin-contributed SDK tools — already prefixed with `<pluginId>_`
