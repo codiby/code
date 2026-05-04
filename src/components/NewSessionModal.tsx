@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Button,
   TextField, Input,
@@ -66,6 +66,9 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
   const [copyEnv, setCopyEnv] = useState(true);
   const [depsMode, setDepsMode] = useState<'install' | 'copy' | 'link' | 'none'>('link');
   const [packageManager, setPackageManager] = useState<PackageManager>('npm');
+  const [sourceBranch, setSourceBranch] = useState('');
+  const [pullSource, setPullSource] = useState(true);
+  const [branchesInfo, setBranchesInfo] = useState<{ current: string; local: string[]; remote: string[] } | null>(null);
 
   const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
   const [consoleStatus, setConsoleStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
@@ -100,6 +103,9 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
       setWorktreeBranch('');
       setCopyEnv(true);
       setDepsMode('link');
+      setPullSource(true);
+      setSourceBranch('');
+      setBranchesInfo(null);
       setConsoleLogs([]);
       setConsoleStatus('idle');
       const start = getRecentDirs()[0] || '/';
@@ -108,6 +114,52 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
       checkGit(start);
     }
   }, [isOpen, loadDir, checkGit]);
+
+  // Load source-branch options whenever the active git repo changes, and
+  // default to the current branch so the common case ("branch off whatever
+  // I'm on") is zero-click.
+  useEffect(() => {
+    const top = gitInfo?.top_level;
+    if (!isOpen || !client || !gitInfo?.is_git || !top) {
+      setBranchesInfo(null);
+      setSourceBranch('');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await client.listBranches(top);
+        if (cancelled) return;
+        setBranchesInfo(info);
+        setSourceBranch(info.current || info.local[0] || '');
+      } catch {
+        if (!cancelled) setBranchesInfo({ current: '', local: [], remote: [] });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isOpen, client, gitInfo?.is_git, gitInfo?.top_level]);
+
+  // Branches the source-picker offers: union of local + remote-only,
+  // deduped, with current / main / develop pinned to the top.
+  const availableBranches = useMemo(() => {
+    if (!branchesInfo) return [] as string[];
+    const seen = new Set<string>();
+    const all: string[] = [];
+    for (const b of [...branchesInfo.local, ...branchesInfo.remote]) {
+      if (!seen.has(b)) { seen.add(b); all.push(b); }
+    }
+    const priority = (b: string) => {
+      if (b === branchesInfo.current) return 0;
+      if (b === 'main' || b === 'master') return 1;
+      if (b === 'develop' || b === 'dev') return 2;
+      return 3;
+    };
+    all.sort((a, b) => {
+      const d = priority(a) - priority(b);
+      return d !== 0 ? d : a.localeCompare(b);
+    });
+    return all;
+  }, [branchesInfo]);
 
   useEffect(() => {
     if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
@@ -137,7 +189,15 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
     client.createWorktree(
       gitInfo.top_level,
       worktreeBranch.trim(),
-      { copy_env: copyEnv, install_deps: depsMode === 'install', copy_node_modules: depsMode === 'copy', link_node_modules: depsMode === 'link', package_manager: packageManager },
+      {
+        copy_env: copyEnv,
+        install_deps: depsMode === 'install',
+        copy_node_modules: depsMode === 'copy',
+        link_node_modules: depsMode === 'link',
+        package_manager: packageManager,
+        source_branch: sourceBranch.trim() || undefined,
+        pull_source: !!sourceBranch.trim() && pullSource,
+      },
       {
         onLog: (line) => setConsoleLogs(prev => [...prev, line]),
         onDone: (result) => {
@@ -289,6 +349,36 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
                     <Button size="sm" isDisabled={!worktreeBranch.trim() || creatingWt} onPress={handleCreateWorktree}>
                       {creatingWt ? '...' : 'Create'}
                     </Button>
+                  </div>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-xs text-zinc-600">Source:</span>
+                    {branchesInfo && availableBranches.length > 0 ? (
+                      <Select aria-label="Source branch" selectedKey={sourceBranch}
+                        onSelectionChange={(key) => setSourceBranch(key as string)}
+                        isDisabled={creatingWt}>
+                        <SelectTrigger className="h-6 text-xs w-44"><SelectValue /></SelectTrigger>
+                        <SelectPopover>
+                          <ListBox>
+                            {availableBranches.map(b => (
+                              <ListBoxItem key={b} id={b} textValue={b}>
+                                <span className="text-sm font-mono">{b}</span>
+                                {b === branchesInfo.current && <span className="text-xs text-zinc-500 ml-1">(current)</span>}
+                              </ListBoxItem>
+                            ))}
+                          </ListBox>
+                        </SelectPopover>
+                      </Select>
+                    ) : (
+                      <span className="text-xs text-zinc-600 font-mono">{branchesInfo ? 'HEAD' : 'loading…'}</span>
+                    )}
+                    <Checkbox isSelected={pullSource} onChange={setPullSource} isDisabled={creatingWt || !sourceBranch}>
+                      <CheckboxControl><CheckboxIndicator /></CheckboxControl>
+                      <CheckboxContent>
+                        <span className="text-xs text-zinc-300">
+                          Pull <code className="font-mono text-zinc-400">origin/{sourceBranch || '…'}</code> first
+                        </span>
+                      </CheckboxContent>
+                    </Checkbox>
                   </div>
                   <div className="flex items-center gap-3 flex-wrap">
                     <Checkbox isSelected={copyEnv} onChange={setCopyEnv} isDisabled={!gitInfo.has_env}>
