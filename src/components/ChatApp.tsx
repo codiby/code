@@ -663,6 +663,11 @@ export function ChatApp() {
     });
   }, []);
   const chatDragging = useRef(false);
+  // Mirrored as React state so we can render a transparent overlay over the
+  // content area during a drag — without it, the cursor entering the
+  // mockup iframe (separate browsing context) eats the mouseup and the
+  // resize never ends.
+  const [chatResizing, setChatResizing] = useState(false);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const lspClientRef = useRef<LspClient | null>(null);
   const lspSessionIdRef = useRef<string | null>(null);
@@ -2159,6 +2164,7 @@ export function ChatApp() {
   const onChatResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     chatDragging.current = true;
+    setChatResizing(true);
     const container = contentRef.current;
     if (!container) return;
     let lastPct = chatSplitPct;
@@ -2170,6 +2176,7 @@ export function ChatApp() {
     };
     const onUp = () => {
       chatDragging.current = false;
+      setChatResizing(false);
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
@@ -3800,6 +3807,14 @@ export function ChatApp() {
                     className="w-1 shrink-0 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors"
                     onMouseDown={onChatResizeStart}
                   />
+                )}
+
+                {/* While dragging the chat/preview split, this overlay sits
+                    above any iframe in the right panel. Without it the
+                    cursor entering the iframe (a separate browsing context)
+                    eats the mousemove/mouseup and the drag never ends. */}
+                {chatResizing && (
+                  <div className="fixed inset-0 z-[9999] cursor-col-resize" />
                 )}
 
                 {/* Right panel: editor or terminal */}
