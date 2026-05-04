@@ -60,24 +60,58 @@ type LocalSessionState = SessionState & {
 type AskQuestion = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
 
 function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]; onSubmit: (answers: Record<string, string>) => void }) {
+  // Per-question state. `selections[i]` is the chosen option label OR the
+  // typed custom text when `customMode[i]` is true. Claude's AskUserQuestion
+  // tool keys answers by question text (its tool_result formatter looks up
+  // `answers[question.question]`), so translate at the submit boundary.
   const [selections, setSelections] = useState<Record<string, string>>({});
+  const [customMode, setCustomMode] = useState<Record<string, boolean>>({});
+
+  const buildAnswers = (sels: Record<string, string>): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const [key, val] of Object.entries(sels)) {
+      const q = questions[Number(key)]?.question;
+      const trimmed = val.trim();
+      if (q && trimmed) out[q] = trimmed;
+    }
+    return out;
+  };
 
   const handleSelect = (qIdx: number, label: string) => {
     const key = String(qIdx);
+    setCustomMode(prev => ({ ...prev, [key]: false }));
     setSelections(prev => ({ ...prev, [key]: label }));
-    // Auto-submit if single question
     if (questions.length === 1) {
-      onSubmit({ [key]: label });
+      onSubmit(buildAnswers({ [key]: label }));
     }
   };
 
-  const allAnswered = questions.every((_, i) => selections[String(i)]);
+  const handleEnterCustom = (qIdx: number) => {
+    const key = String(qIdx);
+    setCustomMode(prev => ({ ...prev, [key]: true }));
+    setSelections(prev => ({ ...prev, [key]: '' }));
+  };
+
+  const handleCustomChange = (qIdx: number, text: string) => {
+    const key = String(qIdx);
+    setSelections(prev => ({ ...prev, [key]: text }));
+  };
+
+  const submitCustomSingle = (qIdx: number) => {
+    const key = String(qIdx);
+    const val = (selections[key] || '').trim();
+    if (!val) return;
+    onSubmit(buildAnswers({ [key]: val }));
+  };
+
+  const allAnswered = questions.every((_, i) => (selections[String(i)] || '').trim());
 
   return (
     <div className="space-y-3 mb-2">
       {questions.map((q, i) => {
         const key = String(i);
-        const selected = selections[key];
+        const isCustom = customMode[key] === true;
+        const selected = !isCustom ? selections[key] : undefined;
         return (
           <div key={i}>
             {q.header && (
@@ -111,6 +145,46 @@ function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]
                     </div>
                   </button>
                 ))}
+                {isCustom ? (
+                  <div className="flex items-stretch gap-1">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={selections[key] || ''}
+                      onChange={(e) => handleCustomChange(i, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && questions.length === 1) {
+                          e.preventDefault();
+                          submitCustomSingle(i);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setCustomMode(prev => ({ ...prev, [key]: false }));
+                          setSelections(prev => ({ ...prev, [key]: '' }));
+                        }
+                      }}
+                      placeholder="Type your own answer…"
+                      className="flex-1 px-3 py-2 rounded-lg border border-violet-400/50 bg-violet-500/10 ring-1 ring-violet-400/20 text-[12px] text-zinc-100 placeholder:text-zinc-500 outline-none"
+                    />
+                    {questions.length === 1 && (
+                      <button
+                        type="button"
+                        disabled={!(selections[key] || '').trim()}
+                        onClick={() => submitCustomSingle(i)}
+                        className="px-3 rounded-lg text-[12px] bg-violet-600/20 text-violet-300 hover:bg-violet-600/30 disabled:opacity-40 transition-colors"
+                      >
+                        Send
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleEnterCustom(i)}
+                    className="w-full text-left px-3 py-2 rounded-lg border border-dashed border-border text-[12px] text-zinc-500 hover:text-zinc-300 hover:border-zinc-600 transition-colors"
+                  >
+                    + Other (write your own answer)
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -119,7 +193,7 @@ function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]
       {questions.length > 1 && (
         <button
           disabled={!allAnswered}
-          onClick={() => onSubmit(selections)}
+          onClick={() => onSubmit(buildAnswers(selections))}
           className="px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors disabled:opacity-40"
         >
           Submit answers
@@ -1850,6 +1924,14 @@ export function ChatApp() {
 
     const images = pastedImages.length > 0 ? pastedImages.map(({ media_type, data }) => ({ media_type, data })) : undefined;
 
+    // If a permission/AskUserQuestion is pending, sending a new message means
+    // the user wants to redirect — auto-deny the pending tool so the agent
+    // unblocks and consumes the new message instead of staying parked.
+    if (active.permRequest) {
+      clientRef.current.respondToPermission(activeId, active.permRequest.requestId, false);
+      updateLocalState(activeId, s => ({ ...s, permRequest: null }));
+    }
+
     // Use the same effective text for the optimistic bubble and the server
     // payload — otherwise the content-based optimistic-upgrade match in
     // onMessage fails (local "" vs server " ") and both bubbles stick, with
@@ -3169,11 +3251,7 @@ export function ChatApp() {
                               // answered), then send the answers as a follow-up user message so
                               // the agent can continue the conversation.
                               clientRef.current.respondToPermission(activeId, item.id, true, { ...(item.toolInput as object), answers });
-                              const questions = ((item.toolInput as any)?.questions || []) as { question: string }[];
-                              const lines = Object.entries(answers).map(([k, v]) => {
-                                const q = questions[Number(k)]?.question || `Q${Number(k) + 1}`;
-                                return `- ${q} → ${v}`;
-                              });
+                              const lines = Object.entries(answers).map(([q, v]) => `- ${q} → ${v}`);
                               clientRef.current.sendMessage(activeId, lines.join('\n'));
                             }
                           : undefined;

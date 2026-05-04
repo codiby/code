@@ -198,10 +198,27 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
     if ((input as any).answers && typeof (input as any).answers === 'object') {
       askAnswers = (input as any).answers as Record<string, string>;
     } else if (message.toolResult?.content) {
+      const content = message.toolResult.content;
+      // Synthetic tool_result added by the server stores answers as JSON.
       try {
-        const parsed = JSON.parse(message.toolResult.content);
-        if (parsed && typeof parsed.answers === 'object') askAnswers = parsed.answers as Record<string, string>;
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed.answers === 'object') {
+          askAnswers = parsed.answers as Record<string, string>;
+        }
       } catch {}
+      // SDK's real tool_result is plain text in the form
+      //   `User has answered your questions: "Q1"="A1" ...`
+      // Fall back to a regex parse so reloaded sessions still surface answers
+      // even if the synthetic was overwritten by the SDK's text result.
+      if (!askAnswers) {
+        const out: Record<string, string> = {};
+        const re = /"([^"]+)"="([^"]+)"/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(content)) !== null) {
+          out[m[1]!] = m[2]!;
+        }
+        if (Object.keys(out).length > 0) askAnswers = out;
+      }
     }
   }
   const planContent = isPlan ? input!.plan as string : '';
@@ -213,19 +230,56 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
   const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
   const writeLines = isWrite ? (input.content as string).split('\n').length : 0;
   const writeHeight = isWrite ? Math.min(writeLines * 19 + 20, 250) : 0;
-  const unansweredAsk = !!isAskUser && askQuestions.some((_, i) => !askAnswers || !askAnswers[String(i)]);
+  // Claude's AskUserQuestion tool keys answers by question text — its
+  // tool_result formatter looks up `answers[question.question]`. Submit and
+  // read using question text; keep local selection state index-keyed for
+  // display, and translate at the submit boundary. `customMode[i]` flips a
+  // question into free-text mode where `askSelections[i]` holds the typed
+  // string instead of an option label.
+  const unansweredAsk = !!isAskUser && askQuestions.some(q => !askAnswers || !askAnswers[q.question]);
   const summary = toolSummary(message);
-  const [expanded, setExpanded] = useState(!!isLast && unansweredAsk);
+  // AskUserQuestion: always default to expanded when this bubble is last —
+  // the user expects to see either the live form (unanswered) or the
+  // preserved selection/custom text (answered) without having to click.
+  const [expanded, setExpanded] = useState(!!isLast && (unansweredAsk || !!isAskUser));
   const [askSelections, setAskSelections] = useState<Record<string, string>>({});
+  const [askCustomMode, setAskCustomMode] = useState<Record<string, boolean>>({});
   const canAnswer = !!onAnswerAskUser && !!isAskUser && unansweredAsk;
+  const buildAskAnswers = (sels: Record<string, string>): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const [key, val] of Object.entries(sels)) {
+      const q = askQuestions[Number(key)]?.question;
+      const trimmed = val.trim();
+      if (q && trimmed) out[q] = trimmed;
+    }
+    return out;
+  };
   const handleAskSelect = (qIdx: number, label: string) => {
     if (!canAnswer) return;
     const key = String(qIdx);
+    setAskCustomMode(prev => ({ ...prev, [key]: false }));
     const next = { ...askSelections, [key]: label };
     setAskSelections(next);
-    if (askQuestions.length === 1) onAnswerAskUser!(next);
+    if (askQuestions.length === 1) onAnswerAskUser!(buildAskAnswers(next));
   };
-  const allAskAnswered = askQuestions.every((_, i) => askSelections[String(i)]);
+  const handleAskEnterCustom = (qIdx: number) => {
+    if (!canAnswer) return;
+    const key = String(qIdx);
+    setAskCustomMode(prev => ({ ...prev, [key]: true }));
+    setAskSelections(prev => ({ ...prev, [key]: '' }));
+  };
+  const handleAskCustomChange = (qIdx: number, text: string) => {
+    const key = String(qIdx);
+    setAskSelections(prev => ({ ...prev, [key]: text }));
+  };
+  const submitAskCustomSingle = (qIdx: number) => {
+    if (!canAnswer) return;
+    const key = String(qIdx);
+    const val = (askSelections[key] || '').trim();
+    if (!val) return;
+    onAnswerAskUser!(buildAskAnswers({ [key]: val }));
+  };
+  const allAskAnswered = askQuestions.every((_, i) => (askSelections[String(i)] || '').trim());
 
   return (
     <div className="py-0.5 pl-3 ml-1 border-l-2 border-border select-none">
@@ -299,7 +353,16 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
           {isAskUser && (
             <div className="space-y-2 mb-1">
               {askQuestions.map((q, i) => {
-                const answer = askAnswers ? askAnswers[String(i)] : undefined;
+                const key = String(i);
+                const isCustom = canAnswer && askCustomMode[key] === true;
+                const answer = askAnswers ? askAnswers[q.question] : undefined;
+                // When showing a saved/finalized answer, surface a free-text
+                // answer that doesn't match any option label so the user can
+                // see what they typed.
+                const customDisplayAnswer =
+                  !canAnswer && answer && !(q.options || []).some(o => o.label === answer)
+                    ? answer
+                    : null;
                 return (
                   <div key={i}>
                     {q.header && (
@@ -312,7 +375,7 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
                       <div className="space-y-0.5">
                         {q.options.map((opt, j) => {
                           const selected = canAnswer
-                            ? askSelections[String(i)] === opt.label
+                            ? !isCustom && askSelections[key] === opt.label
                             : answer === opt.label;
                           const baseCls = `w-full text-left px-2 py-1 rounded border text-[11px] transition-colors ${
                             selected
@@ -340,6 +403,51 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
                             <div key={j} className={baseCls}>{inner}</div>
                           );
                         })}
+                        {canAnswer && (isCustom ? (
+                          <div className="flex items-stretch gap-1">
+                            <input
+                              autoFocus
+                              type="text"
+                              value={askSelections[key] || ''}
+                              onChange={(e) => handleAskCustomChange(i, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && askQuestions.length === 1) {
+                                  e.preventDefault();
+                                  submitAskCustomSingle(i);
+                                } else if (e.key === 'Escape') {
+                                  e.preventDefault();
+                                  setAskCustomMode(prev => ({ ...prev, [key]: false }));
+                                  setAskSelections(prev => ({ ...prev, [key]: '' }));
+                                }
+                              }}
+                              placeholder="Type your own answer…"
+                              className="flex-1 px-2 py-1 rounded border border-violet-400/50 bg-violet-500/10 text-[11px] text-zinc-100 placeholder:text-zinc-500 outline-none"
+                            />
+                            {askQuestions.length === 1 && (
+                              <button
+                                type="button"
+                                disabled={!(askSelections[key] || '').trim()}
+                                onClick={() => submitAskCustomSingle(i)}
+                                className="px-3 rounded text-[11px] bg-violet-600/20 text-violet-300 hover:bg-violet-600/30 disabled:opacity-40 transition-colors"
+                              >
+                                Send
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleAskEnterCustom(i)}
+                            className="w-full text-left px-2 py-1 rounded border border-dashed border-border/60 text-[11px] text-zinc-500 hover:text-zinc-300 hover:border-zinc-600 transition-colors"
+                          >
+                            + Other (write your own answer)
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {customDisplayAnswer && (
+                      <div className="mt-1 px-2 py-1 rounded border border-violet-400/40 bg-violet-500/5 text-[11px] text-zinc-300">
+                        <span className="text-zinc-500">Custom: </span>{customDisplayAnswer}
                       </div>
                     )}
                   </div>
@@ -349,7 +457,7 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
                 <button
                   type="button"
                   disabled={!allAskAnswered}
-                  onClick={() => onAnswerAskUser!(askSelections)}
+                  onClick={() => onAnswerAskUser!(buildAskAnswers(askSelections))}
                   className="px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors disabled:opacity-40"
                 >
                   Submit answers

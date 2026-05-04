@@ -24,17 +24,49 @@ interface Props {
 export function MobileAskQuestionCard({ request, onSubmit }: Props) {
   const input = request.input as { questions?: AskQuestion[] };
   const questions = Array.isArray(input?.questions) ? input.questions : [];
+  // `selections[i]` is either the chosen option label or, when in custom mode,
+  // the user's typed text. Claude keys answers by question text, so translate
+  // at the submit boundary.
   const [selections, setSelections] = useState<Record<string, string>>({});
+  const [customMode, setCustomMode] = useState<Record<string, boolean>>({});
+
+  const buildAnswers = (sels: Record<string, string>): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const [key, val] of Object.entries(sels)) {
+      const q = questions[Number(key)]?.question;
+      const trimmed = val.trim();
+      if (q && trimmed) out[q] = trimmed;
+    }
+    return out;
+  };
 
   const handleSelect = (qIdx: number, label: string) => {
     const key = String(qIdx);
+    setCustomMode(prev => ({ ...prev, [key]: false }));
     const next = { ...selections, [key]: label };
     setSelections(next);
-    // Auto-submit the moment the only question is answered (matches desktop).
-    if (questions.length === 1) onSubmit(next);
+    if (questions.length === 1) onSubmit(buildAnswers(next));
   };
 
-  const allAnswered = questions.length > 0 && questions.every((_, i) => selections[String(i)]);
+  const handleEnterCustom = (qIdx: number) => {
+    const key = String(qIdx);
+    setCustomMode(prev => ({ ...prev, [key]: true }));
+    setSelections(prev => ({ ...prev, [key]: '' }));
+  };
+
+  const handleCustomChange = (qIdx: number, text: string) => {
+    const key = String(qIdx);
+    setSelections(prev => ({ ...prev, [key]: text }));
+  };
+
+  const submitCustomSingle = (qIdx: number) => {
+    const key = String(qIdx);
+    const val = (selections[key] || '').trim();
+    if (!val) return;
+    onSubmit(buildAnswers({ [key]: val }));
+  };
+
+  const allAnswered = questions.length > 0 && questions.every((_, i) => (selections[String(i)] || '').trim());
 
   if (questions.length === 0) return null;
 
@@ -50,7 +82,8 @@ export function MobileAskQuestionCard({ request, onSubmit }: Props) {
       <div className="space-y-3">
         {questions.map((q, i) => {
           const key = String(i);
-          const selected = selections[key];
+          const isCustom = customMode[key] === true;
+          const selected = !isCustom ? selections[key] : undefined;
           return (
             <div key={i}>
               {q.header && (
@@ -92,6 +125,46 @@ export function MobileAskQuestionCard({ request, onSubmit }: Props) {
                       </button>
                     );
                   })}
+                  {isCustom ? (
+                    <div className="flex items-stretch gap-1.5">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={selections[key] || ''}
+                        onChange={(e) => handleCustomChange(i, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && questions.length === 1) {
+                            e.preventDefault();
+                            submitCustomSingle(i);
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            setCustomMode(prev => ({ ...prev, [key]: false }));
+                            setSelections(prev => ({ ...prev, [key]: '' }));
+                          }
+                        }}
+                        placeholder="Type your own answer…"
+                        className="flex-1 px-3 py-3 rounded-xl border border-violet-400/60 bg-violet-500/15 ring-1 ring-violet-400/30 text-[14px] text-zinc-100 placeholder:text-zinc-500 outline-none"
+                      />
+                      {questions.length === 1 && (
+                        <button
+                          type="button"
+                          disabled={!(selections[key] || '').trim()}
+                          onClick={() => submitCustomSingle(i)}
+                          className="px-4 rounded-xl text-[13px] font-semibold bg-violet-500/20 border border-violet-500/40 text-violet-100 active:bg-violet-500/30 disabled:opacity-40 transition-colors"
+                        >
+                          Send
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleEnterCustom(i)}
+                      className="w-full text-left px-3 py-3 rounded-xl border border-dashed border-white/15 text-[13px] text-zinc-400 active:bg-white/5 transition-colors"
+                    >
+                      + Other (write your own answer)
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -103,7 +176,7 @@ export function MobileAskQuestionCard({ request, onSubmit }: Props) {
         <button
           type="button"
           disabled={!allAnswered}
-          onClick={() => onSubmit(selections)}
+          onClick={() => onSubmit(buildAnswers(selections))}
           className="mt-3 w-full min-h-12 rounded-xl bg-violet-500/20 border border-violet-500/40 text-violet-100 font-semibold active:bg-violet-500/30 disabled:opacity-40 transition-colors"
         >
           Submit answers

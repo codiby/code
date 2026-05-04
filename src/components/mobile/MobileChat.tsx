@@ -531,6 +531,15 @@ export function MobileChat({
       ? attachments.map((a) => ({ media_type: a.media_type, data: a.data }))
       : undefined;
 
+    // If a permission/AskUserQuestion is pending, sending a new message means
+    // the user wants to redirect — auto-deny the pending tool so the agent
+    // unblocks and consumes the new message instead of staying parked.
+    if (permRequest) {
+      const reqId = permRequest.requestId;
+      onLocalClearPerm?.(reqId);
+      client.respondToPermission(session.id, reqId, false);
+    }
+
     // Queue mode: while a turn is in flight, buffer locally and let the
     // streaming→idle effect drain it on turn complete.
     if (isStreaming) {
