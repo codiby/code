@@ -179,6 +179,11 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivi
       {...attributes} {...listeners}
       className={baseCls}
       onClick={onToggle}
+      onContextMenu={e => {
+        e.preventDefault();
+        e.stopPropagation();
+        onMenuOpen(e.currentTarget.getBoundingClientRect());
+      }}
     >
       {isExpanded
         ? <ChevronDown size={12} className="shrink-0 text-zinc-500" />
