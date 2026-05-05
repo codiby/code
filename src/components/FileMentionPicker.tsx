@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Folder, File as FileIcon } from 'lucide-react';
 import { searchFiles, type FileEntry } from '../lib/fuzzy-file-search';
 
 export function useFileMention(input: string, fileIndex: FileEntry[]) {
@@ -59,22 +60,30 @@ export function FileMentionList({ results, selectedIndex, onSelect }: Props) {
       ref={listRef}
       className="absolute bottom-full left-0 right-0 mb-2 bg-surface border border-border-light rounded-lg shadow-xl max-h-64 overflow-y-auto py-1 z-50"
     >
-      {results.map((file, i) => (
-        <button
-          key={file.path}
-          className={`w-full flex items-center justify-between px-4 py-1.5 text-sm transition-colors ${
-            i === selectedIndex
-              ? 'bg-surface-light text-zinc-100'
-              : 'text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200'
-          }`}
-          onMouseDown={(e) => e.preventDefault()}
-          onMouseEnter={() => {}}
-          onClick={() => onSelect(file)}
-        >
-          <span className="font-mono truncate">{file.name}</span>
-          <span className="text-[11px] text-zinc-600 font-mono truncate ml-3 shrink-0 max-w-[50%] text-right">{file.rel}</span>
-        </button>
-      ))}
+      {results.map((file, i) => {
+        const isDir = file.type === 'dir';
+        return (
+          <button
+            key={file.path}
+            className={`w-full flex items-center justify-between px-4 py-1.5 text-sm transition-colors ${
+              i === selectedIndex
+                ? 'bg-surface-light text-zinc-100'
+                : 'text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200'
+            }`}
+            onMouseDown={(e) => e.preventDefault()}
+            onMouseEnter={() => {}}
+            onClick={() => onSelect(file)}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              {isDir
+                ? <Folder size={12} className="shrink-0 text-sky-400/80" />
+                : <FileIcon size={12} className="shrink-0 text-zinc-500" />}
+              <span className="font-mono truncate">{file.name}{isDir ? '/' : ''}</span>
+            </span>
+            <span className="text-[11px] text-zinc-600 font-mono truncate ml-3 shrink-0 max-w-[50%] text-right">{file.rel}{isDir ? '/' : ''}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

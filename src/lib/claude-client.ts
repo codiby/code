@@ -770,7 +770,7 @@ export class ClaudeClient {
     });
   }
 
-  async getFileIndex(root: string): Promise<{ name: string; path: string; rel: string }[]> {
+  async getFileIndex(root: string): Promise<{ name: string; path: string; rel: string; type?: 'file' | 'dir' }[]> {
     const resp = await authedFetch(`${this.serverUrl}/file-index?root=${encodeURIComponent(root)}`);
     if (!resp.ok) return [];
     return resp.json();

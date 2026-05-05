@@ -5,6 +5,7 @@ export interface FileEntry {
   name: string;
   path: string;
   rel: string;
+  type?: 'file' | 'dir';
 }
 
 export interface ScoredFile extends FileEntry {

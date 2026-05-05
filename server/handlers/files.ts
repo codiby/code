@@ -14,7 +14,8 @@ function endsWithSep(s: string): boolean {
 export const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.astro', '__pycache__', '.venv', 'vendor', 'coverage', '.cache', '.turbo', 'target', '__snapshots__']);
 const SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 
-export const fileIndexCache = new Map<string, { files: { name: string; path: string; rel: string }[]; ts: number }>();
+export type IndexEntry = { name: string; path: string; rel: string; type: 'file' | 'dir' };
+export const fileIndexCache = new Map<string, { files: IndexEntry[]; ts: number }>();
 export const FILE_INDEX_TTL = 30_000; // 30s cache
 
 export function handleListDirs(prefix: string): Response {
@@ -77,8 +78,8 @@ export function handleListFiles(dirPath: string): Response {
   }
 }
 
-export function buildFileIndex(root: string): { name: string; path: string; rel: string }[] {
-  const files: { name: string; path: string; rel: string }[] = [];
+export function buildFileIndex(root: string): IndexEntry[] {
+  const files: IndexEntry[] = [];
   const maxDepth = 10;
   const maxFiles = 10_000;
 
@@ -92,9 +93,11 @@ export function buildFileIndex(root: string): { name: string; path: string; rel:
       const fullPath = resolve(dir, e.name);
       const relPath = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) walk(fullPath, relPath, depth + 1);
+        if (SKIP_DIRS.has(e.name)) continue;
+        files.push({ name: e.name, path: fullPath, rel: relPath, type: 'dir' });
+        walk(fullPath, relPath, depth + 1);
       } else {
-        files.push({ name: e.name, path: fullPath, rel: relPath });
+        files.push({ name: e.name, path: fullPath, rel: relPath, type: 'file' });
       }
     }
   }

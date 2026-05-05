@@ -2628,10 +2628,11 @@ export function ChatApp() {
     setInput(`/${cmd} `);
   };
 
-  const handleFileMentionSelect = (file: { name: string; path: string; rel: string }) => {
-    // Replace @query with @filepath
+  const handleFileMentionSelect = (file: { name: string; path: string; rel: string; type?: 'file' | 'dir' }) => {
+    // Replace @query with @filepath (trailing slash signals directory)
     const before = input.slice(0, fileMention.atIdx);
-    setInput(`${before}@${file.rel} `);
+    const suffix = file.type === 'dir' ? '/' : '';
+    setInput(`${before}@${file.rel}${suffix} `);
   };
 
   // LSP language IDs that we support

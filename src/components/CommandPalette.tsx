@@ -36,13 +36,15 @@ export function CommandPalette({ isOpen, onClose, actions, fileIndex, onFileOpen
 
   const fileActions: PaletteAction[] = useMemo(() => {
     if (!query) return [];
-    return searchFiles(fileIndex, query, 15).map(f => ({
-      id: `file-${f.path}`,
-      label: f.name,
-      section: 'Files',
-      key: f.rel,
-      onRun: () => onFileOpen?.(f.path),
-    }));
+    return searchFiles(fileIndex, query, 15)
+      .filter(f => f.type !== 'dir')
+      .map(f => ({
+        id: `file-${f.path}`,
+        label: f.name,
+        section: 'Files',
+        key: f.rel,
+        onRun: () => onFileOpen?.(f.path),
+      }));
   }, [query, fileIndex, onFileOpen]);
 
   const filtered = useMemo(() => {
