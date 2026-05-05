@@ -20,14 +20,14 @@
  *    subscribe`). One reader loop runs for the full session lifetime
  *    and drives every onAssistantDelta / onToolUse / onToolResult /
  *    onTodosUpdate / onTurnComplete.
- *  - Per-tool approval IS wired through. The starting permission
- *    policy is set at server boot via `Config.permission`
- *    (`permissionMode` maps to `edit`/`bash`/`webfetch`/
- *    `external_directory` policies). Anything set to `ask` triggers a
- *    `permission.updated` event, which the adapter forwards to
- *    `events.onPermissionRequest` and answers via
- *    `POST /session/{id}/permissions/{permissionID}` once the bridge
- *    resolves. allow → `"once"`, deny → `"reject"`.
+ *  - Per-tool approval is NOT wired. opencode 1.14.x has a bug where
+ *    any `Config.permission.* = "ask"` silently hangs the offending
+ *    tool at `state.running` without firing `permission.updated`, so
+ *    the bridge's onPermissionRequest path can't be exercised. Until
+ *    that's fixed upstream, non-plan modes set everything to `allow`
+ *    (free-running) and plan mode denies all destructive ops outright.
+ *    The `permission.updated` handler stays as a defensive forwarder
+ *    in case a future opencode release starts emitting events again.
  *  - `setModel` IS live: opencode's prompt API takes a per-turn
  *    `body.model`, so changing the model just updates an in-memory
  *    field that the next `sendUserMessage` reads. No server restart.
@@ -80,20 +80,23 @@ type PermissionConfig = NonNullable<Config['permission']>;
 type McpConfig = NonNullable<Config['mcp']>;
 
 function mapPermissionMode(mode: PermissionMode): PermissionConfig {
-  // `ask` entries trigger permission.updated events that the adapter
-  // forwards to the bridge's onPermissionRequest. Mirrors Claude's
-  // mode semantics: plan is read-only, default asks per call,
-  // acceptEdits pre-approves file edits, bypass yolos.
+  // NOTE: opencode 1.14.x has a bug where `Config.permission.* = "ask"`
+  // silently hangs the tool at `state.running` without ever emitting a
+  // `permission.updated` event. Verified locally for `bash`, `edit`,
+  // and `external_directory`. We can't wire per-call approvals into
+  // the bridge until that's fixed upstream, so non-plan modes default
+  // to `allow` (the agent runs tools freely) and `plan` denies
+  // destructive ops outright. The bridge's own permissionMode UI still
+  // gates writes when the user explicitly picks plan; this adapter
+  // just doesn't get the granular per-call prompts Claude does.
   switch (mode) {
     case 'plan':
       return { edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' };
     case 'acceptEdits':
-      return { edit: 'allow', bash: 'ask', webfetch: 'ask', external_directory: 'ask' };
     case 'bypassPermissions':
-      return { edit: 'allow', bash: 'allow', webfetch: 'allow', external_directory: 'allow' };
     case 'default':
     default:
-      return { edit: 'ask', bash: 'ask', webfetch: 'ask', external_directory: 'ask' };
+      return { edit: 'allow', bash: 'allow', webfetch: 'allow', external_directory: 'allow' };
   }
 }
 
@@ -173,6 +176,17 @@ class OpenCodeProviderSession implements ProviderSession {
   private readonly pendingText = new Map<string, string>();
   // callID set so we only emit onToolUse once per tool invocation.
   private readonly toolUseEmitted = new Set<string>();
+  // callIDs that received onToolUse but not yet onToolResult. opencode
+  // sometimes ends a turn (session.idle / session.error) without ever
+  // transitioning a tool past `running` — particularly when the upstream
+  // model API rejects the request. We drain this set on idle so the UI
+  // never shows a tool pinned in "in flight" forever.
+  private readonly pendingTools = new Set<string>();
+  // Last error message captured from the event stream (session.error or
+  // assistant message.error). Surfaced as the synthetic tool result body
+  // when we have to drain stuck tools — it's far more useful than a
+  // generic "did not return".
+  private lastTurnError: string | null = null;
   // messageIDs we know belong to user-role messages. Their parts must
   // not be emitted as assistant output (the prompt API echoes the user
   // text back as a part, which would otherwise show up as a duplicated
@@ -285,6 +299,7 @@ class OpenCodeProviderSession implements ProviderSession {
             'data' in err && typeof (err.data as { message?: string }).message === 'string'
               ? (err.data as { message: string }).message
               : err.name;
+          this.lastTurnError = msg;
           this.events.onError(new Error(msg));
         }
         return;
@@ -296,10 +311,15 @@ class OpenCodeProviderSession implements ProviderSession {
           this.events.onAssistantText(text, { model: this.model || undefined });
         }
         this.pendingText.clear();
+        // Drain any tool uses opencode never resolved — emit a synthetic
+        // error result so the UI un-sticks the tool card and the chat
+        // log isn't pinned waiting forever.
+        this.drainPendingTools();
         this.events.onTurnComplete({
           stopReason: 'end_turn',
           model: this.model || undefined,
         });
+        this.lastTurnError = null;
         return;
       }
       case 'todo.updated': {
@@ -320,6 +340,8 @@ class OpenCodeProviderSession implements ProviderSession {
           'data' in err && typeof (err.data as { message?: string }).message === 'string'
             ? (err.data as { message: string }).message
             : err.name;
+        // Stash so drainPendingTools can use it as the synthetic body.
+        this.lastTurnError = message;
         this.events.onError(new Error(message));
         return;
       }
@@ -376,7 +398,14 @@ class OpenCodeProviderSession implements ProviderSession {
     const callID = part.callID;
     const status = part.state.status;
 
-    if (!this.toolUseEmitted.has(callID) && (status === 'pending' || status === 'running' || status === 'completed' || status === 'error')) {
+    // Skip the `pending` state: the model is still streaming the JSON
+    // input, and `state.input` is `{}` until the args are fully parsed
+    // (the raw partial lives in `state.raw`). The bridge's onToolUse
+    // is one-shot per call, so emitting now would freeze an empty
+    // input in the UI even after `running` arrives with the real one.
+    if (status !== 'running' && status !== 'completed' && status !== 'error') return;
+
+    if (!this.toolUseEmitted.has(callID)) {
       const toolUse: AssistantToolUseBlock = {
         type: 'tool_use',
         id: callID,
@@ -386,9 +415,11 @@ class OpenCodeProviderSession implements ProviderSession {
       };
       this.events.onToolUse(toolUse);
       this.toolUseEmitted.add(callID);
+      this.pendingTools.add(callID);
     }
 
     if (status === 'completed') {
+      this.pendingTools.delete(callID);
       this.events.onToolResult({
         toolUseId: callID,
         content: part.state.output,
@@ -397,6 +428,7 @@ class OpenCodeProviderSession implements ProviderSession {
       return;
     }
     if (status === 'error') {
+      this.pendingTools.delete(callID);
       this.events.onToolResult({
         toolUseId: callID,
         content: part.state.error,
@@ -405,6 +437,23 @@ class OpenCodeProviderSession implements ProviderSession {
       });
       return;
     }
+  }
+
+  private drainPendingTools(): void {
+    if (this.pendingTools.size === 0) return;
+    const reason =
+      this.lastTurnError
+        ? `Tool aborted: ${this.lastTurnError}`
+        : 'Tool execution did not return a result before the turn ended.';
+    for (const callID of this.pendingTools) {
+      this.events.onToolResult({
+        toolUseId: callID,
+        content: reason,
+        isError: true,
+        parentToolUseId: null,
+      });
+    }
+    this.pendingTools.clear();
   }
 
   private async handlePermissionRequest(client: OpencodeClient, perm: Permission): Promise<void> {
