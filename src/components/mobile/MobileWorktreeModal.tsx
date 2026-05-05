@@ -358,7 +358,7 @@ export function MobileWorktreeModal({
                 'text-zinc-500'
               }
             >
-              {line || ' '}
+              {line || ' '}
             </div>
           ))}
           {status === 'running' && logs.length > 0 && (

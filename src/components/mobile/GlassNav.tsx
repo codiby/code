@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-export type NavTab = 'chat' | 'sessions' | 'files' | 'git' | 'settings';
+export type NavTab = 'home' | 'chat' | 'files' | 'git' | 'settings';
 
 interface GlassNavProps {
   active: NavTab;
@@ -19,20 +19,21 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   {
-    key: 'chat', label: 'Chat',
+    key: 'home', label: 'Home',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.7">
-        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M4 7.5h16" strokeLinecap="round" />
+        <rect x="4" y="4" width="16" height="4" rx="1.7" />
+        <rect x="4" y="10" width="16" height="4" rx="1.7" />
+        <rect x="4" y="16" width="16" height="4" rx="1.7" />
       </svg>
     ),
   },
   {
-    key: 'sessions', label: 'Sessions',
+    key: 'chat', label: 'Chat',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.7">
-        <rect x="3" y="4" width="18" height="4" rx="1.5" />
-        <rect x="3" y="10" width="18" height="4" rx="1.5" />
-        <rect x="3" y="16" width="18" height="4" rx="1.5" />
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     ),
   },
@@ -75,7 +76,6 @@ export function GlassNav({ active, onSelect, hasPending, hidden }: GlassNavProps
         bottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
         backdropFilter: 'blur(28px) saturate(180%)',
         WebkitBackdropFilter: 'blur(28px) saturate(180%)',
-        // translateY past 100% so the rounded outer-shadow goes fully off-screen
         transform: hidden ? 'translateY(150%)' : 'translateY(0)',
         opacity: hidden ? 0 : 1,
         pointerEvents: hidden ? 'none' : 'auto',

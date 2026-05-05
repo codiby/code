@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, Folder, Home, Clock, GitBranch, Plus } from 'lucide-react';
+import { ListBox, ListBoxItem, Select, SelectPopover, SelectTrigger, SelectValue } from '@heroui/react';
 import type { ClaudeClient } from '../../lib/claude-client';
 import { MobileWorktreeModal } from './MobileWorktreeModal';
 
@@ -49,11 +50,18 @@ interface Props {
    *  boot). When false, the OpenCode provider chip is hidden entirely so
    *  users can't pick a backend that's guaranteed to fail to spawn. */
   opencodeAvailable?: boolean;
+  opencodeModels?: Array<{ id: string; label: string; providerName: string }>;
   /** Called once the session is successfully created. The modal has already
    *  closed itself by the time this fires; callers typically switch to the
    *  new session id here. */
-  onCreated: (sessionId: string) => void;
+  onCreated: (sessionId: string, cwd: string) => void;
 }
+
+const CLAUDE_MODEL_OPTIONS = [
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+];
 
 /**
  * Mobile-first "New Session" modal. Fullscreen sheet with breadcrumb
@@ -64,7 +72,7 @@ interface Props {
  * associated console output. Power users can still reach those from the
  * desktop.
  */
-export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable, onCreated }: Props) {
+export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable, opencodeModels = [], onCreated }: Props) {
   const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
   const [cwd, setCwd] = useState('/');
   const [folders, setFolders] = useState<string[]>([]);
@@ -77,6 +85,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
   const [error, setError] = useState<string | null>(null);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
   const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider(availableProviders));
+  const [model, setModel] = useState('');
 
   const loadDir = useCallback(async (path: string) => {
     setLoading(true);
@@ -95,18 +104,31 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
     } catch { setGitInfo(null); }
   }, [client]);
 
-  // On open — start from the most recent dir (or root), reset transient state.
+  // On open — always land at the user's home directory so the file browser
+  // starts somewhere useful instead of `/`. Recent projects remain reachable
+  // via the Recent tab.
   useEffect(() => {
     if (!open) return;
     setRecentDirs(getRecentDirs());
     setError(null);
     setName('');
+    setModel('');
+    setProvider(getLastProvider(availableProviders));
     setTab('browse');
-    const start = getRecentDirs()[0] || '/';
-    setCwd(start);
-    loadDir(start);
-    checkGit(start);
-  }, [open, loadDir, checkGit]);
+    let cancelled = false;
+    (async () => {
+      const home = await client.getUserHome();
+      if (cancelled) return;
+      setCwd(home);
+      loadDir(home);
+      checkGit(home);
+    })();
+    return () => { cancelled = true; };
+  }, [open, loadDir, checkGit, client]);
+
+  useEffect(() => {
+    setModel('');
+  }, [provider]);
 
   const navigate = (path: string) => {
     const clean = path.replace(/\/$/, '') || '/';
@@ -122,10 +144,10 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
     setCreating(true);
     setError(null);
     try {
-      const session = await client.createSession(cwd || '/', { name: name.trim() || undefined, provider });
+      const session = await client.createSession(cwd || '/', { name: name.trim() || undefined, provider, model: model || null });
       addRecentDir(cwd);
       localStorage.setItem(PROVIDER_KEY, provider);
-      onCreated(session.id);
+      onCreated(session.id, cwd || '/');
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -141,6 +163,10 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
   };
 
   if (!open) return null;
+
+  const modelOptions = provider === 'opencode'
+    ? opencodeModels.map((m) => ({ id: m.id, label: `${m.providerName} ${m.label}` }))
+    : CLAUDE_MODEL_OPTIONS;
 
   return (
     <div
@@ -349,6 +375,31 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
             </button>
           ))}
         </div>
+        <label className="flex items-center gap-2 min-w-0">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Model</span>
+          <Select
+            aria-label="Model"
+            selectedKey={model || 'default'}
+            onSelectionChange={(key) => setModel(key === 'default' ? '' : String(key))}
+            className="flex-1 min-w-0"
+          >
+            <SelectTrigger className="min-h-0 h-10 py-0 px-2.5 rounded-lg bg-white/5 border border-white/10 text-[13px] text-zinc-200 shadow-none">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopover>
+              <ListBox>
+                <ListBoxItem key="default" id="default" textValue="Default">
+                  <span className="text-xs">Default</span>
+                </ListBoxItem>
+                {modelOptions.map((m) => (
+                  <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
+                    <span className="text-xs">{m.label}</span>
+                  </ListBoxItem>
+                ))}
+              </ListBox>
+            </SelectPopover>
+          </Select>
+        </label>
         <input
           type="text"
           placeholder="Session name (optional)"

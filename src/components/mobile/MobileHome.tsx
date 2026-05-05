@@ -1,214 +1,346 @@
-import { useMemo } from 'react';
-import { Plus, FolderOpen, Settings, ChevronRight, Clock, Sun } from 'lucide-react';
-import type { SessionInfo } from '../../lib/claude-client';
+import { useMemo, useState } from 'react';
+import { Archive, ChevronDown, ChevronRight, Pin, Plus, Sun, X } from 'lucide-react';
+import type { ClaudeClient, ConnectionStatus, SessionInfo } from '../../lib/claude-client';
+import { MobileNewSessionModal } from './MobileNewSessionModal';
+
+type TabGroup = { id: string; name: string; color: string };
 
 interface Props {
+  client: ClaudeClient;
   sessions: SessionInfo[];
+  activeId: string | null;
   closedSessionIds: Set<string>;
   archivedSessionIds: Set<string>;
-  onNewSession: () => void;
-  onOpenSessions: () => void;
-  onOpenSettings: () => void;
+  onQuickStart: (provider: string) => void;
+  opencodeAvailable: boolean;
+  opencodeModels?: Array<{ id: string; label: string; providerName: string }>;
   onSelectSession: (id: string) => void;
+  onSessionCreated?: (id: string, cwd: string) => void;
+  onCloseSession: (id: string) => void;
   onReopenSession: (id: string) => void;
+  onArchiveSession: (id: string) => void;
+  statuses?: Record<string, ConnectionStatus | string>;
+  streaming?: Record<string, boolean>;
+  interrupted?: Record<string, boolean>;
+  hasPermission?: Record<string, boolean>;
+  turnComplete?: Set<string>;
+  tabGroups: Record<string, TabGroup>;
+  tabGroupMap: Record<string, string>;
+  tabOrder: string[];
+  pinnedSessionIds?: Set<string>;
   keepScreenOn: boolean;
   keepScreenOnSupported: boolean;
   onToggleKeepScreenOn: (next: boolean) => void;
 }
 
-function formatRelativeTime(ts: number): string {
-  if (!ts) return '';
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return 'just now';
-  const m = Math.floor(diff / 60_000);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  const w = Math.floor(d / 7);
-  if (w < 4) return `${w}w ago`;
-  return new Date(ts).toLocaleDateString();
+const QUICK_START_PROVIDERS: ReadonlyArray<{ key: string; label: string; tagline: string }> = [
+  { key: 'claudeAgent', label: 'Claude', tagline: 'Anthropic agent' },
+  { key: 'codex', label: 'Codex', tagline: 'OpenAI Codex' },
+  { key: 'opencode', label: 'OpenCode', tagline: 'opencode.ai router' },
+];
+
+const COLOR_DOT: Record<string, string> = {
+  blue: 'bg-blue-400',
+  green: 'bg-green-400',
+  amber: 'bg-amber-400',
+  violet: 'bg-violet-400',
+  red: 'bg-red-400',
+  pink: 'bg-pink-400',
+};
+
+function getDotClass(connStatus: string, isStreaming: boolean, turnComplete: boolean, wasInterrupted: boolean): string {
+  if (connStatus === 'error') return 'bg-red-400';
+  if (connStatus === 'connecting' || connStatus === 'starting') return 'bg-amber-400 animate-pulse';
+  if (turnComplete) return 'bg-green-400 animate-pulse';
+  if (connStatus === 'connected' && isStreaming) return 'bg-amber-400 animate-pulse';
+  if (wasInterrupted) return 'bg-red-400';
+  if (connStatus === 'connected') return 'bg-zinc-500';
+  return 'bg-zinc-600';
 }
 
 export function MobileHome({
+  client,
   sessions,
+  activeId,
   closedSessionIds,
   archivedSessionIds,
-  onNewSession,
-  onOpenSessions,
-  onOpenSettings,
+  onQuickStart,
+  opencodeAvailable,
+  opencodeModels = [],
   onSelectSession,
+  onSessionCreated,
+  onCloseSession,
   onReopenSession,
+  onArchiveSession,
+  statuses,
+  streaming,
+  interrupted,
+  hasPermission,
+  turnComplete,
+  tabGroups,
+  tabGroupMap,
+  tabOrder,
+  pinnedSessionIds,
   keepScreenOn,
   keepScreenOnSupported,
   onToggleKeepScreenOn,
 }: Props) {
-  const openSessions = useMemo(
-    () =>
-      sessions
-        .filter((s) => !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id))
-        .slice()
-        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0)),
+  const [newModalOpen, setNewModalOpen] = useState(false);
+  const [showClosed, setShowClosed] = useState(false);
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(new Set());
+  const visibleQuickStart = QUICK_START_PROVIDERS.filter(p => p.key !== 'opencode' || opencodeAvailable);
+
+  const openSessions = useMemo(() => {
+    const filtered = sessions.filter((s) => !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id));
+    return [...filtered].sort((a, b) => {
+      const ai = tabOrder.indexOf(a.id);
+      const bi = tabOrder.indexOf(b.id);
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+  }, [sessions, closedSessionIds, archivedSessionIds, tabOrder]);
+
+  const closedSessions = useMemo(
+    () => sessions.filter((s) => closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id)),
     [sessions, closedSessionIds, archivedSessionIds],
   );
 
-  const recentClosed = useMemo(
-    () =>
-      sessions
-        .filter((s) => closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id))
-        .slice()
-        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
-        .slice(0, 6),
-    [sessions, closedSessionIds, archivedSessionIds],
-  );
+  type RenderItem =
+    | { kind: 'tab'; session: SessionInfo }
+    | { kind: 'group'; group: TabGroup; members: SessionInfo[] };
+
+  const renderList = useMemo<RenderItem[]>(() => {
+    const list: RenderItem[] = [];
+    const seenGroups = new Set<string>();
+    for (const s of openSessions) {
+      const gid = tabGroupMap[s.id];
+      if (gid && tabGroups[gid]) {
+        if (!seenGroups.has(gid)) {
+          seenGroups.add(gid);
+          const members = openSessions
+            .filter((m) => tabGroupMap[m.id] === gid)
+            .slice()
+            .sort((a, b) => {
+              const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
+              const pb = pinnedSessionIds?.has(b.id) ? 1 : 0;
+              return pb - pa;
+            });
+          list.push({ kind: 'group', group: tabGroups[gid]!, members });
+        }
+      } else {
+        list.push({ kind: 'tab', session: s });
+      }
+    }
+    return list;
+  }, [openSessions, tabGroupMap, tabGroups, pinnedSessionIds]);
+
+  const toggleGroup = (groupId: string) => {
+    setCollapsedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
+      return next;
+    });
+  };
+
+  const renderTab = (s: SessionInfo, opts?: { indented?: boolean }) => {
+    const isActive = s.id === activeId;
+    const status = (statuses && statuses[s.id]) ||
+      (s.ready ? 'connected' : s.status === 'starting' ? 'starting' : 'disconnected');
+    const pending = !!hasPermission?.[s.id];
+    return (
+      <li key={s.id}>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onSelectSession(s.id)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onSelectSession(s.id);
+            }
+          }}
+          className={`group relative flex w-full items-center gap-2 ${opts?.indented ? 'pl-7 pr-3' : 'px-3'} min-h-11 text-[13px] rounded-md transition-colors text-left ${
+            isActive
+              ? 'bg-surface-light text-zinc-100'
+              : 'text-zinc-400 active:bg-surface/60 active:text-zinc-200'
+          }`}
+        >
+          <span className={`w-2 h-2 rounded-full shrink-0 ${getDotClass(String(status), !!streaming?.[s.id], !!turnComplete?.has(s.id), !!interrupted?.[s.id])}`} />
+          <span className="truncate flex-1">{s.name}</span>
+          {pinnedSessionIds?.has(s.id) && (
+            <Pin size={11} strokeWidth={2.25} className="shrink-0 text-zinc-500 fill-current" aria-label="Pinned to top" />
+          )}
+          {pending && !isActive && (
+            <span className="shrink-0 relative inline-flex w-2.5 h-2.5">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onCloseSession(s.id); }}
+            className="shrink-0 w-7 h-7 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-white/10"
+            aria-label={`Close ${s.name}`}
+          >
+            <X size={14} strokeWidth={2.25} />
+          </button>
+        </div>
+      </li>
+    );
+  };
 
   return (
     <div
       className="min-h-[100dvh] overflow-y-auto"
       style={{
-        paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)',
+        paddingTop: 'calc(env(safe-area-inset-top) + 1.25rem)',
         paddingBottom: 'calc(env(safe-area-inset-bottom) + 7rem)',
       }}
     >
-      <div className="px-6 max-w-md mx-auto">
-        {/* Header */}
-        <div className="mb-8 mt-2">
-          <img src="/brand/codiby-logo.svg" alt="Codiby" className="h-10 w-auto mb-2 select-none" draggable={false} />
-          <p className="text-sm text-zinc-500">Editing evolved with Claude.</p>
-        </div>
-
-        {/* Primary CTA */}
-        <button
-          type="button"
-          onClick={onNewSession}
-          className="w-full flex items-center gap-3 px-4 py-4 rounded-2xl bg-gradient-to-br from-violet-500/20 to-indigo-500/15 border border-violet-500/30 text-zinc-100 active:from-violet-500/30 active:to-indigo-500/25 transition-colors mb-3"
-        >
-          <span className="w-10 h-10 rounded-xl bg-violet-500/25 flex items-center justify-center shrink-0">
-            <Plus className="w-5 h-5 text-violet-200" />
-          </span>
-          <div className="flex-1 text-left">
-            <div className="text-[15px] font-semibold">New Session</div>
-            <div className="text-[12px] text-zinc-400">Start a fresh Claude session</div>
+      <div className="px-5 max-w-md mx-auto">
+        <div className="mb-5 mt-2 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <img src="/brand/codiby-logo.svg" alt="Codiby" className="h-9 w-auto mb-1 select-none" draggable={false} />
+            <p className="text-xs text-zinc-500">Sessions</p>
           </div>
-          <ChevronRight className="w-4 h-4 text-zinc-500" />
-        </button>
-
-        {/* Secondary actions */}
-        <div className="grid grid-cols-2 gap-2 mb-3">
           <button
             type="button"
-            onClick={onOpenSessions}
-            className="flex flex-col items-start gap-2 px-3 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-zinc-300 active:bg-zinc-800/70 transition-colors"
+            onClick={() => setNewModalOpen(true)}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-light text-zinc-100 text-[12px] font-medium active:bg-white/15"
           >
-            <FolderOpen className="w-4 h-4 text-zinc-400" />
-            <span className="text-[13px] font-medium">All Sessions</span>
-          </button>
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="flex flex-col items-start gap-2 px-3 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-zinc-300 active:bg-zinc-800/70 transition-colors"
-          >
-            <Settings className="w-4 h-4 text-zinc-400" />
-            <span className="text-[13px] font-medium">Settings</span>
+            <Plus size={15} />
+            New
           </button>
         </div>
 
-        {/* Keep-screen-on toggle */}
+        <div className="flex items-stretch gap-2 mb-3">
+          {visibleQuickStart.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => { onQuickStart(p.key); setNewModalOpen(true); }}
+              className="flex-1 flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-zinc-300 active:bg-zinc-800/70 transition-colors min-w-0"
+            >
+              <span className="text-[12px] font-semibold text-zinc-100 leading-tight">{p.label}</span>
+              <span className="text-[10px] text-zinc-500 truncate w-full">{p.tagline}</span>
+            </button>
+          ))}
+        </div>
+
         {keepScreenOnSupported && (
           <button
             type="button"
             role="switch"
             aria-checked={keepScreenOn}
             onClick={() => onToggleKeepScreenOn(!keepScreenOn)}
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 active:bg-zinc-800/70 transition-colors mb-8"
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 active:bg-zinc-800/70 transition-colors mb-3"
           >
-            <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-              keepScreenOn ? 'bg-amber-500/20' : 'bg-zinc-800/80'
-            }`}>
+            <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${keepScreenOn ? 'bg-amber-500/20' : 'bg-zinc-800/80'}`}>
               <Sun className={`w-4 h-4 ${keepScreenOn ? 'text-amber-300' : 'text-zinc-500'}`} />
             </span>
             <div className="flex-1 text-left min-w-0">
               <div className="text-[13px] font-medium text-zinc-200">Keep screen on</div>
               <div className="text-[11px] text-zinc-500">Prevents the display from dimming</div>
             </div>
-            <span
-              className={`relative w-10 h-6 rounded-full shrink-0 transition-colors ${
-                keepScreenOn ? 'bg-amber-500/70' : 'bg-zinc-700'
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  keepScreenOn ? 'translate-x-4' : 'translate-x-0'
-                }`}
-              />
+            <span className={`relative w-10 h-6 rounded-full shrink-0 transition-colors ${keepScreenOn ? 'bg-amber-500/70' : 'bg-zinc-700'}`}>
+              <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${keepScreenOn ? 'translate-x-4' : 'translate-x-0'}`} />
             </span>
           </button>
         )}
 
-        {/* Open sessions */}
-        {openSessions.length > 0 && (
-          <div className="mb-6">
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-2 px-1">
-              Open
-            </h2>
-            <div className="space-y-1.5">
-              {openSessions.slice(0, 6).map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => onSelectSession(s.id)}
-                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 active:bg-zinc-800/70 transition-colors text-left"
-                >
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[14px] text-zinc-200 truncate">{s.name}</div>
-                    <div className="text-[11px] text-zinc-500 font-mono truncate">{s.cwd}</div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-zinc-600 shrink-0" />
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        <div className="rounded-xl bg-[#161616] border border-white/5 py-1 mb-3">
+          {renderList.length === 0 && (
+            <p className="text-sm text-zinc-500 px-3 py-4">No open sessions. Tap New to begin.</p>
+          )}
+          <ul className="flex flex-col gap-0.5 px-1.5">
+            {renderList.map((item) => {
+              if (item.kind === 'tab') return renderTab(item.session);
 
-        {/* Recent (closed) */}
-        {recentClosed.length > 0 && (
-          <div className="mb-6">
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-2 px-1">
-              Recent
-            </h2>
-            <div className="space-y-1.5">
-              {recentClosed.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => onReopenSession(s.id)}
-                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-zinc-900/40 border border-zinc-800/60 active:bg-zinc-800/60 transition-colors text-left"
-                >
-                  <span className="w-2 h-2 rounded-full bg-zinc-600 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[14px] text-zinc-300 truncate">{s.name}</div>
-                    <div className="text-[11px] text-zinc-600 font-mono truncate">{s.cwd}</div>
-                  </div>
-                  {s.created_at ? (
-                    <span className="flex items-center gap-1 text-[10px] text-zinc-600 shrink-0">
-                      <Clock className="w-3 h-3" />
-                      {formatRelativeTime(s.created_at)}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+              const { group, members } = item;
+              const isCollapsed = collapsedGroupIds.has(group.id);
+              const dot = COLOR_DOT[group.color] || COLOR_DOT.blue!;
+              const hasActivity = members.some((m) => hasPermission?.[m.id]);
+              return (
+                <li key={`grp-${group.id}`} className="flex flex-col gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group.id)}
+                    className="relative flex w-full items-center gap-2 px-2 min-h-10 text-[13px] rounded-md text-zinc-300 active:bg-surface/60 text-left"
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight size={14} className="shrink-0 text-zinc-500" />
+                    ) : (
+                      <ChevronDown size={14} className="shrink-0 text-zinc-500" />
+                    )}
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${dot} ${isCollapsed && hasActivity ? 'animate-pulse' : ''}`} />
+                    <span className="truncate flex-1 font-medium">{group.name}</span>
+                    <span className="text-[11px] text-zinc-500 shrink-0">{members.length}</span>
+                  </button>
+                  {!isCollapsed && (
+                    <ul className="flex flex-col gap-0.5">
+                      {members.map((m) => renderTab(m, { indented: true }))}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
 
-        {openSessions.length === 0 && recentClosed.length === 0 && (
-          <div className="text-center text-zinc-600 text-[13px] py-8">
-            No sessions yet. Tap <span className="text-zinc-400">New Session</span> to begin.
+        {closedSessions.length > 0 && (
+          <div className="rounded-xl bg-white/[0.02] border border-white/5">
+            <button
+              type="button"
+              onClick={() => setShowClosed((v) => !v)}
+              className="w-full flex items-center gap-2 px-3 min-h-11 text-[12px] text-zinc-400 active:text-zinc-200 active:bg-white/5 rounded-xl"
+            >
+              {showClosed ? <ChevronDown size={14} className="shrink-0 text-zinc-500" /> : <ChevronRight size={14} className="shrink-0 text-zinc-500" />}
+              <span className="uppercase tracking-wider font-semibold flex-1 text-left">Closed sessions</span>
+              <span className="text-[11px] text-zinc-500">{closedSessions.length}</span>
+            </button>
+            {showClosed && (
+              <ul className="flex flex-col px-1.5 pb-1.5">
+                {closedSessions.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      onClick={() => onReopenSession(s.id)}
+                      className="group relative flex w-full items-center gap-2 px-3 min-h-11 text-[13px] rounded-md text-zinc-400 active:bg-surface/60 active:text-zinc-200 text-left"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
+                      <span className="truncate flex-1">{s.name}</span>
+                      <span className="text-[10px] text-zinc-600 ml-auto shrink-0 font-mono truncate max-w-[40%]">
+                        {s.cwd.split('/').pop()}
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        onClick={(e) => { e.stopPropagation(); onArchiveSession(s.id); }}
+                        className="shrink-0 w-8 h-8 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-surface"
+                        aria-label="Archive session"
+                        title="Archive (hide from this list, keeps history)"
+                      >
+                        <Archive size={14} strokeWidth={2} />
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>
+
+      <MobileNewSessionModal
+        open={newModalOpen}
+        onClose={() => setNewModalOpen(false)}
+        client={client}
+        opencodeAvailable={opencodeAvailable}
+        opencodeModels={opencodeModels}
+        onCreated={(id, cwd) => { onSessionCreated?.(id, cwd); onSelectSession(id); setNewModalOpen(false); }}
+      />
     </div>
   );
 }

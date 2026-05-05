@@ -49,6 +49,14 @@ interface Props {
    *  app boot). Forwarded to MobileNewSessionModal so the OpenCode
    *  provider option only appears when usable. */
   opencodeAvailable?: boolean;
+  /** Provider key set by the launchpad's quick-start chips. When the
+   *  sheet becomes visible with this populated, it auto-opens the New
+   *  Session modal (the modal reads `claude-ui-last-provider` from
+   *  localStorage to seed its provider chip). The sheet calls
+   *  `onConsumeNewSessionRequest` once it has acted so the parent
+   *  doesn't replay the auto-open every render. */
+  pendingNewSessionProvider?: string | null;
+  onConsumeNewSessionRequest?: () => void;
 }
 
 const COLOR_DOT: Record<string, string> = {
@@ -78,6 +86,7 @@ export function MobileSessionsSheet({
   statuses, streaming, interrupted, hasPermission, turnComplete,
   tabGroups, tabGroupMap, tabOrder, pinnedSessionIds, closedSessionIds, archivedSessionIds,
   opencodeAvailable,
+  pendingNewSessionProvider, onConsumeNewSessionRequest,
 }: Props) {
   const [newModalOpen, setNewModalOpen] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
@@ -97,6 +106,19 @@ export function MobileSessionsSheet({
       editInputRef.current.select();
     }
   }, [editingId]);
+
+  // Auto-open the New Session modal when the sheet becomes visible
+  // because of a launchpad quick-start tap. The localStorage write
+  // (`claude-ui-last-provider`) happens upstream in MobileApp, so the
+  // modal's getLastProvider() picks up the chosen provider as soon as
+  // it mounts. Once we've consumed the request, tell the parent to
+  // clear it so re-opening the sheet later doesn't trigger a phantom
+  // modal.
+  useEffect(() => {
+    if (!open || !pendingNewSessionProvider) return;
+    setNewModalOpen(true);
+    onConsumeNewSessionRequest?.();
+  }, [open, pendingNewSessionProvider, onConsumeNewSessionRequest]);
 
   const startLongPress = (s: SessionInfo) => {
     longPressFiredRef.current = false;
