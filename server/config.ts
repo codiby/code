@@ -7,18 +7,26 @@ import { execSync } from 'child_process';
 // Enrich `process.env.PATH` so anything we spawn downstream — the Claude SDK's
 // `claude` binary, the Bash tool's child processes, `git`, `sudo`, `bun`, etc.
 // — can resolve user-installed binaries. When the bridge is launched from the
-// Tauri app (Finder/Dock) it inherits launchd's minimal PATH
-// (`/usr/bin:/bin:/usr/sbin:/sbin`); user paths from `/opt/homebrew/bin`,
-// `~/.local/bin`, `~/.cargo/bin`, etc. are missing. The PTY shell handles its
-// own login-mode profile load (see `pty.ts`), but Bun.spawn / Node spawn
-// invocations from the bridge inherit `process.env.PATH` directly — so we
-// enrich it here once at module load.
+// Tauri app (Finder/Dock) or a LaunchAgent it inherits launchd's PATH, which
+// reads `/etc/paths(.d)/*` but never sources `~/.zshrc` / `~/.zprofile`. So
+// per-user bin dirs added by shell rc files (`~/.opencode/bin`, `~/.local/bin`,
+// `~/.cargo/bin`, …) are missing. The PTY shell handles its own login-mode
+// profile load (see `pty.ts`), but Bun.spawn / Node spawn invocations from
+// the bridge inherit `process.env.PATH` directly — so we enrich it here once
+// at module load.
 //
-// Skipped when PATH already looks rich (running outside Tauri, e.g. `bun run`
-// from a real terminal) so we don't pay the shell-spawn cost unnecessarily.
+// When launched by the Tauri app or a service (any `--spawned-by=…` flag, or
+// CODIBY_SPAWN_MODE set) we always enrich: the launchd-inherited PATH can
+// look superficially "rich" (e.g. it already has /opt/homebrew/bin from
+// /etc/paths) yet still miss user-rc dirs. Spending ~100ms on a login-shell
+// PATH probe at boot is cheap insurance. From a real terminal (`bun run` with
+// no spawn flag) the PATH is already complete, so we skip the probe.
 (function enrichPathFromUserShell() {
   const cur = process.env.PATH || '';
-  if (/\/opt\/homebrew\/bin|\/\.local\/bin|\/\.cargo\/bin|\/\.bun\/bin/.test(cur)) return;
+  const launchedAsService =
+    process.argv.slice(2).some((a) => a === '--spawned-by' || a.startsWith('--spawned-by=')) ||
+    !!process.env.CODIBY_SPAWN_MODE;
+  if (!launchedAsService) return;
   const shell = process.env.SHELL || '/bin/zsh';
   try {
     const out = execSync(`${shell} -lic 'printf "<<<PATH>>>%s<<</PATH>>>" "$PATH"'`, {
