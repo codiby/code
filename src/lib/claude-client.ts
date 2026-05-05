@@ -617,6 +617,16 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  async getUserHome(): Promise<string> {
+    if (this._userHomeCache) return this._userHomeCache;
+    const resp = await authedFetch(`${this.serverUrl}/user-home`);
+    if (!resp.ok) return '/';
+    const data = await resp.json() as { home?: string };
+    this._userHomeCache = data.home || '/';
+    return this._userHomeCache;
+  }
+  private _userHomeCache: string | null = null;
+
   async listFiles(dirPath: string): Promise<{ name: string; path: string; type: 'file' | 'dir' }[]> {
     const resp = await authedFetch(`${this.serverUrl}/files?path=${encodeURIComponent(dirPath)}`);
     if (!resp.ok) return [];

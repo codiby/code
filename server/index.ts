@@ -1179,6 +1179,10 @@ const server = Bun.serve({
       return handleListDirs(prefix);
     }
 
+    if (url.pathname === '/user-home' && req.method === 'GET') {
+      return Response.json({ home: homedir() }, { headers: corsHeaders });
+    }
+
     if (url.pathname === '/files' && req.method === 'GET') {
       const dirPath = url.searchParams.get('path') || '/';
       return handleListFiles(dirPath);

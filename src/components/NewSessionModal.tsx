@@ -100,23 +100,27 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
   }, [client]);
 
   useEffect(() => {
-    if (isOpen) {
-      setRecentDirs(getRecentDirs());
-      setShowWorktree(false);
-      setWorktreeBranch('');
-      setCopyEnv(true);
-      setDepsMode('link');
-      setPullSource(true);
-      setSourceBranch('');
-      setBranchesInfo(null);
-      setConsoleLogs([]);
-      setConsoleStatus('idle');
-      const start = getRecentDirs()[0] || '/';
-      setCwd(start);
-      loadDir(start);
-      checkGit(start);
-    }
-  }, [isOpen, loadDir, checkGit]);
+    if (!isOpen) return;
+    setRecentDirs(getRecentDirs());
+    setShowWorktree(false);
+    setWorktreeBranch('');
+    setCopyEnv(true);
+    setDepsMode('link');
+    setPullSource(true);
+    setSourceBranch('');
+    setBranchesInfo(null);
+    setConsoleLogs([]);
+    setConsoleStatus('idle');
+    let cancelled = false;
+    (async () => {
+      const home = client ? await client.getUserHome() : '/';
+      if (cancelled) return;
+      setCwd(home);
+      loadDir(home);
+      checkGit(home);
+    })();
+    return () => { cancelled = true; };
+  }, [isOpen, loadDir, checkGit, client]);
 
   // Load source-branch options whenever the active git repo changes, and
   // default to the current branch so the common case ("branch off whatever
