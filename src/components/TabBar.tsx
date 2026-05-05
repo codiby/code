@@ -49,6 +49,9 @@ interface Props {
   onChangeGroupIcon?: (groupId: string, icon: string | null) => void;
   /** Create a new session in the group's saved cwd, then add it to the group. */
   onNewSessionInGroup?: (groupId: string) => void;
+  /** Open the worktree creation flow for the group's repo, then spawn a
+   *  session in the resulting worktree path and add it to the group. */
+  onNewSessionInWorktreeForGroup?: (groupId: string) => void;
   /** Move a closed session into the archived bucket. The archive icon next
    *  to each row in the "+" dropdown's CLOSED section calls this — the
    *  session disappears from the dropdown, history is kept, and it can be
@@ -176,7 +179,7 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
 
 function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivity, onToggle, onRename, onMenuOpen }: {
   group: TabGroup; memberCount: number; isExpanded: boolean; hasActive: boolean; hasActivity?: boolean;
-  onToggle: () => void; onRename: (name: string) => void; onMenuOpen: (rect: DOMRect) => void;
+  onToggle: () => void; onRename: (name: string) => void; onMenuOpen: (x: number, y: number) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isOver } = useSortable({ id: `group::${group.id}` });
   const colors = COLOR_MAP[group.color] || COLOR_MAP.blue!;
@@ -198,7 +201,7 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivi
       onContextMenu={e => {
         e.preventDefault();
         e.stopPropagation();
-        onMenuOpen(e.currentTarget.getBoundingClientRect());
+        onMenuOpen(e.clientX, e.clientY);
       }}
     >
       {isExpanded
@@ -237,7 +240,13 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivi
       {/* Dropdown arrow */}
       <button ref={btnRef}
         className="shrink-0 w-4 h-4 flex items-center justify-center rounded-sm leading-none text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-opacity opacity-0 group-hover:opacity-100"
-        onClick={e => { e.stopPropagation(); if (btnRef.current) onMenuOpen(btnRef.current.getBoundingClientRect()); }}
+        onClick={e => {
+          e.stopPropagation();
+          if (btnRef.current) {
+            const r = btnRef.current.getBoundingClientRect();
+            onMenuOpen(r.left, r.bottom + 4);
+          }
+        }}
         onPointerDown={e => e.stopPropagation()}
         title="Group options"
       >
@@ -348,7 +357,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionLastMessageAt,
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
+    tabGroups, tabGroupMap, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
     collapsed, onToggleCollapsed } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
@@ -410,7 +419,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [showMenu, setShowMenu] = useState(false);
-  const [groupMenu, setGroupMenu] = useState<{ groupId: string; rect: DOMRect } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -678,7 +687,7 @@ export const TabBar = memo(function TabBar(props: Props) {
                     hasActivity={!isExpanded && item.members.some(m => sessionHasPermission[m.id])}
                     onToggle={() => onToggleGroup(item.groupId)}
                     onRename={name => onRenameGroup(item.groupId, name)}
-                    onMenuOpen={rect => setGroupMenu({ groupId: item.groupId, rect })}
+                    onMenuOpen={(x, y) => setGroupMenu({ groupId: item.groupId, x, y })}
                   />
                   {isExpanded && (
                     // Indent + colored left rail spans the full height of all
@@ -707,7 +716,7 @@ export const TabBar = memo(function TabBar(props: Props) {
           <>
             <div className="fixed inset-0 z-40" onClick={() => setGroupMenu(null)} />
             <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl min-w-[200px] py-1"
-              style={{ top: groupMenu.rect.bottom + 4, left: groupMenu.rect.left }}>
+              style={{ top: groupMenu.y, left: groupMenu.x }}>
               {grpCwd && (
                 <div className="px-3 py-1 text-[10px] text-zinc-600 truncate font-mono" title={grpCwd}>
                   📁 {grpCwd.split('/').slice(-2).join('/') || grpCwd}
@@ -722,6 +731,13 @@ export const TabBar = memo(function TabBar(props: Props) {
                   onClick={() => { onNewSessionInGroup(groupMenu.groupId); setGroupMenu(null); }}>
                   <span className="text-zinc-500">+</span>
                   New session in group
+                </button>
+              )}
+              {onNewSessionInWorktreeForGroup && grpCwd && (
+                <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-200 hover:bg-surface-light flex items-center gap-2 transition-colors"
+                  onClick={() => { onNewSessionInWorktreeForGroup(groupMenu.groupId); setGroupMenu(null); }}>
+                  <span className="text-zinc-500">⌥</span>
+                  New session in worktree…
                 </button>
               )}
               <div className="px-3 py-1.5">
