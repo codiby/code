@@ -9,6 +9,7 @@ import { FileExplorer } from './FileExplorer';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
 import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
+import { WorktreeModal } from './WorktreeModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
@@ -546,6 +547,59 @@ export function ChatApp() {
     }
   };
 
+  /** Open the worktree creation modal targeted at a group's repo. On
+   *  success (handleWorktreeCreatedForGroup), spawn a session in the new
+   *  worktree path and bind it to the group. Falls back to the first
+   *  member's cwd for legacy groups, same as handleNewSessionInGroup. */
+  const handleNewSessionInWorktreeForGroup = async (groupId: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    const group = tabGroups[groupId];
+    if (!group) return;
+    const firstMember = sessions.find(s => tabGroupMap[s.id] === groupId);
+    const cwd = group.cwd || firstMember?.cwd || '';
+    if (!cwd) return;
+    let hasEnv: boolean | undefined;
+    let packageManager: string | undefined;
+    try {
+      const info = await c.getGitInfo(cwd);
+      hasEnv = info.has_env;
+      packageManager = info.package_manager;
+    } catch {
+      // GitInfo is best-effort prefill; keep going with defaults.
+    }
+    setWorktreeForGroup({ groupId, cwd, hasEnv, packageManager });
+  };
+
+  const handleWorktreeCreatedForGroup = async (groupId: string, originalCwd: string, worktreePath: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    const group = tabGroups[groupId];
+    if (!group) return;
+    try {
+      const session = await c.createSession(worktreePath);
+      const newMap = { ...tabGroupMap, [session.id]: groupId };
+      setTabGroupMap(newMap);
+      let nextGroups = tabGroups;
+      // Backfill the group's cwd with the original repo path (NOT the
+      // worktree path) for legacy groups, so future opens skip the
+      // first-member fallback.
+      if (!group.cwd) {
+        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd: originalCwd } };
+        setTabGroups(nextGroups);
+      }
+      setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
+      setActiveId(session.id);
+      c.subscribe(session.id);
+      subscribedRef.current.add(session.id);
+      persistPrefs({ tabGroupMap: newMap, ...(group.cwd ? {} : { tabGroups: nextGroups }) });
+    } catch (err) {
+      console.error('[ChatApp] Failed to create session in worktree for group:', err);
+    } finally {
+      setWorktreeForGroup(null);
+    }
+  };
+
   const handleGroupTabs = (tabIdA: string, tabIdB: string) => {
     handleCreateGroup([tabIdA, tabIdB]);
   };
@@ -715,6 +769,12 @@ export function ChatApp() {
   const [activeShellBySession, setActiveShellBySession] = useState<Record<string, string>>({});
   const [visibleMessageCount, setVisibleMessageCount] = useState(200);
   const [showNewSession, setShowNewSession] = useState(false);
+  const [worktreeForGroup, setWorktreeForGroup] = useState<{
+    groupId: string;
+    cwd: string;
+    hasEnv?: boolean;
+    packageManager?: string;
+  } | null>(null);
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
@@ -2949,6 +3009,7 @@ export function ChatApp() {
             onRequestDelete={handleRequestDeleteSession}
             onRequestDeleteGroup={handleRequestDeleteGroup}
             onNewSessionInGroup={handleNewSessionInGroup}
+            onNewSessionInWorktreeForGroup={handleNewSessionInWorktreeForGroup}
             collapsed={tabsCollapsed}
             onToggleCollapsed={toggleTabsCollapsed}
           />
@@ -4429,6 +4490,17 @@ export function ChatApp() {
           onClose={() => setShowNewSession(false)}
           onCreate={handleCreateSession}
         />
+        {worktreeForGroup && clientRef.current && (
+          <WorktreeModal
+            open
+            onClose={() => setWorktreeForGroup(null)}
+            client={clientRef.current}
+            repoPath={worktreeForGroup.cwd}
+            hasEnv={worktreeForGroup.hasEnv}
+            detectedPackageManager={worktreeForGroup.packageManager}
+            onCreated={(path) => handleWorktreeCreatedForGroup(worktreeForGroup.groupId, worktreeForGroup.cwd, path)}
+          />
+        )}
         <CommandPalette
           isOpen={showPalette}
           onClose={() => setShowPalette(false)}

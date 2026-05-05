@@ -20,15 +20,15 @@ interface Props {
    *  "Install" for node_modules. */
   detectedPackageManager?: string;
   /** Called once the worktree is ready. Receives the absolute path of the
-   *  new checkout so the parent modal can navigate its cwd there. */
+   *  new checkout so the caller can navigate / spawn a session there. */
   onCreated: (path: string) => void;
 }
 
 /**
  * Mobile worktree creation. Streams `client.createWorktree()` log lines
- * into a live console while git/npm/bun do their thing. Mirrors the
- * desktop NewSessionModal's worktree panel, laid out vertically so it
- * works on a narrow viewport.
+ * into a live console while git/npm/bun do their thing. Full-screen
+ * sheet sized for narrow viewports. Desktop has its own centered-card
+ * variant in `WorktreeModal.tsx`.
  */
 export function MobileWorktreeModal({
   open, onClose, client, repoPath, hasEnv, detectedPackageManager, onCreated,
