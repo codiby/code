@@ -7,6 +7,7 @@ import {
   type ConnectionStatus,
   type PermissionRequest,
   type SessionInfo,
+  type SupportedModel,
 } from '../../lib/claude-client';
 import { playChime } from '../../lib/chime';
 import { useScreenWakeLock } from '../../lib/wake-lock';
@@ -15,12 +16,18 @@ import { MobileHome } from './MobileHome';
 import { GlassNav, type NavTab } from './GlassNav';
 import { BottomBlobs } from './BottomBlobs';
 import { PwaInstallBanner } from './PwaInstallBanner';
-import { MobileSessionsSheet } from './MobileSessionsSheet';
 import { MobileFilesSheet } from './MobileFilesSheet';
 import { MobileGitSheet } from './MobileGitSheet';
 import { MobileSettingsSheet } from './MobileSettingsSheet';
+import type { MockupComment } from '../../lib/mockup-inspector';
 
 const TOKEN_STORAGE_KEY = 'mobileToken';
+
+const CLAUDE_MODEL_OPTIONS = [
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+];
 
 type SessionRuntime = {
   messages: ChatMessage[];
@@ -41,6 +48,14 @@ const EMPTY_RUNTIME: SessionRuntime = {
   wasInterrupted: false,
   permRequest: null,
   hydrated: false,
+};
+
+/** One mockup pinned to a session — persists across modal open/close so the
+ *  user can re-enter from the chat dock pill without losing their comments. */
+type MockupEntry = {
+  name: string;
+  html: string;
+  comments: MockupComment[];
 };
 
 export function MobileApp() {
@@ -166,6 +181,7 @@ export function MobileApp() {
   const [connection, setConnection] = useState<ConnectionStatus>('connecting');
   const [statusBySession, setStatusBySession] = useState<Record<string, string>>({});
   const [turnCompleteSet, setTurnCompleteSet] = useState<Set<string>>(new Set());
+  const [supportedModelsBySession, setSupportedModelsBySession] = useState<Record<string, SupportedModel[]>>({});
   // Tab grouping / ordering / closed sessions — shared with the desktop UI
   // via `~/.claude/ui-preferences.json` so both views agree.
   const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string }>>({});
@@ -179,6 +195,13 @@ export function MobileApp() {
   const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(new Set());
   // Cached opencode probe — see ChatApp.tsx for the desktop equivalent.
   const [opencodeInfo, setOpencodeInfo] = useState<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }> } | null>(null);
+  // Mockups broadcast by the `mockup_write` / `mockup_edit` SDK tools, keyed
+  // by session id. The list is the dock pill row above the composer; the
+  // optional `openName` per session is the mockup currently rendered in the
+  // full-screen modal. Closing the modal clears `openName` but leaves the
+  // entry in the list so the pill stays.
+  const [mockupsBySession, setMockupsBySession] = useState<Record<string, MockupEntry[]>>({});
+  const [openMockupBySession, setOpenMockupBySession] = useState<Record<string, string | null>>({});
   const clientRef = useRef<ClaudeClient | null>(null);
 
   useEffect(() => {
@@ -201,6 +224,9 @@ export function MobileApp() {
         });
       },
       onSessionState: (sessionId, state) => {
+        if (state.supportedModels) {
+          setSupportedModelsBySession((prev) => ({ ...prev, [sessionId]: state.supportedModels || [] }));
+        }
         setRuntime((prev) => ({
           ...prev,
           [sessionId]: {
@@ -314,9 +340,33 @@ export function MobileApp() {
         setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name } : s)));
       },
       onInitInfo: () => {},
+      onSupportedModels: (sessionId, models) => {
+        setSupportedModelsBySession((prev) => ({ ...prev, [sessionId]: models }));
+      },
       onOpenFile: () => {},
-      onOpenMockup: () => {},
-      onPreferences: () => {},
+      onOpenMockup: (sessionId, name, html) => {
+        // Insert/update the entry, preserving any existing comments so a
+        // mockup_edit pass doesn't wipe in-flight feedback.
+        setMockupsBySession((prev) => {
+          const list = prev[sessionId] || [];
+          const idx = list.findIndex((m) => m.name === name);
+          const next: MockupEntry[] = idx === -1
+            ? [...list, { name, html, comments: [] }]
+            : list.map((m, i) => (i === idx ? { ...m, html } : m));
+          return { ...prev, [sessionId]: next };
+        });
+        // Mirror desktop: every broadcast pops the modal open. Edits to an
+        // already-open mockup just refresh in place.
+        setOpenMockupBySession((prev) => ({ ...prev, [sessionId]: name }));
+      },
+      onPreferences: (prefs) => {
+        if (prefs.tabGroups && typeof prefs.tabGroups === 'object') {
+          setTabGroups(prefs.tabGroups as Record<string, { id: string; name: string; color: string }>);
+        }
+        if (prefs.tabGroupMap && typeof prefs.tabGroupMap === 'object') {
+          setTabGroupMap(prefs.tabGroupMap as Record<string, string>);
+        }
+      },
       onFocusSession: (sid) => setActiveId(sid),
       onWelcome: () => {/* Mobile resumes sessions on user action only */},
       onConnectionChange: setConnection,
@@ -540,6 +590,13 @@ export function MobileApp() {
     c.updateSession(activeId, { permissionMode: mode }).catch(() => {});
   };
 
+  const setModelForSession = (sessionId: string, model: string | null) => {
+    const c = clientRef.current;
+    if (!c) return;
+    setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, model } : s)));
+    c.setModel(sessionId, model || '');
+  };
+
   // Screen wake lock — opt-in toggle on the launchpad keeps the display from
   // dimming while the PWA is in the foreground (useful when watching long
   // turns play out). The lock auto-releases on hide; the hook re-acquires it
@@ -549,7 +606,7 @@ export function MobileApp() {
   // ---------------------------------------------------------------------
   // Nav state
   // ---------------------------------------------------------------------
-  const [tab, setTab] = useState<NavTab>('chat');
+  const [tab, setTab] = useState<NavTab>('home');
   // Bottom chrome (nav + composer) auto-hides on downward scroll, comes
   // back on upward scroll or near the top of the chat.
   const [chromeHidden, setChromeHidden] = useState(false);
@@ -640,8 +697,46 @@ export function MobileApp() {
     [sessions, activeId],
   );
   const activeRuntime = (activeId && runtime[activeId]) || EMPTY_RUNTIME;
+  const activeMockups = (activeId && mockupsBySession[activeId]) || [];
+  const openMockupName = (activeId && openMockupBySession[activeId]) || null;
+  const openMockup = openMockupName
+    ? activeMockups.find((m) => m.name === openMockupName) || null
+    : null;
+
+  const setMockupComments = (mockupName: string, next: MockupComment[]) => {
+    if (!activeId) return;
+    setMockupsBySession((prev) => {
+      const list = prev[activeId] || [];
+      const idx = list.findIndex((m) => m.name === mockupName);
+      if (idx === -1) return prev;
+      return {
+        ...prev,
+        [activeId]: list.map((m, i) => (i === idx ? { ...m, comments: next } : m)),
+      };
+    });
+  };
+
+  const openMockupModal = (mockupName: string) => {
+    if (!activeId) return;
+    setOpenMockupBySession((prev) => ({ ...prev, [activeId]: mockupName }));
+  };
+
+  const closeMockupModal = () => {
+    if (!activeId) return;
+    setOpenMockupBySession((prev) => ({ ...prev, [activeId]: null }));
+  };
   const activeStatus = (activeId && statusBySession[activeId]) ||
     (activeSession?.ready ? 'connected' : connection);
+  const activeModelOptions = useMemo(() => {
+    if (!activeSession) return [];
+    const providerModels = activeSession.provider === 'opencode'
+      ? (opencodeInfo?.models ?? []).map((m) => ({ id: m.id, label: `${m.providerName} ${m.label}` }))
+      : (supportedModelsBySession[activeSession.id]?.length ? supportedModelsBySession[activeSession.id]! : CLAUDE_MODEL_OPTIONS);
+    if (activeSession.model && !providerModels.some((m) => m.id === activeSession.model)) {
+      return [{ id: activeSession.model, label: activeSession.model }, ...providerModels];
+    }
+    return providerModels;
+  }, [activeSession, opencodeInfo?.models, supportedModelsBySession]);
 
   // Derive per-session flags for the sessions sheet
   const streamingBySession = useMemo(() => {
@@ -686,12 +781,64 @@ export function MobileApp() {
       ? connection
       : (activeId && !runtime[activeId]?.hydrated ? 'loading' : 'connected');
 
+  const client = clientRef.current;
+  if (!client) {
+    return <FullscreenMessage>Connecting…</FullscreenMessage>;
+  }
+
+  const selectSessionAndOpenChat = (id: string) => {
+    setActiveId(id);
+    setTab('chat');
+  };
+
+  const reopenSessionAndOpenChat = (id: string) => {
+    reopenSession(id);
+    setTab('chat');
+  };
+
+  const selectNavTab = (next: NavTab) => {
+    if (next === 'chat' && !activeId) {
+      setTab('home');
+      return;
+    }
+    setTab(next);
+  };
+
   return (
     <div className="relative min-h-[100dvh] bg-zinc-950">
       <BottomLoader status={indicatorStatus} />
-      {activeSession ? (
+      {tab === 'home' || !activeSession ? (
+        <MobileHome
+          client={client}
+          sessions={sessions}
+          activeId={activeId}
+          closedSessionIds={closedSessionIds}
+          archivedSessionIds={archivedSessionIds}
+          onQuickStart={(provider) => {
+            try { localStorage.setItem('claude-ui-last-provider', provider); } catch {}
+          }}
+          opencodeAvailable={opencodeInfo?.available ?? false}
+          opencodeModels={opencodeInfo?.models ?? []}
+          onSelectSession={selectSessionAndOpenChat}
+          onCloseSession={closeSession}
+          onReopenSession={reopenSessionAndOpenChat}
+          onArchiveSession={archiveSession}
+          statuses={statusBySession}
+          streaming={streamingBySession}
+          interrupted={interruptedBySession}
+          hasPermission={permissionBySession}
+          turnComplete={turnCompleteSet}
+          tabGroups={tabGroups}
+          tabGroupMap={tabGroupMap}
+          tabOrder={tabOrder}
+          pinnedSessionIds={pinnedSessionIds}
+          keepScreenOn={wakeLock.enabled}
+          keepScreenOnSupported={wakeLock.supported}
+          onToggleKeepScreenOn={wakeLock.setEnabled}
+        />
+      ) : (
         <MobileChat
-          client={clientRef.current!}
+          client={client}
           session={activeSession}
           messages={activeRuntime.messages}
           partialText={activeRuntime.partialText}
@@ -699,7 +846,7 @@ export function MobileApp() {
           permRequest={activeRuntime.permRequest}
           status={activeStatus}
           hydrated={activeRuntime.hydrated}
-          onOpenSessions={() => setTab('sessions')}
+          onOpenSessions={() => setTab('home')}
           onLocalClearPerm={(reqId) => {
             if (!activeId) return;
             setRuntime((prev) => {
@@ -714,23 +861,16 @@ export function MobileApp() {
           onCreateShell={createShell}
           onRemoveShell={removeShell}
           shells={(activeId && shellsBySession[activeId]) || undefined}
-          onOpenNewSession={() => setTab('sessions')}
+          onOpenNewSession={() => setTab('home')}
           onClearSession={clearActiveSession}
           onPermissionModeChange={setPermissionModeForActive}
-        />
-      ) : (
-        <MobileHome
-          sessions={sessions}
-          closedSessionIds={closedSessionIds}
-          archivedSessionIds={archivedSessionIds}
-          onNewSession={() => setTab('sessions')}
-          onOpenSessions={() => setTab('sessions')}
-          onOpenSettings={() => setTab('settings')}
-          onSelectSession={setActiveId}
-          onReopenSession={reopenSession}
-          keepScreenOn={wakeLock.enabled}
-          keepScreenOnSupported={wakeLock.supported}
-          onToggleKeepScreenOn={wakeLock.setEnabled}
+          modelOptions={activeModelOptions}
+          onModelChange={(model) => activeId && setModelForSession(activeId, model)}
+          mockups={activeMockups}
+          openMockup={openMockup}
+          onOpenMockup={openMockupModal}
+          onCloseMockup={closeMockupModal}
+          onSetMockupComments={setMockupComments}
         />
       )}
 
@@ -742,38 +882,12 @@ export function MobileApp() {
 
       <GlassNav
         active={tab}
-        onSelect={setTab}
+        onSelect={selectNavTab}
         hasPending={!!activeRuntime.permRequest}
         hidden={effectiveChromeHidden}
       />
 
       <PwaInstallBanner />
-
-      {clientRef.current && (
-        <MobileSessionsSheet
-          open={tab === 'sessions'}
-          onClose={() => setTab('chat')}
-          client={clientRef.current}
-          opencodeAvailable={opencodeInfo?.available ?? false}
-          sessions={sessions}
-          activeId={activeId}
-          onSelect={setActiveId}
-          onCloseSession={closeSession}
-          onReopenSession={reopenSession}
-          onArchiveSession={archiveSession}
-          statuses={statusBySession}
-          streaming={streamingBySession}
-          interrupted={interruptedBySession}
-          hasPermission={permissionBySession}
-          turnComplete={turnCompleteSet}
-          tabGroups={tabGroups}
-          tabGroupMap={tabGroupMap}
-          tabOrder={tabOrder}
-          pinnedSessionIds={pinnedSessionIds}
-          closedSessionIds={closedSessionIds}
-          archivedSessionIds={archivedSessionIds}
-        />
-      )}
 
       {clientRef.current && (
         <MobileFilesSheet

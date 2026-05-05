@@ -14,6 +14,8 @@ import { MobileActionSheet, type ActionSheetId } from './MobileActionSheet';
 import { MobileImageViewer } from './MobileImageViewer';
 import { collapseToolRuns, toolRunSummary } from '../MessageBubble';
 import type { ToolRunGroup } from '../MessageBubble';
+import { MobileMockupModal } from './MobileMockupModal';
+import type { MockupComment } from '../../lib/mockup-inspector';
 
 /** Tailwind classes that bump the Markdown component's default 12px sizing
  *  up to mobile-readable sizes. The Markdown component sets a base of
@@ -70,6 +72,19 @@ interface Props {
    *  permission mode. Lets MobileApp optimistically update its session list
    *  while we also push the change to the server. */
   onPermissionModeChange?: (mode: string) => void;
+  modelOptions?: Array<{ id: string; label: string }>;
+  onModelChange?: (model: string | null) => void;
+  /** All mockups broadcast for the active session — rendered as pills in
+   *  the dock row above the composer so the user can re-open any of them. */
+  mockups?: { name: string; html: string; comments: MockupComment[] }[];
+  /** When set, the full-screen mockup modal is rendered for this entry. */
+  openMockup?: { name: string; html: string; comments: MockupComment[] } | null;
+  /** Tap a pill → open the modal for that mockup name. */
+  onOpenMockup?: (name: string) => void;
+  /** Close button on the modal — minimizes back to the pill row. */
+  onCloseMockup?: () => void;
+  /** Persist comments edited in the modal back into per-session state. */
+  onSetMockupComments?: (mockupName: string, next: MockupComment[]) => void;
 }
 
 export function MobileChat({
@@ -92,6 +107,13 @@ export function MobileChat({
   onOpenNewSession,
   onClearSession,
   onPermissionModeChange,
+  modelOptions,
+  onModelChange,
+  mockups,
+  openMockup,
+  onOpenMockup,
+  onCloseMockup,
+  onSetMockupComments,
 }: Props) {
   const [input, setInput] = useState('');
   // Pending image attachments — base64 + media_type, shown as thumbnails
@@ -437,10 +459,19 @@ export function MobileChat({
       accumDeltaRef.current = 0;
       return;
     }
-    // Hide on a sustained downward swipe; show on any meaningful upward swipe.
+    // Always show when near the bottom (composer territory) — that's where
+    // the user types and expects the tabs to be reachable.
+    if (distanceFromBottom < 96) {
+      if (chromeHidden) toggleChrome(false);
+      accumDeltaRef.current = 0;
+      return;
+    }
+    // Hide on a sustained downward gesture; bring the chrome back the
+    // moment the user even glances upward (no accumulator threshold —
+    // a small swipe was getting swallowed before).
     if (accumDeltaRef.current > 60 && !chromeHidden) {
       toggleChrome(true);
-    } else if (accumDeltaRef.current < -20 && chromeHidden) {
+    } else if (delta < 0 && chromeHidden) {
       toggleChrome(false);
     }
   };
@@ -1013,6 +1044,28 @@ export function MobileChat({
                   </button>
                 );
               })}
+          {mockups && mockups.map((m) => (
+            <button
+              key={m.name}
+              type="button"
+              onClick={() => onOpenMockup?.(m.name)}
+              className="shrink-0 flex items-center gap-1.5 max-w-[70vw] px-2.5 py-1 rounded-full bg-zinc-900/70 border border-violet-500/30 shadow-lg text-[12px] text-violet-200 active:bg-zinc-900/90"
+              style={{
+                backdropFilter: 'blur(20px) saturate(180%)',
+                WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+              }}
+              title={`Open mockup "${m.name}"`}
+              aria-label={`Open mockup: ${m.name}`}
+            >
+              <span className="text-[10px] text-violet-400 shrink-0">▣</span>
+              <span className="truncate font-mono">{m.name}</span>
+              {m.comments.length > 0 && (
+                <span className="shrink-0 px-1 min-w-[16px] h-[16px] flex items-center justify-center rounded-full bg-violet-500/30 text-[10px] font-semibold text-violet-100">
+                  {m.comments.length}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
 
         {/* Attachment thumbnails (above the composer when present) */}
@@ -1200,9 +1253,53 @@ export function MobileChat({
         open={actionSheetOpen}
         onClose={() => setActionSheetOpen(false)}
         onAction={handleActionSheet}
+        sessionName={session?.name}
+        model={session?.model}
+        modelOptions={modelOptions}
+        onModelChange={onModelChange}
       />
 
       <MobileImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />
+
+      {openMockup && session && (
+        <MobileMockupModal
+          open
+          name={openMockup.name}
+          html={openMockup.html}
+          comments={openMockup.comments}
+          onSetComments={(next) => onSetMockupComments?.(openMockup.name, next)}
+          onSendToChat={(md) => {
+            // Mirrors handleSend's queue-vs-direct branching so feedback
+            // round-trips work mid-turn too. Clear comments + close inspect
+            // afterward, but leave the modal open so the user can keep
+            // iterating on the same mockup.
+            if (permRequest) {
+              const reqId = permRequest.requestId;
+              onLocalClearPerm?.(reqId);
+              client.respondToPermission(session.id, reqId, false);
+            }
+            if (isStreaming) {
+              const pendingMsg: PendingMessage = { id: crypto.randomUUID(), text: md };
+              setPendingBySession((prev) => ({
+                ...prev,
+                [session.id]: [...(prev[session.id] || []), pendingMsg],
+              }));
+            } else {
+              client.sendMessage(session.id, md);
+            }
+            onSetMockupComments?.(openMockup.name, []);
+          }}
+          onWriteToChat={(md) => {
+            // Stuff into the composer without sending — close the modal so the
+            // user lands back on the input. Comments stay in place so they
+            // can keep iterating before firing.
+            setInput((prev) => prev ? prev + (prev.endsWith('\n') ? '' : '\n\n') + md : md);
+            onCloseMockup?.();
+            requestAnimationFrame(() => taRef.current?.focus());
+          }}
+          onClose={() => onCloseMockup?.()}
+        />
+      )}
     </div>
   );
 }
