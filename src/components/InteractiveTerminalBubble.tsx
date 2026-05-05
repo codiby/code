@@ -138,10 +138,12 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
 
       // Subscribe to live data BEFORE spawning so we don't miss the first chunk.
       const unsubData = client.onTerminalDataForProc(procId, (text: string) => {
-        if (!gotFirstDataRef.current) {
+        // The server emits an empty `terminal_data` immediately after spawn as
+        // a correlation ack — that arrives before the shell has finished
+        // starting up, so we must not treat it as readiness. Only real output
+        // (the prompt) means it's safe to inject the initial command.
+        if (!gotFirstDataRef.current && text.length > 0) {
           gotFirstDataRef.current = true;
-          // Once the PTY has produced any output, it's safe to inject the
-          // optional initial command typed after `/terminal` (e.g. `/t ls`).
           if (initialCommand && !didSendInitialRef.current) {
             didSendInitialRef.current = true;
             try { client.sendTerminalInput(sessionId, procId, initialCommand + '\r'); } catch {}
