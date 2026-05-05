@@ -13,6 +13,7 @@ import {
   Minus,
   Play,
   Plus,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -353,6 +354,13 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
         </span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Changes</span>
         <span className="text-[10px] text-amber-400/70 ml-auto mr-1">{totalCount}</span>
+        <span
+          className="text-zinc-600 hover:text-zinc-200 px-1 flex items-center transition-colors opacity-0 group-hover:opacity-100"
+          onClick={(e) => { e.stopPropagation(); onRefresh(); }}
+          title="Refresh"
+        >
+          <RefreshCw size={12} />
+        </span>
         {unstagedFiles.length > 0 && (
           <span
             className="text-zinc-600 hover:text-green-400 px-1 flex items-center transition-colors opacity-0 group-hover:opacity-100"
