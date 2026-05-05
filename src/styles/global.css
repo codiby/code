@@ -149,3 +149,16 @@ code {
 .connection-bar-slider {
   animation: connection-bar-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
+
+/* ---------------------------------------------------------------------------
+   PlanPanel block flash — applied to blocks whose text is new or modified
+   compared to the previous version of the plan. One-shot violet wash that
+   settles back to transparent over ~2.5s.
+   --------------------------------------------------------------------------- */
+@keyframes planBlockHighlight {
+  0%   { background-color: rgba(139, 92, 246, 0.28); box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.45); }
+  100% { background-color: transparent;             box-shadow: inset 0 0 0 0 transparent; }
+}
+.plan-block-highlight {
+  animation: planBlockHighlight 2.5s ease-out forwards;
+}

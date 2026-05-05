@@ -32,6 +32,7 @@ import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
 import { type MockupComment } from '../lib/mockup-inspector';
 import { MockupPanel } from './MockupPanel';
+import { PlanPanel, type PlanComment } from './PlanPanel';
 
 type PendingMessage = {
   id: string;
@@ -55,6 +56,14 @@ type LocalSessionState = SessionState & {
   // survive `mockup_edit` re-broadcasts and tab switches.
   mockupComments: Record<string, MockupComment[]>;
   mockupInspect: boolean;
+  // ExitPlanMode plan rendered in the side panel. UI-only — same merge
+  // caveat as `openMockup`. `planRequestId` tracks the most recent perm
+  // request id we auto-opened for so we don't reopen the panel after the
+  // user closes it manually while permission is still pending.
+  openPlan: { content: string; allowedPrompts?: { tool: string; prompt: string }[] } | null;
+  lastPlan: { content: string; allowedPrompts?: { tool: string; prompt: string }[] } | null;
+  planComments: PlanComment[];
+  planRequestId: string | null;
 };
 
 type AskQuestion = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
@@ -763,6 +772,7 @@ export function ChatApp() {
     pendingMessages: [],
     openMockup: null, lastMockup: null,
     mockupComments: {}, mockupInspect: false,
+    openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
   });
 
   const getState = (id: string | null): LocalSessionState => {
@@ -891,6 +901,10 @@ export function ChatApp() {
                 lastMockup: existing?.lastMockup ?? null,
                 mockupComments: existing?.mockupComments ?? {},
                 mockupInspect: false,
+                openPlan: existing?.openPlan ?? null,
+                lastPlan: existing?.lastPlan ?? null,
+                planComments: existing?.planComments ?? [],
+                planRequestId: existing?.planRequestId ?? null,
               },
             };
           });
@@ -1256,9 +1270,9 @@ export function ChatApp() {
   }, [activeId]);
 
   const active = getState(activeId);
-  const { openFile, openMockup, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
+  const { openFile, openMockup, openPlan, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
-  const hasRightPanel = !!openFile || !!openMockup || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+  const hasRightPanel = !!openFile || !!openMockup || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
 
   useEffect(() => {
     scrollToBottom();
@@ -1305,6 +1319,34 @@ export function ChatApp() {
       return () => clearTimeout(t);
     }
   }, [active.permRequest, scrollToBottom]);
+
+  // Auto-open the plan side panel the first time we see an `ExitPlanMode`
+  // permission request. We track `planRequestId` so re-renders (or the user
+  // closing the panel mid-decision) don't pop it back open. New plan
+  // proposals replace any prior comments — they're per-plan-instance.
+  useEffect(() => {
+    if (!activeId) return;
+    const req = active.permRequest;
+    if (!req || req.toolName !== 'ExitPlanMode') return;
+    const content = typeof req.input.plan === 'string' ? req.input.plan as string : '';
+    if (!content) return;
+    if (active.planRequestId === req.requestId) return;
+    const allowedPrompts = Array.isArray(req.input.allowedPrompts)
+      ? req.input.allowedPrompts as { tool: string; prompt: string }[]
+      : undefined;
+    updateLocalState(activeId, s => ({
+      ...s,
+      openPlan: { content, allowedPrompts },
+      lastPlan: { content, allowedPrompts },
+      planComments: [],
+      planRequestId: req.requestId,
+      openFile: null,
+      openMockup: null,
+      openTerminalId: null,
+      diffView: null,
+      editorDirty: false,
+    }));
+  }, [activeId, active.permRequest, active.planRequestId]);
 
   // Re-fetch open file and git status when new messages arrive
   const msgLenRef = useRef(0);
@@ -3374,28 +3416,32 @@ export function ChatApp() {
                             </div>
                           )}
 
-                          {/* ExitPlanMode: full-height markdown plan */}
+                          {/* ExitPlanMode: plan body lives in the side panel
+                              (auto-opened by an effect above). Inline we just
+                              render a compact pointer + a Reopen button so the
+                              chat doesn't go blank if the user closed it. */}
                           {isPlan && (
-                            <div className="rounded overflow-hidden border border-violet-500/30 mb-2 flex flex-col" style={{ height: 'calc(60vh)' }}>
-                              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-violet-500/20 bg-violet-500/5 shrink-0">
-                                <span className="text-[11px] text-violet-400 font-semibold uppercase tracking-wide">Plan</span>
+                            <div className="rounded border border-violet-500/30 bg-violet-500/5 mb-2 px-3 py-2 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-[10px] text-violet-400">◆</span>
+                                <span className="text-[11px] text-violet-300 font-semibold uppercase tracking-wide shrink-0">Plan</span>
+                                <span className="text-[11px] text-zinc-500 truncate">
+                                  {planContent ? (planContent.split('\n').find(l => l.trim()) || '').slice(0, 80) : 'No plan content'}
+                                </span>
                               </div>
-                              {planContent ? (
-                                <div className="flex-1 overflow-y-auto px-3 py-2">
-                                  <Markdown text={planContent} />
-                                </div>
-                              ) : (
-                                <p className="text-[12px] text-zinc-500 px-3 py-3">No plan content</p>
-                              )}
-                              {allowedPrompts.length > 0 && (
-                                <div className="border-t border-violet-500/20 px-3 py-2 shrink-0">
-                                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Allowed actions</p>
-                                  <div className="flex flex-wrap gap-1">
-                                    {allowedPrompts.map((p, i) => (
-                                      <span key={i} className="text-[11px] bg-surface-light text-zinc-400 px-2 py-0.5 rounded">{p.prompt}</span>
-                                    ))}
-                                  </div>
-                                </div>
+                              {planContent && activeId && !openPlan && (
+                                <button
+                                  className="text-[11px] text-violet-300 hover:text-violet-200 hover:bg-violet-500/15 rounded px-2 py-0.5 shrink-0"
+                                  onClick={() => updateLocalState(activeId, s => ({
+                                    ...s,
+                                    openPlan: { content: planContent, allowedPrompts },
+                                    lastPlan: { content: planContent, allowedPrompts },
+                                    openFile: null, openMockup: null, openTerminalId: null, diffView: null,
+                                  }))}
+                                  title="Reopen plan in the side panel"
+                                >
+                                  Open in side panel
+                                </button>
                               )}
                             </div>
                           )}
@@ -4035,13 +4081,78 @@ export function ChatApp() {
                     onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
                   />
                 )}
-                {!openFile && !openMockup && pluginDetailOpen && (
+                {!openFile && !openMockup && openPlan && activeId && (
+                  <PlanPanel
+                    content={openPlan.content}
+                    allowedPrompts={openPlan.allowedPrompts}
+                    comments={active.planComments}
+                    onSetComments={(next) => updateLocalState(activeId, s => ({ ...s, planComments: next }))}
+                    onSendToChat={(md) => {
+                      // Mirrors MockupPanel.onSendToChat — fire as a queued
+                      // message if a turn is in flight, otherwise start a
+                      // new turn directly. Always clear comments after.
+                      // Additionally: if the pending perm is the ExitPlanMode
+                      // we're commenting on, auto-deny it so the agent
+                      // unblocks and can refine the plan from our feedback
+                      // (mirrors the handleSend auto-deny on stale perms).
+                      if (!clientRef.current) return;
+                      const pendingPlanReq = active.permRequest && active.permRequest.toolName === 'ExitPlanMode'
+                        ? active.permRequest
+                        : null;
+                      if (pendingPlanReq) {
+                        clientRef.current.respondToPermission(activeId, pendingPlanReq.requestId, false);
+                      }
+                      const streamingNow = active.isStreaming;
+                      if (streamingNow) {
+                        const pendingId = crypto.randomUUID();
+                        const pendingMsg = {
+                          id: pendingId,
+                          role: 'user' as const,
+                          content: md,
+                          timestamp: Date.now(),
+                          isPending: true,
+                        };
+                        updateLocalState(activeId, s => ({
+                          ...s,
+                          messages: [...s.messages, pendingMsg],
+                          pendingMessages: [...s.pendingMessages, { id: pendingId, text: md }],
+                          planComments: [],
+                          permRequest: pendingPlanReq ? null : s.permRequest,
+                        }));
+                      } else {
+                        const userMsg = {
+                          id: crypto.randomUUID(),
+                          role: 'user' as const,
+                          content: md,
+                          timestamp: Date.now(),
+                        };
+                        updateLocalState(activeId, s => ({
+                          ...s,
+                          messages: [...s.messages, userMsg],
+                          isStreaming: true,
+                          wasInterrupted: false,
+                          partialText: '',
+                          planComments: [],
+                          permRequest: pendingPlanReq ? null : s.permRequest,
+                        }));
+                        clientRef.current.sendMessage(activeId, md);
+                      }
+                    }}
+                    onWriteToChat={(md) => {
+                      setInput(prev => prev ? prev + (prev.endsWith('\n') ? '' : '\n\n') + md : md);
+                      inputRef.current?.focus();
+                    }}
+                    onClose={() => updateLocalState(activeId, s => ({ ...s, openPlan: null, editorFullWidth: false }))}
+                    onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
+                  />
+                )}
+                {!openFile && !openMockup && !openPlan && pluginDetailOpen && (
                   <PluginDetailView />
                 )}
-                {!openFile && !openMockup && !pluginDetailOpen && openPR && (
+                {!openFile && !openMockup && !openPlan && !pluginDetailOpen && openPR && (
                   <PRDetail pr={openPR} cwd={active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
                 )}
-                {!openFile && !openMockup && !pluginDetailOpen && !openPR && openTerminal && (
+                {!openFile && !openMockup && !openPlan && !pluginDetailOpen && !openPR && openTerminal && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
@@ -4064,7 +4175,7 @@ export function ChatApp() {
                     </pre>
                   </div>
                 )}
-                {!openFile && !openMockup && !openTerminal && diffView && (
+                {!openFile && !openMockup && !openPlan && !openTerminal && diffView && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     {/* Review status bar */}
                     {reviewMode && (
