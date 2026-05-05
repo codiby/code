@@ -561,14 +561,16 @@ export function ChatApp() {
     if (!cwd) return;
     let hasEnv: boolean | undefined;
     let packageManager: string | undefined;
+    let worktrees: { path: string; branch: string }[] | undefined;
     try {
       const info = await c.getGitInfo(cwd);
       hasEnv = info.has_env;
       packageManager = info.package_manager;
+      worktrees = info.worktrees;
     } catch {
       // GitInfo is best-effort prefill; keep going with defaults.
     }
-    setWorktreeForGroup({ groupId, cwd, hasEnv, packageManager });
+    setWorktreeForGroup({ groupId, cwd, hasEnv, packageManager, worktrees });
   };
 
   const handleWorktreeCreatedForGroup = async (groupId: string, originalCwd: string, worktreePath: string) => {
@@ -774,6 +776,7 @@ export function ChatApp() {
     cwd: string;
     hasEnv?: boolean;
     packageManager?: string;
+    worktrees?: { path: string; branch: string }[];
   } | null>(null);
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
@@ -4484,6 +4487,7 @@ export function ChatApp() {
             repoPath={worktreeForGroup.cwd}
             hasEnv={worktreeForGroup.hasEnv}
             detectedPackageManager={worktreeForGroup.packageManager}
+            worktrees={worktreeForGroup.worktrees}
             onCreated={(path) => handleWorktreeCreatedForGroup(worktreeForGroup.groupId, worktreeForGroup.cwd, path)}
           />
         )}
