@@ -177,6 +177,8 @@ export function MobileApp() {
   // sessions sheet only renders the closed bucket; archived sessions are
   // hidden until the future archived-sessions management page lands.
   const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(new Set());
+  // Cached opencode probe — see ChatApp.tsx for the desktop equivalent.
+  const [opencodeInfo, setOpencodeInfo] = useState<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }> } | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
 
   useEffect(() => {
@@ -320,7 +322,14 @@ export function MobileApp() {
       onConnectionChange: setConnection,
     });
     clientRef.current = client;
+    // Probe opencode once per mount; cached server-side, so the bridge
+    // only spawns the binary on the first call.
+    let cancelled = false;
+    client.getOpencodeInfo()
+      .then(info => { if (!cancelled) setOpencodeInfo({ available: info.available, models: info.models || [] }); })
+      .catch(() => { if (!cancelled) setOpencodeInfo({ available: false, models: [] }); });
     return () => {
+      cancelled = true;
       client.destroy();
       clientRef.current = null;
     };
@@ -745,6 +754,7 @@ export function MobileApp() {
           open={tab === 'sessions'}
           onClose={() => setTab('chat')}
           client={clientRef.current}
+          opencodeAvailable={opencodeInfo?.available ?? false}
           sessions={sessions}
           activeId={activeId}
           onSelect={setActiveId}

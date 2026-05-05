@@ -471,38 +471,6 @@ class OpenCodeProviderSession implements ProviderSession {
     }
   }
 
-  async listModels(): Promise<Array<{ id: string; label: string; providerName: string }>> {
-    const { client } = await this.readyPromise;
-    const result = await client.provider.list({ throwOnError: true });
-    const data = (result as { data?: { all?: unknown[]; connected?: string[] } }).data;
-    const all = (data?.all ?? []) as Array<{
-      id: string;
-      name: string;
-      models: Record<string, { id: string; name: string; status?: string }>;
-    }>;
-    const connected = new Set(data?.connected ?? []);
-    const out: Array<{ id: string; label: string; providerName: string }> = [];
-    for (const provider of all) {
-      // Only surface providers the user is actually authenticated for —
-      // listing 200+ models from every backend just to grey them out
-      // would be more confusing than useful.
-      if (!connected.has(provider.id)) continue;
-      for (const [, model] of Object.entries(provider.models)) {
-        if (model.status === 'deprecated') continue;
-        out.push({
-          id: `${provider.id}/${model.id}`,
-          label: model.name,
-          providerName: provider.name,
-        });
-      }
-    }
-    out.sort((a, b) => {
-      if (a.providerName !== b.providerName) return a.providerName.localeCompare(b.providerName);
-      return a.label.localeCompare(b.label);
-    });
-    return out;
-  }
-
   async setModel(model: string | null): Promise<void> {
     // opencode supports a per-prompt model override (SessionPromptData
     // body.model), so we just stash the new value and the next

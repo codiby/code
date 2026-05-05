@@ -45,6 +45,10 @@ interface Props {
    *  section. They live in the (future) archived-sessions management
    *  page only. */
   archivedSessionIds: Set<string>;
+  /** Whether the opencode binary is available on this host (cached at
+   *  app boot). Forwarded to MobileNewSessionModal so the OpenCode
+   *  provider option only appears when usable. */
+  opencodeAvailable?: boolean;
 }
 
 const COLOR_DOT: Record<string, string> = {
@@ -73,6 +77,7 @@ export function MobileSessionsSheet({
   open, onClose, client, sessions, activeId, onSelect, onCloseSession, onReopenSession, onArchiveSession,
   statuses, streaming, interrupted, hasPermission, turnComplete,
   tabGroups, tabGroupMap, tabOrder, pinnedSessionIds, closedSessionIds, archivedSessionIds,
+  opencodeAvailable,
 }: Props) {
   const [newModalOpen, setNewModalOpen] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
@@ -331,6 +336,7 @@ export function MobileSessionsSheet({
         open={newModalOpen}
         onClose={() => setNewModalOpen(false)}
         client={client}
+        opencodeAvailable={opencodeAvailable ?? false}
         onCreated={(id) => { onSelect(id); onClose(); }}
       />
 

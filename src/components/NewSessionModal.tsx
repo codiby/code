@@ -21,9 +21,10 @@ const PROVIDER_OPTIONS = [
 ] as const;
 type ProviderKey = typeof PROVIDER_OPTIONS[number]['key'];
 
-function getLastProvider(): ProviderKey {
+function getLastProvider(available: ReadonlyArray<{ key: string }>): ProviderKey {
   const v = localStorage.getItem(PROVIDER_KEY);
-  return PROVIDER_OPTIONS.some(o => o.key === v) ? (v as ProviderKey) : 'claudeAgent';
+  if (available.some(o => o.key === v)) return v as ProviderKey;
+  return 'claudeAgent';
 }
 
 function getRecentDirs(): string[] {
@@ -48,11 +49,13 @@ interface GitInfo {
 interface Props {
   isOpen: boolean;
   client: ClaudeClient | null;
+  opencodeAvailable?: boolean;
   onClose: () => void;
   onCreate: (cwd: string, provider: string) => void;
 }
 
-export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
+export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, onCreate }: Props) {
+  const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
   const [cwd, setCwd] = useState('/');
   const [folders, setFolders] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -74,7 +77,7 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
   const [consoleStatus, setConsoleStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const consoleRef = useRef<HTMLDivElement>(null);
 
-  const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider());
+  const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider(availableProviders));
 
   const loadDir = useCallback(async (path: string) => {
     if (!client) return;
@@ -480,7 +483,7 @@ export function NewSessionModal({ isOpen, client, onClose, onCreate }: Props) {
               <SelectTrigger className="h-8 text-xs w-28"><SelectValue /></SelectTrigger>
               <SelectPopover>
                 <ListBox>
-                  {PROVIDER_OPTIONS.map(opt => (
+                  {availableProviders.map(opt => (
                     <ListBoxItem key={opt.key} id={opt.key} textValue={opt.label}>
                       <span className="text-sm">{opt.label}</span>
                     </ListBoxItem>

@@ -692,9 +692,13 @@ export function ChatApp() {
   const historyDraftRef = useRef('');
   const subscribedRef = useRef(new Set<string>());
   const [pastedImages, setPastedImages] = useState<{ media_type: string; data: string; preview: string }[]>([]);
-  // Provider-supplied model lists (currently only opencode), keyed by sessionId.
-  // null = not yet fetched, [] = fetched and empty (no connected providers).
-  const [providerModels, setProviderModels] = useState<Record<string, Array<{ id: string; label: string; providerName: string }> | null>>({});
+  // Pulled once from the bridge on mount via /providers/opencode/info.
+  // `null` = probe in flight, `{available: false}` = opencode binary is
+  // missing or its first boot failed (in which case the New Session
+  // modal hides the OpenCode option). Populated from opencode's
+  // provider.list, so it reflects whichever providers the user has
+  // authenticated for.
+  const [opencodeInfo, setOpencodeInfo] = useState<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }> } | null>(null);
   // Per-message-id set of interactive terminals the user has minimized via the
   // shells badge bar or bubble header. Transient UI state; not persisted.
   const [minimizedShells, setMinimizedShells] = useState<Set<string>>(new Set());
@@ -1278,21 +1282,20 @@ export function ChatApp() {
     scrollToBottom();
   }, [active.messages.length, active.partialText, scrollToBottom]);
 
-  // For opencode sessions, fetch the model list off the running server
-  // once it's ready. Other providers use a hardcoded list and don't need
-  // a fetch. Refetch is keyed on sessionId + ready, so swapping tabs or
-  // a session restart triggers a fresh pull.
+  // Probe opencode once when the bridge client is ready. The endpoint
+  // is cached on the server side, so future calls (or a refresh of the
+  // app) hit the cache instantly. We persist the result in state so
+  // the model picker and provider gating in the New Session modal can
+  // consume it without re-fetching per render.
   useEffect(() => {
-    if (!activeId || !clientRef.current) return;
-    const sess = sessions.find(s => s.id === activeId);
-    if (!sess || sess.provider !== 'opencode' || !sess.ready) return;
-    if (providerModels[activeId] !== undefined) return;
-    const sid = activeId;
-    setProviderModels(prev => ({ ...prev, [sid]: null }));
-    clientRef.current.listSessionModels(sid)
-      .then(models => setProviderModels(prev => ({ ...prev, [sid]: models })))
-      .catch(() => setProviderModels(prev => ({ ...prev, [sid]: [] })));
-  }, [activeId, sessions, providerModels]);
+    if (!clientRef.current) return;
+    if (opencodeInfo !== null) return;
+    let cancelled = false;
+    clientRef.current.getOpencodeInfo()
+      .then(info => { if (!cancelled) setOpencodeInfo({ available: info.available, models: info.models || [] }); })
+      .catch(() => { if (!cancelled) setOpencodeInfo({ available: false, models: [] }); });
+    return () => { cancelled = true; };
+  }, [opencodeInfo]);
 
   // Jump to line when openFile.line changes (e.g. clicking different search results in same file)
   useEffect(() => {
@@ -3678,8 +3681,8 @@ export function ChatApp() {
                         const streaming = active.isStreaming;
                         const refs = input.match(/@[\w.\/\-:]+/g);
                         const isOpenCode = activeSession?.provider === 'opencode';
-                        const ocModels = activeId ? providerModels[activeId] : undefined;
-                        const ocLoading = isOpenCode && ocModels === null;
+                        const ocModels = isOpenCode ? (opencodeInfo?.models ?? null) : undefined;
+                        const ocLoading = isOpenCode && opencodeInfo === null;
                         const sendDisabled = isTerminalMode
                           ? !cmdText.trim() || activeStatus !== 'connected'
                           : !input.trim() || activeStatus !== 'connected';
@@ -4421,6 +4424,7 @@ export function ChatApp() {
         <NewSessionModal
           isOpen={showNewSession}
           client={clientRef.current}
+          opencodeAvailable={opencodeInfo?.available ?? false}
           onClose={() => setShowNewSession(false)}
           onCreate={handleCreateSession}
         />

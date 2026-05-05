@@ -578,9 +578,9 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async listSessionModels(sessionId: string): Promise<Array<{ id: string; label: string; providerName: string }>> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/models`);
-    if (!resp.ok) return [];
+  async getOpencodeInfo(): Promise<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }>; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/providers/opencode/info`);
+    if (!resp.ok) return { available: false, models: [] };
     return resp.json();
   }
 

@@ -16,9 +16,10 @@ const PROVIDER_OPTIONS = [
 ] as const;
 type ProviderKey = typeof PROVIDER_OPTIONS[number]['key'];
 
-function getLastProvider(): ProviderKey {
+function getLastProvider(available: ReadonlyArray<{ key: string }>): ProviderKey {
   const v = localStorage.getItem(PROVIDER_KEY);
-  return PROVIDER_OPTIONS.some(o => o.key === v) ? (v as ProviderKey) : 'claudeAgent';
+  if (available.some(o => o.key === v)) return v as ProviderKey;
+  return 'claudeAgent';
 }
 
 function getRecentDirs(): string[] {
@@ -44,6 +45,10 @@ interface Props {
   open: boolean;
   onClose: () => void;
   client: ClaudeClient;
+  /** Whether the opencode binary is available on this host (cached at app
+   *  boot). When false, the OpenCode provider chip is hidden entirely so
+   *  users can't pick a backend that's guaranteed to fail to spawn. */
+  opencodeAvailable?: boolean;
   /** Called once the session is successfully created. The modal has already
    *  closed itself by the time this fires; callers typically switch to the
    *  new session id here. */
@@ -59,7 +64,8 @@ interface Props {
  * associated console output. Power users can still reach those from the
  * desktop.
  */
-export function MobileNewSessionModal({ open, onClose, client, onCreated }: Props) {
+export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable, onCreated }: Props) {
+  const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
   const [cwd, setCwd] = useState('/');
   const [folders, setFolders] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -70,7 +76,7 @@ export function MobileNewSessionModal({ open, onClose, client, onCreated }: Prop
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
-  const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider());
+  const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider(availableProviders));
 
   const loadDir = useCallback(async (path: string) => {
     setLoading(true);
@@ -329,7 +335,7 @@ export function MobileNewSessionModal({ open, onClose, client, onCreated }: Prop
         </div>
         <div className="flex items-center gap-1.5 -mx-1">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold px-1">Provider</span>
-          {PROVIDER_OPTIONS.map(opt => (
+          {availableProviders.map(opt => (
             <button
               key={opt.key}
               onClick={() => setProvider(opt.key)}
