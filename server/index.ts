@@ -976,7 +976,7 @@ const server = Bun.serve({
         url.pathname === '/m/'
       ) {
         return new Response(
-          'UI not built. Run `bun run build` first.',
+          'UI not built. Run `bun run build-server` first.',
           { status: 503, headers: { 'Content-Type': 'text/plain', ...corsHeaders } },
         );
       }

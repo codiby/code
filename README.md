@@ -64,7 +64,7 @@ bun run tauri:dev
 | :------------------- | :--------------------------------------------------- |
 | `bun install`        | Install dependencies                                 |
 | `bun run dev`        | Watch and rebuild the frontend bundle into `./dist/` |
-| `bun run build`      | One-shot production build of the frontend            |
+| `bun run build-server` | One-shot production build of the frontend          |
 | `bun run bridge`     | Run the Bun bridge server directly                   |
 | `bun run tauri:dev`  | Run the Tauri desktop app in dev mode                |
 | `bun run tauri`      | Invoke the Tauri CLI directly (e.g. `tauri build`)   |

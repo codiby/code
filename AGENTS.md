@@ -4,17 +4,21 @@
 
 The desktop UI (`/`), the mobile UI (`/m/`), and the bridge server are all served by a macOS launchd service (`com.codiby.code.server`) installed at `~/.codiby/`. That directory holds its own copy of the bundled `server.js` and `dist/`, so edits under `src/`, `server/`, `public/`, or `scripts/build.ts` are **not live until you redeploy**.
 
-After any change to the frontend or the server, run:
+Do **not** run `./scripts/install.sh` unless the user explicitly asks for it.
+
+If the user asks to redeploy the launchd service, run:
 
 ```sh
 ./scripts/install.sh
 ```
 
-`install.sh` rebuilds both frontends (desktop + mobile), bundles `server.js`, copies everything into `~/.codiby/`, and restarts the LaunchAgent. Safe to re-run at any time.
+`install.sh` rebuilds both frontends (desktop + mobile), bundles `server.js`, copies everything into `~/.codiby/`, and restarts the LaunchAgent.
 
 To remove the service entirely: `./scripts/uninstall.sh`.
 
 ## Rebuilding the macOS app (Tauri)
+
+This is the primary way to build and install the app locally: run the Tauri production build, then run the detached replace script so `/Applications/Codiby Code.app` is updated and relaunched.
 
 The Tauri-bundled `/Applications/Codiby Code.app` is a separate distribution path from the launchd service flow above — `install.sh` does **not** touch it. To rebuild and reinstall the desktop app locally:
 
@@ -51,9 +55,10 @@ Live progress at `/tmp/codiby-replace.log`. Any in-flight chat session in the ol
 
 ### TL;DR — one-shot rebuild + reinstall
 
+Use this as the principal app build command when the user asks to build and replace the app:
+
 ```sh
-PATH="/opt/homebrew/bin:$HOME/.bun/bin:$PATH" bun run tauri build && \
-  nohup bash scripts/replace-app.sh </dev/null >/tmp/codiby-replace-bootstrap.log 2>&1 & disown
+bun run build:replace
 ```
 
 ## Bumping the app version
