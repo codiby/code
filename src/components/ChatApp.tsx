@@ -829,6 +829,7 @@ export function ChatApp() {
 
   const emptyLocalState = (): LocalSessionState => ({
     messages: [], partialText: '', isStreaming: false, wasInterrupted: false, initInfo: null, permRequest: null,
+    supportedModels: [],
     openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
     input: '', inputHistory: [],
@@ -1152,6 +1153,13 @@ export function ChatApp() {
             ...s,
             model: info.model || s.model,
           } : s));
+        },
+
+        onSupportedModels: (sid, models) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return { ...prev, [sid]: { ...s, supportedModels: models } };
+          });
         },
 
         // Server-initiated "open file in editor" — triggered by the
@@ -3708,6 +3716,12 @@ export function ChatApp() {
                         const isOpenCode = activeSession?.provider === 'opencode';
                         const ocModels = isOpenCode ? (opencodeInfo?.models ?? null) : undefined;
                         const ocLoading = isOpenCode && opencodeInfo === null;
+                        // Live list pushed by the bridge once the Claude SDK
+                        // returns from `runtime.supportedModels()`. Empty
+                        // until the probe lands; the picker falls back to
+                        // its hardcoded entries below to avoid a flash of
+                        // "Default-only" while the session warms up.
+                        const claudeModels = !isOpenCode ? (active.supportedModels ?? []) : [];
                         const sendDisabled = isTerminalMode
                           ? !cmdText.trim() || activeStatus !== 'connected'
                           : !input.trim() || activeStatus !== 'connected';
@@ -3881,6 +3895,12 @@ export function ChatApp() {
                                             <span className="text-zinc-500">{m.providerName}</span>{' '}
                                             {m.label}
                                           </span>
+                                        </ListBoxItem>
+                                      ))
+                                    ) : claudeModels.length > 0 ? (
+                                      claudeModels.map(m => (
+                                        <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
+                                          <span className="text-xs">{m.label}</span>
                                         </ListBoxItem>
                                       ))
                                     ) : (

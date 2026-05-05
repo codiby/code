@@ -132,6 +132,17 @@ export interface SessionInitInfo {
   permissionMode: string;
 }
 
+/**
+ * Provider-side descriptor for one selectable model. Streamed in via the
+ * `supported_models` WS message once the live session has reported its
+ * available models; consumed by the model picker.
+ */
+export interface SupportedModel {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 export interface SessionState {
   messages: ChatMessage[];
   partialText: string;
@@ -140,6 +151,8 @@ export interface SessionState {
   wasInterrupted: boolean;
   permRequest: PermissionRequest | null;
   initInfo: SessionInitInfo | null;
+  /** Live model list for the picker. Empty until the provider reports in. */
+  supportedModels: SupportedModel[];
   // UI state
   input: string;
   inputHistory: string[];
@@ -176,6 +189,7 @@ type ClientCallbacks = {
   onAutoApproved: (sessionId: string, toolName: string, filePath?: string, command?: string) => void;
   onSessionName: (sessionId: string, name: string) => void;
   onInitInfo: (sessionId: string, info: SessionInitInfo) => void;
+  onSupportedModels: (sessionId: string, models: SupportedModel[]) => void;
   onOpenFile: (sessionId: string, path: string, line: number | null) => void;
   onOpenMockup: (sessionId: string, name: string, html: string) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
@@ -367,6 +381,9 @@ export class ClaudeClient {
         break;
       case 'init_info':
         this.callbacks.onInitInfo(sessionId, msg.info as SessionInitInfo);
+        break;
+      case 'supported_models':
+        this.callbacks.onSupportedModels(sessionId, (msg.models as SupportedModel[]) || []);
         break;
       case 'open_file':
         this.callbacks.onOpenFile(sessionId, msg.path as string, (msg.line as number | null) ?? null);

@@ -84,6 +84,18 @@ export type TurnCompleteInfo = {
   model?: string;
 };
 
+/**
+ * Static descriptor for a model the provider exposes for selection. Sourced
+ * from the provider once a session is alive (e.g. Claude Agent SDK's
+ * `runtime.supportedModels()`) and broadcast to the frontend so the model
+ * picker reflects the live list instead of a hardcoded fallback.
+ */
+export type ProviderModelInfo = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
 export type PermissionRequestDetail = {
   requestId: string;
   toolName: string;
@@ -111,6 +123,7 @@ export interface ProviderEvents {
   onToolUse(tool: AssistantToolUseBlock): void;
   onToolResult(result: { toolUseId?: string; content: unknown; isError?: boolean; parentToolUseId?: string | null }): void;
   onTodosUpdate(todos: unknown[]): void;
+  onModelsAvailable(models: ProviderModelInfo[]): void;
   onPermissionRequest(req: PermissionRequestDetail): Promise<PermissionDecision>;
   onTurnComplete(info: TurnCompleteInfo): void;
   onError(err: Error): void;

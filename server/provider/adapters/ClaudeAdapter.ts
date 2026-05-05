@@ -212,6 +212,33 @@ class ClaudeSession implements ProviderSession {
     this.drain().catch((err) => {
       this.events.onError(err instanceof Error ? err : new Error(String(err)));
     });
+    this.fetchSupportedModels();
+  }
+
+  /**
+   * Pull the live list of supported models from the SDK runtime and forward
+   * it to the bridge so the frontend's model picker can replace its hardcoded
+   * fallback. Fire-and-forget: the SDK queues this control request until the
+   * underlying CLI subprocess is responsive, so the call resolves whenever
+   * the session is ready (typically right after `system/init`). Failures are
+   * swallowed — the picker keeps its built-in defaults if the probe never
+   * lands.
+   */
+  private fetchSupportedModels(): void {
+    const runtime = this.runtime;
+    if (!runtime) return;
+    runtime.supportedModels()
+      .then((models) => {
+        if (this.closed) return;
+        this.events.onModelsAvailable(
+          models.map((m) => ({
+            id: m.value,
+            label: m.displayName,
+            description: m.description,
+          })),
+        );
+      })
+      .catch(() => {});
   }
 
   private async drain(): Promise<void> {

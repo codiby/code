@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'crypto';
 import { loadMessages, loadUIState, saveUIState, appendMessage } from './storage';
+import type { ProviderModelInfo } from './provider/types';
 
 export interface ChatMessage {
   id: string;
@@ -79,6 +80,13 @@ export interface SessionState {
     model: string;
     permissionMode: string;
   } | null;
+  /**
+   * Models the provider exposes for the model picker. Populated by the
+   * adapter once the live session is responsive (e.g. Claude Agent SDK's
+   * `runtime.supportedModels()`). Empty until the probe lands; the frontend
+   * falls back to its built-in list while it's still empty.
+   */
+  supportedModels: ProviderModelInfo[];
   ui: SessionUIState;
 }
 
@@ -113,6 +121,7 @@ export function emptyState(): SessionState {
     wasInterrupted: false,
     permRequest: null,
     initInfo: null,
+    supportedModels: [],
     ui: emptyUIState(),
   };
 }
@@ -246,6 +255,7 @@ export function getStateForClient(sessionId: string) {
     wasInterrupted: state.wasInterrupted,
     permRequest: state.permRequest,
     initInfo: state.initInfo,
+    supportedModels: state.supportedModels,
     ...state.ui,
   };
 }

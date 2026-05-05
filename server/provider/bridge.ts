@@ -167,6 +167,11 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       deps.broadcastToSession(session.id, { type: 'todos', sessionId: session.id, todos });
     },
 
+    onModelsAvailable(models) {
+      updateSessionState(session.id, s => ({ ...s, supportedModels: models }));
+      deps.broadcastToSession(session.id, { type: 'supported_models', sessionId: session.id, models });
+    },
+
     async onPermissionRequest(req: PermissionRequestDetail): Promise<PermissionDecision> {
       const mode = session.permissionMode || 'default';
       const inputRecord = req.input || {};
