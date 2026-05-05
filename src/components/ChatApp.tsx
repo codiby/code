@@ -1438,42 +1438,6 @@ export function ChatApp() {
     setShowNewSession(true);
   };
 
-  /** Resolve the project folder name for a given cwd via git info — uses the
-   *  same logic as the "Organize Tabs by Folder" command so worktrees of the
-   *  same repo all bucket under the main repo's folder name. */
-  const resolveFolderName = async (cwd: string): Promise<string> => {
-    const c = clientRef.current;
-    let repoPath = cwd;
-    try {
-      const info = c ? await c.getGitInfo(cwd) : { is_git: false as const };
-      if (info.is_git && info.worktrees?.length) {
-        repoPath = info.worktrees[0]!.path;
-      } else if (info.is_git && info.top_level) {
-        repoPath = info.top_level;
-      }
-    } catch {}
-    return repoPath.split('/').filter(Boolean).pop() || '/';
-  };
-
-  /** Assign a freshly-created session to a tab group whose name matches the
-   *  session's project folder. Reuses an existing group with the same name,
-   *  or creates a new one (matching `handleCreateGroup`'s color cycling). */
-  const autoGroupNewSession = async (sessionId: string, cwd: string) => {
-    const folder = await resolveFolderName(cwd);
-    let groupId = Object.keys(tabGroups).find(gid => tabGroups[gid]!.name === folder);
-    let nextGroups = tabGroups;
-    if (!groupId) {
-      groupId = crypto.randomUUID();
-      const color = GROUP_COLORS[Object.keys(tabGroups).length % GROUP_COLORS.length]!;
-      nextGroups = { ...tabGroups, [groupId]: { id: groupId, name: folder, color, cwd } };
-    }
-    const nextMap = { ...tabGroupMap, [sessionId]: groupId };
-    setTabGroups(nextGroups);
-    setTabGroupMap(nextMap);
-    setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId!); return next; });
-    persistPrefs({ tabGroups: nextGroups, tabGroupMap: nextMap });
-  };
-
   const handleToggleAutoGroup = (next: boolean) => {
     setAutoGroupSessions(next);
     persistPrefs({ autoGroupSessions: next });
@@ -1487,9 +1451,8 @@ export function ChatApp() {
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
-      if (autoGroupSessions) {
-        await autoGroupNewSession(session.id, cwd);
-      }
+      // Autogrouping runs server-side in POST /sessions; the updated tab
+      // groups arrive via the next `preferences` broadcast.
     } catch {}
   };
 

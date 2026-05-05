@@ -151,6 +151,33 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
   return prefs;
 }
 
+/** Auto-assigns a freshly-created session to a tab group whose name matches
+ *  the cwd's project folder, mirroring the cycling-color behavior of the
+ *  frontend's `handleCreateGroup`. Single source of truth for every
+ *  session-creation entry point: HTTP `POST /sessions` (frontend, mobile,
+ *  CLI) and MCP `ui_spawn_session`. No-ops if `autoGroupSessions` is off,
+ *  if the cwd is empty, or if the session is already in a group (callers
+ *  with an explicit group assignment win). */
+const AUTOGROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
+type AutoGroup = { id: string; name: string; color: string; cwd?: string; icon?: string };
+function maybeAutoGroupSession(sessionId: string, cwd: string) {
+  if (!cwd) return;
+  const prefs = loadPreferences();
+  if (!prefs.autoGroupSessions) return;
+  const map: Record<string, string> = { ...((prefs.tabGroupMap as Record<string, string>) || {}) };
+  if (map[sessionId]) return;
+  const folder = cwd.split('/').filter(Boolean).pop() || '/';
+  const groups: Record<string, AutoGroup> = { ...((prefs.tabGroups as Record<string, AutoGroup>) || {}) };
+  let groupId = Object.keys(groups).find(gid => groups[gid]!.name === folder);
+  if (!groupId) {
+    groupId = randomUUID();
+    const color = AUTOGROUP_COLORS[Object.keys(groups).length % AUTOGROUP_COLORS.length]!;
+    groups[groupId] = { id: groupId, name: folder, color, cwd };
+  }
+  map[sessionId] = groupId;
+  updatePreferences({ tabGroups: groups, tabGroupMap: map });
+}
+
 /**
  * Send a user message to a session — shared between the frontend WebSocket
  * (`send_message`), the HTTP endpoint (`POST /sessions/:id/messages`), and
@@ -1082,16 +1109,25 @@ const server = Bun.serve({
 
     if (url.pathname === '/sessions' && req.method === 'POST') {
       const resp = await handleCreateSession(req, server.port);
-      // Notify all connected frontends that the session list changed
+      // Apply the `autoGroupSessions` preference server-side so every entry
+      // point (frontend, mobile, CLI) honors it without each client needing
+      // its own copy of the logic.
+      let createdId: string | null = null;
+      if (resp.ok) {
+        try {
+          const body = await resp.clone().json() as { id?: string; cwd?: string };
+          if (body?.id) {
+            createdId = body.id;
+            if (body.cwd) maybeAutoGroupSession(body.id, body.cwd);
+          }
+        } catch {}
+      }
       broadcastSessionList();
       // ?focus=1 → also tell clients to switch their active tab to the new
       // session. Used by the `codiby` CLI so `codiby .` lands the user on
       // the freshly created tab instead of leaving them on whatever was open.
-      if (url.searchParams.get('focus') === '1' && resp.ok) {
-        try {
-          const body = await resp.clone().json() as { id?: string };
-          if (body?.id) broadcastFocusSession(body.id);
-        } catch {}
+      if (url.searchParams.get('focus') === '1' && createdId) {
+        broadcastFocusSession(createdId);
       }
       return resp;
     }
@@ -1760,6 +1796,7 @@ setMcpDeps({
   broadcastSessionList,
   updatePreferences,
   loadPreferences,
+  maybeAutoGroupSession,
 });
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);

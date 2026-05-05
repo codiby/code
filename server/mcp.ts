@@ -43,6 +43,9 @@ type McpDeps = {
   updatePreferences: (partial: Record<string, unknown>) => Record<string, unknown>;
   /** Read the current preferences blob (tabGroups, tabGroupMap, etc.). */
   loadPreferences: () => Record<string, unknown>;
+  /** Apply the `autoGroupSessions` preference to a freshly-created session.
+   *  No-op if the preference is off or the session was already grouped. */
+  maybeAutoGroupSession: (sessionId: string, cwd: string) => void;
 };
 
 let _deps: McpDeps | null = null;
@@ -336,19 +339,24 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         const resp = await handleCreateSession(req, _deps.port);
         const data = await resp.json() as Record<string, unknown>;
-        _deps.broadcastSessionList();
 
         // Optional group assignment — merge the session id into tabGroupMap.
+        // An explicit group_id wins over the autoGroupSessions preference, so
+        // run it before the autogroup fallback below.
         if (typeof args!.group_id === 'string' && args!.group_id) {
           const prefs = _deps.loadPreferences();
           const groups = (prefs.tabGroups as Record<string, unknown>) || {};
           if (!groups[args!.group_id as string]) {
+            _deps.broadcastSessionList();
             return { content: [{ type: 'text', text: `Spawned ${data.id} but group ${args!.group_id} not found — left ungrouped.` }] };
           }
           const map = { ...((prefs.tabGroupMap as Record<string, string>) || {}) };
           map[data.id as string] = args!.group_id as string;
           _deps.updatePreferences({ tabGroupMap: map });
+        } else if (typeof data.id === 'string' && typeof data.cwd === 'string') {
+          _deps.maybeAutoGroupSession(data.id, data.cwd);
         }
+        _deps.broadcastSessionList();
 
         const wtSuffix = worktreeInfo ? ` [worktree: ${worktreeInfo.branch} @ ${worktreeInfo.path}]` : '';
         return { content: [{ type: 'text', text: `Spawned session ${data.id} — ${data.name} (cwd: ${data.cwd})${wtSuffix}` }] };
