@@ -1350,20 +1350,23 @@ export function ChatApp() {
     scrollToBottom();
   }, [active.messages.length, active.partialText, scrollToBottom]);
 
-  // Probe opencode once when the bridge client is ready. The endpoint
-  // is cached on the server side, so future calls (or a refresh of the
+  // Probe opencode once the bridge client is ready. The endpoint is
+  // cached on the server side, so future calls (or a refresh of the
   // app) hit the cache instantly. We persist the result in state so
   // the model picker and provider gating in the New Session modal can
-  // consume it without re-fetching per render.
+  // consume it without re-fetching per render. Depend on `client`
+  // (state) rather than `clientRef.current` (ref): refs don't trigger
+  // a re-run when they change, so a ref-only dep would silently miss
+  // the moment the client becomes available.
   useEffect(() => {
-    if (!clientRef.current) return;
+    if (!client) return;
     if (opencodeInfo !== null) return;
     let cancelled = false;
-    clientRef.current.getOpencodeInfo()
+    client.getOpencodeInfo()
       .then(info => { if (!cancelled) setOpencodeInfo({ available: info.available, models: info.models || [] }); })
       .catch(() => { if (!cancelled) setOpencodeInfo({ available: false, models: [] }); });
     return () => { cancelled = true; };
-  }, [opencodeInfo]);
+  }, [client, opencodeInfo]);
 
   // Jump to line when openFile.line changes (e.g. clicking different search results in same file)
   useEffect(() => {
