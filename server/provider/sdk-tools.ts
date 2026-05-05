@@ -19,7 +19,7 @@ import type { ChatMessage } from '../state';
 import { sessions, saveSessions } from '../sessions';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host';
 
-const IMAGE_MEDIA_TYPES: Record<string, string> = {
+export const IMAGE_MEDIA_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -33,7 +33,7 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
 // back to disk and rehydrate.
 const MOCKUPS_ROOT = join(homedir(), '.codiby', 'mockups');
 const mockupStore = new Map<string, Map<string, string>>();
-function mockupsFor(sessionId: string): Map<string, string> {
+export function mockupsFor(sessionId: string): Map<string, string> {
   let m = mockupStore.get(sessionId);
   if (!m) { m = new Map(); mockupStore.set(sessionId, m); }
   return m;
@@ -44,7 +44,7 @@ function mockupsFor(sessionId: string): Map<string, string> {
  * mockup name can't escape the per-session mockup directory. Returns null
  * when the name has nothing usable left.
  */
-function sanitizeMockupName(raw: string): string | null {
+export function sanitizeMockupName(raw: string): string | null {
   const name = raw.trim();
   if (!name) return null;
   if (name === '.' || name === '..') return null;
@@ -58,7 +58,7 @@ function mockupFilePath(sessionId: string, name: string): string {
   return join(MOCKUPS_ROOT, sessionId, `${name}.html`);
 }
 
-async function persistMockup(sessionId: string, name: string, html: string): Promise<void> {
+export async function persistMockup(sessionId: string, name: string, html: string): Promise<void> {
   const file = mockupFilePath(sessionId, name);
   await fs.mkdir(dirname(file), { recursive: true });
   await fs.writeFile(file, html, 'utf-8');
@@ -67,7 +67,7 @@ async function persistMockup(sessionId: string, name: string, html: string): Pro
 /** Read mockup html, preferring the in-memory copy and falling back to disk.
  *  On a disk hit the value is rehydrated into memory so subsequent reads are
  *  cheap. Returns null when the mockup doesn't exist anywhere. */
-async function loadMockup(sessionId: string, name: string): Promise<string | null> {
+export async function loadMockup(sessionId: string, name: string): Promise<string | null> {
   const mem = mockupsFor(sessionId).get(name);
   if (mem != null) return mem;
   try {
@@ -79,7 +79,7 @@ async function loadMockup(sessionId: string, name: string): Promise<string | nul
   }
 }
 
-async function listPersistedMockups(sessionId: string): Promise<string[]> {
+export async function listPersistedMockups(sessionId: string): Promise<string[]> {
   try {
     const dir = join(MOCKUPS_ROOT, sessionId);
     const files = await fs.readdir(dir);

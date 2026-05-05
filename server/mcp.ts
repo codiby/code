@@ -9,12 +9,22 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { corsHeaders } from './config';
 import { log } from './logger';
-import { sessions, sessionToJSON } from './sessions';
+import { sessions, sessionToJSON, saveSessions } from './sessions';
 import { handleCreateSession } from './handlers/sessions';
-import { getSessionState } from './state';
+import { addMessage, getSessionState } from './state';
 import type { ChatMessage } from './state';
 import { createWorktree } from './handlers/worktree';
 import { randomUUID } from 'crypto';
+import { promises as fs } from 'fs';
+import { extname } from 'path';
+import {
+  IMAGE_MEDIA_TYPES,
+  mockupsFor,
+  sanitizeMockupName,
+  persistMockup,
+  loadMockup,
+  listPersistedMockups,
+} from './provider/sdk-tools';
 
 /** Palette for auto-assigning a tab-group colour when the caller doesn't pick.
  *  Matches the set in ChatApp.tsx#handleCreateGroup so new server-made groups
@@ -39,6 +49,11 @@ type McpDeps = {
     images?: { media_type: string; data: string }[],
   ) => Promise<{ ok: boolean; error?: string }>;
   broadcastSessionList: () => void;
+  /** Push a WS message to every client subscribed to a single session.
+   *  Used by the new ui_open_file_in_editor / ui_post_system_note /
+   *  ui_post_image_to_session / ui_mockup_* tools to render side-panel
+   *  state changes in the chat tab the model is running in. */
+  broadcastToSession: (sessionId: string, msg: object) => void;
   /** Merge-patch the UI preferences blob, persist, and broadcast to frontends. */
   updatePreferences: (partial: Record<string, unknown>) => Record<string, unknown>;
   /** Read the current preferences blob (tabGroups, tabGroupMap, etc.). */
@@ -56,7 +71,7 @@ export function setMcpDeps(deps: McpDeps) {
   _serverPort = deps.port;
 }
 
-function createMcpServer() {
+function createMcpServer(uiSessionId: string) {
   const mcpServer = new Server(
     { name: 'codiby-code', version: '1.0.0' },
     { capabilities: { tools: {} } },
@@ -244,6 +259,96 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           group_id: { type: 'string', description: 'Target group id. Empty string or omitted to ungroup.' },
         },
         required: ['session_id'],
+      },
+    },
+    // ---------------------------------------------------------------
+    // Per-session UI tools — mirrored from the in-process SDK MCP so
+    // they're reachable from opencode/Codex over HTTP. The owning
+    // session id comes from the `x-session-id` header set by the
+    // adapter at MCP-server creation time, so the LLM doesn't need
+    // to pass session_id explicitly for these.
+    // ---------------------------------------------------------------
+    {
+      name: 'ui_open_file_in_editor',
+      description: 'Open a file in the editor side-panel of Codiby Code (the chat tab the model is running in). Use when the user would benefit from reviewing a file inline alongside the chat. Optional `line` jumps to a specific line.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          path: { type: 'string', description: 'Absolute path of the file to open.' },
+          line: { type: 'number', description: '1-based line number to jump to.' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'ui_rename_session',
+      description: 'Rename the current Codiby Code session (the chat tab the model is running in). Aim for ≤ 24 chars. Format: "{TICKET-ID} {SHORT DESCRIPTION}". Call once per session — the user can rename manually after.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string', description: 'New session name. Aim for ≤ 24 chars so it fits a narrow tab. Format: "{TICKET-ID} {3-4 word description}". Omit ticket id if none was mentioned.' },
+        },
+        required: ['name'],
+      },
+    },
+    {
+      name: 'ui_post_system_note',
+      description: "Post a non-model system note into the current session's chat log (separator-style). Use sparingly for status updates the user should see (e.g. \"Deployed commit abc123\"). Not visible to the model in future turns.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          content: { type: 'string', description: 'Short note text (<= 500 chars).' },
+        },
+        required: ['content'],
+      },
+    },
+    {
+      name: 'ui_post_image_to_session',
+      description: "Post an image into the current session's chat log inline. Reads the file from a local absolute path and embeds it as base64 — supported formats: PNG, JPEG, GIF, WebP. Not visible to the model in future turns.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          path: { type: 'string', description: 'Absolute path to an image file (.png, .jpg, .jpeg, .gif, or .webp).' },
+          caption: { type: 'string', description: 'Optional short caption shown beneath the image (<= 500 chars).' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'ui_mockup_write',
+      description: 'Create or replace an HTML mockup and open it in the live preview side-panel of the current session. Authors a self-contained HTML document (inline CSS/JS, CDN scripts allowed; sandboxed iframe). Replaces any existing mockup with the same `name`. Persisted to ~/.codiby/mockups/<sessionId>/<name>.html.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string', description: 'Identifier for this mockup (letters, digits, dot, dash, underscore, space; 1–80 chars; no slashes). Reuse the same name to update the same preview.' },
+          html: { type: 'string', description: 'Full HTML document. Inline all CSS/JS — the iframe is sandboxed and cannot reach the parent. CDN scripts/fonts work.' },
+        },
+        required: ['name', 'html'],
+      },
+    },
+    {
+      name: 'ui_mockup_edit',
+      description: 'Edit an existing HTML mockup by replacing a string, then re-render and rewrite the file on disk. `old_string` must occur exactly once unless `replace_all` is true. Falls back to disk when the in-memory copy was lost.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string', description: 'Name of the mockup to edit (must already exist on disk or in memory).' },
+          old_string: { type: 'string', description: 'Exact substring to replace. Must match uniquely unless replace_all is true.' },
+          new_string: { type: 'string', description: 'Replacement text (may be empty to delete).' },
+          replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring uniqueness.' },
+        },
+        required: ['name', 'old_string', 'new_string'],
+      },
+    },
+    {
+      name: 'ui_mockup_read',
+      description: 'Read the current HTML source of a mockup previously created with `ui_mockup_write`. Useful before calling `ui_mockup_edit`. Looks in memory first, then falls back to disk.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string', description: 'Name of the mockup to read.' },
+        },
+        required: ['name'],
       },
     },
   ],
@@ -546,6 +651,161 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         _deps.updatePreferences({ tabGroupMap: map });
         return { content: [{ type: 'text', text: `Moved session ${sid} to group "${groups[gid]!.name}" (${gid}).` }] };
       }
+      // ----- Per-session UI tools (use uiSessionId from x-session-id) -----
+      case 'ui_open_file_in_editor': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const path = typeof args!.path === 'string' ? args!.path : '';
+        const line = typeof args!.line === 'number' && args!.line > 0 ? Math.floor(args!.line as number) : null;
+        if (!path) return { content: [{ type: 'text', text: 'path is required' }], isError: true };
+        _deps.broadcastToSession(uiSessionId, { type: 'open_file', sessionId: uiSessionId, path, line });
+        const where = line != null ? `${path}:${line}` : path;
+        return { content: [{ type: 'text', text: `Opened ${where} in the side editor.` }] };
+      }
+      case 'ui_rename_session': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const session = sessions.get(uiSessionId);
+        if (!session) return { content: [{ type: 'text', text: `Session ${uiSessionId} not found.` }], isError: true };
+        const next = typeof args!.name === 'string' ? args!.name.trim() : '';
+        if (!next) return { content: [{ type: 'text', text: 'Name cannot be empty or whitespace.' }], isError: true };
+        const previous = session.name;
+        session.name = next;
+        saveSessions();
+        _deps.broadcastSessionList();
+        return { content: [{ type: 'text', text: `Renamed session from "${previous}" to "${next}".` }] };
+      }
+      case 'ui_post_system_note': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const content = typeof args!.content === 'string' ? args!.content : '';
+        if (!content) return { content: [{ type: 'text', text: 'content is required' }], isError: true };
+        const msg: ChatMessage = {
+          id: randomUUID(),
+          role: 'system',
+          content,
+          timestamp: Date.now(),
+        };
+        if (addMessage(uiSessionId, msg)) {
+          _deps.broadcastToSession(uiSessionId, { type: 'message', sessionId: uiSessionId, message: msg });
+        }
+        return { content: [{ type: 'text', text: `Posted note: ${content}` }] };
+      }
+      case 'ui_post_image_to_session': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const path = typeof args!.path === 'string' ? args!.path : '';
+        if (!path) return { content: [{ type: 'text', text: 'path is required' }], isError: true };
+        const caption = typeof args!.caption === 'string' ? args!.caption : undefined;
+        const mediaType = IMAGE_MEDIA_TYPES[extname(path).toLowerCase()];
+        if (!mediaType) {
+          return { content: [{ type: 'text', text: `Unsupported image extension for ${path}. Supported: .png, .jpg, .jpeg, .gif, .webp.` }], isError: true };
+        }
+        let buf: Buffer;
+        try {
+          buf = await fs.readFile(path);
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e);
+          return { content: [{ type: 'text', text: `Failed to read image at ${path}: ${err}` }], isError: true };
+        }
+        const msg: ChatMessage = {
+          id: randomUUID(),
+          role: 'system',
+          content: caption ?? '',
+          timestamp: Date.now(),
+          images: [{ media_type: mediaType, data: buf.toString('base64') }],
+        };
+        if (addMessage(uiSessionId, msg)) {
+          _deps.broadcastToSession(uiSessionId, { type: 'message', sessionId: uiSessionId, message: msg });
+        }
+        const sizeKb = Math.max(1, Math.round(buf.length / 1024));
+        const tail = caption ? ` — "${caption}"` : '';
+        return { content: [{ type: 'text', text: `Posted ${mediaType} (${sizeKb} KB) from ${path}${tail}.` }] };
+      }
+      case 'ui_mockup_write': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const rawName = typeof args!.name === 'string' ? args!.name : '';
+        const html = typeof args!.html === 'string' ? args!.html : '';
+        if (!html) return { content: [{ type: 'text', text: 'html is required' }], isError: true };
+        const name = sanitizeMockupName(rawName);
+        if (!name) {
+          return { content: [{ type: 'text', text: `Invalid mockup name "${rawName}". Use letters, digits, dot, dash, underscore, or space (1–80 chars), no slashes.` }], isError: true };
+        }
+        mockupsFor(uiSessionId).set(name, html);
+        try {
+          await persistMockup(uiSessionId, name, html);
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e);
+          return { content: [{ type: 'text', text: `Mockup "${name}" rendered but failed to persist to disk: ${err}` }], isError: true };
+        }
+        _deps.broadcastToSession(uiSessionId, { type: 'open_mockup', sessionId: uiSessionId, name, html });
+        const sizeKb = Math.max(1, Math.round(Buffer.byteLength(html, 'utf8') / 1024));
+        return { content: [{ type: 'text', text: `Mockup "${name}" rendered and saved (${sizeKb} KB).` }] };
+      }
+      case 'ui_mockup_edit': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const rawName = typeof args!.name === 'string' ? args!.name : '';
+        const oldStr = typeof args!.old_string === 'string' ? args!.old_string : '';
+        const newStr = typeof args!.new_string === 'string' ? args!.new_string : '';
+        const replaceAll = !!args!.replace_all;
+        if (!oldStr) return { content: [{ type: 'text', text: 'old_string is required' }], isError: true };
+        const name = sanitizeMockupName(rawName);
+        if (!name) return { content: [{ type: 'text', text: `Invalid mockup name "${rawName}".` }], isError: true };
+        const current = await loadMockup(uiSessionId, name);
+        if (current == null) {
+          return { content: [{ type: 'text', text: `Mockup "${name}" not found in memory or on disk. Create it with ui_mockup_write first.` }], isError: true };
+        }
+        if (oldStr === newStr) {
+          return { content: [{ type: 'text', text: 'old_string and new_string are identical — nothing to do.' }], isError: true };
+        }
+        let next: string;
+        let count: number;
+        if (replaceAll) {
+          const parts = current.split(oldStr);
+          count = parts.length - 1;
+          if (count === 0) {
+            return { content: [{ type: 'text', text: `old_string not found in mockup "${name}".` }], isError: true };
+          }
+          next = parts.join(newStr);
+        } else {
+          const idx = current.indexOf(oldStr);
+          if (idx === -1) {
+            return { content: [{ type: 'text', text: `old_string not found in mockup "${name}".` }], isError: true };
+          }
+          const second = current.indexOf(oldStr, idx + oldStr.length);
+          if (second !== -1) {
+            return { content: [{ type: 'text', text: `old_string is not unique in mockup "${name}" (matched at least twice). Pass replace_all: true or include more surrounding context.` }], isError: true };
+          }
+          next = current.slice(0, idx) + newStr + current.slice(idx + oldStr.length);
+          count = 1;
+        }
+        mockupsFor(uiSessionId).set(name, next);
+        try {
+          await persistMockup(uiSessionId, name, next);
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e);
+          return { content: [{ type: 'text', text: `Mockup "${name}" updated in memory but failed to persist to disk: ${err}` }], isError: true };
+        }
+        _deps.broadcastToSession(uiSessionId, { type: 'open_mockup', sessionId: uiSessionId, name, html: next });
+        return { content: [{ type: 'text', text: `Mockup "${name}" updated (${count} replacement${count === 1 ? '' : 's'}) and saved.` }] };
+      }
+      case 'ui_mockup_read': {
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const rawName = typeof args!.name === 'string' ? args!.name : '';
+        const name = sanitizeMockupName(rawName);
+        if (!name) return { content: [{ type: 'text', text: `Invalid mockup name "${rawName}".` }], isError: true };
+        const html = await loadMockup(uiSessionId, name);
+        if (html == null) {
+          const inMem = [...mockupsFor(uiSessionId).keys()];
+          const onDisk = await listPersistedMockups(uiSessionId);
+          const available = [...new Set([...inMem, ...onDisk])].sort();
+          const tail = available.length ? ` Available: ${available.join(', ')}.` : ' No mockups exist in this session yet.';
+          return { content: [{ type: 'text', text: `Mockup "${name}" not found.${tail}` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: html }] };
+      }
       default:
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -572,7 +832,7 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
 
   // New session — create fresh server + transport
   log(`[mcp] New MCP session for UI session: ${uiSessionId.slice(0, 8) || 'unknown'}`);
-  const mcpServer = createMcpServer();
+  const mcpServer = createMcpServer(uiSessionId);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
     onsessioninitialized: (id) => {

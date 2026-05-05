@@ -1794,6 +1794,7 @@ setMcpDeps({
   port: server.port,
   sendMessageToSession,
   broadcastSessionList,
+  broadcastToSession,
   updatePreferences,
   loadPreferences,
   maybeAutoGroupSession,
