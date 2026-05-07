@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { Send as SendIcon, Sparkles } from 'lucide-react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { ArrowDown, Send as SendIcon, Sparkles } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -1321,10 +1321,26 @@ export function ChatApp() {
     return () => document.removeEventListener('click', handler);
   }, [showPrDropdown]);
 
+  // Pinned-to-bottom autoscroll: only nudge to the latest message when the
+  // user is already there. If they scrolled up to read history, leave them
+  // alone — the floating "scroll to latest" button below re-engages the pin.
+  const stickToBottomRef = useRef(true);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+
   const scrollToBottom = useCallback(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickToBottomRef.current = true;
+    setShowScrollDown(false);
+  }, []);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 80;
+    setShowScrollDown(distanceFromBottom > 200);
   }, []);
 
   const handleOpenTerminal = useCallback((id: string) => {
@@ -1362,9 +1378,21 @@ export function ChatApp() {
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
   const hasRightPanel = !!openFile || !!openMockup || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
 
+  // Snap back to the bottom whenever the active session changes — each tab
+  // should open on its latest message, regardless of where the previous tab
+  // had been scrolled. Done via a ref so the streaming-content effect below
+  // can read the new pin state synchronously on the same render.
   useEffect(() => {
-    scrollToBottom();
-  }, [active.messages.length, active.partialText, active.partialThinking, scrollToBottom]);
+    stickToBottomRef.current = true;
+    setShowScrollDown(false);
+  }, [activeId]);
+
+  useLayoutEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activeId, active.messages.length, active.partialText, active.partialThinking]);
 
   // Probe opencode once the bridge client is ready. The endpoint is
   // cached on the server side, so future calls (or a refresh of the
@@ -3295,12 +3323,12 @@ export function ChatApp() {
               <div ref={contentRef} className="flex-1 flex min-h-0">
                 {/* Chat panel */}
                 <div
-                  className={`flex flex-col min-w-0 overflow-hidden ${hasRightPanel && editorFullWidth ? 'hidden' : hasRightPanel ? 'shrink-0' : 'flex-1'}`}
+                  className={`flex flex-col min-w-0 overflow-hidden relative ${hasRightPanel && editorFullWidth ? 'hidden' : hasRightPanel ? 'shrink-0' : 'flex-1'}`}
                   style={hasRightPanel && !editorFullWidth ? { width: `${chatSplitPct}%` } : undefined}
                 >
                   <div className="flex flex-1 min-h-0">
                   {/* Messages */}
-                  <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1">
+                  <div ref={scrollRef} onScroll={handleMessagesScroll} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1">
                     {active.messages.length === 0 && !active.partialText && (
                       <div className="flex items-center justify-center h-full">
                         <p className="text-zinc-600 text-sm">
@@ -3728,6 +3756,24 @@ export function ChatApp() {
                       </div>
                     );
                   })()}
+
+                  {/* Floating "scroll to latest" — appears when the user has
+                      scrolled away from the bottom while the assistant streams.
+                      Clicking re-pins the chat to the latest message. */}
+                  {showScrollDown && (
+                    <button
+                      type="button"
+                      onClick={scrollToBottom}
+                      aria-label="Scroll to latest"
+                      className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 w-9 h-9 rounded-full bg-zinc-900/85 border border-white/10 text-zinc-200 hover:bg-zinc-800 shadow-2xl flex items-center justify-center"
+                      style={{
+                        backdropFilter: 'blur(20px) saturate(180%)',
+                        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+                      }}
+                    >
+                      <ArrowDown size={16} />
+                    </button>
+                  )}
 
                   {/* Input */}
                   <div className="border-t border-border p-3 shrink-0 relative">
