@@ -79,6 +79,15 @@ export interface ChatMessage {
   parentToolUseId?: string | null;
   autoApproved?: boolean;
   isError?: boolean;
+  /**
+   * Set on assistant messages whose `content` is the model's reasoning
+   * summary (Anthropic `thinking` / `redacted_thinking` block). Rendered as
+   * a collapsible dim bubble — distinct from regular assistant text.
+   */
+  isThinking?: boolean;
+  /** True when the underlying block was `redacted_thinking` (content is a
+   *  placeholder; the real reasoning is encrypted by the API). */
+  thinkingRedacted?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;
@@ -146,6 +155,13 @@ export interface SupportedModel {
 export interface SessionState {
   messages: ChatMessage[];
   partialText: string;
+  /**
+   * Live-streaming thinking text. Updates with each `partial_thinking` WS
+   * event as Claude reasons; cleared when the matching permanent
+   * `isThinking` ChatMessage arrives or the turn ends. Rendered as a
+   * transient italic bubble that morphs into the persisted ThinkingBubble.
+   */
+  partialThinking: string;
   isStreaming: boolean;
   /** Set by the server when the previous turn died without onTurnComplete. */
   wasInterrupted: boolean;
@@ -180,6 +196,7 @@ type ClientCallbacks = {
   onSessionState: (sessionId: string, state: SessionState) => void;
   onMessage: (sessionId: string, msg: ChatMessage) => void;
   onPartialText: (sessionId: string, text: string) => void;
+  onPartialThinking: (sessionId: string, text: string) => void;
   onPermissionRequest: (sessionId: string, req: PermissionRequest) => void;
   onPermissionCancelled: (sessionId: string, requestId: string) => void;
   onStatus: (sessionId: string, status: string) => void;
@@ -334,6 +351,9 @@ export class ClaudeClient {
         break;
       case 'partial_text':
         this.callbacks.onPartialText(sessionId, msg.text as string);
+        break;
+      case 'partial_thinking':
+        this.callbacks.onPartialThinking(sessionId, (msg.text as string) || '');
         break;
       case 'permission_request':
         this.callbacks.onPermissionRequest(sessionId, msg.request as PermissionRequest);

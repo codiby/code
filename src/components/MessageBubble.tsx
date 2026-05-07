@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import { Markdown } from './Markdown';
@@ -912,10 +912,52 @@ export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: 
   return result;
 }
 
+function ThinkingBubble({ message }: { message: ChatMessage }) {
+  const [open, setOpen] = useState(false);
+  const redacted = !!message.thinkingRedacted;
+  const Chevron = open ? ChevronDown : ChevronRight;
+  const text = message.content || '';
+  const firstLine = text.split('\n').find((l) => l.trim()) ?? '';
+  const preview = firstLine.length > 90 ? firstLine.slice(0, 89) + '…' : firstLine;
+  return (
+    <div className="py-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="group flex w-full items-start gap-1.5 text-left text-[12px] text-zinc-500 hover:text-zinc-300 transition-colors"
+      >
+        <Chevron className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-70 group-hover:opacity-100" />
+        <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-60" />
+        <span className="font-medium uppercase tracking-wide text-[10px] mt-0.5 shrink-0">
+          {redacted ? 'Encrypted thought' : 'Thought'}
+        </span>
+        {!open && preview && (
+          <span className="ml-1 truncate italic text-zinc-500/80">{preview}</span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
+          {redacted ? (
+            <p className="text-[12px] italic text-zinc-500 leading-relaxed">
+              {text}
+            </p>
+          ) : (
+            <Markdown
+              text={text}
+              className="text-[12px] italic text-zinc-400 leading-relaxed"
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
+  const isThinking = !!message.isThinking;
   // Local fullscreen image-viewer state — only the bubbles that contain
   // clickable images ever set this, but it lives at the top so any branch
   // can render the (portal-mounted) viewer next to its main content.
@@ -988,6 +1030,10 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
 
   if (isToolUse) {
     return <ToolBubble message={message} isLast={isLast} onAnswerAskUser={onAnswerAskUser} />;
+  }
+
+  if (isThinking) {
+    return <ThinkingBubble message={message} />;
   }
 
   if (isUser) {

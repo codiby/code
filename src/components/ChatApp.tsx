@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { Send as SendIcon } from 'lucide-react';
+import { Send as SendIcon, Sparkles } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -831,7 +831,7 @@ export function ChatApp() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const emptyLocalState = (): LocalSessionState => ({
-    messages: [], partialText: '', isStreaming: false, wasInterrupted: false, initInfo: null, permRequest: null,
+    messages: [], partialText: '', partialThinking: '', isStreaming: false, wasInterrupted: false, initInfo: null, permRequest: null,
     supportedModels: [],
     openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
@@ -1018,7 +1018,7 @@ export function ChatApp() {
               if (idx !== -1) {
                 const next = [...s.messages];
                 next[idx] = msg;
-                return { ...prev, [sid]: { ...s, messages: next, partialText: '', contextTokens } };
+                return { ...prev, [sid]: { ...s, messages: next, partialText: '', partialThinking: msg.isThinking ? '' : s.partialThinking, contextTokens } };
               }
             }
             return {
@@ -1027,6 +1027,11 @@ export function ChatApp() {
                 ...s,
                 messages: [...s.messages, msg],
                 partialText: '',
+                // Clear the live thinking preview only when the matching
+                // permanent isThinking message arrives — otherwise an
+                // unrelated tool_use or text message would wipe a thought
+                // that's still streaming above it.
+                partialThinking: msg.isThinking ? '' : s.partialThinking,
                 contextTokens,
               },
             };
@@ -1037,6 +1042,13 @@ export function ChatApp() {
           setSessionStates(prev => {
             const s = prev[sid] || emptyLocalState();
             return { ...prev, [sid]: { ...s, partialText: text } };
+          });
+        },
+
+        onPartialThinking: (sid, text) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return { ...prev, [sid]: { ...s, partialThinking: text } };
           });
         },
 
@@ -1074,7 +1086,7 @@ export function ChatApp() {
             setSessionStates(prev => {
               const s = prev[sid] || emptyLocalState();
               wasStreaming = !!s.isStreaming;
-              return { ...prev, [sid]: { ...s, isStreaming: false, wasInterrupted: false, partialText: '' } };
+              return { ...prev, [sid]: { ...s, isStreaming: false, wasInterrupted: false, partialText: '', partialThinking: '' } };
             });
             if (wasStreaming) playChime();
             setTurnCompleteIds(prev => new Set(prev).add(sid));
@@ -1091,7 +1103,7 @@ export function ChatApp() {
             // knows to retry instead of staring at a stale orange forever.
             setSessionStates(prev => {
               const s = prev[sid] || emptyLocalState();
-              return { ...prev, [sid]: { ...s, isStreaming: false, partialText: '', wasInterrupted: true } };
+              return { ...prev, [sid]: { ...s, isStreaming: false, partialText: '', partialThinking: '', wasInterrupted: true } };
             });
           }
         },
@@ -1351,7 +1363,7 @@ export function ChatApp() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [active.messages.length, active.partialText, scrollToBottom]);
+  }, [active.messages.length, active.partialText, active.partialThinking, scrollToBottom]);
 
   // Probe opencode once the bridge client is ready. The endpoint is
   // cached on the server side, so future calls (or a refresh of the
@@ -2062,6 +2074,7 @@ export function ChatApp() {
       isStreaming: true,
       wasInterrupted: false,
       partialText: '',
+      partialThinking: '',
     }));
     setInput('');
     setPastedImages([]);
@@ -2117,6 +2130,7 @@ export function ChatApp() {
           isStreaming: true,
           wasInterrupted: false,
           partialText: '',
+          partialThinking: '',
           pendingMessages: rest,
         }));
         client.sendMessage(sid, next.text, next.images);
@@ -2233,7 +2247,7 @@ export function ChatApp() {
     updateLocalState(activeId, s => ({
       ...s,
       messages: [...s.messages, { id: crypto.randomUUID(), role: 'user' as const, content: reviewText, timestamp: Date.now() }],
-      isStreaming: true, wasInterrupted: false, partialText: '',
+      isStreaming: true, wasInterrupted: false, partialText: '', partialThinking: '',
       reviewMode: false, reviewFiles: [], diffView: null, editorFullWidth: false, reviewComments: {},
     }));
     clientRef.current.sendMessage(activeId, reviewText);
@@ -3356,6 +3370,22 @@ export function ChatApp() {
                         );
                       });
                     })()}
+                    {active.partialThinking && (
+                      <div className="py-1">
+                        <div className="flex items-start gap-1.5 text-[12px] text-zinc-500">
+                          <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-70 text-violet-300/70 animate-pulse" />
+                          <span className="font-medium uppercase tracking-wide text-[10px] mt-[3px] shrink-0">
+                            Thinking
+                          </span>
+                        </div>
+                        <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
+                          <p className="text-[12px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
+                            {active.partialThinking}
+                            <span className="inline-block ml-0.5 w-1.5 h-3 bg-zinc-500/70 align-middle animate-pulse" />
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     {active.partialText && (
                       <div className="py-1">
                         <p className="text-[13px] text-zinc-300 whitespace-pre-wrap break-words leading-relaxed">
@@ -4117,6 +4147,7 @@ export function ChatApp() {
                           isStreaming: true,
                           wasInterrupted: false,
                           partialText: '',
+                          partialThinking: '',
                           mockupInspect: false,
                           mockupComments: { ...s.mockupComments, [mockupName]: [] },
                         }));
@@ -4186,6 +4217,7 @@ export function ChatApp() {
                           isStreaming: true,
                           wasInterrupted: false,
                           partialText: '',
+                          partialThinking: '',
                           planComments: [],
                           permRequest: pendingPlanReq ? null : s.permRequest,
                         }));

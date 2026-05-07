@@ -31,6 +31,7 @@ import type {
   TokenUsage,
 } from '../types';
 import { CLAUDE_BIN } from '../../config';
+import { log } from '../../logger';
 
 const PROVIDER_NAME = 'claudeAgent';
 
@@ -150,6 +151,14 @@ class ClaudeSession implements ProviderSession {
   private runtime: Query | null = null;
   private providerSessionId: string | null = null;
   private closed = false;
+  /**
+   * Live-thinking accumulators keyed by Anthropic content-block index. Set
+   * when a `content_block_start` event opens a `thinking` block; appended to
+   * by each `thinking_delta`; cleared on `content_block_stop`. Lets us emit
+   * incremental `onThinkingDelta` for the UI without waiting for the full
+   * `assistant` SDK message that finalizes the block.
+   */
+  private streamingThinkingByIndex = new Map<number, string>();
 
   constructor(sessionId: string, events: ProviderEvents) {
     this.sessionId = sessionId;
@@ -188,6 +197,12 @@ class ClaudeSession implements ProviderSession {
       permissionMode: toSdkPermissionMode(opts.permissionMode),
       mcpServers: toSdkMcpServers(opts.mcpServers),
       pathToClaudeCodeExecutable: CLAUDE_BIN,
+      // Force Claude to expose its reasoning summaries on every supported
+      // model. Without this the SDK relies on per-model defaults that often
+      // omit thinking blocks even on Opus 4.6+, leaving the UI's "Thought"
+      // bubble dark forever. `display: 'summarized'` (the default) returns
+      // the human-readable summary; `omitted` would only return signatures.
+      thinking: { type: 'adaptive', display: 'summarized' },
       // Keep the Claude Code preset (built-in tool/git/cwd context still
       // applies) and append Codiby Code-specific steering — currently the
       // rename policy that pairs with the `rename_session` SDK tool.
@@ -258,6 +273,39 @@ class ClaudeSession implements ProviderSession {
   }
 
   private dispatch(msg: SDKMessage): void {
+    // Live partial-message stream. With `includePartialMessages: true`, the
+    // SDK forwards the raw Anthropic SSE events here (content_block_start /
+    // _delta / _stop). We use them to stream `thinking` blocks
+    // character-by-character into the UI — the regular `assistant` message
+    // only arrives once the block is fully complete, which would make the
+    // "Thought" bubble pop in all at once after seconds of silence.
+    if (msg.type === 'stream_event') {
+      const event = (msg as any).event;
+      const eType = event?.type;
+      if (eType === 'content_block_start') {
+        const idx = event.index as number;
+        const block = event.content_block;
+        if (block?.type === 'thinking') {
+          // Seed the accumulator. Some content_block_start events ship with
+          // an initial `thinking` chunk pre-populated; carry it forward so
+          // the first delta isn't dropped.
+          this.streamingThinkingByIndex.set(idx, (block.thinking as string) ?? '');
+        }
+      } else if (eType === 'content_block_delta') {
+        const idx = event.index as number;
+        const delta = event.delta;
+        if (delta?.type === 'thinking_delta' && this.streamingThinkingByIndex.has(idx)) {
+          const next = (this.streamingThinkingByIndex.get(idx) ?? '') + (delta.thinking as string);
+          this.streamingThinkingByIndex.set(idx, next);
+          this.events.onThinkingDelta(next);
+        }
+      } else if (eType === 'content_block_stop') {
+        const idx = event.index as number;
+        this.streamingThinkingByIndex.delete(idx);
+      }
+      return;
+    }
+
     // System init — capture session id and basic info.
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       const init = msg as any;
@@ -283,10 +331,34 @@ class ClaudeSession implements ProviderSession {
       // Agent tool_use so the UI can nest these under the Agent card.
       const parentToolUseId = (assistant.parent_tool_use_id as string | null | undefined) ?? null;
 
+      // Diagnostic: surface every block type so we can confirm whether the
+      // SDK is delivering thinking blocks. Cheap (one short line per
+      // assistant message) and easy to remove later.
+      log(`[claudeAgent] blocks=${content.map((b: any) => b?.type ?? 'unknown').join(',')}${parentToolUseId ? ' (sub-agent)' : ''}`);
+
       let partialText = '';
       for (const block of content) {
         if (block.type === 'text') {
           partialText += block.text as string;
+        } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+          // Thinking blocks always precede text/tool_use within a Message, so
+          // flush any pending text first to keep the UI ordering stable.
+          if (partialText.trim()) {
+            this.events.onAssistantText(partialText, { model: assistant.message?.model, parentToolUseId });
+            partialText = '';
+          }
+          const isRedacted = block.type === 'redacted_thinking';
+          const text = isRedacted
+            ? '[Encrypted reasoning — preserved for multi-turn continuity.]'
+            : (block.thinking as string) ?? '';
+          if (text) {
+            this.events.onThinking({
+              type: 'thinking',
+              text,
+              redacted: isRedacted || undefined,
+              parentToolUseId,
+            });
+          }
         } else if (block.type === 'tool_use') {
           if (partialText.trim()) {
             this.events.onAssistantText(partialText, { model: assistant.message?.model, parentToolUseId });

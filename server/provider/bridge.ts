@@ -80,6 +80,49 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       commitText(text, meta);
     },
 
+    onThinkingDelta(text) {
+      if (!session.replayDone) return;
+      if (getSessionState(session.id).wasInterrupted) return;
+      updateSessionState(session.id, s => ({ ...s, partialThinking: text, isStreaming: true, wasInterrupted: false }));
+      deps.broadcastToSession(session.id, { type: 'partial_thinking', sessionId: session.id, text });
+    },
+
+    onThinking(block) {
+      // A thinking block usually precedes text/tool_use within the same
+      // Anthropic Message, but in case the bridge has any pending streaming
+      // text (rare — partial deltas should have been overwritten by the
+      // assistant message that carried the thinking), flush it first so the
+      // UI doesn't render the thought below text it actually preceded.
+      const pending = getSessionState(session.id).partialText;
+      if (pending?.trim()) commitText(pending, { parentToolUseId: block.parentToolUseId });
+
+      const msg: ChatMessage = {
+        id: randomUUID(),
+        role: 'assistant',
+        content: block.text,
+        timestamp: Date.now(),
+        isThinking: true,
+        thinkingRedacted: block.redacted || undefined,
+        parentToolUseId: block.parentToolUseId ?? null,
+      };
+      if (addMessage(session.id, msg)) {
+        deps.broadcastToSession(session.id, { type: 'message', sessionId: session.id, message: msg });
+      }
+
+      // The permanent thinking ChatMessage is now in the log — drop the
+      // transient streaming preview. The client clears the same field when
+      // it sees the matching `message` event.
+      updateSessionState(session.id, s => ({ ...s, partialThinking: '' }));
+      deps.broadcastToSession(session.id, { type: 'partial_thinking', sessionId: session.id, text: '' });
+
+      // The model is still mid-turn after a thought — keep the streaming
+      // indicator on so the UI doesn't briefly flash idle.
+      if (!getSessionState(session.id).wasInterrupted) {
+        updateSessionState(session.id, s => ({ ...s, isStreaming: true, wasInterrupted: false }));
+        deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'streaming' });
+      }
+    },
+
     onToolUse(tool) {
       // When partial messages are enabled, the SDK sends streaming text in one
       // assistant message and the follow-up tool_use in a SEPARATE message.
@@ -247,7 +290,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         }
       }
       session.replayDone = true;
-      updateSessionState(session.id, s => ({ ...s, partialText: '', isStreaming: false, wasInterrupted: false, permRequest: null }));
+      updateSessionState(session.id, s => ({ ...s, partialText: '', partialThinking: '', isStreaming: false, wasInterrupted: false, permRequest: null }));
       deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'turn_complete' });
       deps.notifyTelegramIfMainSession(session.id);
       // Generic "Claude is done" alert for any NON-main session's turn
@@ -271,7 +314,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       // turn died" (red dot) instead of an idle gray dot.
       const wasStreaming = getSessionState(session.id).isStreaming;
       if (wasStreaming) {
-        updateSessionState(session.id, s => ({ ...s, isStreaming: false, partialText: '', wasInterrupted: true }));
+        updateSessionState(session.id, s => ({ ...s, isStreaming: false, partialText: '', partialThinking: '', wasInterrupted: true }));
         deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'interrupted' });
       }
     },
@@ -297,7 +340,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       // interrupted so the UI can render a red dot instead of leaving the
       // user staring at a stuck "thinking" indicator forever.
       const interrupted = state.isStreaming;
-      updateSessionState(session.id, s => ({ ...s, partialText: '', isStreaming: false, wasInterrupted: interrupted || s.wasInterrupted }));
+      updateSessionState(session.id, s => ({ ...s, partialText: '', partialThinking: '', isStreaming: false, wasInterrupted: interrupted || s.wasInterrupted }));
       deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'disconnected' });
       if (interrupted) {
         deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'interrupted' });

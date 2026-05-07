@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
-import { ChevronDown, ChevronRight, ArrowDown, LayoutGrid, X as XIcon } from 'lucide-react';
+import { ChevronDown, ChevronRight, ArrowDown, LayoutGrid, X as XIcon, Sparkles } from 'lucide-react';
 import type { ChatMessage, ClaudeClient, PermissionRequest, SessionInfo } from '../../lib/claude-client';
 import { getAuthToken, resolveServerUrl } from '../../lib/claude-client';
 import { Terminal as TerminalIcon } from 'lucide-react';
@@ -29,6 +29,8 @@ interface Props {
   session: SessionInfo | null;
   messages: ChatMessage[];
   partialText: string;
+  /** Live-streaming reasoning text — rendered as a transient italic bubble. */
+  partialThinking: string;
   isStreaming: boolean;
   permRequest: PermissionRequest | null;
   status: string;
@@ -92,6 +94,7 @@ export function MobileChat({
   session,
   messages,
   partialText,
+  partialThinking,
   isStreaming,
   permRequest,
   status,
@@ -390,7 +393,7 @@ export function MobileChat({
     const el = scrollRef.current;
     if (!el || !stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, partialText, permRequest, shells?.length]);
+  }, [messages, partialText, partialThinking, permRequest, shells?.length]);
 
   // Scroll handler — does double duty:
   //   1. Tracks "pinned to bottom" so streaming messages auto-scroll.
@@ -833,6 +836,20 @@ export function MobileChat({
               onOpenImage={setViewerSrc}
             />
           ))}
+          {partialThinking && (
+            <li className="mx-4">
+              <div className="flex items-center gap-1.5 text-[12px] text-zinc-500 mb-1">
+                <Sparkles className="w-3 h-3 text-violet-300/70 animate-pulse" />
+                <span className="font-medium uppercase tracking-wide text-[10px]">Thinking</span>
+              </div>
+              <div className="ml-4 pl-2.5 border-l border-zinc-800/80">
+                <p className="text-[13px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
+                  {partialThinking}
+                  <span className="inline-block w-1.5 h-3 bg-zinc-500/70 ml-1 align-middle animate-pulse" />
+                </p>
+              </div>
+            </li>
+          )}
           {partialText && (
             <li className="mx-4 text-zinc-100">
               <Markdown text={partialText} className={MOBILE_MD_CLS} />

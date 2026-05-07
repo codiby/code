@@ -32,6 +32,8 @@ const CLAUDE_MODEL_OPTIONS = [
 type SessionRuntime = {
   messages: ChatMessage[];
   partialText: string;
+  /** Live-streaming reasoning text. Mirrors desktop's `partialThinking`. */
+  partialThinking: string;
   isStreaming: boolean;
   /** Last turn died without onTurnComplete — drives the red dot. */
   wasInterrupted: boolean;
@@ -44,6 +46,7 @@ type SessionRuntime = {
 const EMPTY_RUNTIME: SessionRuntime = {
   messages: [],
   partialText: '',
+  partialThinking: '',
   isStreaming: false,
   wasInterrupted: false,
   permRequest: null,
@@ -232,6 +235,7 @@ export function MobileApp() {
           [sessionId]: {
             messages: state.messages || [],
             partialText: state.partialText || '',
+            partialThinking: state.partialThinking || '',
             isStreaming: !!state.isStreaming,
             wasInterrupted: !!state.wasInterrupted,
             permRequest: state.permRequest,
@@ -250,6 +254,7 @@ export function MobileApp() {
               ...cur,
               messages: [...cur.messages, msg],
               partialText: '',
+              partialThinking: msg.isThinking ? '' : cur.partialThinking,
               isStreaming: false,
               wasInterrupted: false,
             },
@@ -260,6 +265,12 @@ export function MobileApp() {
         setRuntime((prev) => {
           const cur = prev[sessionId] || EMPTY_RUNTIME;
           return { ...prev, [sessionId]: { ...cur, partialText: text, isStreaming: true, wasInterrupted: false } };
+        });
+      },
+      onPartialThinking: (sessionId, text) => {
+        setRuntime((prev) => {
+          const cur = prev[sessionId] || EMPTY_RUNTIME;
+          return { ...prev, [sessionId]: { ...cur, partialThinking: text, isStreaming: !!text || cur.isStreaming, wasInterrupted: false } };
         });
       },
       onPermissionRequest: (sessionId, req) => {
@@ -299,7 +310,7 @@ export function MobileApp() {
           setRuntime((prev) => {
             const cur = prev[sessionId];
             if (!cur) return prev;
-            return { ...prev, [sessionId]: { ...cur, isStreaming: false, partialText: '', wasInterrupted: true } };
+            return { ...prev, [sessionId]: { ...cur, isStreaming: false, partialText: '', partialThinking: '', wasInterrupted: true } };
           });
           return;
         }
@@ -312,7 +323,7 @@ export function MobileApp() {
             const cur = prev[sessionId];
             if (!cur) return prev;
             wasStreaming = !!cur.isStreaming;
-            return { ...prev, [sessionId]: { ...cur, isStreaming: false, wasInterrupted: false, permRequest: null, partialText: '' } };
+            return { ...prev, [sessionId]: { ...cur, isStreaming: false, wasInterrupted: false, permRequest: null, partialText: '', partialThinking: '' } };
           });
           if (wasStreaming) playChime();
           // Flash the green "turn complete" dot for the inactive session list,
@@ -842,6 +853,7 @@ export function MobileApp() {
           session={activeSession}
           messages={activeRuntime.messages}
           partialText={activeRuntime.partialText}
+          partialThinking={activeRuntime.partialThinking}
           isStreaming={activeRuntime.isStreaming}
           permRequest={activeRuntime.permRequest}
           status={activeStatus}

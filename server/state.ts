@@ -27,6 +27,15 @@ export interface ChatMessage {
   parentToolUseId?: string | null;
   autoApproved?: boolean;
   isError?: boolean;
+  /**
+   * Set on assistant messages whose `content` is the model's reasoning summary
+   * (Anthropic `thinking` / `redacted_thinking` block). Rendered as a separate
+   * collapsible bubble in the chat — distinct from regular assistant text.
+   */
+  isThinking?: boolean;
+  /** True when the underlying block was `redacted_thinking` (content is a
+   *  placeholder; the real reasoning is encrypted). */
+  thinkingRedacted?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;
@@ -62,6 +71,14 @@ export interface SessionUIState {
 export interface SessionState {
   messages: ChatMessage[];
   partialText: string;
+  /**
+   * Live-streaming thinking text — appended to as `thinking_delta` events
+   * arrive over the SDK's partial-message channel. Replaced (not appended)
+   * by each broadcast: each `partial_thinking` payload carries the full
+   * accumulated text. Cleared when the matching permanent `isThinking`
+   * ChatMessage is committed, on turn complete, or on session error/exit.
+   */
+  partialThinking: string;
   isStreaming: boolean;
   /**
    * The previous turn ended without an `onTurnComplete` — usually a provider
@@ -117,6 +134,7 @@ export function emptyState(): SessionState {
   return {
     messages: [],
     partialText: '',
+    partialThinking: '',
     isStreaming: false,
     wasInterrupted: false,
     permRequest: null,
@@ -251,6 +269,7 @@ export function getStateForClient(sessionId: string) {
     messages: msgs.length > MAX_CLIENT_MESSAGES ? msgs.slice(-MAX_CLIENT_MESSAGES) : msgs,
     totalMessages: msgs.length,
     partialText: state.partialText,
+    partialThinking: state.partialThinking,
     isStreaming: state.isStreaming,
     wasInterrupted: state.wasInterrupted,
     permRequest: state.permRequest,

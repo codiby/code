@@ -66,7 +66,16 @@ export type AssistantToolUseBlock = {
    */
   parentToolUseId?: string | null;
 };
-export type AssistantContentBlock = AssistantTextBlock | AssistantToolUseBlock;
+export type AssistantThinkingBlock = {
+  type: 'thinking';
+  /** Plain-text reasoning summary the model exposed for this turn. */
+  text: string;
+  /** Set when the SDK delivered a `redacted_thinking` block — the text is a
+   *  placeholder, the actual reasoning is encrypted for multi-turn replay. */
+  redacted?: boolean;
+  parentToolUseId?: string | null;
+};
+export type AssistantContentBlock = AssistantTextBlock | AssistantToolUseBlock | AssistantThinkingBlock;
 
 export type TokenUsage = {
   input_tokens?: number;
@@ -120,6 +129,14 @@ export interface ProviderEvents {
   onInit(info: InitInfo): void;
   onAssistantDelta(text: string): void;
   onAssistantText(text: string, meta?: { model?: string; usage?: TokenUsage; parentToolUseId?: string | null }): void;
+  /**
+   * Cumulative live-streaming thinking text. Fires multiple times per turn
+   * as `thinking_delta` events arrive over the SDK's partial-message channel.
+   * The UI shows this as a transient italic bubble that morphs into the
+   * permanent `onThinking()` ChatMessage once the block is committed.
+   */
+  onThinkingDelta(text: string): void;
+  onThinking(block: AssistantThinkingBlock): void;
   onToolUse(tool: AssistantToolUseBlock): void;
   onToolResult(result: { toolUseId?: string; content: unknown; isError?: boolean; parentToolUseId?: string | null }): void;
   onTodosUpdate(todos: unknown[]): void;
