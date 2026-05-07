@@ -1394,6 +1394,18 @@ export function ChatApp() {
     el.scrollTop = el.scrollHeight;
   }, [activeId, active.messages.length, active.partialText, active.partialThinking]);
 
+  // The composer textarea autosizes via inline `style.height` set in its
+  // onInput handler. Clearing the value programmatically (after send, /clear,
+  // history nav reset, etc.) doesn't fire `input`, so a long sent message
+  // would leave the box visibly tall. Reset the inline height back to the
+  // single-row baseline whenever the controlled value goes empty.
+  useLayoutEffect(() => {
+    if (input !== '') return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+  }, [input]);
+
   // Probe opencode once the bridge client is ready. The endpoint is
   // cached on the server side, so future calls (or a refresh of the
   // app) hit the cache instantly. We persist the result in state so
