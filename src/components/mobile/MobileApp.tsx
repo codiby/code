@@ -261,6 +261,30 @@ export function MobileApp() {
             },
           };
         });
+        // Server-driven interactive terminals (the `spawn_terminal` SDK
+        // tool pushes a `isInteractiveTerminal: true` chat message). The
+        // desktop renders these from `state.messages`; mobile reads its
+        // shell dock from a separate `shellsBySession` map, so we hydrate
+        // it here whenever such a message arrives.
+        if (msg.isInteractiveTerminal && msg.procId) {
+          setShellsBySession((prev) => {
+            const list = prev[sessionId] || [];
+            if (list.some((s) => s.procId === msg.procId)) return prev;
+            return {
+              ...prev,
+              [sessionId]: [
+                ...list,
+                {
+                  id: msg.procId!,
+                  procId: msg.procId!,
+                  cwd: msg.terminalCwd || '/',
+                  command: msg.terminalCommand,
+                  createdAt: msg.timestamp || Date.now(),
+                },
+              ],
+            };
+          });
+        }
       },
       onPartialText: (sessionId, text) => {
         setRuntime((prev) => {
@@ -699,11 +723,16 @@ export function MobileApp() {
           const additions: LocalShell[] = [];
           for (const p of live) {
             if (existingIds.has(p.id)) continue;
+            // The user's `/terminal` shells are tracked on the bridge with
+            // command: '(interactive shell)' — that's a placeholder, not
+            // something to surface. PTYs spawned by `spawn_terminal` have
+            // a real command we want to keep as the badge label.
+            const cmd = p.command && p.command !== '(interactive shell)' ? p.command : undefined;
             additions.push({
               id: p.id,
               procId: p.id,
               cwd: p.cwd,
-              command: undefined,
+              command: cmd,
               createdAt: p.startedAt || Date.now(),
             });
           }

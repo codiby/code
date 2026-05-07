@@ -14,10 +14,46 @@ import { dirname, extname, join } from 'path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
+import { log } from '../logger';
 import { addMessage } from '../state';
 import type { ChatMessage } from '../state';
 import { sessions, saveSessions } from '../sessions';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host';
+import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProcessOutput } from '../handlers/processes';
+import { spawnPty } from '../pty';
+import type { TrackedProcess } from '../types';
+
+/** Resolve a tracked process for the current session by procId OR name. */
+function resolveTrackedProcess(
+  sessionId: string,
+  args: { procId?: string; name?: string },
+): { ok: true; tp: TrackedProcess } | { ok: false; error: string } {
+  if (!args.procId && !args.name) {
+    return { ok: false, error: 'Provide either `procId` or `name`.' };
+  }
+  if (args.procId) {
+    const tp = trackedProcesses.get(args.procId);
+    if (!tp || tp.sessionId !== sessionId) {
+      return { ok: false, error: `No terminal with procId "${args.procId}" found in this session.` };
+    }
+    return { ok: true, tp };
+  }
+  const wanted = (args.name || '').trim().toLowerCase();
+  const matches: TrackedProcess[] = [];
+  for (const candidate of trackedProcesses.values()) {
+    if (candidate.sessionId !== sessionId) continue;
+    if ((candidate.label || '').toLowerCase() === wanted) matches.push(candidate);
+  }
+  if (matches.length === 0) {
+    const known = [...trackedProcesses.values()]
+      .filter(t => t.sessionId === sessionId && t.label)
+      .map(t => `"${t.label}"`);
+    const tail = known.length ? ` Known in this session: ${known.join(', ')}.` : ' No labelled terminals exist in this session yet.';
+    return { ok: false, error: `No terminal with name "${args.name}" found.${tail}` };
+  }
+  matches.sort((a, b) => b.startedAt - a.startedAt);
+  return { ok: true, tp: matches[0]! };
+}
 
 export const IMAGE_MEDIA_TYPES: Record<string, string> = {
   '.png': 'image/png',
@@ -317,6 +353,249 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             return { content: [{ type: 'text', text: `Mockup "${name}" not found.${tail}` }], isError: true };
           }
           return { content: [{ type: 'text', text: html }] };
+        },
+      ),
+      tool(
+        'spawn_terminal',
+        [
+          'Spawn a long-running shell command in the background and surface it in the in-app Processes panel so the user can watch it live. The process keeps running across model turns; output buffers in memory and on disk and can be read back any time with `read_terminal_output`.',
+          '',
+          'WHEN TO USE — anything the USER will want to keep an eye on:',
+          '- App / API / dev servers ("bun run dev", "npm start", "rails s", "uvicorn …")',
+          '- File watchers and incremental builds ("tsc --watch", "vitest --watch", "esbuild --watch")',
+          '- Log tailing and monitoring ("tail -f app.log", "kubectl logs -f …", "watch -n 1 …", "htop -b")',
+          '- Background workers, queue consumers, ngrok / tunnels, port-forwards',
+          '- Anything you would normally leave running in a separate terminal tab',
+          '',
+          'WHEN NOT TO USE:',
+          '- Short one-shot commands whose result you need before answering ("ls", "git status", "cat", "rg foo") — use the Bash tool instead. Bash blocks until completion and returns the output; this tool returns immediately and never blocks.',
+          '- Anything destructive that you have not been explicitly asked to run.',
+          '',
+          'The command runs through the user\'s login shell with their profile sourced (~/.zprofile, ~/.zshrc), so PATH, aliases, asdf/nvm shims, etc. all work. The process is detached into its own group so killing it cleans up the whole tree. Returns a `procId` you can pass to `read_terminal_output`, or you can look the process up by `name` later. The terminal also appears in the Processes section of the file-explorer panel so the user can see and kill it from the UI.',
+        ].join('\n'),
+        {
+          cwd: z.string().min(1).describe('Absolute working directory where the command runs (e.g. "/Users/me/proj"). Must exist and be readable by the user.'),
+          name: z.string().min(1).max(60).describe('Short human-readable label for this terminal — what shows up in the Processes panel and what `read_terminal_output` matches against. Pick something specific so the user can tell several terminals apart at a glance, e.g. "API Server", "Vite Dev", "tail app.log", "ngrok tunnel".'),
+          command: z.string().min(1).describe('Shell command line to run. Anything a normal interactive zsh would accept — pipes, env vars, multi-step `&&` chains, etc. Do NOT background it yourself with trailing `&`; this tool already runs it as a tracked background process.'),
+        },
+        async (args) => {
+          if (!sessions.get(sessionId)) {
+            return { content: [{ type: 'text', text: `Session ${sessionId} not found.` }], isError: true };
+          }
+          const label = args.name.trim();
+          if (!label) {
+            return { content: [{ type: 'text', text: 'name cannot be empty or whitespace.' }], isError: true };
+          }
+          try {
+            const stat = await fs.stat(args.cwd);
+            if (!stat.isDirectory()) {
+              return { content: [{ type: 'text', text: `cwd "${args.cwd}" is not a directory.` }], isError: true };
+            }
+          } catch (e) {
+            const err = e instanceof Error ? e.message : String(e);
+            return { content: [{ type: 'text', text: `cwd "${args.cwd}" is not accessible: ${err}` }], isError: true };
+          }
+
+          // Spawn a PTY-backed shell so the running command gets a real TTY
+          // (curses output, color, line discipline) and so the same xterm
+          // bubble used by `/terminal` can re-attach to it. Default size is
+          // re-negotiated by the bubble's xterm via `terminal_resize` once
+          // it mounts.
+          const procId = randomUUID();
+          const cols = 120;
+          const rows = 30;
+          const pty = spawnPty({ cwd: args.cwd, cols, rows });
+          if (!pty) {
+            return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
+          }
+
+          const tp: TrackedProcess = {
+            id: procId,
+            pid: pty.pid,
+            command: args.command,
+            cwd: args.cwd,
+            sessionId,
+            startedAt: Date.now(),
+            proc: null,
+            viewers: new Set(),
+            outputBuffer: [],
+            exitCode: null,
+            kind: 'pty',
+            cols,
+            rows,
+            pty,
+            label,
+          };
+          trackedProcesses.set(procId, tp);
+          saveProcessRegistry();
+
+          // Inject the user's command on the PTY's first byte. We pre-type
+          // here (instead of relying on the bubble's `terminalCommand`
+          // auto-send) because the bubble suppresses auto-send whenever it
+          // detects a re-attach — and our pre-spawned PTY makes every
+          // `execShell` from the bubble look like a re-attach. Waiting for
+          // first byte means the shell has finished sourcing its rc files
+          // and is ready to read input.
+          let didTypeCommand = false;
+          pty.onData((text: string) => {
+            tp.outputBuffer.push(text);
+            if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
+            appendProcessOutput(procId, text);
+            deps.broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
+            if (!didTypeCommand) {
+              didTypeCommand = true;
+              try { pty.write(args.command + '\r'); } catch {}
+            }
+          });
+          pty.onExit((code: number) => {
+            if (tp.exitCode !== null) return;
+            tp.exitCode = code;
+            log(`[spawn_terminal] "${label}" procId=${procId.slice(0, 8)} exited code=${code}`);
+            deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
+            setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
+          });
+
+          // Push the chat message AFTER the PTY is in `trackedProcesses` so
+          // when the InteractiveTerminalBubble mounts and fires `exec_shell`,
+          // the bridge re-attaches to this PTY (replays buffer, resizes)
+          // instead of spawning a duplicate. The bubble auto-types
+          // `terminalCommand + \r` once the PTY produces its first byte —
+          // that's how the command actually starts running.
+          const termMsg: ChatMessage = {
+            id: procId,
+            role: 'system',
+            content: '',
+            timestamp: Date.now(),
+            isInteractiveTerminal: true,
+            procId,
+            terminalCommand: args.command,
+            terminalCwd: args.cwd,
+          };
+          if (addMessage(sessionId, termMsg)) {
+            deps.broadcastToSession(sessionId, { type: 'message', sessionId, message: termMsg });
+          }
+
+          log(`[spawn_terminal] "${label}" procId=${procId.slice(0, 8)} pid=${pty.pid} session=${sessionId.slice(0, 8)} cmd=${args.command.slice(0, 80)}`);
+
+          const summary = [
+            `Spawned terminal "${label}" (procId=${procId}, pid=${pty.pid}).`,
+            `cwd: ${args.cwd}`,
+            `command: ${args.command}`,
+            'A live xterm shell is mounted in the chat (same UX as the /terminal slash command); the process also appears in the Processes panel. Read output with read_terminal_output, send keystrokes with send_terminal_input, stop it with kill_terminal — all by procId or by name.',
+          ].join('\n');
+          return { content: [{ type: 'text', text: summary }] };
+        },
+      ),
+      tool(
+        'read_terminal_output',
+        [
+          'Read the current accumulated output of a terminal previously spawned with `spawn_terminal` (or any other tracked background process in this session). Use this to peek at a dev server\'s logs, see what a watcher just emitted, verify a worker is healthy, or grab the last error from a crash.',
+          '',
+          'Returns a snapshot of stdout+stderr captured so far, plus the live status (running, or exited with code N). To "watch in real time", call this tool again after taking the action you expect to produce new output — each call returns the freshest buffer.',
+          '',
+          'Identify the target terminal by `procId` (returned from spawn_terminal) OR by `name` (the label passed to spawn_terminal — matched case-insensitively within the current session). Pass exactly one.',
+        ].join('\n'),
+        {
+          procId: z.string().optional().describe('procId returned by spawn_terminal. Provide this OR `name`.'),
+          name: z.string().optional().describe('Label originally passed to spawn_terminal (e.g. "API Server"). Matched case-insensitively against terminals in the current session. Provide this OR `procId`.'),
+          tail_lines: z.number().int().positive().max(5000).optional().describe('Return only the last N lines of output. Omit to return the full buffered output. Useful for long-running servers where the early startup logs are no longer interesting.'),
+        },
+        async (args) => {
+          const resolved = resolveTrackedProcess(sessionId, args);
+          if (!resolved.ok) {
+            return { content: [{ type: 'text', text: resolved.error }], isError: true };
+          }
+          const tp = resolved.tp;
+
+          let output = tp.outputBuffer.join('');
+          if (args.tail_lines && args.tail_lines > 0) {
+            const lines = output.split('\n');
+            if (lines.length > args.tail_lines) {
+              output = lines.slice(lines.length - args.tail_lines).join('\n');
+            }
+          }
+
+          const status = tp.exitCode === null
+            ? 'running'
+            : `exited (code ${tp.exitCode})`;
+          const ageSec = Math.max(0, Math.round((Date.now() - tp.startedAt) / 1000));
+          const header = [
+            `=== "${tp.label || '(no name)'}" (procId=${tp.id}, pid=${tp.pid}) ===`,
+            `status: ${status} · uptime ${ageSec}s · cwd ${tp.cwd}`,
+            `command: ${tp.command}`,
+            '--- output ---',
+          ].join('\n');
+          const body = output.length === 0 ? '(no output yet)' : output;
+          return { content: [{ type: 'text', text: `${header}\n${body}` }] };
+        },
+      ),
+      tool(
+        'kill_terminal',
+        [
+          'Stop a background terminal previously spawned with `spawn_terminal`. Sends SIGTERM (then SIGKILL after 500ms) to the entire process group, so child processes (e.g. workers forked from a dev server) are reaped along with the parent. Removes the terminal from the Processes panel.',
+          '',
+          'Identify the target by `procId` (returned from spawn_terminal) OR by `name` (its label). Pass exactly one. Use this when the user asks you to stop/restart a server, when you want to free a port before relaunching with different args, or when a terminal is no longer useful.',
+        ].join('\n'),
+        {
+          procId: z.string().optional().describe('procId returned by spawn_terminal. Provide this OR `name`.'),
+          name: z.string().optional().describe('Label originally passed to spawn_terminal (case-insensitive). Provide this OR `procId`.'),
+        },
+        async (args) => {
+          const resolved = resolveTrackedProcess(sessionId, args);
+          if (!resolved.ok) {
+            return { content: [{ type: 'text', text: resolved.error }], isError: true };
+          }
+          const tp = resolved.tp;
+          if (tp.exitCode !== null) {
+            return { content: [{ type: 'text', text: `Terminal "${tp.label || tp.id}" already exited (code ${tp.exitCode}).` }] };
+          }
+          const ok = killTrackedProcess(tp.id);
+          if (!ok) {
+            return { content: [{ type: 'text', text: `Terminal "${tp.label || tp.id}" was no longer tracked.` }], isError: true };
+          }
+          deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId: tp.id, code: -1 });
+          log(`[kill_terminal] killed "${tp.label || ''}" procId=${tp.id.slice(0, 8)} pid=${tp.pid} session=${sessionId.slice(0, 8)}`);
+          return { content: [{ type: 'text', text: `Killed terminal "${tp.label || '(no name)'}" (procId=${tp.id}, pid=${tp.pid}). The whole process group was signalled (SIGTERM → SIGKILL).` }] };
+        },
+      ),
+      tool(
+        'send_terminal_input',
+        [
+          'Write input to the stdin of a terminal previously spawned with `spawn_terminal` — i.e. type more "commands" into a still-running process. Use for anything that reads stdin: REPLs (`node`, `python -i`, `psql`), interactive prompts ("Are you sure? [y/N]"), CLI debuggers, or programs that take queries on stdin.',
+          '',
+          'A trailing newline is appended by default so the child process receives a complete line; pass `append_newline: false` for partial input or for tools that want a literal byte sequence (Ctrl-C is "\\x03", Ctrl-D is "\\x04", etc.).',
+          '',
+          'Identify the target by `procId` OR by `name` (label). Pass exactly one. Note: the spawned shell does NOT have a controlling TTY, so programs that strictly require a TTY (e.g. `vim`, password prompts, `sudo`) will not work — for those, prefer the user-driven interactive `/terminal` shell.',
+        ].join('\n'),
+        {
+          procId: z.string().optional().describe('procId returned by spawn_terminal. Provide this OR `name`.'),
+          name: z.string().optional().describe('Label originally passed to spawn_terminal (case-insensitive). Provide this OR `procId`.'),
+          input: z.string().describe('Bytes to write to the child\'s stdin. May be empty (e.g. just to send a newline keypress).'),
+          append_newline: z.boolean().optional().describe('When true (default), a trailing "\\n" is appended so the child receives a complete line. Set to false to send raw bytes without modification.'),
+        },
+        async (args) => {
+          const resolved = resolveTrackedProcess(sessionId, args);
+          if (!resolved.ok) {
+            return { content: [{ type: 'text', text: resolved.error }], isError: true };
+          }
+          const tp = resolved.tp;
+          if (tp.exitCode !== null) {
+            return { content: [{ type: 'text', text: `Terminal "${tp.label || tp.id}" has already exited (code ${tp.exitCode}); cannot send input.` }], isError: true };
+          }
+          const payload = args.append_newline === false ? args.input : args.input + '\n';
+          let written = false;
+          if (tp.kind === 'pty' && tp.pty) {
+            try { tp.pty.write(payload); written = true; } catch {}
+          } else if (tp.proc?.stdin && !tp.proc.stdin.destroyed) {
+            try { written = tp.proc.stdin.write(payload); } catch {}
+          } else {
+            return { content: [{ type: 'text', text: `Terminal "${tp.label || tp.id}" has no writable stdin (process was spawned without a stdin pipe, or the stream is already closed).` }], isError: true };
+          }
+          if (!written) {
+            return { content: [{ type: 'text', text: `stdin write to "${tp.label || tp.id}" returned false (backpressure or closed stream); the bytes were buffered but may not have flushed.` }], isError: true };
+          }
+          const preview = args.input.length > 80 ? args.input.slice(0, 77) + '…' : args.input;
+          return { content: [{ type: 'text', text: `Wrote ${payload.length} byte${payload.length === 1 ? '' : 's'} to stdin of "${tp.label || '(no name)'}" (procId=${tp.id}). Input: ${JSON.stringify(preview)}` }] };
         },
       ),
       // Plugin-contributed SDK tools — already prefixed with `<pluginId>_`

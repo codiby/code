@@ -39,6 +39,20 @@ export interface ChatMessage {
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;
+  /** Set on `isTerminal` messages produced by the `spawn_terminal` SDK tool —
+   *  i.e. background processes the model started for the user (dev servers,
+   *  watchers, log tails). The chat stream renders these inline; legacy
+   *  `isTerminal` reattach messages without this flag stay hidden until the
+   *  user opens them from the Processes panel. */
+  isManagedTerminal?: boolean;
+  // Interactive PTY terminal (spawned via the `/terminal` slash command on
+  // the FE, or the `spawn_terminal` SDK tool on the bridge). Renders as an
+  // xterm bubble in the sticky bottom shell panel.
+  isInteractiveTerminal?: boolean;
+  procId?: string;
+  terminalExited?: boolean;
+  terminalExitCode?: number;
+  terminalCwd?: string;
   costUsd?: number;
   durationMs?: number;
   usage?: { input_tokens?: number; output_tokens?: number };

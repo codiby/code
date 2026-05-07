@@ -70,6 +70,12 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
   const didReplayRef = useRef(false);
   const didSendInitialRef = useRef(false);
   const gotFirstDataRef = useRef(false);
+  // Set when the server emits `terminal_reset` for this procId — its presence
+  // means the server treated our `execShell` call as a re-attach to an
+  // existing PTY (tab switch / remount / reload), not a fresh spawn. We use
+  // this to suppress the optional initial-command injection so it doesn't
+  // re-fire every time the bubble remounts.
+  const wasReattachedRef = useRef(false);
 
   const procId = message.procId || message.id;
   const cwd = message.terminalCwd || '/';
@@ -142,7 +148,8 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
           gotFirstDataRef.current = true;
           // Once the PTY has produced any output, it's safe to inject the
           // optional initial command typed after `/terminal` (e.g. `/t ls`).
-          if (initialCommand && !didSendInitialRef.current) {
+          // Skip on re-attach: the command already ran on the original spawn.
+          if (initialCommand && !didSendInitialRef.current && !wasReattachedRef.current) {
             didSendInitialRef.current = true;
             try { client.sendTerminalInput(sessionId, procId, initialCommand + '\r'); } catch {}
           }
@@ -162,6 +169,7 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
       // we optimistically wrote from `message.content` — otherwise every
       // character ends up duplicated.
       const unsubReset = client.onTerminalResetForProc(procId, () => {
+        wasReattachedRef.current = true;
         try { term.reset(); } catch {}
       });
 

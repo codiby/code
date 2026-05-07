@@ -3319,13 +3319,15 @@ export function ChatApp() {
                       </button>
                     )}
                     {(() => {
-                      // All shells — interactive PTY (isInteractiveTerminal) and legacy
-                      // one-shot bubbles (isTerminal, from listProcesses reattach or the
-                      // pre-PTY `>` path) — live in the sticky bottom terminal panel,
-                      // not the chat stream.
+                      // Interactive PTY shells (isInteractiveTerminal) live in the sticky
+                      // bottom terminal panel. Legacy one-shot `isTerminal` bubbles
+                      // (listProcesses reattach / pre-PTY `>` path) stay hidden until
+                      // the user opens them from the Processes panel — but model-spawned
+                      // managed terminals (spawn_terminal SDK tool, isManagedTerminal)
+                      // render inline so the user sees them appear without clicking.
                       const grouped = collapseToolRuns(groupMessages(
                         [...active.messages]
-                          .filter(m => !m.isInteractiveTerminal && !m.isTerminal)
+                          .filter(m => !m.isInteractiveTerminal && !(m.isTerminal && !m.isManagedTerminal))
                           .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))
                           .slice(-visibleMessageCount)
                       ));

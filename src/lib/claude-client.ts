@@ -91,6 +91,10 @@ export interface ChatMessage {
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;
+  /** Set on `isTerminal` messages produced by the `spawn_terminal` SDK tool.
+   *  These render inline in the chat (legacy `isTerminal` reattach messages
+   *  without this flag stay hidden until opened from the Processes panel). */
+  isManagedTerminal?: boolean;
   // Interactive PTY terminal (spawned via /terminal or /t slash command).
   isInteractiveTerminal?: boolean;
   procId?: string;
