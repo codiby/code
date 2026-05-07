@@ -19,6 +19,7 @@ import { PwaInstallBanner } from './PwaInstallBanner';
 import { MobileFilesSheet } from './MobileFilesSheet';
 import { MobileGitSheet } from './MobileGitSheet';
 import { MobileSettingsSheet } from './MobileSettingsSheet';
+import { BypassWarningModal, shouldWarnBypass } from '../BypassWarningModal';
 import type { MockupComment } from '../../lib/mockup-inspector';
 
 const TOKEN_STORAGE_KEY = 'mobileToken';
@@ -593,12 +594,30 @@ export function MobileApp() {
 
   /** Tap-to-cycle permission mode — keeps MobileApp's local sessions list in
    *  sync with the server-side change so the badge re-renders immediately. */
-  const setPermissionModeForActive = (mode: string) => {
+  const applyPermissionMode = (sessionId: string, mode: string) => {
     const c = clientRef.current;
-    if (!c || !activeId) return;
-    setSessions((prev) => prev.map((s) => (s.id === activeId ? { ...s, permission_mode: mode } : s)));
-    c.setPermissionMode(activeId, mode);
-    c.updateSession(activeId, { permissionMode: mode }).catch(() => {});
+    if (!c) return;
+    setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, permission_mode: mode } : s)));
+    c.setPermissionMode(sessionId, mode);
+    c.updateSession(sessionId, { permissionMode: mode }).catch(() => {});
+  };
+
+  // Bypass-mode warning gate — shared between the chat cycle button and the
+  // settings sheet. First flip to bypass pops a confirm modal; the user can
+  // tick "don't show again" to suppress future prompts.
+  const [pendingBypassSessionId, setPendingBypassSessionId] = useState<string | null>(null);
+
+  const requestPermissionMode = (sessionId: string, mode: string) => {
+    if (mode === 'bypassPermissions' && shouldWarnBypass()) {
+      setPendingBypassSessionId(sessionId);
+      return;
+    }
+    applyPermissionMode(sessionId, mode);
+  };
+
+  const setPermissionModeForActive = (mode: string) => {
+    if (!activeId) return;
+    requestPermissionMode(activeId, mode);
   };
 
   const setModelForSession = (sessionId: string, model: string | null) => {
@@ -925,9 +944,18 @@ export function MobileApp() {
         permissionMode={activeSession?.permission_mode}
         onPermissionModeChange={
           activeSession
-            ? (mode) => clientRef.current?.setPermissionMode(activeSession.id, mode)
+            ? (mode) => requestPermissionMode(activeSession.id, mode)
             : undefined
         }
+      />
+
+      <BypassWarningModal
+        open={pendingBypassSessionId !== null}
+        onCancel={() => setPendingBypassSessionId(null)}
+        onConfirm={() => {
+          if (pendingBypassSessionId) applyPermissionMode(pendingBypassSessionId, 'bypassPermissions');
+          setPendingBypassSessionId(null);
+        }}
       />
     </div>
   );

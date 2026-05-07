@@ -10,6 +10,7 @@ import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolR
 import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
 import { WorktreeModal } from './WorktreeModal';
+import { BypassWarningModal, shouldWarnBypass } from './BypassWarningModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
@@ -2437,6 +2438,27 @@ export function ChatApp() {
   const activeStatus = activeId ? (statuses[activeId] || 'disconnected') : 'disconnected';
   const activeSession = sessions.find(s => s.id === activeId);
 
+  // Bypass-mode warning gate. Switching a session to `bypassPermissions`
+  // pops a confirmation modal the first time; the user can tick "don't show
+  // again" to suppress it on future flips.
+  const [pendingBypassSessionId, setPendingBypassSessionId] = useState<string | null>(null);
+
+  const applyPermissionMode = useCallback((sessionId: string, mode: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, permission_mode: mode } : s));
+    c.setPermissionMode(sessionId, mode);
+    c.updateSession(sessionId, { permissionMode: mode }).catch(() => {});
+  }, []);
+
+  const requestPermissionMode = useCallback((sessionId: string, mode: string) => {
+    if (mode === 'bypassPermissions' && shouldWarnBypass()) {
+      setPendingBypassSessionId(sessionId);
+      return;
+    }
+    applyPermissionMode(sessionId, mode);
+  }, [applyPermissionMode]);
+
   // Shift+Tab cycles the active session's permission mode while the chat
   // input is focused. Outside the chat input we leave Shift+Tab alone so the
   // browser's reverse focus traversal still works.
@@ -2447,19 +2469,16 @@ export function ChatApp() {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (document.activeElement !== inputRef.current) return;
       if (!activeId) return;
-      const c = clientRef.current;
-      if (!c) return;
+      if (!clientRef.current) return;
       e.preventDefault();
       const current = (activeSession?.permission_mode || 'default') as typeof PERMISSION_MODES[number];
       const idx = PERMISSION_MODES.indexOf(current);
       const next = PERMISSION_MODES[(idx === -1 ? 0 : idx + 1) % PERMISSION_MODES.length]!;
-      setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: next } : s));
-      c.setPermissionMode(activeId, next);
-      c.updateSession(activeId, { permissionMode: next }).catch(() => {});
+      requestPermissionMode(activeId, next);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [activeId, activeSession?.permission_mode]);
+  }, [activeId, activeSession?.permission_mode, requestPermissionMode]);
 
   // Ordered sessions for tab bar — open = neither closed nor archived
   const orderedOpenSessions = useMemo(() => sessions
@@ -3955,10 +3974,7 @@ export function ChatApp() {
                                 selectedKey={activeSession?.permission_mode || 'default'}
                                 onSelectionChange={(key) => {
                                   if (!activeId || !clientRef.current) return;
-                                  const mode = String(key);
-                                  setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: mode } : s));
-                                  clientRef.current.setPermissionMode(activeId, mode);
-                                  clientRef.current.updateSession(activeId, { permissionMode: mode }).catch(() => {});
+                                  requestPermissionMode(activeId, String(key));
                                 }}
                                 className="w-36"
                               >
@@ -4510,6 +4526,14 @@ export function ChatApp() {
           opencodeAvailable={opencodeInfo?.available ?? false}
           onClose={() => setShowNewSession(false)}
           onCreate={handleCreateSession}
+        />
+        <BypassWarningModal
+          open={pendingBypassSessionId !== null}
+          onCancel={() => setPendingBypassSessionId(null)}
+          onConfirm={() => {
+            if (pendingBypassSessionId) applyPermissionMode(pendingBypassSessionId, 'bypassPermissions');
+            setPendingBypassSessionId(null);
+          }}
         />
         {worktreeForGroup && clientRef.current && (
           <WorktreeModal
