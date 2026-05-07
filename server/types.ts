@@ -55,4 +55,8 @@ export interface TrackedProcess {
   // spawned in *this* server lifetime (re-adopted PTY entries are killed
   // rather than restored — see restoreProcessRegistry).
   pty?: PtyHandle;
+  // Optional human-readable label for processes spawned via the
+  // `spawn_terminal` SDK tool ("API Server", "Vite Dev", etc). Lets the
+  // model look the process up by name in `read_terminal_output`.
+  label?: string;
 }

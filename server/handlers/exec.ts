@@ -1,8 +1,111 @@
 import { randomUUID } from 'crypto';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { corsHeaders } from '../config';
 import { log } from '../logger';
+import type { TrackedProcess } from '../types';
 import { trackedProcesses, saveProcessRegistry, appendProcessOutput } from './processes';
+
+export interface SpawnTrackedOptions {
+  command: string;
+  cwd: string;
+  sessionId: string;
+  /** Optional human-readable label surfaced in the Processes panel and used by
+   *  `read_terminal_output` for name-based lookup. */
+  label?: string;
+  /** Pre-allocated procId. Provide when the caller needs to reference the id
+   *  before the process is spawned (e.g. WS reply correlation). */
+  procId?: string;
+  /** Called for every stdout+stderr chunk after it has been buffered and
+   *  appended to the on-disk log. */
+  onData?: (text: string) => void;
+  /** Called once with the final exit code (0 on clean exit, 1 on spawn error). */
+  onExit?: (code: number) => void;
+}
+
+export interface SpawnTrackedResult {
+  procId: string;
+  pid: number;
+  proc: ChildProcess;
+  tp: TrackedProcess;
+}
+
+/**
+ * Spawn a one-shot tracked background process. Used by:
+ * - HTTP `POST /exec` (`handleExecCreate`) for the legacy viewer-WS flow
+ * - the WS `exec` message in index.ts (broadcasts via `broadcastToSession`)
+ * - the `spawn_terminal` SDK MCP tool (model-driven background terminals)
+ *
+ * The helper owns: spawn args (login shell + profile sourcing + color env),
+ * `trackedProcesses` registration, output buffering with rotation, on-disk
+ * log appends, and post-exit cleanup. Callers wire their own broadcast /
+ * acknowledgement via the `onData` / `onExit` callbacks.
+ */
+export function spawnTrackedProcess(opts: SpawnTrackedOptions): SpawnTrackedResult {
+  const procId = opts.procId || randomUUID();
+  const cwd = opts.cwd;
+  const command = opts.command;
+  const shell = process.env.SHELL || '/bin/sh';
+  const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
+  const proc = spawn(shell, ['-c', init + command], {
+    cwd,
+    detached: true, // Own process group so kill(-pgid) kills entire tree
+    env: {
+      ...process.env,
+      TERM: 'xterm-256color',
+      FORCE_COLOR: '1',
+      COLORTERM: 'truecolor',
+      PATH: `/usr/local/sbin:/usr/sbin:/sbin:${process.env.PATH || ''}`,
+    },
+    // stdin is piped (not ignored) so callers — including the
+    // `send_terminal_input` SDK tool — can feed more input to a long-lived
+    // child later. Existing one-shot callers just leave it dangling, which
+    // is harmless (the child sees EOF only when the pipe is closed).
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  const tp: TrackedProcess = {
+    id: procId,
+    pid: proc.pid!,
+    command,
+    cwd,
+    sessionId: opts.sessionId,
+    startedAt: Date.now(),
+    proc,
+    viewers: new Set(),
+    outputBuffer: [],
+    exitCode: null,
+    kind: 'oneshot',
+    label: opts.label,
+  };
+  trackedProcesses.set(procId, tp);
+  saveProcessRegistry();
+
+  const handleChunk = (chunk: Buffer) => {
+    const text = chunk.toString();
+    tp.outputBuffer.push(text);
+    if (tp.outputBuffer.length > 500) tp.outputBuffer.splice(0, tp.outputBuffer.length - 300);
+    appendProcessOutput(procId, text);
+    opts.onData?.(text);
+  };
+  proc.stdout?.on('data', handleChunk);
+  proc.stderr?.on('data', handleChunk);
+
+  proc.on('close', (code) => {
+    tp.exitCode = code ?? 0;
+    opts.onExit?.(tp.exitCode);
+    // Keep around briefly so any late viewer can see the exit code, then GC.
+    setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
+  });
+
+  proc.on('error', (err) => {
+    log(`[spawnTrackedProcess] ${procId.slice(0, 8)} error: ${err.message}`);
+    tp.exitCode = 1;
+    opts.onExit?.(1);
+    setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
+  });
+
+  return { procId, pid: proc.pid!, proc, tp };
+}
 
 /**
  * POST /exec — Create a terminal process. Returns { procId, pid } immediately.
@@ -12,75 +115,27 @@ export async function handleExecCreate(req: Request): Promise<Response> {
   const body = await req.json() as { command: string; cwd?: string; sessionId?: string };
   if (!body.command) return Response.json({ error: 'command required' }, { status: 400, headers: corsHeaders });
 
-  const procId = randomUUID();
-  const command = body.command;
-  const cwd = body.cwd || '/';
   const sessionId = body.sessionId || 'unknown';
+  const cwd = body.cwd || '/';
 
-  const shell = process.env.SHELL || '/bin/sh';
-  const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
-  const proc = spawn(shell, ['-c', init + command], {
-    cwd,
-    detached: true, // Own process group so kill(-pgid) kills entire tree
-    env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor', PATH: `/usr/local/sbin:/usr/sbin:/sbin:${process.env.PATH || ''}` },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  const tp = {
-    id: procId,
-    pid: proc.pid!,
-    command,
-    cwd,
-    sessionId,
-    startedAt: Date.now(),
-    proc,
-    viewers: new Set<any>(),
-    outputBuffer: [] as string[],
-    exitCode: null as number | null,
-  };
-  trackedProcesses.set(procId, tp);
-  saveProcessRegistry();
-
-  log(`[exec] Started process ${procId.slice(0, 8)} (pid=${proc.pid}): ${command.slice(0, 80)}`);
-
-  const broadcastToViewers = (msg: string) => {
+  const broadcastToViewers = (procId: string, msg: string) => {
+    const tp = trackedProcesses.get(procId);
+    if (!tp) return;
     for (const ws of tp.viewers) {
       try { ws.send(msg); } catch {}
     }
   };
 
-  proc.stdout.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
-    tp.outputBuffer.push(text);
-    if (tp.outputBuffer.length > 500) tp.outputBuffer.splice(0, tp.outputBuffer.length - 300);
-    appendProcessOutput(procId, text);
-    broadcastToViewers(JSON.stringify({ type: 'data', text }));
+  const { procId, pid, tp } = spawnTrackedProcess({
+    command: body.command,
+    cwd,
+    sessionId,
+    onData: (text) => broadcastToViewers(procId, JSON.stringify({ type: 'data', text })),
+    onExit: (code) => broadcastToViewers(procId, JSON.stringify({ type: 'exit', code })),
   });
+  log(`[exec] Started process ${procId.slice(0, 8)} (pid=${pid}): ${tp.command.slice(0, 80)}`);
 
-  proc.stderr.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
-    tp.outputBuffer.push(text);
-    if (tp.outputBuffer.length > 500) tp.outputBuffer.splice(0, tp.outputBuffer.length - 300);
-    appendProcessOutput(procId, text);
-    broadcastToViewers(JSON.stringify({ type: 'data', text }));
-  });
-
-  proc.on('close', (code) => {
-    tp.exitCode = code ?? 0;
-    log(`[exec] Process ${procId.slice(0, 8)} exited with code ${tp.exitCode}`);
-    broadcastToViewers(JSON.stringify({ type: 'exit', code: tp.exitCode }));
-    // Keep in trackedProcesses for a bit so viewers can reconnect and see exit code
-    setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
-  });
-
-  proc.on('error', (err) => {
-    tp.exitCode = 1;
-    log(`[exec] Process ${procId.slice(0, 8)} error: ${err.message}`);
-    broadcastToViewers(JSON.stringify({ type: 'exit', code: 1, error: err.message }));
-    setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
-  });
-
-  return Response.json({ procId, pid: proc.pid }, { headers: corsHeaders });
+  return Response.json({ procId, pid }, { headers: corsHeaders });
 }
 
 /**

@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from '
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import { spawnPty } from './pty';
 
 import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, loadOrCreateMobileToken, getLanIp, resolveTls } from './config';
@@ -26,8 +26,8 @@ import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision } from './provider/bridge';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
-import { handleExecCreate, terminalWsOpen, terminalWsClose } from './handlers/exec';
-import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput } from './handlers/processes';
+import { handleExecCreate, terminalWsOpen, terminalWsClose, spawnTrackedProcess } from './handlers/exec';
+import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput } from './handlers/processes';
 import type { TrackedProcess } from './types';
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout } from './handlers/git';
 import { handleSearch } from './handlers/search';
@@ -539,61 +539,15 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     const { sessionId, command, cwd, procId: clientProcId } = msg as { sessionId: string; command: string; cwd?: string; procId?: string };
     if (!sessionId || !command) return;
 
-    const procId = clientProcId || randomUUID();
-    const execCwd = cwd || '/';
-    const shell = process.env.SHELL || '/bin/sh';
-    const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
-    const proc = spawn(shell, ['-c', init + command], {
-      cwd: execCwd,
-      detached: true,
-      env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor', PATH: `/usr/local/sbin:/usr/sbin:/sbin:${process.env.PATH || ''}` },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    const tp = {
-      id: procId,
-      pid: proc.pid!,
+    const { procId, pid } = spawnTrackedProcess({
       command,
-      cwd: execCwd,
+      cwd: cwd || '/',
       sessionId,
-      startedAt: Date.now(),
-      proc,
-      viewers: new Set<any>(),
-      outputBuffer: [] as string[],
-      exitCode: null as number | null,
-    };
-    trackedProcesses.set(procId, tp);
-    saveProcessRegistry();
-    log(`[exec/ws] Started process ${procId.slice(0, 8)} (pid=${proc.pid}) for session ${sessionId.slice(0, 8)}: ${command.slice(0, 80)}`);
-
-    proc.stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString();
-      tp.outputBuffer.push(text);
-      if (tp.outputBuffer.length > 500) tp.outputBuffer.splice(0, tp.outputBuffer.length - 300);
-      appendProcessOutput(procId, text);
-      broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
+      procId: clientProcId,
+      onData: (text) => broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text }),
+      onExit: (code) => broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code }),
     });
-
-    proc.stderr.on('data', (chunk: Buffer) => {
-      const text = chunk.toString();
-      tp.outputBuffer.push(text);
-      if (tp.outputBuffer.length > 500) tp.outputBuffer.splice(0, tp.outputBuffer.length - 300);
-      appendProcessOutput(procId, text);
-      broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
-    });
-
-    proc.on('close', (code) => {
-      tp.exitCode = code ?? 0;
-      log(`[exec/ws] Process ${procId.slice(0, 8)} exited with code ${tp.exitCode}`);
-      broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: tp.exitCode });
-      setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
-    });
-
-    proc.on('error', (err) => {
-      tp.exitCode = 1;
-      broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: 1 });
-      setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
-    });
+    log(`[exec/ws] Started process ${procId.slice(0, 8)} (pid=${pid}) for session ${sessionId.slice(0, 8)}: ${command.slice(0, 80)}`);
 
     // Acknowledge with procId so the client can correlate
     ws.send(JSON.stringify({ type: 'terminal_data', sessionId, procId, text: '' }));
@@ -741,16 +695,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (pid) {
       killProcessTree(pid);
     } else if (processId) {
-      const tp = trackedProcesses.get(processId);
-      if (tp) {
-        if (tp.kind === 'pty' && tp.pty) {
-          tp.pty.kill('SIGHUP');
-        }
-        if (tp.pid) killProcessTree(tp.pid);
-        try { tp.proc?.kill('SIGKILL'); } catch {}
-        trackedProcesses.delete(processId);
-        saveProcessRegistry();
-      }
+      killTrackedProcess(processId);
     }
     return;
   }

@@ -13,7 +13,7 @@ const PROC_REGISTRY = join(PROC_DIR, 'registry.json');
 
 try { mkdirSync(PROC_DIR, { recursive: true }); } catch {}
 
-type PersistedProc = { id: string; pid: number; command: string; cwd: string; sessionId: string; startedAt: number; kind?: 'oneshot' | 'pty' };
+type PersistedProc = { id: string; pid: number; command: string; cwd: string; sessionId: string; startedAt: number; kind?: 'oneshot' | 'pty'; label?: string };
 
 function isPidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -42,7 +42,7 @@ function removeProcessOutput(procId: string) {
 export function saveProcessRegistry() {
   const entries: PersistedProc[] = [];
   for (const [, tp] of trackedProcesses) {
-    entries.push({ id: tp.id, pid: tp.pid, command: tp.command, cwd: tp.cwd, sessionId: tp.sessionId, startedAt: tp.startedAt, kind: tp.kind });
+    entries.push({ id: tp.id, pid: tp.pid, command: tp.command, cwd: tp.cwd, sessionId: tp.sessionId, startedAt: tp.startedAt, kind: tp.kind, label: tp.label });
   }
   try { writeFileSync(PROC_REGISTRY, JSON.stringify(entries)); } catch {}
 }
@@ -89,6 +89,7 @@ export function restoreProcessRegistry() {
       outputBuffer: output ? [output] : [],
       exitCode: null,
       kind: entry.kind || 'oneshot',
+      label: entry.label,
     });
     log(`[proc] Re-adopted process ${entry.id.slice(0, 8)} (pid=${entry.pid}): ${entry.command.slice(0, 60)}`);
   }
@@ -123,7 +124,7 @@ export function killProcessTree(pid: number) {
 }
 
 export function handleListProcesses(sessionId: string): Response {
-  const procs: { id: string; pid: number; command: string; cwd: string; startedAt: number; exitCode: number | null; kind: 'oneshot' | 'pty'; output: string; children: { pid: number; command: string }[] }[] = [];
+  const procs: { id: string; pid: number; command: string; cwd: string; startedAt: number; exitCode: number | null; kind: 'oneshot' | 'pty'; output: string; label?: string; children: { pid: number; command: string }[] }[] = [];
   for (const [id, tp] of trackedProcesses) {
     if (tp.sessionId !== sessionId) continue;
     // Check if still alive for re-adopted processes
@@ -144,19 +145,19 @@ export function handleListProcesses(sessionId: string): Response {
       exitCode: tp.exitCode,
       kind: tp.kind || 'oneshot',
       output: tp.outputBuffer.join(''),
+      label: tp.label,
       children: tree?.children || [],
     });
   }
   return Response.json(procs, { headers: corsHeaders });
 }
 
-export function handleKillProcess(processId: string, pid?: number): Response {
-  if (pid) {
-    killProcessTree(pid);
-    return Response.json({ ok: true }, { headers: corsHeaders });
-  }
+/** Kill a tracked process by id (PTY-aware) and remove it from the registry.
+ *  Shared by the HTTP `/kill` endpoint and the `kill_terminal` SDK tool.
+ *  Returns false when the procId is unknown. */
+export function killTrackedProcess(processId: string): boolean {
   const tp = trackedProcesses.get(processId);
-  if (!tp) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+  if (!tp) return false;
   if (tp.kind === 'pty' && tp.pty) {
     try { tp.pty.kill('SIGHUP'); } catch {}
   }
@@ -165,5 +166,16 @@ export function handleKillProcess(processId: string, pid?: number): Response {
   trackedProcesses.delete(processId);
   removeProcessOutput(processId);
   saveProcessRegistry();
+  return true;
+}
+
+export function handleKillProcess(processId: string, pid?: number): Response {
+  if (pid) {
+    killProcessTree(pid);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  }
+  if (!killTrackedProcess(processId)) {
+    return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+  }
   return Response.json({ ok: true }, { headers: corsHeaders });
 }
