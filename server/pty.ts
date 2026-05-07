@@ -66,6 +66,14 @@ export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
     },
   });
 
+  // We stack two PTYs on macOS/Linux — this outer one and the inner one
+  // `script(1)` allocates for the shell. Both default to ECHO+canonical, so
+  // every keystroke gets echoed twice. Make the outer a raw passthrough; the
+  // inner pty's line discipline still handles real echo/cooking.
+  if (!isWin) {
+    try { terminal.setRawMode(true); } catch {}
+  }
+
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries({ ...process.env, ...(opts.env || {}) })) {
     if (typeof v === 'string') env[k] = v;
