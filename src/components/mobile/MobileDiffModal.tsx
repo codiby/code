@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw, Text, WrapText, Columns2, AlignJustify } from 'lucide-react';
+import { Button } from '@heroui/react';
 import type { ClaudeClient } from '../../lib/claude-client';
 import { DiffView, diffCounts } from './DiffView';
 
@@ -87,12 +88,13 @@ export function MobileDiffModal({ open, onClose, client, filePath, status, textS
     >
       {/* Header */}
       <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-border shrink-0">
-        <button
-          onClick={onClose}
-          className="text-[13px] text-zinc-400 active:text-zinc-200 px-1 shrink-0"
+        <Button
+          variant="ghost"
+          onPress={onClose}
+          className="h-auto min-w-0 text-[13px] text-zinc-400 active:text-zinc-200 px-1 shrink-0"
         >
           Close
-        </button>
+        </Button>
         <div className="flex-1 min-w-0 text-center">
           <div className="text-[13px] font-mono text-zinc-100 truncate" title={titleLine}>
             {fileName || '(no file)'}
@@ -100,32 +102,39 @@ export function MobileDiffModal({ open, onClose, client, filePath, status, textS
           {dirPart && <div className="text-[10px] font-mono text-zinc-600 truncate">{dirPart}</div>}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => setMode((m) => (m === 'unified' ? 'split' : 'unified'))}
-            className={`p-1.5 rounded active:bg-white/10 ${mode === 'split' ? 'text-indigo-300' : 'text-zinc-500'}`}
-            aria-label="Toggle split view"
-            title={mode === 'split' ? 'Split view' : 'Unified view'}
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            onPress={() => setMode((m) => (m === 'unified' ? 'split' : 'unified'))}
+            className={`p-1.5 min-w-0 rounded active:bg-white/10 ${mode === 'split' ? 'text-indigo-300' : 'text-zinc-500'}`}
+            aria-label={mode === 'split' ? 'Split view' : 'Unified view'}
           >
             {mode === 'split' ? <Columns2 size={16} /> : <AlignJustify size={16} />}
-          </button>
-          <button
-            onClick={() => setWrap((v) => !v)}
-            disabled={mode === 'split'}
-            className={`p-1.5 rounded active:bg-white/10 disabled:opacity-30 ${wrap ? 'text-indigo-300' : 'text-zinc-500'}`}
-            aria-label="Toggle word wrap"
-            title={mode === 'split' ? 'Wrap is always on in split view' : 'Toggle wrap'}
+          </Button>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            onPress={() => setWrap((v) => !v)}
+            isDisabled={mode === 'split'}
+            className={`p-1.5 min-w-0 rounded active:bg-white/10 disabled:opacity-30 ${wrap ? 'text-indigo-300' : 'text-zinc-500'}`}
+            aria-label={mode === 'split' ? 'Wrap is always on in split view' : 'Toggle wrap'}
           >
             {wrap ? <WrapText size={16} /> : <Text size={16} />}
-          </button>
+          </Button>
           {isFileSource && (
-            <button
-              onClick={load}
-              disabled={loading}
-              className="p-1.5 rounded text-zinc-400 active:text-zinc-200 active:bg-white/10 disabled:opacity-40"
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              onPress={load}
+              isDisabled={loading}
+              className="p-1.5 min-w-0 rounded text-zinc-400 active:text-zinc-200 active:bg-white/10 disabled:opacity-40"
               aria-label="Refresh"
             >
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -135,12 +144,13 @@ export function MobileDiffModal({ open, onClose, client, filePath, status, textS
         <span className="text-green-400">+{added}</span>
         <span className="text-red-400">−{removed}</span>
         {!showAllContext && (added > 0 || removed > 0) && (
-          <button
-            onClick={() => setShowAllContext(true)}
-            className="ml-auto text-zinc-500 active:text-zinc-300"
+          <Button
+            variant="ghost"
+            onPress={() => setShowAllContext(true)}
+            className="h-auto min-w-0 ml-auto text-zinc-500 active:text-zinc-300 px-0"
           >
             Show all context
-          </button>
+          </Button>
         )}
       </div>
 

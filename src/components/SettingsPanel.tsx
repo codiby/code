@@ -1,5 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Switch, SwitchControl, SwitchThumb } from '@heroui/react';
+import {
+  Button,
+  TextField, Input,
+  Switch, SwitchControl, SwitchThumb,
+} from '@heroui/react';
 import { resolveServerUrl } from '../lib/claude-client';
 import { PairPhoneModal } from './PairPhoneModal';
 import { PluginSettingsSections } from './PluginExtensionPoints';
@@ -203,7 +207,9 @@ export function SettingsPanel({ onClose, tabGroups, tabGroupMap, onDeleteGroup, 
       {/* Header */}
       <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Settings</span>
-        <button onClick={onClose} className="text-zinc-600 hover:text-zinc-300 text-sm">×</button>
+        <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close settings" className="h-auto p-0 min-w-0 text-zinc-600 hover:text-zinc-300">
+          <span className="text-sm">×</span>
+        </Button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-4 relative">
@@ -237,44 +243,43 @@ export function SettingsPanel({ onClose, tabGroups, tabGroupMap, onDeleteGroup, 
               <div>
                 <label className="block text-[11px] text-zinc-500 mb-1 px-1">Bot Token</label>
                 <div className="relative">
-                  <input
+                  <TextField
                     type={tgShowToken ? 'text' : 'password'}
                     value={tgBotToken}
-                    onChange={(e) => setTgBotToken(e.target.value)}
-                    placeholder="123456:ABC-DEF..."
-                    className="w-full text-[12px] px-2.5 py-1.5 pr-14 rounded-md bg-surface-light border border-border focus:border-border-light focus:outline-none text-zinc-200 placeholder:text-zinc-600 font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setTgShowToken((v) => !v)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                    onChange={setTgBotToken}
+                    aria-label="Bot Token"
+                  >
+                    <Input placeholder="123456:ABC-DEF..." className="font-mono text-[12px] pr-14" />
+                  </TextField>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onPress={() => setTgShowToken((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 h-auto px-1 py-0 min-w-0 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
                   >
                     {tgShowToken ? 'Hide' : 'Show'}
-                  </button>
+                  </Button>
                 </div>
               </div>
 
               <div>
                 <label className="block text-[11px] text-zinc-500 mb-1 px-1">Chat ID (optional)</label>
-                <input
-                  type="text"
-                  value={tgChatId}
-                  onChange={(e) => setTgChatId(e.target.value)}
-                  placeholder="Restrict to a single chat"
-                  className="w-full text-[12px] px-2.5 py-1.5 rounded-md bg-surface-light border border-border focus:border-border-light focus:outline-none text-zinc-200 placeholder:text-zinc-600 font-mono"
-                />
+                <TextField value={tgChatId} onChange={setTgChatId} aria-label="Chat ID">
+                  <Input placeholder="Restrict to a single chat" className="font-mono text-[12px]" />
+                </TextField>
                 <p className="mt-1 text-[10px] text-zinc-600 px-1">
                   Leave blank to accept any chat. Send /start to the bot to see your chat ID.
                 </p>
               </div>
 
-              <button
-                onClick={handleTelegramSave}
-                disabled={tgSaving}
-                className="w-full text-[12px] px-3 py-1.5 rounded-md font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              <Button
+                fullWidth
+                onPress={handleTelegramSave}
+                isDisabled={tgSaving}
+                className="text-[12px] px-3 py-1.5 h-auto rounded-md font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light"
               >
                 {tgSaving ? 'Saving...' : tgSaved ? 'Saved' : 'Save & Restart Bot'}
-              </button>
+              </Button>
 
               {tgError && (
                 <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
@@ -317,55 +322,50 @@ export function SettingsPanel({ onClose, tabGroups, tabGroupMap, onDeleteGroup, 
               <div>
                 <label className="block text-[11px] text-zinc-500 mb-1 px-1">API Key</label>
                 <div className="relative">
-                  <input
+                  <TextField
                     type={dgShowKey ? 'text' : 'password'}
                     value={dgApiKey}
-                    onChange={(e) => setDgApiKey(e.target.value)}
-                    placeholder="Your Deepgram API key"
-                    className="w-full text-[12px] px-2.5 py-1.5 pr-14 rounded-md bg-surface-light border border-border focus:border-border-light focus:outline-none text-zinc-200 placeholder:text-zinc-600 font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setDgShowKey((v) => !v)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                    onChange={setDgApiKey}
+                    aria-label="Deepgram API Key"
+                  >
+                    <Input placeholder="Your Deepgram API key" className="font-mono text-[12px] pr-14" />
+                  </TextField>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onPress={() => setDgShowKey((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 h-auto px-1 py-0 min-w-0 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
                   >
                     {dgShowKey ? 'Hide' : 'Show'}
-                  </button>
+                  </Button>
                 </div>
               </div>
 
               <div>
                 <label className="block text-[11px] text-zinc-500 mb-1 px-1">Model</label>
-                <input
-                  type="text"
-                  value={dgModel}
-                  onChange={(e) => setDgModel(e.target.value)}
-                  placeholder="nova-3"
-                  className="w-full text-[12px] px-2.5 py-1.5 rounded-md bg-surface-light border border-border focus:border-border-light focus:outline-none text-zinc-200 placeholder:text-zinc-600 font-mono"
-                />
+                <TextField value={dgModel} onChange={setDgModel} aria-label="Deepgram Model">
+                  <Input placeholder="nova-3" className="font-mono text-[12px]" />
+                </TextField>
               </div>
 
               <div>
                 <label className="block text-[11px] text-zinc-500 mb-1 px-1">Language</label>
-                <input
-                  type="text"
-                  value={dgLanguage}
-                  onChange={(e) => setDgLanguage(e.target.value)}
-                  placeholder="multi"
-                  className="w-full text-[12px] px-2.5 py-1.5 rounded-md bg-surface-light border border-border focus:border-border-light focus:outline-none text-zinc-200 placeholder:text-zinc-600 font-mono"
-                />
+                <TextField value={dgLanguage} onChange={setDgLanguage} aria-label="Deepgram Language">
+                  <Input placeholder="multi" className="font-mono text-[12px]" />
+                </TextField>
                 <p className="mt-1 text-[10px] text-zinc-600 px-1">
                   Use <code className="text-zinc-400">multi</code> to auto-detect, or a BCP-47 code (e.g. <code className="text-zinc-400">en</code>, <code className="text-zinc-400">es</code>).
                 </p>
               </div>
 
-              <button
-                onClick={handleDeepgramSave}
-                disabled={dgSaving}
-                className="w-full text-[12px] px-3 py-1.5 rounded-md font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              <Button
+                fullWidth
+                onPress={handleDeepgramSave}
+                isDisabled={dgSaving}
+                className="text-[12px] px-3 py-1.5 h-auto rounded-md font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light"
               >
                 {dgSaving ? 'Saving...' : dgSaved ? 'Saved' : 'Save'}
-              </button>
+              </Button>
 
               {dgError && (
                 <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
@@ -450,32 +450,38 @@ export function SettingsPanel({ onClose, tabGroups, tabGroupMap, onDeleteGroup, 
                     </div>
                     {isConfirming ? (
                       <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={() => setConfirmingGroupId(null)}
-                          className="text-[11px] px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onPress={() => setConfirmingGroupId(null)}
+                          className="text-[11px] px-2 py-1 h-auto rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
                         >
                           Cancel
-                        </button>
-                        <button
-                          onClick={() => {
+                        </Button>
+                        <Button
+                          size="sm"
+                          onPress={() => {
                             onDeleteGroup(g.id);
                             setConfirmingGroupId(null);
                           }}
-                          className="text-[11px] px-2 py-1 rounded font-medium text-red-300 bg-red-500/15 hover:bg-red-500/25 border border-red-500/30"
+                          className="text-[11px] px-2 py-1 h-auto rounded font-medium text-red-300 bg-red-500/15 hover:bg-red-500/25 border border-red-500/30"
                         >
                           Delete
-                        </button>
+                        </Button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => setConfirmingGroupId(g.id)}
-                        title={memberCount > 0 ? `Delete group (${memberCount} session${memberCount === 1 ? '' : 's'} will be ungrouped)` : 'Delete group'}
-                        className="shrink-0 p-1 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="ghost"
+                        onPress={() => setConfirmingGroupId(g.id)}
+                        aria-label={memberCount > 0 ? `Delete group (${memberCount} session${memberCount === 1 ? '' : 's'} will be ungrouped)` : 'Delete group'}
+                        className="shrink-0 p-1 h-auto min-w-0 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
                       >
                         <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                           <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
-                      </button>
+                      </Button>
                     )}
                   </div>
                 );
@@ -567,9 +573,10 @@ export function SettingsPanel({ onClose, tabGroups, tabGroupMap, onDeleteGroup, 
           <p className="text-[12px] text-zinc-500 px-1 mb-3">
             Open this UI on your phone to approve permission requests remotely.
           </p>
-          <button
-            onClick={() => setPairOpen(true)}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-md text-[12px] font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light transition-colors"
+          <Button
+            fullWidth
+            onPress={() => setPairOpen(true)}
+            className="flex items-center justify-center gap-2 px-3 py-2 h-auto rounded-md text-[12px] font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light"
           >
             <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -578,7 +585,7 @@ export function SettingsPanel({ onClose, tabGroups, tabGroupMap, onDeleteGroup, 
               <path d="M14 14h3v3M21 14v3h-3M14 21v-3h3M21 21h-3" strokeLinecap="round" />
             </svg>
             Pair Phone
-          </button>
+          </Button>
         </div>
 
         {/* Plugin-contributed settings sections (sideloaded from ~/.codiby/plugins/) */}

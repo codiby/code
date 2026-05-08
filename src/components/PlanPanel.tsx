@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Send as SendIcon } from 'lucide-react';
+import { Button, TextField, TextArea } from '@heroui/react';
 import { Markdown } from './Markdown';
 
 export type PlanComment = {
@@ -226,13 +227,9 @@ export function PlanPanel({
           <span className="text-[10px] text-violet-400 shrink-0">◆</span>
           <span className="text-[12px] font-mono text-violet-300 truncate">plan</span>
         </div>
-        <button
-          className="text-zinc-500 hover:text-zinc-200 text-sm px-1 shrink-0"
-          onClick={onClose}
-          title="Close plan"
-        >
-          &times;
-        </button>
+        <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close plan" className="text-zinc-500 hover:text-zinc-200 text-sm px-1 h-auto min-w-0 shrink-0">
+          <span>×</span>
+        </Button>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -251,29 +248,33 @@ export function PlanPanel({
                   className={`group relative -mx-3 px-3 rounded transition-colors hover:bg-surface-light/60 ${isListItem ? 'py-0.5' : 'pt-2 pb-1'} ${isChanged ? 'plan-block-highlight' : ''}`}
                 >
                   <div className="absolute right-1 top-1 z-10 flex items-center gap-0.5 px-0.5 py-0.5 rounded bg-[#1f1f1f]/95 border border-border-light shadow-md opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                    <button
-                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-zinc-400 hover:text-violet-200 hover:bg-violet-500/15 transition-colors"
-                      onClick={() => openNewComment(i)}
-                      title="Comment on this block"
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 h-auto rounded text-[11px] text-zinc-400 hover:text-violet-200 hover:bg-violet-500/15 transition-colors"
+                      onPress={() => openNewComment(i)}
+                      aria-label="Comment on this block"
                     >
                       <span className="text-[12px] leading-none">+</span>
                       <span>Comment</span>
-                    </button>
+                    </Button>
                   </div>
                   {blockComments.length > 0 && (
                     <div className="mb-1 flex flex-wrap gap-1">
                       {blockComments.map(c => (
-                        <button
+                        <Button
                           key={c.id}
-                          onClick={() => openExistingComment(c)}
-                          className="inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 rounded bg-violet-500/15 border border-violet-500/30 text-violet-200 text-[11px] hover:bg-violet-500/25 transition-colors"
-                          title="Edit comment"
+                          size="sm"
+                          variant="ghost"
+                          onPress={() => openExistingComment(c)}
+                          className="inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 h-auto rounded bg-violet-500/15 border border-violet-500/30 text-violet-200 text-[11px] hover:bg-violet-500/25 transition-colors"
+                          aria-label="Edit comment"
                         >
                           <span className="w-3.5 h-3.5 rounded-full bg-violet-500/40 text-[9px] flex items-center justify-center shrink-0">
                             {comments.findIndex(x => x.id === c.id) + 1}
                           </span>
                           <span className="truncate">{c.text}</span>
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   )}
@@ -298,23 +299,25 @@ export function PlanPanel({
 
       {comments.length > 0 && (
         <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2">
-          <button
-            className="text-[11px] px-3 py-1.5 rounded-full bg-[#1f1f1f]/85 border border-border-light backdrop-blur text-zinc-400 hover:text-violet-200 hover:bg-violet-500/15 transition-colors"
-            onClick={() => {
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-[11px] px-3 py-1.5 h-auto rounded-full bg-[#1f1f1f]/85 border border-border-light backdrop-blur text-zinc-400 hover:text-violet-200 hover:bg-violet-500/15 transition-colors"
+            onPress={() => {
               const md = buildChatMessage(comments, blocks);
               if (md) onWriteToChat(md);
             }}
-            title="Insert the comments into the chat input without sending"
+            aria-label="Insert the comments into the chat input without sending"
           >
             Write to input
-          </button>
-          <button
-            className="relative w-[52px] h-[52px] rounded-full bg-violet-600 hover:bg-violet-500 text-white shadow-lg shadow-violet-500/40 inline-flex items-center justify-center transition-transform hover:scale-[1.04]"
-            onClick={() => {
+          </Button>
+          <Button
+            isIconOnly
+            className="relative w-[52px] h-[52px] min-w-0 p-0 rounded-full bg-violet-600 hover:bg-violet-500 text-white shadow-lg shadow-violet-500/40 inline-flex items-center justify-center transition-transform hover:scale-[1.04]"
+            onPress={() => {
               const md = buildChatMessage(comments, blocks);
               if (md) onSendToChat(md);
             }}
-            title={`Send ${comments.length} comment${comments.length === 1 ? '' : 's'} to chat`}
             aria-label={`Send ${comments.length} to chat`}
           >
             <SendIcon className="w-[22px] h-[22px]" />
@@ -324,7 +327,7 @@ export function PlanPanel({
             >
               {comments.length > 99 ? '99+' : comments.length}
             </span>
-          </button>
+          </Button>
         </div>
       )}
 
@@ -339,40 +342,49 @@ export function PlanPanel({
               {popup.blockPreview}
             </span>
           </div>
-          <textarea
-            autoFocus
+          <TextField
             value={popup.text}
-            onChange={(e) => setPopup(p => p ? { ...p, text: e.target.value } : p)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') { e.preventDefault(); closePopup(); }
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); savePopup(); }
-            }}
-            placeholder="Comment on this block… (Cmd+Enter to save, Esc to cancel)"
-            className="block w-full bg-transparent px-2.5 py-2 text-[12px] resize-none focus:outline-none placeholder:text-zinc-600"
-            rows={4}
-          />
+            onChange={(v) => setPopup(p => p ? { ...p, text: v } : p)}
+            aria-label="Block comment"
+          >
+            <TextArea
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); closePopup(); }
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); savePopup(); }
+              }}
+              placeholder="Comment on this block… (Cmd+Enter to save, Esc to cancel)"
+              className="block w-full bg-transparent px-2.5 py-2 text-[12px] resize-none border-0 placeholder:text-zinc-600"
+              rows={4}
+            />
+          </TextField>
           <div className="flex items-center justify-end gap-1 px-2 py-1.5 border-t border-border-light">
             {popup.commentId && (
-              <button
-                className="text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5"
-                onClick={deletePopup}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 h-auto"
+                onPress={deletePopup}
               >
                 Delete
-              </button>
+              </Button>
             )}
             <span className="flex-1" />
-            <button
-              className="text-[11px] text-zinc-500 hover:text-zinc-300 px-2 py-0.5"
-              onClick={closePopup}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-[11px] text-zinc-500 hover:text-zinc-300 px-2 py-0.5 h-auto"
+              onPress={closePopup}
             >
               Cancel
-            </button>
-            <button
-              className="text-[11px] text-white bg-violet-600 hover:bg-violet-500 rounded px-2 py-0.5"
-              onClick={savePopup}
+            </Button>
+            <Button
+              size="sm"
+              className="text-[11px] text-white bg-violet-600 hover:bg-violet-500 rounded px-2 py-0.5 h-auto"
+              onPress={savePopup}
             >
               Save
-            </button>
+            </Button>
           </div>
         </div>
       )}

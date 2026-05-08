@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode, PointerEvent as ReactPointerEvent } from 'react';
+import { Button } from '@heroui/react';
 
 interface BottomSheetProps {
   open: boolean;
@@ -60,11 +61,11 @@ export function BottomSheet({ open, onClose, title, children, maxHeight = 0.85 }
   return (
     <div className="fixed inset-0 z-50">
       {/* Backdrop */}
-      <button
-        type="button"
+      <Button
+        variant="ghost"
         aria-label="Close"
-        onClick={onClose}
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
+        onPress={onClose}
+        className="absolute inset-0 h-auto min-w-0 rounded-none bg-black/60 backdrop-blur-sm transition-opacity"
         style={{ opacity: 1 - Math.min(dragY / 400, 0.4) }}
       />
       {/* Sheet */}
@@ -92,13 +93,16 @@ export function BottomSheet({ open, onClose, title, children, maxHeight = 0.85 }
         {title && (
           <div className="px-5 pb-3 pt-1 flex items-center justify-between">
             <h2 className="text-base font-semibold text-zinc-100">{title}</h2>
-            <button
-              onClick={onClose}
-              className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 flex items-center justify-center text-lg"
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              onPress={onClose}
+              className="w-8 h-8 min-w-0 rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 text-lg"
               aria-label="Close"
             >
               ×
-            </button>
+            </Button>
           </div>
         )}
         <div className="flex-1 overflow-y-auto overscroll-contain px-5 pb-4">

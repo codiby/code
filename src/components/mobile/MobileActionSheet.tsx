@@ -1,5 +1,5 @@
 import { Image as ImageIcon, LayoutGrid, Mic, Plus, Terminal, type LucideIcon } from 'lucide-react';
-import { Drawer, ListBox, ListBoxItem, Select, SelectPopover, SelectTrigger, SelectValue } from '@heroui/react';
+import { Button, Drawer, ListBox, ListBoxItem, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from '@heroui/react';
 
 export type ActionSheetId =
   | 'new-terminal'
@@ -16,7 +16,18 @@ interface Props {
   model?: string | null;
   modelOptions?: Array<{ id: string; label: string }>;
   onModelChange?: (model: string | null) => void;
+  /** Current permission mode of the active session ('default' | 'acceptEdits' | 'plan' | 'bypassPermissions'). */
+  permissionMode?: string;
+  /** Change handler for permission mode. */
+  onPermissionModeChange?: (mode: string) => void;
 }
+
+const PERMISSION_MODES = [
+  { value: 'default', label: 'Default', desc: 'Prompt for every tool' },
+  { value: 'acceptEdits', label: 'Accept edits', desc: 'Auto-approve file edits' },
+  { value: 'plan', label: 'Plan', desc: 'Read-only, no writes' },
+  { value: 'bypassPermissions', label: 'Bypass', desc: 'Auto-approve everything' },
+];
 
 interface Tile {
   id: ActionSheetId;
@@ -38,7 +49,7 @@ const TILES: Tile[] = [
  * `onAction(id)` and dismisses. Built on HeroUI's `Drawer` so swipe-down /
  * backdrop tap dismiss come for free.
  */
-export function MobileActionSheet({ open, onClose, onAction, sessionName, model, modelOptions = [], onModelChange }: Props) {
+export function MobileActionSheet({ open, onClose, onAction, sessionName, model, modelOptions = [], onModelChange, permissionMode, onPermissionModeChange }: Props) {
   return (
     <Drawer isOpen={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <Drawer.Backdrop variant="blur">
@@ -52,18 +63,16 @@ export function MobileActionSheet({ open, onClose, onAction, sessionName, model,
               {sessionName && onModelChange && (
                 <div className="mb-4 rounded-2xl bg-zinc-900/55 border border-white/10 px-3 py-3">
                   <label className="flex items-center gap-3 min-w-0">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-0.5">Model</div>
-                      <div className="text-[12px] text-zinc-300 truncate">{sessionName}</div>
-                    </div>
+                    <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Model</div>
                     <Select
-                      aria-label={`Model for ${sessionName}`}
+                      aria-label="Model"
                       selectedKey={model || 'default'}
                       onSelectionChange={(key) => onModelChange(key === 'default' ? null : String(key))}
-                      className="shrink-0 w-44"
+                      className="flex-1 min-w-0"
                     >
-                      <SelectTrigger className="min-h-0 h-9 py-0 px-2.5 rounded-lg bg-white/5 border border-white/10 text-[13px] text-zinc-200 shadow-none">
-                        <SelectValue />
+                      <SelectTrigger className="min-h-0 h-9 py-0 px-2.5 rounded-lg bg-white/5 border border-white/10 text-[13px] text-zinc-200 shadow-none flex items-center justify-between gap-2 w-full">
+                        <SelectValue className="truncate text-left" />
+                        <SelectIndicator className="shrink-0 text-zinc-400" />
                       </SelectTrigger>
                       <SelectPopover>
                         <ListBox>
@@ -81,21 +90,50 @@ export function MobileActionSheet({ open, onClose, onAction, sessionName, model,
                   </label>
                 </div>
               )}
+              {onPermissionModeChange && (
+                <div className="mb-4">
+                  <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2 px-1">
+                    Permission mode
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {PERMISSION_MODES.map((m) => {
+                      const isActive = m.value === (permissionMode || 'default');
+                      return (
+                        <Button
+                          key={m.value}
+                          variant="ghost"
+                          onPress={() => onPermissionModeChange(m.value)}
+                          className={`w-full h-auto min-w-0 justify-start text-left p-2.5 rounded-xl border transition ${
+                            isActive
+                              ? 'bg-indigo-500/15 border-indigo-500/40'
+                              : 'bg-zinc-900/55 border-white/10 active:bg-white/10'
+                          }`}
+                        >
+                          <div className="w-full">
+                            <div className="text-[13px] font-medium text-zinc-100">{m.label}</div>
+                            <div className="text-[10px] text-zinc-500 mt-0.5 truncate">{m.desc}</div>
+                          </div>
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-4 gap-3 pt-2">
                 {TILES.map(({ id, label, icon: Icon }) => (
-                  <button
+                  <Button
                     key={id}
-                    type="button"
-                    onClick={() => { onAction(id); onClose(); }}
-                    className="aspect-square flex flex-col items-center justify-center gap-2 rounded-2xl bg-zinc-900/55 border border-white/10 text-zinc-200 active:bg-zinc-900/85"
+                    variant="ghost"
+                    onPress={() => { onAction(id); onClose(); }}
+                    className="w-full aspect-square h-auto min-w-0 px-1! flex flex-col items-center justify-center gap-2 rounded-2xl bg-zinc-900/55 border border-white/10 text-zinc-200 active:bg-zinc-900/85"
                     style={{
                       backdropFilter: 'blur(28px) saturate(180%)',
                       WebkitBackdropFilter: 'blur(28px) saturate(180%)',
                     }}
                   >
-                    <Icon size={26} className="text-zinc-100" strokeWidth={1.6} />
-                    <span className="text-[11px] leading-tight text-zinc-300">{label}</span>
-                  </button>
+                    <Icon size={24} className="text-zinc-100" strokeWidth={1.6} />
+                    <span className="text-[10px] leading-tight text-zinc-300 truncate max-w-full">{label}</span>
+                  </Button>
                 ))}
               </div>
             </Drawer.Body>

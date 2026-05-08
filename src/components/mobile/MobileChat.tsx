@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { ChevronDown, ChevronRight, ArrowDown, LayoutGrid, X as XIcon, Sparkles } from 'lucide-react';
+import { Button, TextField, TextArea } from '@heroui/react';
 import type { ChatMessage, ClaudeClient, PermissionRequest, SessionInfo } from '../../lib/claude-client';
 import { getAuthToken, resolveServerUrl } from '../../lib/claude-client';
 import { Terminal as TerminalIcon } from 'lucide-react';
@@ -479,12 +480,12 @@ export function MobileChat({
     }
   };
 
-  // Auto-grow the textarea (capped) as the user types
+  // Auto-grow the textarea (capped at ~5 rows) as the user types
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
   }, [input]);
 
   // When the soft keyboard slides up/down the visual viewport changes size.
@@ -724,15 +725,15 @@ export function MobileChat({
       {/* Floating Stop pill — only visible while Claude is streaming.
           Replaces the dedicated header so the chat can use the full height. */}
       {isStreaming && (
-        <button
-          type="button"
-          onClick={interrupt}
-          className="fixed left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full bg-red-500/15 border border-red-500/40 text-[12px] text-red-200 backdrop-blur-md active:bg-red-500/25 shadow-lg flex items-center gap-2"
+        <Button
+          variant="ghost"
+          onPress={interrupt}
+          className="fixed left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full bg-red-500/15 border border-red-500/40 text-[12px] text-red-200 backdrop-blur-md active:bg-red-500/25 shadow-lg flex items-center gap-2 h-auto min-w-0"
           style={{ top: 'calc(0.5rem + env(safe-area-inset-top))' }}
         >
           <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
           Stop
-        </button>
+        </Button>
       )}
 
       {/* Messages */}
@@ -757,13 +758,13 @@ export function MobileChat({
         {!session && (
           <div className="px-6 py-12 text-center text-zinc-500">
             <p className="text-sm">No session yet.</p>
-            <button
-              type="button"
-              onClick={onOpenSessions}
-              className="mt-4 px-4 py-3 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 text-sm font-semibold active:bg-indigo-500/25"
+            <Button
+              variant="ghost"
+              onPress={onOpenSessions}
+              className="mt-4 px-4 py-3 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 text-sm font-semibold active:bg-indigo-500/25 h-auto min-w-0"
             >
               Pick or create a session
-            </button>
+            </Button>
           </div>
         )}
 
@@ -949,9 +950,10 @@ export function MobileChat({
          well above the bottom of the chat. Sits centered just above the
          composer; tapping it pins the chat back to the latest message. */}
       {showScrollDown && (
-        <button
-          type="button"
-          onClick={() => {
+        <Button
+          variant="ghost"
+          isIconOnly
+          onPress={() => {
             const el = scrollRef.current;
             if (!el) return;
             el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
@@ -959,7 +961,7 @@ export function MobileChat({
             setShowScrollDown(false);
           }}
           aria-label="Scroll to latest"
-          className="fixed left-1/2 -translate-x-1/2 z-30 w-10 h-10 rounded-full bg-zinc-900/85 border border-white/10 text-zinc-200 active:bg-zinc-800 shadow-2xl flex items-center justify-center"
+          className="fixed left-1/2 -translate-x-1/2 z-30 w-10 h-10 rounded-full bg-zinc-900/85 border border-white/10 text-zinc-200 active:bg-zinc-800 shadow-2xl flex items-center justify-center min-w-0"
           style={{
             // Sit just above the composer's top edge
             bottom: chromeHidden
@@ -970,7 +972,7 @@ export function MobileChat({
           }}
         >
           <ArrowDown size={16} />
-        </button>
+        </Button>
       )}
 
       {/* Composer — uses position: fixed so it anchors to the visual viewport,
@@ -995,19 +997,20 @@ export function MobileChat({
             as floating glass pills. The xterm of each stays alive
             (display:none on the inline bubble). */}
         <div className="mb-2 -mx-1 px-1 flex gap-1.5 overflow-x-auto no-scrollbar">
-          <button
-            type="button"
-            onClick={() => setActionSheetOpen(true)}
-            className="shrink-0 w-9 h-7 flex items-center justify-center rounded-full bg-zinc-900/70 border border-white/10 shadow-lg text-zinc-200 active:bg-zinc-900/90"
+          <Button
+            variant="ghost"
+            isIconOnly
+            size="sm"
+            onPress={() => setActionSheetOpen(true)}
+            className="shrink-0 w-9 h-7 flex items-center justify-center rounded-full bg-zinc-900/70 border border-white/10 shadow-lg text-zinc-200 active:bg-zinc-900/90 min-w-0"
             style={{
               backdropFilter: 'blur(20px) saturate(180%)',
               WebkitBackdropFilter: 'blur(20px) saturate(180%)',
             }}
             aria-label="Open actions"
-            title="Actions"
           >
             <LayoutGrid size={14} />
-          </button>
+          </Button>
           {session && (() => {
             const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const;
             const MODE_LABELS: Record<string, string> = {
@@ -1023,19 +1026,18 @@ export function MobileChat({
             const idx = PERMISSION_MODES.indexOf(current);
             const next = PERMISSION_MODES[(idx === -1 ? 0 : idx + 1) % PERMISSION_MODES.length]!;
             return (
-              <button
-                type="button"
-                onClick={() => onPermissionModeChange?.(next)}
-                className={`shrink-0 h-7 px-2.5 flex items-center rounded-full bg-zinc-900/70 border border-white/10 shadow-lg text-[11px] font-medium active:bg-zinc-900/90 ${MODE_TONES[current] || 'text-zinc-200'}`}
+              <Button
+                variant="ghost"
+                onPress={() => onPermissionModeChange?.(next)}
+                className={`shrink-0 h-7 px-2.5 flex items-center rounded-full bg-zinc-900/70 border border-white/10 shadow-lg text-[11px] font-medium active:bg-zinc-900/90 min-w-0 ${MODE_TONES[current] || 'text-zinc-200'}`}
                 style={{
                   backdropFilter: 'blur(20px) saturate(180%)',
                   WebkitBackdropFilter: 'blur(20px) saturate(180%)',
                 }}
                 aria-label={`Permission mode: ${MODE_LABELS[current] || current}. Tap to cycle.`}
-                title={`Mode: ${MODE_LABELS[current] || current} — tap to cycle`}
               >
                 {MODE_LABELS[current] || current}
-              </button>
+              </Button>
             );
           })()}
           {shells &&
@@ -1044,34 +1046,32 @@ export function MobileChat({
               .map((sh) => {
                 const label = sh.command?.trim() || sh.cwd.split('/').pop() || 'shell';
                 return (
-                  <button
+                  <Button
                     key={sh.id}
-                    type="button"
-                    onClick={() => toggleShellMinimized(sh.id)}
-                    className="shrink-0 flex items-center gap-1.5 max-w-[70vw] px-2.5 py-1 rounded-full bg-zinc-900/70 border border-white/10 shadow-lg text-[12px] text-zinc-200 font-mono active:bg-zinc-900/90"
+                    variant="ghost"
+                    onPress={() => toggleShellMinimized(sh.id)}
+                    className="shrink-0 flex items-center gap-1.5 max-w-[70vw] px-2.5 py-1 rounded-full bg-zinc-900/70 border border-white/10 shadow-lg text-[12px] text-zinc-200 font-mono active:bg-zinc-900/90 h-auto min-w-0"
                     style={{
                       backdropFilter: 'blur(20px) saturate(180%)',
                       WebkitBackdropFilter: 'blur(20px) saturate(180%)',
                     }}
-                    title={sh.command || sh.cwd}
                     aria-label={`Restore terminal: ${label}`}
                   >
                     <TerminalIcon size={12} className="shrink-0 text-emerald-400" />
                     <span className="truncate">{label}</span>
-                  </button>
+                  </Button>
                 );
               })}
           {mockups && mockups.map((m) => (
-            <button
+            <Button
               key={m.name}
-              type="button"
-              onClick={() => onOpenMockup?.(m.name)}
-              className="shrink-0 flex items-center gap-1.5 max-w-[70vw] px-2.5 py-1 rounded-full bg-zinc-900/70 border border-violet-500/30 shadow-lg text-[12px] text-violet-200 active:bg-zinc-900/90"
+              variant="ghost"
+              onPress={() => onOpenMockup?.(m.name)}
+              className="shrink-0 flex items-center gap-1.5 max-w-[70vw] px-2.5 py-1 rounded-full bg-zinc-900/70 border border-violet-500/30 shadow-lg text-[12px] text-violet-200 active:bg-zinc-900/90 h-auto min-w-0"
               style={{
                 backdropFilter: 'blur(20px) saturate(180%)',
                 WebkitBackdropFilter: 'blur(20px) saturate(180%)',
               }}
-              title={`Open mockup "${m.name}"`}
               aria-label={`Open mockup: ${m.name}`}
             >
               <span className="text-[10px] text-violet-400 shrink-0">▣</span>
@@ -1081,7 +1081,7 @@ export function MobileChat({
                   {m.comments.length}
                 </span>
               )}
-            </button>
+            </Button>
           ))}
         </div>
 
@@ -1095,14 +1095,16 @@ export function MobileChat({
                   alt={a.name}
                   className="w-16 h-16 rounded-lg object-cover border border-white/10"
                 />
-                <button
-                  type="button"
-                  onClick={() => removeAttachment(a.id)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-950 border border-white/20 text-zinc-300 flex items-center justify-center text-[10px] active:bg-zinc-800"
+                <Button
+                  variant="ghost"
+                  isIconOnly
+                  size="sm"
+                  onPress={() => removeAttachment(a.id)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-950 border border-white/20 text-zinc-300 flex items-center justify-center text-[10px] active:bg-zinc-800 min-w-0"
                   aria-label={`Remove ${a.name}`}
                 >
                   ×
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -1158,26 +1160,30 @@ export function MobileChat({
               </div>
               {recState === 'recording' && (
                 <>
-                  <button
-                    type="button"
-                    onClick={cancelRecording}
-                    className="shrink-0 w-9 h-9 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center transition"
+                  <Button
+                    variant="ghost"
+                    isIconOnly
+                    size="sm"
+                    onPress={cancelRecording}
+                    className="shrink-0 w-9 h-9 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center transition min-w-0"
                     aria-label="Cancel recording"
                   >
                     <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
                     </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={finishRecording}
-                    className="shrink-0 w-9 h-9 rounded-full bg-indigo-500 text-white flex items-center justify-center font-semibold active:bg-indigo-600 transition"
+                  </Button>
+                  <Button
+                    variant="primary"
+                    isIconOnly
+                    size="sm"
+                    onPress={finishRecording}
+                    className="shrink-0 w-9 h-9 rounded-full bg-indigo-500 text-white flex items-center justify-center font-semibold active:bg-indigo-600 transition min-w-0"
                     aria-label="Send recording"
                   >
                     <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M5 12l14-7-7 14-2-5-5-2z" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
-                  </button>
+                  </Button>
                 </>
               )}
             </>
@@ -1199,21 +1205,29 @@ export function MobileChat({
                   }
                 }}
               />
-              <textarea
-                ref={taRef}
+              <TextField
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={onKeyDown}
-                disabled={!session}
-                rows={1}
-                placeholder={session ? 'Message Claude…' : 'Select a session first'}
-                className="flex-1 bg-transparent resize-none outline-none text-[15px] text-zinc-100 placeholder:text-zinc-600 max-h-40 leading-snug py-1.5"
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!session}
-                className="shrink-0 w-9 h-9 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center disabled:opacity-30 transition"
+                onChange={setInput}
+                isDisabled={!session}
+                aria-label="Message"
+                className="flex-1 self-center"
+              >
+                <TextArea
+                  ref={taRef}
+                  onKeyDown={onKeyDown}
+                  rows={1}
+                  placeholder={session ? 'Message Claude…' : 'Select a session first'}
+                  className="w-full shrink-0! border-0! bg-transparent! shadow-none! ring-0! p-0! min-h-0! rounded-none! resize-none outline-none text-[15px] text-zinc-100 placeholder:text-zinc-600 leading-snug"
+                  style={{ maxHeight: 120 }}
+                />
+              </TextField>
+              <Button
+                variant="ghost"
+                isIconOnly
+                size="sm"
+                onPress={() => fileInputRef.current?.click()}
+                isDisabled={!session}
+                className="shrink-0 w-9 h-9 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center disabled:opacity-30 transition min-w-0"
                 aria-label="Attach image"
               >
                 <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.7">
@@ -1223,15 +1237,17 @@ export function MobileChat({
                     strokeLinejoin="round"
                   />
                 </svg>
-              </button>
+              </Button>
               {!input.trim() && attachments.length === 0 ? (
                 // Empty composer → mic button (records voice note, Deepgram
                 // transcribes, transcript goes through as a normal message).
-                <button
-                  type="button"
-                  onClick={startRecording}
-                  disabled={!session}
-                  className="shrink-0 w-9 h-9 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center disabled:opacity-30 transition"
+                <Button
+                  variant="ghost"
+                  isIconOnly
+                  size="sm"
+                  onPress={startRecording}
+                  isDisabled={!session}
+                  className="shrink-0 w-9 h-9 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center disabled:opacity-30 transition min-w-0"
                   aria-label="Record voice note"
                 >
                   <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.7">
@@ -1239,27 +1255,30 @@ export function MobileChat({
                     <path d="M19 10v2a7 7 0 01-14 0v-2" />
                     <path d="M12 19v3M8 22h8" strokeLinecap="round" />
                   </svg>
-                </button>
+                </Button>
               ) : (
                 // Has text or attachments → send button.
-                <button
-                  type="button"
-                  onClick={send}
-                  // Keep the textarea focused on tap so iOS/Android don't
-                  // dismiss the keyboard mid-send (which reflows the chat
-                  // and obscures the new bubble's arrival animation).
-                  // PointerDown fires on both mouse + touch and — unlike
-                  // touchstart — preventDefault here doesn't cancel the
-                  // subsequent click.
-                  onPointerDown={(e) => e.preventDefault()}
-                  disabled={!session}
-                  className="shrink-0 w-9 h-9 rounded-full bg-indigo-500 text-white flex items-center justify-center font-semibold disabled:opacity-30 disabled:bg-white/10 active:bg-indigo-600 transition"
-                  aria-label="Send"
-                >
-                  <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M5 12l14-7-7 14-2-5-5-2z" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
+                // Keep the textarea focused on tap so iOS/Android don't
+                // dismiss the keyboard mid-send (which reflows the chat
+                // and obscures the new bubble's arrival animation).
+                // PointerDown fires on both mouse + touch and — unlike
+                // touchstart — preventDefault here doesn't cancel the
+                // subsequent click.
+                <span onPointerDown={(e) => e.preventDefault()}>
+                  <Button
+                    variant="primary"
+                    isIconOnly
+                    size="sm"
+                    onPress={send}
+                    isDisabled={!session}
+                    className="shrink-0 w-9 h-9 rounded-full bg-indigo-500 text-white flex items-center justify-center font-semibold disabled:opacity-30 disabled:bg-white/10 active:bg-indigo-600 transition min-w-0"
+                    aria-label="Send"
+                  >
+                    <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M5 12l14-7-7 14-2-5-5-2z" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </Button>
+                </span>
               )}
             </>
           )}
@@ -1274,6 +1293,8 @@ export function MobileChat({
         model={session?.model}
         modelOptions={modelOptions}
         onModelChange={onModelChange}
+        permissionMode={session?.permission_mode}
+        onPermissionModeChange={session ? onPermissionModeChange : undefined}
       />
 
       <MobileImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />
@@ -1327,7 +1348,7 @@ export function MobileChat({
 // fields that matter on a phone. No Monaco / xterm / complex tool UIs.
 // ---------------------------------------------------------------------------
 
-function MobileMessage({ msg, result, onCancelPending, onOpenImage }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (src: string) => void }) {
+function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (src: string) => void; nested?: boolean }) {
   if (msg.role === 'user') {
     const hasImages = !!msg.images && msg.images.length > 0;
     const pending = !!msg.isPending;
@@ -1365,14 +1386,16 @@ function MobileMessage({ msg, result, onCancelPending, onOpenImage }: { msg: Cha
           </div>
         )}
         {pending && onCancelPending && (
-          <button
-            type="button"
-            onClick={onCancelPending}
-            className="absolute -top-1.5 -left-1.5 w-6 h-6 rounded-full bg-zinc-950 border border-blue-500/40 text-blue-300 active:text-blue-100 active:bg-zinc-900 flex items-center justify-center"
+          <Button
+            variant="ghost"
+            isIconOnly
+            size="sm"
+            onPress={onCancelPending}
+            className="absolute -top-1.5 -left-1.5 w-6 h-6 rounded-full bg-zinc-950 border border-blue-500/40 text-blue-300 active:text-blue-100 active:bg-zinc-900 flex items-center justify-center min-w-0"
             aria-label="Cancel queued message"
           >
             <XIcon className="w-3.5 h-3.5" />
-          </button>
+          </Button>
         )}
       </li>
     );
@@ -1415,13 +1438,19 @@ function MobileMessage({ msg, result, onCancelPending, onOpenImage }: { msg: Cha
   // The matching tool_result (if any) is rendered nested inside this same
   // accordion so each tool gets exactly one collapse.
   if (msg.toolName && !msg.isToolResult) {
-    return <ToolUseBubble msg={msg} result={result} />;
+    return <ToolUseBubble msg={msg} result={result} nested={nested} />;
   }
 
   // Orphan tool_result (no matching tool_use rendered above) — fall back to
   // its own collapsible bubble so it isn't lost.
   if (msg.isToolResult) {
-    return <ToolResultBubble msg={msg} />;
+    return <ToolResultBubble msg={msg} nested={nested} />;
+  }
+
+  // Persisted thinking summary — render the collapsible italic bubble that
+  // takes over when the live `partialThinking` stream finishes.
+  if (msg.isThinking) {
+    return <MobileThoughtBubble msg={msg} />;
   }
 
   // Plain assistant text — render as Markdown, no card. Only user messages
@@ -1429,6 +1458,45 @@ function MobileMessage({ msg, result, onCancelPending, onOpenImage }: { msg: Cha
   return (
     <li className="mx-4 text-zinc-100">
       <Markdown text={msg.content} className={MOBILE_MD_CLS} />
+    </li>
+  );
+}
+
+function MobileThoughtBubble({ msg }: { msg: ChatMessage }) {
+  const [open, setOpen] = useState(false);
+  const redacted = !!msg.thinkingRedacted;
+  const Chevron = open ? ChevronDown : ChevronRight;
+  const text = msg.content || '';
+  const firstLine = text.split('\n').find((l) => l.trim()) ?? '';
+  const preview = firstLine.length > 80 ? firstLine.slice(0, 79) + '…' : firstLine;
+  return (
+    <li className="mx-4">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-start gap-1.5 text-left text-[12px] text-zinc-500 active:text-zinc-300"
+      >
+        <Chevron className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-70" />
+        <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-60" />
+        <span className="font-medium uppercase tracking-wide text-[10px] mt-0.5 shrink-0">
+          {redacted ? 'Encrypted thought' : 'Thought'}
+        </span>
+        {!open && preview && (
+          <span className="ml-1 truncate italic text-zinc-500/80">{preview}</span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
+          {redacted ? (
+            <p className="text-[13px] italic text-zinc-500 leading-relaxed">{text}</p>
+          ) : (
+            <Markdown
+              text={text}
+              className="text-[13px] italic text-zinc-400 leading-relaxed [&_p]:my-1"
+            />
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -1454,53 +1522,52 @@ function MobileToolRunBubble({
   const anyError = group.items.some((m) => resultByToolUseId.get(m.id)?.isError);
   const anyRunning = group.items.some((m) => !resultByToolUseId.get(m.id));
   return (
-    <li className="mx-3">
-      <div className="rounded-xl border border-violet-500/20 overflow-hidden bg-violet-500/[0.04]">
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="w-full flex items-center gap-2 px-3 py-2 text-left active:bg-white/5"
-        >
-          <span className="text-zinc-500 shrink-0">
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </span>
-          {name ? (
-            <>
-              <span className="text-[11px] font-mono font-medium text-violet-400 shrink-0">{name}</span>
-              <span className="text-[12px] text-zinc-400 truncate flex-1 min-w-0">{label}</span>
-            </>
-          ) : (
-            <span className="text-[11px] font-mono font-medium text-violet-400 truncate flex-1 min-w-0">{label}</span>
-          )}
-          <span className="ml-auto flex items-center gap-1.5 shrink-0">
-            {anyRunning && (
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            )}
-            {anyError && !anyRunning && (
-              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-            )}
-            {!anyRunning && !anyError && (
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            )}
-          </span>
-        </button>
-        {expanded && (
-          <ul className="border-t border-violet-500/10 px-1 py-1 flex flex-col gap-1">
-            {group.items.map((m) => (
-              <MobileMessage
-                key={m.id}
-                msg={m}
-                result={resultByToolUseId.get(m.id)}
-              />
-            ))}
-          </ul>
+    <li className="mx-4">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-start gap-1.5 text-left text-[12px] text-zinc-500 active:text-zinc-300"
+      >
+        <span className="text-zinc-500 shrink-0 mt-0.5">
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
+        {name ? (
+          <>
+            <span className="text-[11px] font-mono font-medium text-violet-400 shrink-0">{name}</span>
+            <span className="text-[12px] text-zinc-400 truncate flex-1 min-w-0">{label}</span>
+          </>
+        ) : (
+          <span className="text-[11px] font-mono font-medium text-violet-400 truncate flex-1 min-w-0">{label}</span>
         )}
-      </div>
+        <span className="ml-auto flex items-center gap-1.5 shrink-0 mt-0.5">
+          {anyRunning && (
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          )}
+          {anyError && !anyRunning && (
+            <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+          )}
+          {!anyRunning && !anyError && (
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+          )}
+        </span>
+      </button>
+      {expanded && (
+        <ul className="mt-1 ml-2 pl-2 border-l border-zinc-800/80 flex flex-col gap-1">
+          {group.items.map((m) => (
+            <MobileMessage
+              key={m.id}
+              msg={m}
+              result={resultByToolUseId.get(m.id)}
+              nested
+            />
+          ))}
+        </ul>
+      )}
     </li>
   );
 }
 
-function ToolUseBubble({ msg, result }: { msg: ChatMessage; result?: ChatMessage }) {
+function ToolUseBubble({ msg, result, nested }: { msg: ChatMessage; result?: ChatMessage; nested?: boolean }) {
   // Default collapsed — mirrors the desktop, where every tool starts collapsed
   // and you click the chevron to expand. Especially useful with acceptEdits /
   // bypassPermissions where Claude fires lots of tools per turn.
@@ -1535,22 +1602,22 @@ function ToolUseBubble({ msg, result }: { msg: ChatMessage; result?: ChatMessage
   else if (result) statusDot = { color: 'bg-green-500' };
 
   return (
-    <li className="mx-3">
+    <li className={nested ? '' : 'mx-4'}>
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-1 rounded-lg active:bg-white/5 text-left"
+        className="flex w-full items-start gap-1.5 text-left text-[12px] text-zinc-500 active:text-zinc-300"
       >
-        <span className="text-zinc-500 shrink-0">
+        <span className="text-zinc-500 shrink-0 mt-0.5">
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
-        <span className="text-[11px] font-mono text-violet-400 shrink-0">{msg.toolName}</span>
+        <span className="font-mono text-[11px] text-violet-400 shrink-0">{msg.toolName}</span>
         {!expanded && summary && (
           <span className="text-[12px] text-zinc-500 font-mono truncate flex-1 min-w-0">
             {summary.split('\n')[0]}
           </span>
         )}
-        <span className="ml-auto flex items-center gap-1.5 shrink-0">
+        <span className="ml-auto flex items-center gap-1.5 shrink-0 mt-0.5">
           {msg.autoApproved && (
             <span
               className="text-[9px] uppercase tracking-wider text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded font-mono"
@@ -1571,7 +1638,7 @@ function ToolUseBubble({ msg, result }: { msg: ChatMessage; result?: ChatMessage
         </span>
       </button>
       {expanded && (
-        <div className="mt-1 mx-1 space-y-1.5">
+        <div className="mt-1 ml-5 space-y-1.5">
           {planText ? (
             <div className="px-3 py-2 rounded-xl bg-violet-500/[0.06] border border-violet-500/30 max-h-[60vh] overflow-y-auto">
               <Markdown text={planText} className={MOBILE_MD_CLS} />
@@ -1583,13 +1650,14 @@ function ToolUseBubble({ msg, result }: { msg: ChatMessage; result?: ChatMessage
                   <span className="text-[11px] font-mono text-zinc-400 truncate" title={editParts.filePath}>
                     {editParts.filePath.split('/').pop()}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => setDiffFullscreen(true)}
-                    className="shrink-0 text-[10px] text-zinc-500 active:text-zinc-200 px-2 py-0.5 rounded active:bg-white/5"
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onPress={() => setDiffFullscreen(true)}
+                    className="shrink-0 text-[10px] text-zinc-500 active:text-zinc-200 px-2 py-0.5 rounded active:bg-white/5 h-auto min-w-0"
                   >
                     Expand
-                  </button>
+                  </Button>
                 </div>
               )}
               <DiffView
@@ -1635,23 +1703,23 @@ function ToolUseBubble({ msg, result }: { msg: ChatMessage; result?: ChatMessage
   );
 }
 
-function ToolResultBubble({ msg }: { msg: ChatMessage }) {
+function ToolResultBubble({ msg, nested }: { msg: ChatMessage; nested?: boolean }) {
   const content = (msg.content || '').trim();
   // First non-empty line as a teaser when collapsed
   const firstLine = content.split('\n').find((l) => l.trim()) || '';
   const [expanded, setExpanded] = useState(false);
   const isErr = !!msg.isError;
   return (
-    <li className="mx-3">
+    <li className={nested ? '' : 'mx-4'}>
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-1 rounded-lg active:bg-white/5 text-left"
+        className="flex w-full items-start gap-1.5 text-left text-[12px] text-zinc-500 active:text-zinc-300"
       >
-        <span className="text-zinc-500 shrink-0">
+        <span className="text-zinc-500 shrink-0 mt-0.5">
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
-        <span className={`text-[10px] uppercase tracking-wider shrink-0 ${isErr ? 'text-red-400' : 'text-zinc-500'}`}>
+        <span className={`font-medium uppercase tracking-wide text-[10px] mt-0.5 shrink-0 ${isErr ? 'text-red-400' : 'text-zinc-500'}`}>
           {isErr ? 'Error' : 'Result'}
         </span>
         {!expanded && firstLine && (
@@ -1661,7 +1729,7 @@ function ToolResultBubble({ msg }: { msg: ChatMessage }) {
         )}
       </button>
       {expanded && content && (
-        <div className={`mt-1 mx-1 px-3 py-2 rounded-xl ${isErr ? 'bg-red-500/5 border border-red-500/20' : 'bg-white/[0.03] border border-white/5'}`}>
+        <div className={`mt-1 ml-5 px-3 py-2 rounded-xl ${isErr ? 'bg-red-500/5 border border-red-500/20' : 'bg-white/[0.03] border border-white/5'}`}>
           <pre className="text-[12px] text-zinc-300 font-mono whitespace-pre-wrap break-all m-0 leading-relaxed max-h-72 overflow-auto">
             {content.slice(0, 8000)}
           </pre>

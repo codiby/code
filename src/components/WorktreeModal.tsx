@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
-import { Button } from '@heroui/react';
+import { Button, TextField, Input } from '@heroui/react';
 import type { ClaudeClient } from '../lib/claude-client';
 import { WorktreeCreateModal } from './WorktreeCreateModal';
 
@@ -75,9 +75,9 @@ export function WorktreeModal({
           {/* Header */}
           <div className="px-5 py-3 border-b border-border flex items-center justify-between shrink-0">
             <h2 className="text-sm font-semibold text-zinc-100">Worktree</h2>
-            <button className="text-zinc-500 hover:text-zinc-300" onClick={onClose} aria-label="Close">
+            <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close">
               <X size={16} />
-            </button>
+            </Button>
           </div>
 
           {/* Repo path */}
@@ -90,17 +90,21 @@ export function WorktreeModal({
             <div className="shrink-0 border-b border-border">
               <div className="flex items-center gap-2 px-5 py-1.5 border-b border-border/50">
                 <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Existing worktrees</span>
-                <input
-                  type="text"
+                <TextField
                   value={worktreeFilter}
-                  onChange={(e) => setWorktreeFilter(e.target.value)}
-                  placeholder="filter…"
-                  autoCapitalize="off"
-                  autoCorrect="off"
+                  onChange={setWorktreeFilter}
+                  aria-label="Filter worktrees"
                   autoComplete="off"
-                  spellCheck={false}
-                  className="flex-1 min-w-0 px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[11px] text-zinc-200 placeholder:text-zinc-600 font-mono focus:outline-none focus:border-indigo-500/40"
-                />
+                  className="flex-1 min-w-0"
+                >
+                  <Input
+                    placeholder="filter…"
+                    className="font-mono text-[11px] py-0.5"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                </TextField>
                 <span className="text-[10px] text-zinc-600 shrink-0 tabular-nums">
                   {worktreeFilter ? `${filteredWorktrees.length}/${existingWorktrees.length}` : existingWorktrees.length}
                 </span>
@@ -109,15 +113,17 @@ export function WorktreeModal({
                 {filteredWorktrees.length === 0 ? (
                   <div className="px-5 py-3 text-[11px] text-zinc-600 text-center">No worktrees match.</div>
                 ) : filteredWorktrees.map(wt => (
-                  <button key={wt.path}
-                    className="flex items-center gap-2 w-full text-left text-[12px] px-5 py-1.5 text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200 transition-colors"
-                    onClick={() => { onCreated(wt.path); onClose(); }}
-                    title={wt.path}
+                  <Button key={wt.path}
+                    variant="ghost"
+                    fullWidth
+                    className="flex items-center gap-2 justify-start text-left text-[12px] px-5 py-1.5 h-auto rounded-none text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200 transition-colors"
+                    onPress={() => { onCreated(wt.path); onClose(); }}
+                    aria-label={`Use worktree ${wt.branch} at ${wt.path}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
                     <span className="text-green-400 font-mono shrink-0">{wt.branch}</span>
                     <span className="text-zinc-600 font-mono truncate">{wt.path}</span>
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -125,10 +131,11 @@ export function WorktreeModal({
 
           {/* Footer — open the create sub-modal or dismiss */}
           <div className="px-5 py-3 border-t border-border flex items-center justify-between gap-2 shrink-0">
-            <button
-              className="text-xs text-zinc-400 hover:text-zinc-100 bg-surface-light hover:bg-surface-lighter rounded px-2.5 py-1 transition-colors"
-              onClick={() => setShowCreateModal(true)}
-            >+ New worktree</button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => setShowCreateModal(true)}
+            >+ New worktree</Button>
             <Button size="sm" variant="ghost" onPress={onClose}>Cancel</Button>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Button } from '@heroui/react';
 
 export type NavTab = 'home' | 'chat' | 'files' | 'git' | 'settings';
 
@@ -85,11 +86,11 @@ export function GlassNav({ active, onSelect, hasPending, hidden }: GlassNavProps
       {TABS.map((t) => {
         const isActive = active === t.key;
         return (
-          <button
+          <Button
             key={t.key}
-            type="button"
-            onClick={() => onSelect(t.key)}
-            className={`relative flex-1 min-h-12 flex flex-col items-center justify-center gap-0.5 rounded-full transition-colors ${
+            variant="ghost"
+            onPress={() => onSelect(t.key)}
+            className={`relative flex-1 h-auto min-w-0 min-h-12 flex flex-col items-center justify-center gap-0.5 rounded-full transition-colors ${
               isActive
                 ? 'bg-white/10 text-zinc-100'
                 : 'text-zinc-400 active:bg-white/5 active:text-zinc-200'
@@ -104,7 +105,7 @@ export function GlassNav({ active, onSelect, hasPending, hidden }: GlassNavProps
               )}
             </span>
             <span className="text-[10px] leading-none font-medium">{t.label}</span>
-          </button>
+          </Button>
         );
       })}
     </nav>

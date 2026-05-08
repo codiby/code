@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowUp, ChevronRight } from 'lucide-react';
+import { Button } from '@heroui/react';
 import { BottomSheet } from './BottomSheet';
 import type { ClaudeClient } from '../../lib/claude-client';
 
@@ -84,14 +85,14 @@ export function MobileFilesSheet({ open, onClose, client, initialCwd }: Props) {
       {openFile ? (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setOpenFile(null)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-zinc-200 active:bg-white/10"
+            <Button
+              variant="ghost"
+              onPress={() => setOpenFile(null)}
+              className="h-auto min-w-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-zinc-200 active:bg-white/10"
             >
               <ArrowLeft size={14} />
               Back
-            </button>
+            </Button>
             <span className="text-[11px] font-mono text-zinc-500 truncate">{openFile.path}</span>
           </div>
           <pre className="text-[12px] text-zinc-200 whitespace-pre-wrap break-all bg-black/40 rounded-lg p-3 max-h-[60vh] overflow-auto m-0 font-mono leading-relaxed">
@@ -101,15 +102,15 @@ export function MobileFilesSheet({ open, onClose, client, initialCwd }: Props) {
       ) : (
         <div>
           <div className="flex items-center gap-2 mb-3">
-            <button
-              type="button"
-              onClick={goUp}
-              disabled={cwd === '/' || cwd === ''}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-zinc-200 active:bg-white/10 disabled:opacity-40"
+            <Button
+              variant="ghost"
+              onPress={goUp}
+              isDisabled={cwd === '/' || cwd === ''}
+              className="h-auto min-w-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-zinc-200 active:bg-white/10 disabled:opacity-40"
             >
               <ArrowUp size={14} />
               Up
-            </button>
+            </Button>
             <span className="text-[11px] font-mono text-zinc-500 truncate flex-1">{cwd}</span>
           </div>
 
@@ -124,10 +125,10 @@ export function MobileFilesSheet({ open, onClose, client, initialCwd }: Props) {
           <ul className="divide-y divide-white/5">
             {entries.map((e) => (
               <li key={e.path}>
-                <button
-                  type="button"
-                  onClick={() => onEntryClick(e)}
-                  className="w-full text-left flex items-center gap-3 py-2.5 active:bg-white/5 rounded-lg px-2"
+                <Button
+                  variant="ghost"
+                  onPress={() => onEntryClick(e)}
+                  className="w-full h-auto min-w-0 justify-start text-left flex items-center gap-3 py-2.5 active:bg-white/5 rounded-lg px-2"
                 >
                   <span className="text-base">
                     {e.type === 'directory' ? '📁' : '📄'}
@@ -136,7 +137,7 @@ export function MobileFilesSheet({ open, onClose, client, initialCwd }: Props) {
                   {e.type === 'directory' && (
                     <ChevronRight size={14} className="text-zinc-600" />
                   )}
-                </button>
+                </Button>
               </li>
             ))}
           </ul>

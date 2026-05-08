@@ -813,6 +813,29 @@ export function MobileApp() {
     for (const [id, r] of Object.entries(runtime)) out[id] = !!r.permRequest;
     return out;
   }, [runtime]);
+  // Per-session "last user/assistant message at" timestamp — used to order
+  // sessions by recency in the home list (mirrors desktop's TabBar). Tool
+  // notifications, results and system notes are skipped so the order doesn't
+  // jump around as Claude streams Read/Bash/Edit chatter mid-turn.
+  const sessionLastMessageAt = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const s of sessions) {
+      const r = runtime[s.id];
+      const msgs = r?.messages || [];
+      let last = 0;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m) continue;
+        if (m.role === 'system') continue;
+        if (m.toolName) continue;
+        if (m.isToolResult) continue;
+        const t = m.timestamp;
+        if (typeof t === 'number' && t > last) { last = t; break; }
+      }
+      out[s.id] = last || (s.created_at ?? 0);
+    }
+    return out;
+  }, [sessions, runtime]);
 
   // ---------------------------------------------------------------------
   // Empty state when no token
@@ -891,6 +914,7 @@ export function MobileApp() {
           tabGroupMap={tabGroupMap}
           tabOrder={tabOrder}
           pinnedSessionIds={pinnedSessionIds}
+          sessionLastMessageAt={sessionLastMessageAt}
           keepScreenOn={wakeLock.enabled}
           keepScreenOnSupported={wakeLock.supported}
           onToggleKeepScreenOn={wakeLock.setEnabled}
@@ -970,12 +994,6 @@ export function MobileApp() {
       <MobileSettingsSheet
         open={tab === 'settings'}
         onClose={() => setTab('chat')}
-        permissionMode={activeSession?.permission_mode}
-        onPermissionModeChange={
-          activeSession
-            ? (mode) => requestPermissionMode(activeSession.id, mode)
-            : undefined
-        }
       />
 
       <BypassWarningModal

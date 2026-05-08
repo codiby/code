@@ -17,6 +17,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { Button, TextField, Input } from '@heroui/react';
 import type { ClaudeClient } from '../lib/claude-client';
 
 interface FileEntry {
@@ -130,20 +131,25 @@ function NodeNameInput({
   };
 
   return (
-    <input
-      ref={inputRef}
+    <TextField
       value={value}
-      onChange={e => { setValue(e.target.value); if (error) setError(null); }}
-      onBlur={submit}
-      onKeyDown={e => {
-        if (e.key === 'Enter') { e.preventDefault(); submit(); }
-        else if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
-        e.stopPropagation();
-      }}
-      onClick={e => e.stopPropagation()}
-      className={`flex-1 min-w-0 bg-[#1f1f1f] text-[12px] text-zinc-100 px-1 py-0 rounded outline-none ${error ? 'border border-red-500' : 'border border-blue-500/60'}`}
-      title={error || undefined}
-    />
+      onChange={(v) => { setValue(v); if (error) setError(null); }}
+      aria-label="Name"
+      className="flex-1 min-w-0"
+    >
+      <Input
+        ref={inputRef}
+        onBlur={submit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); submit(); }
+          else if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+          e.stopPropagation();
+        }}
+        onClick={e => e.stopPropagation()}
+        className={`bg-[#1f1f1f] text-[12px] text-zinc-100 px-1 py-0 rounded outline-none ${error ? 'border border-red-500' : 'border border-blue-500/60'}`}
+        title={error || undefined}
+      />
+    </TextField>
   );
 }
 
@@ -345,9 +351,11 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
 
   return (
     <div className="border-b border-border/50 shrink-0">
-      <button
-        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors group"
-        onClick={() => setExpanded(e => !e)}
+      <Button
+        variant="ghost"
+        fullWidth
+        className="flex items-center gap-1 justify-start text-left px-3 py-1.5 h-auto rounded-none hover:bg-surface-light/30 transition-colors group"
+        onPress={() => setExpanded(e => !e)}
       >
         <span className="w-3 flex items-center justify-center shrink-0 text-zinc-400">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -379,7 +387,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
             <Play size={12} />
           </span>
         )}
-      </button>
+      </Button>
       {expanded && (
         <div className="pb-1">
           {stagedFiles.length > 0 && (
@@ -417,9 +425,9 @@ function ProcessNode({ proc, onKill, onView }: { proc: ProcessInfo; onKill: (pro
     <div>
       <div className="flex items-center gap-1 py-[2px] px-2 text-zinc-400 group">
         {hasChildren ? (
-          <button className="w-3 flex items-center justify-center shrink-0 text-zinc-500" onClick={() => setExpanded(e => !e)}>
+          <Button isIconOnly size="sm" variant="ghost" className="w-3 h-auto p-0 min-w-0 text-zinc-500" onPress={() => setExpanded(e => !e)} aria-label="Toggle children">
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </button>
+          </Button>
         ) : (
           <span className="w-3 shrink-0" />
         )}
@@ -427,34 +435,43 @@ function ProcessNode({ proc, onKill, onView }: { proc: ProcessInfo; onKill: (pro
         <span className="truncate text-[11px] font-mono flex-1 cursor-pointer hover:text-zinc-200" onClick={() => onView?.(proc.command)}>{proc.command}</span>
         <span className="text-[10px] text-zinc-600 shrink-0">{proc.pid}</span>
         {onView && (
-          <button
-            className="text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 shrink-0 ml-0.5 flex items-center transition-opacity"
-            onClick={() => onView(proc.command)}
-            title="Open in panel"
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            className="h-auto p-0 min-w-0 text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 shrink-0 ml-0.5 transition-opacity"
+            onPress={() => onView(proc.command)}
+            aria-label="Open in panel"
           >
             <ArrowUpRight size={12} />
-          </button>
+          </Button>
         )}
-        <button
-          className="text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 shrink-0 ml-0.5 flex items-center transition-opacity"
-          onClick={() => onKill(proc.id)}
-          title="Kill process"
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          className="h-auto p-0 min-w-0 text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 shrink-0 ml-0.5 transition-opacity"
+          onPress={() => onKill(proc.id)}
+          aria-label="Kill process"
         >
           <X size={12} />
-        </button>
+        </Button>
       </div>
       {expanded && proc.children.map(child => (
         <div key={child.pid} className="flex items-center gap-1 py-[1px] text-zinc-500 group" style={{ paddingLeft: 28 }}>
           <span className="text-zinc-600 shrink-0 flex items-center"><CornerDownRight size={11} /></span>
           <span className="truncate text-[10px] font-mono flex-1">{child.command}</span>
           <span className="text-[9px] text-zinc-600 shrink-0">{child.pid}</span>
-          <button
-            className="text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 shrink-0 ml-1 pr-2 flex items-center transition-opacity"
-            onClick={() => onKill(undefined, child.pid)}
-            title="Kill process"
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            className="h-auto p-0 min-w-0 text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 shrink-0 ml-1 pr-2 transition-opacity"
+            onPress={() => onKill(undefined, child.pid)}
+            aria-label="Kill process"
           >
             <X size={11} />
-          </button>
+          </Button>
         </div>
       ))}
     </div>
@@ -464,7 +481,7 @@ function ProcessNode({ proc, onKill, onView }: { proc: ProcessInfo; onKill: (pro
 function ProcessesSection({ client, sessionId, onViewTerminal }: { client: ClaudeClient | null; sessionId: string | null; onViewTerminal?: (command: string) => void }) {
   const [expanded, setExpanded] = useState(true);
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
-  const intervalRef = useRef<ReturnType<typeof setInterval>>();
+  const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     if (!client || !sessionId) { setProcesses([]); return; }
@@ -490,16 +507,18 @@ function ProcessesSection({ client, sessionId, onViewTerminal }: { client: Claud
 
   return (
     <div className="border-b border-border/50 shrink-0">
-      <button
-        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
-        onClick={() => setExpanded(e => !e)}
+      <Button
+        variant="ghost"
+        fullWidth
+        className="flex items-center gap-1 justify-start text-left px-3 py-1.5 h-auto rounded-none hover:bg-surface-light/30 transition-colors"
+        onPress={() => setExpanded(e => !e)}
       >
         <span className="w-3 flex items-center justify-center shrink-0 text-zinc-400">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Processes</span>
         <span className="text-[10px] text-green-400/70 ml-auto">{processes.length}</span>
-      </button>
+      </Button>
       {expanded && (
         <div className="pb-1">
           {processes.map(proc => (
@@ -528,21 +547,30 @@ function FileTreeSection({ rootPath, entries, onNewAtRoot }: { rootPath: string 
         </span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider truncate">{label}</span>
         {rootPath && (
-          <span className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
-              className="text-zinc-600 hover:text-zinc-300 flex items-center"
-              onClick={e => { e.stopPropagation(); onNewAtRoot('file'); }}
-              title="New file"
+          <span
+            className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+            onClick={e => e.stopPropagation()}
+          >
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              className="h-auto p-0 min-w-0 text-zinc-600 hover:text-zinc-300"
+              onPress={() => onNewAtRoot('file')}
+              aria-label="New file"
             >
               <FilePlus size={12} />
-            </button>
-            <button
-              className="text-zinc-600 hover:text-zinc-300 flex items-center"
-              onClick={e => { e.stopPropagation(); onNewAtRoot('dir'); }}
-              title="New folder"
+            </Button>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              className="h-auto p-0 min-w-0 text-zinc-600 hover:text-zinc-300"
+              onPress={() => onNewAtRoot('dir')}
+              aria-label="New folder"
             >
               <FolderPlus size={12} />
-            </button>
+            </Button>
           </span>
         )}
       </div>
@@ -615,16 +643,18 @@ function PRsSection({ client, rootPath, sessionName }: { client: ClaudeClient | 
 
   return (
     <div className="border-b border-border/50 shrink-0">
-      <button
-        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
-        onClick={() => setExpanded(e => !e)}
+      <Button
+        variant="ghost"
+        fullWidth
+        className="flex items-center gap-1 justify-start text-left px-3 py-1.5 h-auto rounded-none hover:bg-surface-light/30 transition-colors"
+        onPress={() => setExpanded(e => !e)}
       >
         <span className="w-3 flex items-center justify-center shrink-0 text-zinc-400">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Pull Requests</span>
         <span className="text-[10px] text-zinc-600 ml-auto">{prs.length}</span>
-      </button>
+      </Button>
       {expanded && (
         <div className="pb-1">
           {prs.map(pr => {
@@ -662,16 +692,18 @@ function ToolsSection({ tools }: { tools: string[] }) {
 
   return (
     <div className="border-b border-border/50 shrink-0">
-      <button
-        className="flex items-center gap-1 w-full text-left px-3 py-1.5 hover:bg-surface-light/30 transition-colors"
-        onClick={() => setExpanded(e => !e)}
+      <Button
+        variant="ghost"
+        fullWidth
+        className="flex items-center gap-1 justify-start text-left px-3 py-1.5 h-auto rounded-none hover:bg-surface-light/30 transition-colors"
+        onPress={() => setExpanded(e => !e)}
       >
         <span className="w-3 flex items-center justify-center shrink-0 text-zinc-400">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Tools</span>
         <span className="text-[10px] text-zinc-600 ml-auto">{tools.length}</span>
-      </button>
+      </Button>
       {expanded && (
         <div className="px-3 pb-2 flex flex-wrap gap-1 max-h-40 overflow-y-auto">
           {tools.map(tool => (
@@ -869,13 +901,16 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
         {/* Header */}
         <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
           <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Explorer</span>
-          <button
-            className="text-zinc-600 hover:text-zinc-300 flex items-center"
-            onClick={onToggle}
-            title="Toggle file explorer"
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            className="h-auto p-0 min-w-0 text-zinc-600 hover:text-zinc-300"
+            onPress={onToggle}
+            aria-label="Toggle file explorer"
           >
             <X size={14} />
-          </button>
+          </Button>
         </div>
 
         {/* Processes */}
@@ -958,14 +993,14 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
 });
 
 function MenuItem({ icon, label, onClick, danger }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
-  const base = 'w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 transition-colors';
+  const base = 'w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 justify-start h-auto rounded-none transition-colors';
   const tone = danger
     ? 'text-red-400 hover:bg-red-500/15 hover:text-red-300'
     : 'text-zinc-400 hover:bg-surface-light hover:text-zinc-200';
   return (
-    <button className={`${base} ${tone}`} onClick={onClick}>
+    <Button variant="ghost" fullWidth className={`${base} ${tone}`} onPress={onClick}>
       <span className="w-3 flex items-center justify-center shrink-0 opacity-70">{icon}</span>
       {label}
-    </button>
+    </Button>
   );
 }

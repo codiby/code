@@ -79,30 +79,42 @@ export function Sidebar({ sessions, activeSessionId, sessionStatuses, onSelect, 
             >
               <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot[connStatus] || statusDot.disconnected}`} />
               <span className="truncate flex-1">{s.name}</span>
-              <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition-opacity">
+              <span
+                className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition-opacity"
+                onClick={(e) => e.stopPropagation()}
+              >
                 {isStopped && s.claude_session_id && (
-                  <button
-                    className="text-green-400 hover:text-green-300 text-xs px-1"
-                    onClick={(e) => { e.stopPropagation(); onResume(s.id); }}
-                    title="Resume session"
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                    className="h-auto p-1 text-green-400 hover:text-green-300 text-xs"
+                    onPress={() => onResume(s.id)}
+                    aria-label="Resume session"
                   >
-                    &#x25B6;
-                  </button>
+                    <span>&#x25B6;</span>
+                  </Button>
                 )}
-                <button
-                  className="text-zinc-500 hover:text-zinc-300 text-xs px-1"
-                  onClick={(e) => { e.stopPropagation(); startRename(s); }}
-                  title="Rename"
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  className="h-auto p-1 text-zinc-500 hover:text-zinc-300 text-xs"
+                  onPress={() => startRename(s)}
+                  aria-label="Rename"
                 >
-                  &#x270E;
-                </button>
-                <button
-                  className="text-zinc-500 hover:text-red-400 text-xs px-1"
-                  onClick={(e) => { e.stopPropagation(); onDelete(s.id); }}
-                  title="Delete"
+                  <span>&#x270E;</span>
+                </Button>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  className="h-auto p-1 text-zinc-500 hover:text-red-400 text-xs"
+                  onPress={() => onDelete(s.id)}
+                  aria-label="Delete"
                 >
-                  &times;
-                </button>
+                  <span>&times;</span>
+                </Button>
               </span>
             </div>
           );

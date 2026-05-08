@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
+import { Button, Checkbox, CheckboxControl, CheckboxIndicator, CheckboxContent } from '@heroui/react';
 
 const STORAGE_KEY = 'claude-ui-bypass-warning-acknowledged';
 
@@ -60,14 +61,9 @@ export function BypassWarningModal({ open, onCancel, onConfirm }: Props) {
               Enable Bypass Permissions?
             </h2>
           </div>
-          <button
-            type="button"
-            className="text-zinc-500 hover:text-zinc-300"
-            onClick={onCancel}
-            aria-label="Close"
-          >
+          <Button isIconOnly size="sm" variant="ghost" onPress={onCancel} aria-label="Close">
             <X size={16} />
-          </button>
+          </Button>
         </div>
 
         <div className="px-5 py-4 space-y-3 text-[13px] text-zinc-300 leading-relaxed">
@@ -89,32 +85,25 @@ export function BypassWarningModal({ open, onCancel, onConfirm }: Props) {
             are cheap to undo.
           </p>
 
-          <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={dontShowAgain}
-              onChange={(e) => setDontShowAgain(e.target.checked)}
-              className="w-3.5 h-3.5 accent-amber-500"
-            />
-            <span className="text-[12px] text-zinc-400">Don&apos;t show this warning again</span>
-          </label>
+          <Checkbox isSelected={dontShowAgain} onChange={setDontShowAgain} className="pt-1">
+            <CheckboxControl><CheckboxIndicator /></CheckboxControl>
+            <CheckboxContent>
+              <span className="text-[12px] text-zinc-400">Don&apos;t show this warning again</span>
+            </CheckboxContent>
+          </Checkbox>
         </div>
 
         <div className="px-5 py-3 border-t border-border flex items-center justify-end gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="h-8 px-3 rounded-md text-[13px] text-zinc-300 hover:bg-white/5"
-          >
+          <Button size="sm" variant="ghost" onPress={onCancel}>
             Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleConfirm}
-            className="h-8 px-3 rounded-md text-[13px] font-medium bg-amber-500 text-black hover:bg-amber-400"
+          </Button>
+          <Button
+            size="sm"
+            onPress={handleConfirm}
+            className="bg-amber-500 text-black hover:bg-amber-400 font-medium"
           >
             Enable Bypass
-          </button>
+          </Button>
         </div>
       </div>
     </div>

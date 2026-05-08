@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
+import { Button, TextField, TextArea } from '@heroui/react';
 
 export interface ReviewComment {
   id: string;
@@ -231,26 +232,31 @@ export function DiffReview({ original, modified, filePath, comments, onAddCommen
               <span className="text-[10px] text-zinc-600 ml-auto">Shift+click to select range</span>
             )}
           </div>
-          <textarea
-            ref={inputRef}
+          <TextField
             value={commentText}
-            onChange={e => setCommentText(e.target.value)}
-            placeholder="Add a review comment... (Cmd+Enter to submit)"
-            rows={2}
-            className="w-full bg-surface px-3 py-2 text-[13px] text-zinc-200 placeholder:text-zinc-600 resize-none outline-none"
-            onKeyDown={e => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                submitComment();
-              }
-              if (e.key === 'Escape') {
-                setCommentInput(null);
-              }
-            }}
-          />
+            onChange={setCommentText}
+            aria-label="Review comment"
+            className="w-full"
+          >
+            <TextArea
+              ref={inputRef}
+              placeholder="Add a review comment... (Cmd+Enter to submit)"
+              rows={2}
+              className="w-full bg-surface px-3 py-2 text-[13px] text-zinc-200 placeholder:text-zinc-600 resize-none border-0"
+              onKeyDown={e => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  submitComment();
+                }
+                if (e.key === 'Escape') {
+                  setCommentInput(null);
+                }
+              }}
+            />
+          </TextField>
           <div className="flex justify-end gap-2 px-3 py-1.5 bg-surface">
-            <button className="text-[12px] text-zinc-500 hover:text-zinc-300 px-2 py-1" onClick={() => setCommentInput(null)}>Cancel</button>
-            <button className="text-[12px] bg-green-600 text-white rounded px-3 py-1 hover:bg-green-500 disabled:opacity-40" disabled={!commentText.trim()} onClick={submitComment}>Comment</button>
+            <Button size="sm" variant="ghost" className="text-[12px] text-zinc-500 hover:text-zinc-300 px-2 py-1 h-auto" onPress={() => setCommentInput(null)}>Cancel</Button>
+            <Button size="sm" className="text-[12px] bg-green-600 text-white rounded px-3 py-1 h-auto hover:bg-green-500" isDisabled={!commentText.trim()} onPress={submitComment}>Comment</Button>
           </div>
         </div>
       )}
@@ -269,7 +275,9 @@ export function DiffReview({ original, modified, filePath, comments, onAddCommen
                 {c.startLine === c.endLine ? `L${c.startLine}` : `L${c.startLine}-${c.endLine}`}
               </span>
               <p className="text-[12px] text-zinc-300 flex-1 whitespace-pre-wrap min-w-0">{c.text}</p>
-              <button className="text-zinc-600 hover:text-red-400 text-[11px] shrink-0" onClick={(e) => { e.stopPropagation(); onDeleteComment(c.id); }}>&times;</button>
+              <span onClick={(e) => e.stopPropagation()} className="shrink-0">
+                <Button isIconOnly size="sm" variant="ghost" className="text-zinc-600 hover:text-red-400 text-[11px] h-auto p-0 min-w-0" onPress={() => onDeleteComment(c.id)} aria-label="Delete comment">×</Button>
+              </span>
             </div>
           ))}
         </div>

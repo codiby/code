@@ -4,6 +4,10 @@ import {
   TextField, Input,
   Checkbox, CheckboxControl, CheckboxIndicator, CheckboxContent,
   Select, SelectTrigger, SelectValue, SelectPopover,
+  Autocomplete, AutocompleteTrigger, AutocompleteValue, AutocompleteIndicator,
+  AutocompletePopover, AutocompleteFilter,
+  SearchField, SearchFieldInput,
+  ToggleButtonGroup, ToggleButton,
   ListBox, ListBoxItem,
 } from '@heroui/react';
 import type { ClaudeClient } from '../lib/claude-client';
@@ -241,7 +245,9 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
         <div className="px-5 py-3 border-b border-border flex items-center justify-between shrink-0">
           <h2 className="text-sm font-semibold text-zinc-100">New Session</h2>
           {!creatingWt && (
-            <button className="text-zinc-500 hover:text-zinc-300 text-lg leading-none" onClick={onClose}>&times;</button>
+            <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close">
+              <span className="text-lg leading-none">&times;</span>
+            </Button>
           )}
         </div>
 
@@ -251,20 +257,22 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
           <div className={`flex flex-col min-h-0 ${showRightPanel ? 'w-[480px] shrink-0' : 'flex-1'}`}>
             {/* Breadcrumb */}
             <div className="flex items-center gap-1 px-4 pt-3 pb-2 flex-wrap min-h-[32px] shrink-0">
-              <button className="text-xs text-zinc-500 hover:text-zinc-200 flex items-center gap-0.5" onClick={() => navigate('/')}>
+              <Button size="sm" variant="ghost" className="text-xs text-zinc-500 hover:text-zinc-200 flex items-center gap-0.5 h-auto px-1.5 py-0.5 min-w-0" onPress={() => navigate('/')}>
                 <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" /></svg>
                 /
-              </button>
+              </Button>
               {segments.map((seg, i) => {
                 const path = '/' + segments.slice(0, i + 1).join('/');
                 const isLast = i === segments.length - 1;
                 return (
                   <span key={path} className="flex items-center gap-1">
                     {i > 0 && <span className="text-zinc-700 text-xs">/</span>}
-                    <button
-                      className={`text-xs ${isLast ? 'text-zinc-100 font-medium' : 'text-zinc-500 hover:text-zinc-200'}`}
-                      onClick={() => navigate(path)}
-                    >{seg}</button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className={`text-xs h-auto px-1.5 py-0.5 min-w-0 ${isLast ? 'text-zinc-100 font-medium' : 'text-zinc-500 hover:text-zinc-200'}`}
+                      onPress={() => navigate(path)}
+                    >{seg}</Button>
                   </span>
                 );
               })}
@@ -279,10 +287,12 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
             {/* Tabs */}
             <div className="flex border-b border-border px-4 shrink-0">
               {(['browse', 'recent'] as const).map(t => (
-                <button key={t}
-                  className={`text-xs px-3 py-1.5 border-b-2 transition-colors ${tab === t ? 'border-blue-500 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
-                  onClick={() => setTab(t)}
-                >{t === 'recent' ? `Recent (${recentDirs.length})` : 'Browse'}</button>
+                <Button key={t}
+                  size="sm"
+                  variant="ghost"
+                  className={`text-xs px-3 py-1.5 h-auto rounded-none border-b-2 transition-colors ${tab === t ? 'border-blue-500 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+                  onPress={() => setTab(t)}
+                >{t === 'recent' ? `Recent (${recentDirs.length})` : 'Browse'}</Button>
               ))}
             </div>
 
@@ -294,25 +304,29 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                 : folders.map(dir => {
                     const name = dir.replace(/\/$/, '').split('/').pop() || dir;
                     return (
-                      <button key={dir}
-                        className="flex items-center gap-2 w-full text-left px-3 py-1.5 rounded-md text-sm text-zinc-300 hover:bg-surface-light/70"
-                        onClick={() => navigate(dir.replace(/\/$/, ''))}
+                      <Button key={dir}
+                        variant="ghost"
+                        fullWidth
+                        className="flex items-center gap-2 justify-start text-left px-3 py-1.5 h-auto rounded-md text-sm text-zinc-300 hover:bg-surface-light/70"
+                        onPress={() => navigate(dir.replace(/\/$/, ''))}
                       >
                         <span className="text-zinc-600 text-xs">&#x1F4C1;</span>
                         <span className="truncate">{name}</span>
-                      </button>
+                      </Button>
                     );
                   })
               ) : (
                 recentDirs.length === 0 ? <p className="text-xs text-zinc-600 text-center py-8">No recent projects</p>
                 : recentDirs.map(dir => (
-                    <button key={dir}
-                      className={`flex items-center gap-2 w-full text-left px-3 py-1.5 rounded-md text-sm ${cwd === dir ? 'bg-surface-light text-white' : 'text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200'}`}
-                      onClick={() => navigate(dir)}
+                    <Button key={dir}
+                      variant="ghost"
+                      fullWidth
+                      className={`flex items-center gap-2 justify-start text-left px-3 py-1.5 h-auto rounded-md text-sm ${cwd === dir ? 'bg-surface-light text-white' : 'text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200'}`}
+                      onPress={() => navigate(dir)}
                     >
                       <span className="text-zinc-600 text-xs">&#x1F4C1;</span>
                       <span className="font-mono text-xs truncate">{dir}</span>
-                    </button>
+                    </Button>
                   ))
               )}
             </div>
@@ -331,16 +345,18 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                   </div>
                   <div className="max-h-40 overflow-y-auto py-1">
                     {gitInfo.worktrees.map(wt => (
-                      <button key={wt.path}
-                        className={`flex items-center gap-2 w-full text-left text-xs px-3 py-1.5 transition-colors ${
+                      <Button key={wt.path}
+                        variant="ghost"
+                        fullWidth
+                        className={`flex items-center gap-2 justify-start text-left text-xs px-3 py-1.5 h-auto rounded-none transition-colors ${
                           cwd === wt.path ? 'bg-surface-light text-zinc-100' : 'text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200'
                         }`}
-                        onClick={() => navigate(wt.path)}
+                        onPress={() => navigate(wt.path)}
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
                         <span className="text-green-400 font-mono shrink-0">{wt.branch}</span>
                         <span className="text-zinc-600 font-mono truncate">{wt.path}</span>
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 </div>
@@ -360,21 +376,29 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="text-xs text-zinc-600">Source:</span>
                     {branchesInfo && availableBranches.length > 0 ? (
-                      <Select aria-label="Source branch" selectedKey={sourceBranch}
+                      <Autocomplete aria-label="Source branch" selectedKey={sourceBranch}
                         onSelectionChange={(key) => setSourceBranch(key as string)}
                         isDisabled={creatingWt}>
-                        <SelectTrigger className="h-6 text-xs w-44"><SelectValue /></SelectTrigger>
-                        <SelectPopover>
-                          <ListBox>
-                            {availableBranches.map(b => (
-                              <ListBoxItem key={b} id={b} textValue={b}>
-                                <span className="text-sm font-mono">{b}</span>
-                                {b === branchesInfo.current && <span className="text-xs text-zinc-500 ml-1">(current)</span>}
-                              </ListBoxItem>
-                            ))}
-                          </ListBox>
-                        </SelectPopover>
-                      </Select>
+                        <AutocompleteTrigger className="h-6 text-xs w-44">
+                          <AutocompleteValue className="font-mono truncate" />
+                          <AutocompleteIndicator />
+                        </AutocompleteTrigger>
+                        <AutocompletePopover>
+                          <AutocompleteFilter filter={(textValue, inputValue) => textValue.toLowerCase().includes(inputValue.toLowerCase())}>
+                            <SearchField aria-label="Filter branches" autoFocus>
+                              <SearchFieldInput placeholder="Search branches…" className="font-mono text-xs text-zinc-100" />
+                            </SearchField>
+                            <ListBox>
+                              {availableBranches.map(b => (
+                                <ListBoxItem key={b} id={b} textValue={b}>
+                                  <span className="text-sm font-mono">{b}</span>
+                                  {b === branchesInfo.current && <span className="text-xs text-zinc-500 ml-1">(current)</span>}
+                                </ListBoxItem>
+                              ))}
+                            </ListBox>
+                          </AutocompleteFilter>
+                        </AutocompletePopover>
+                      </Autocomplete>
                     ) : (
                       <span className="text-xs text-zinc-600 font-mono">{branchesInfo ? 'HEAD' : 'loading…'}</span>
                     )}
@@ -395,12 +419,22 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                       </CheckboxContent>
                     </Checkbox>
                     <span className="text-xs text-zinc-600">node_modules:</span>
-                    {(['install', 'copy', 'link', 'none'] as const).map(mode => (
-                      <button key={mode}
-                        className={`text-xs px-2 py-0.5 rounded transition-colors ${depsMode === mode ? 'bg-surface-lighter text-zinc-100' : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface-light'}`}
-                        onClick={() => setDepsMode(mode)}
-                      >{mode === 'install' ? 'Install' : mode === 'copy' ? 'Copy' : mode === 'link' ? 'Link' : 'Skip'}</button>
-                    ))}
+                    <ToggleButtonGroup
+                      aria-label="node_modules strategy"
+                      selectionMode="single"
+                      disallowEmptySelection
+                      selectedKeys={new Set([depsMode])}
+                      onSelectionChange={(keys) => {
+                        const k = Array.from(keys as Set<string>)[0];
+                        if (k) setDepsMode(k as typeof depsMode);
+                      }}
+                      size="sm"
+                    >
+                      <ToggleButton id="install">Install</ToggleButton>
+                      <ToggleButton id="copy">Copy</ToggleButton>
+                      <ToggleButton id="link">Link</ToggleButton>
+                      <ToggleButton id="none">Skip</ToggleButton>
+                    </ToggleButtonGroup>
                     {depsMode === 'install' && (
                       <Select aria-label="Package manager" selectedKey={packageManager}
                         onSelectionChange={(key) => setPackageManager(key as PackageManager)}>
@@ -424,10 +458,11 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
               {/* New worktree button (when form is hidden) */}
               {gitInfo?.is_git && !showWorktree && (
                 <div className="px-3 py-2 border-b border-border shrink-0">
-                  <button
-                    className="text-xs text-zinc-400 hover:text-zinc-100 bg-surface-light hover:bg-surface-lighter rounded px-2.5 py-1 transition-colors"
-                    onClick={() => { setShowWorktree(true); setConsoleLogs([]); setConsoleStatus('idle'); }}
-                  >+ New worktree</button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onPress={() => { setShowWorktree(true); setConsoleLogs([]); setConsoleStatus('idle'); }}
+                  >+ New worktree</Button>
                 </div>
               )}
 
@@ -495,7 +530,7 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                 </ListBox>
               </SelectPopover>
             </Select>
-            <Button variant="flat" onPress={onClose} isDisabled={creatingWt}>Cancel</Button>
+            <Button variant="secondary" onPress={onClose} isDisabled={creatingWt}>Cancel</Button>
             <Button onPress={handleCreate} isDisabled={creatingWt}>Open here</Button>
           </div>
         </div>

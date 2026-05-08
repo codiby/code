@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X as XIcon } from 'lucide-react';
+import { Button } from '@heroui/react';
 
 interface Props {
   src: string | null;
@@ -228,19 +229,26 @@ export function MobileImageViewer({ src, onClose }: Props) {
       style={{ touchAction: 'none' }}
       onClick={handleBackdropClick}
     >
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onClose(); }}
-        className="absolute top-3 right-3 z-10 w-9 h-9 rounded-full bg-zinc-900/70 border border-white/10 text-zinc-200 flex items-center justify-center active:bg-zinc-800"
-        style={{
-          backdropFilter: 'blur(20px) saturate(180%)',
-          WebkitBackdropFilter: 'blur(20px) saturate(180%)',
-          top: 'calc(env(safe-area-inset-top) + 0.75rem)',
-        }}
-        aria-label="Close image"
+      <span
+        onClick={(e) => e.stopPropagation()}
+        className="absolute top-3 right-3 z-10"
+        style={{ top: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
       >
-        <XIcon size={18} />
-      </button>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          onPress={onClose}
+          className="w-9 h-9 min-w-0 rounded-full bg-zinc-900/70 border border-white/10 text-zinc-200 flex items-center justify-center active:bg-zinc-800"
+          style={{
+            backdropFilter: 'blur(20px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+          }}
+          aria-label="Close image"
+        >
+          <XIcon size={18} />
+        </Button>
+      </span>
 
       <div
         ref={containerRef}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ChevronDown, ChevronRight, Pin, Plus } from 'lucide-react';
+import { Button, TextField, Input } from '@heroui/react';
 import { BottomSheet } from './BottomSheet';
 import { MobileNewSessionModal } from './MobileNewSessionModal';
 import type { ClaudeClient, ConnectionStatus, SessionInfo } from '../../lib/claude-client';
@@ -250,20 +251,25 @@ export function MobileSessionsSheet({
         >
           <span className={`w-2 h-2 rounded-full shrink-0 ${getDotClass(String(status), isStreaming, tc, wasInterrupted)}`} />
           {isEditing ? (
-            <input
-              ref={editInputRef}
-              type="text"
+            <TextField
               value={editingName}
-              onChange={(e) => setEditingName(e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); commitRename(s.id); }
-                if (e.key === 'Escape') { e.preventDefault(); setEditingId(null); }
-              }}
-              onBlur={() => commitRename(s.id)}
-              className="flex-1 bg-transparent border-none outline-none text-[13px] text-zinc-100 min-w-0"
-            />
+              onChange={setEditingName}
+              aria-label="Rename session"
+              autoFocus
+              className="flex-1 min-w-0"
+            >
+              <Input
+                ref={editInputRef}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitRename(s.id); }
+                  if (e.key === 'Escape') { e.preventDefault(); setEditingId(null); }
+                }}
+                onBlur={() => commitRename(s.id)}
+                className="bg-transparent border-none outline-none text-[13px] text-zinc-100"
+              />
+            </TextField>
           ) : (
             <span className="truncate flex-1">{s.name}</span>
           )}
@@ -282,16 +288,20 @@ export function MobileSessionsSheet({
             </span>
           )}
           {!isEditing && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onCloseSession(s.id); }}
-              className="shrink-0 w-7 h-7 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-white/10"
-              aria-label={`Close ${s.name}`}
-            >
-              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round">
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
+            <span onClick={(e) => e.stopPropagation()} className="shrink-0">
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                onPress={() => onCloseSession(s.id)}
+                className="w-7 h-7 min-w-0 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-white/10"
+                aria-label={`Close ${s.name}`}
+              >
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </Button>
+            </span>
           )}
         </div>
       </li>
@@ -342,15 +352,16 @@ export function MobileSessionsSheet({
 
         {/* "+" row — same vertical-tab styling as a tab */}
         <div className="px-1.5 pt-0.5">
-          <button
-            type="button"
-            onClick={() => setNewModalOpen(true)}
-            className="w-full flex items-center justify-center gap-2 min-h-11 rounded-md text-zinc-400 active:text-zinc-100 active:bg-surface/60 text-[13px]"
+          <Button
+            variant="ghost"
+            fullWidth
+            onPress={() => setNewModalOpen(true)}
+            className="h-auto min-w-0 flex items-center justify-center gap-2 min-h-11 rounded-md text-zinc-400 active:text-zinc-100 active:bg-surface/60 text-[13px]"
             aria-label="New session"
           >
             <Plus size={16} />
             <span>New session</span>
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -366,10 +377,11 @@ export function MobileSessionsSheet({
           "Closed sessions" section but always present and inline. */}
       {closedSessions.length > 0 && (
         <div className="rounded-xl bg-white/[0.02] border border-white/5 -mx-1">
-          <button
-            type="button"
-            onClick={() => setShowClosed((v) => !v)}
-            className="w-full flex items-center gap-2 px-3 min-h-11 text-[12px] text-zinc-400 active:text-zinc-200 active:bg-white/5 rounded-xl"
+          <Button
+            variant="ghost"
+            fullWidth
+            onPress={() => setShowClosed((v) => !v)}
+            className="h-auto min-w-0 flex items-center gap-2 px-3 min-h-11 text-[12px] text-zinc-400 active:text-zinc-200 active:bg-white/5 rounded-xl"
           >
             {showClosed ? (
               <ChevronDown size={14} className="shrink-0 text-zinc-500" />
@@ -380,7 +392,7 @@ export function MobileSessionsSheet({
               Closed sessions
             </span>
             <span className="text-[11px] text-zinc-500">{closedSessions.length}</span>
-          </button>
+          </Button>
           {showClosed && (
             <ul className="flex flex-col px-1.5 pb-1.5">
               {closedSessions.map((s) => (
@@ -396,15 +408,18 @@ export function MobileSessionsSheet({
                     <span className="text-[10px] text-zinc-600 ml-auto shrink-0 font-mono truncate max-w-[40%]">
                       {s.cwd.split('/').pop()}
                     </span>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); onArchiveSession(s.id); }}
-                      className="shrink-0 w-8 h-8 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-surface"
-                      aria-label="Archive session"
-                      title="Archive (hide from this list, keeps history)"
-                    >
-                      <Archive size={14} strokeWidth={2} />
-                    </button>
+                    <span onClick={(e) => e.stopPropagation()} className="shrink-0">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="ghost"
+                        onPress={() => onArchiveSession(s.id)}
+                        className="w-8 h-8 min-w-0 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-surface"
+                        aria-label="Archive session"
+                      >
+                        <Archive size={14} strokeWidth={2} />
+                      </Button>
+                    </span>
                   </div>
                 </li>
               ))}

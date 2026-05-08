@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, TextField, TextArea } from '@heroui/react';
 import { wrapMockupHtml, type MockupComment, type MockupInboundMsg } from '../lib/mockup-inspector';
 
 type Popup = {
@@ -206,17 +207,19 @@ export function MockupPanel({
           <span className="text-[12px] font-mono text-violet-300 truncate">mockup · {name}</span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
+          <Button
+            size="sm"
+            variant="ghost"
+            className={`text-[11px] px-2 py-0.5 h-auto rounded transition-colors ${
               inspect
                 ? 'bg-violet-500/20 text-violet-200 hover:bg-violet-500/30'
                 : 'text-zinc-500 hover:text-violet-300'
             }`}
-            onClick={() => onSetInspect(!inspect)}
-            title={inspect ? 'Exit inspect mode (Esc)' : 'Pick elements to comment on'}
+            onPress={() => onSetInspect(!inspect)}
+            aria-label={inspect ? 'Exit inspect mode (Esc)' : 'Pick elements to comment on'}
           >
             {inspect ? '◉ Inspecting' : '◉ Inspect'}
-          </button>
+          </Button>
           {comments.length > 0 && (
             <SendCommentsButton
               count={comments.length}
@@ -230,13 +233,9 @@ export function MockupPanel({
               }}
             />
           )}
-          <button
-            className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
-            onClick={onClose}
-            title="Close mockup (use the chat header button to reopen)"
-          >
-            &times;
-          </button>
+          <Button isIconOnly size="sm" variant="ghost" className="text-zinc-500 hover:text-zinc-200 text-sm px-1 h-auto min-w-0" onPress={onClose} aria-label="Close mockup">
+            <span>×</span>
+          </Button>
         </div>
       </div>
       <div className="flex-1 relative min-h-0">
@@ -261,40 +260,49 @@ export function MockupPanel({
                 {popup.summary}
               </span>
             </div>
-            <textarea
-              autoFocus
+            <TextField
               value={popup.text}
-              onChange={(e) => setPopup(p => p ? { ...p, text: e.target.value } : p)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') { e.preventDefault(); closePopup(); }
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); savePopup(); }
-              }}
-              placeholder="Comment on this element… (Cmd+Enter to save, Esc to cancel)"
-              className="block w-full bg-transparent px-2.5 py-2 text-[12px] resize-none focus:outline-none placeholder:text-zinc-600"
-              rows={4}
-            />
+              onChange={(v) => setPopup(p => p ? { ...p, text: v } : p)}
+              aria-label="Element comment"
+            >
+              <TextArea
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') { e.preventDefault(); closePopup(); }
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); savePopup(); }
+                }}
+                placeholder="Comment on this element… (Cmd+Enter to save, Esc to cancel)"
+                className="block w-full bg-transparent px-2.5 py-2 text-[12px] resize-none border-0 placeholder:text-zinc-600"
+                rows={4}
+              />
+            </TextField>
             <div className="flex items-center justify-end gap-1 px-2 py-1.5 border-t border-border-light">
               {popup.commentId && (
-                <button
-                  className="text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5"
-                  onClick={deletePopup}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-[11px] text-red-400 hover:text-red-300 px-2 py-0.5 h-auto"
+                  onPress={deletePopup}
                 >
                   Delete
-                </button>
+                </Button>
               )}
               <span className="flex-1" />
-              <button
-                className="text-[11px] text-zinc-500 hover:text-zinc-300 px-2 py-0.5"
-                onClick={closePopup}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-[11px] text-zinc-500 hover:text-zinc-300 px-2 py-0.5 h-auto"
+                onPress={closePopup}
               >
                 Cancel
-              </button>
-              <button
-                className="text-[11px] text-white bg-violet-600 hover:bg-violet-500 rounded px-2 py-0.5"
-                onClick={savePopup}
+              </Button>
+              <Button
+                size="sm"
+                className="text-[11px] text-white bg-violet-600 hover:bg-violet-500 rounded px-2 py-0.5 h-auto"
+                onPress={savePopup}
               >
                 Save
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -333,31 +341,36 @@ function SendCommentsButton({
 
   return (
     <div ref={ref} className="relative inline-flex items-stretch">
-      <button
-        className="text-[11px] pl-2 pr-1.5 py-0.5 rounded-l text-violet-300 hover:bg-violet-500/20 transition-colors border border-r-0 border-transparent hover:border-violet-500/30"
-        onClick={onSend}
-        title="Send these comments to chat now and clear the dots"
+      <Button
+        size="sm"
+        variant="ghost"
+        className="text-[11px] pl-2 pr-1.5 py-0.5 h-auto rounded-l text-violet-300 hover:bg-violet-500/20 transition-colors border border-r-0 border-transparent hover:border-violet-500/30"
+        onPress={onSend}
+        aria-label="Send these comments to chat now and clear the dots"
       >
         Send {count} to chat
-      </button>
-      <button
-        className="text-[11px] px-1 py-0.5 rounded-r text-violet-300 hover:bg-violet-500/20 transition-colors border border-l-0 border-transparent hover:border-violet-500/30"
-        onClick={() => setOpen(o => !o)}
-        title="More send options"
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="text-[11px] px-1 py-0.5 h-auto rounded-r text-violet-300 hover:bg-violet-500/20 transition-colors border border-l-0 border-transparent hover:border-violet-500/30"
+        onPress={() => setOpen(o => !o)}
         aria-label="More options"
         aria-expanded={open}
       >
         ▾
-      </button>
+      </Button>
       {open && (
         <div className="absolute top-full right-0 mt-1 z-20 min-w-[180px] bg-[#1f1f1f] border border-border-light rounded-md shadow-xl overflow-hidden">
-          <button
-            className="block w-full text-left text-[11px] px-3 py-1.5 text-zinc-300 hover:bg-surface-light transition-colors"
-            onClick={() => { setOpen(false); onWrite(); }}
-            title="Insert the comments into the chat input without sending"
+          <Button
+            variant="ghost"
+            fullWidth
+            className="block text-left justify-start text-[11px] px-3 py-1.5 h-auto rounded-none text-zinc-300 hover:bg-surface-light transition-colors"
+            onPress={() => { setOpen(false); onWrite(); }}
+            aria-label="Insert the comments into the chat input without sending"
           >
             Write to chat only
-          </button>
+          </Button>
         </div>
       )}
     </div>

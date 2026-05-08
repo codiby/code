@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Archive, ChevronDown, ChevronRight, Pin, Plus, Sun, X } from 'lucide-react';
+import { Button } from '@heroui/react';
 import type { ClaudeClient, ConnectionStatus, SessionInfo } from '../../lib/claude-client';
 import { MobileNewSessionModal } from './MobileNewSessionModal';
 
@@ -28,6 +29,9 @@ interface Props {
   tabGroupMap: Record<string, string>;
   tabOrder: string[];
   pinnedSessionIds?: Set<string>;
+  /** Per-session last-message timestamp — used to order sessions by recency
+   *  the same way the desktop TabBar does. */
+  sessionLastMessageAt?: Record<string, number>;
   keepScreenOn: boolean;
   keepScreenOnSupported: boolean;
   onToggleKeepScreenOn: (next: boolean) => void;
@@ -47,6 +51,24 @@ const COLOR_DOT: Record<string, string> = {
   red: 'bg-red-400',
   pink: 'bg-pink-400',
 };
+
+/** Compact "5m / 2h / 3d" age label — mirrors desktop's TabBar. */
+function formatTabAge(ts: number | undefined, now: number): string {
+  if (!ts) return '';
+  const diffMs = Math.max(0, now - ts);
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 45) return 'now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d`;
+  const wk = Math.floor(day / 7);
+  if (wk < 5) return `${wk}w`;
+  const mo = Math.floor(day / 30);
+  return `${mo}mo`;
+}
 
 function getDotClass(connStatus: string, isStreaming: boolean, turnComplete: boolean, wasInterrupted: boolean): string {
   if (connStatus === 'error') return 'bg-red-400';
@@ -81,12 +103,20 @@ export function MobileHome({
   tabGroupMap,
   tabOrder,
   pinnedSessionIds,
+  sessionLastMessageAt,
   keepScreenOn,
   keepScreenOnSupported,
   onToggleKeepScreenOn,
 }: Props) {
   const [newModalOpen, setNewModalOpen] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
+  // Tick once a minute so age labels refresh from "1m" → "2m" → … without
+  // hammering the parent for re-renders.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(new Set());
   const visibleQuickStart = QUICK_START_PROVIDERS.filter(p => p.key !== 'opencode' || opencodeAvailable);
 
@@ -119,13 +149,20 @@ export function MobileHome({
       if (gid && tabGroups[gid]) {
         if (!seenGroups.has(gid)) {
           seenGroups.add(gid);
+          // Group members: pinned first, then by last-message recency
+          // (newest at top), then fall back to tabOrder for stability.
+          // Mirrors the desktop TabBar's sort.
           const members = openSessions
             .filter((m) => tabGroupMap[m.id] === gid)
             .slice()
             .sort((a, b) => {
               const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
               const pb = pinnedSessionIds?.has(b.id) ? 1 : 0;
-              return pb - pa;
+              if (pa !== pb) return pb - pa;
+              const ta = sessionLastMessageAt?.[a.id] || 0;
+              const tb = sessionLastMessageAt?.[b.id] || 0;
+              if (tb !== ta) return tb - ta;
+              return openSessions.indexOf(a) - openSessions.indexOf(b);
             });
           list.push({ kind: 'group', group: tabGroups[gid]!, members });
         }
@@ -134,7 +171,7 @@ export function MobileHome({
       }
     }
     return list;
-  }, [openSessions, tabGroupMap, tabGroups, pinnedSessionIds]);
+  }, [openSessions, tabGroupMap, tabGroups, pinnedSessionIds, sessionLastMessageAt]);
 
   const toggleGroup = (groupId: string) => {
     setCollapsedGroupIds((prev) => {
@@ -149,6 +186,7 @@ export function MobileHome({
     const status = (statuses && statuses[s.id]) ||
       (s.ready ? 'connected' : s.status === 'starting' ? 'starting' : 'disconnected');
     const pending = !!hasPermission?.[s.id];
+    const ageLabel = formatTabAge(sessionLastMessageAt?.[s.id], nowMs);
     return (
       <li key={s.id}>
         <div
@@ -172,20 +210,32 @@ export function MobileHome({
           {pinnedSessionIds?.has(s.id) && (
             <Pin size={11} strokeWidth={2.25} className="shrink-0 text-zinc-500 fill-current" aria-label="Pinned to top" />
           )}
+          {ageLabel && !isActive && (
+            <span
+              className="shrink-0 text-[10px] tabular-nums text-zinc-600"
+              title={`Last activity ${ageLabel} ago`}
+            >
+              {ageLabel}
+            </span>
+          )}
           {pending && !isActive && (
             <span className="shrink-0 relative inline-flex w-2.5 h-2.5">
               <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping" />
               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
             </span>
           )}
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onCloseSession(s.id); }}
-            className="shrink-0 w-7 h-7 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-white/10"
-            aria-label={`Close ${s.name}`}
-          >
-            <X size={14} strokeWidth={2.25} />
-          </button>
+          <span onClick={(e) => e.stopPropagation()}>
+            <Button
+              variant="ghost"
+              isIconOnly
+              size="sm"
+              onPress={() => onCloseSession(s.id)}
+              className="shrink-0 w-7 h-7 -mr-1 flex items-center justify-center rounded text-zinc-500 active:text-zinc-200 active:bg-white/10 min-w-0"
+              aria-label={`Close ${s.name}`}
+            >
+              <X size={14} strokeWidth={2.25} />
+            </Button>
+          </span>
         </div>
       </li>
     );
@@ -205,37 +255,38 @@ export function MobileHome({
             <img src="/brand/codiby-logo.svg" alt="Codiby" className="h-9 w-auto mb-1 select-none" draggable={false} />
             <p className="text-xs text-zinc-500">Sessions</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setNewModalOpen(true)}
-            className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-light text-zinc-100 text-[12px] font-medium active:bg-white/15"
+          <Button
+            variant="ghost"
+            onPress={() => setNewModalOpen(true)}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-light text-zinc-100 text-[12px] font-medium active:bg-white/15 h-auto min-w-0"
           >
             <Plus size={15} />
             New
-          </button>
+          </Button>
         </div>
 
         <div className="flex items-stretch gap-2 mb-3">
           {visibleQuickStart.map((p) => (
-            <button
+            <Button
               key={p.key}
-              type="button"
-              onClick={() => { onQuickStart(p.key); setNewModalOpen(true); }}
-              className="flex-1 flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-zinc-300 active:bg-zinc-800/70 transition-colors min-w-0"
+              variant="ghost"
+              onPress={() => { onQuickStart(p.key); setNewModalOpen(true); }}
+              className="flex-1 flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-zinc-300 active:bg-zinc-800/70 transition-colors min-w-0 h-auto"
             >
               <span className="text-[12px] font-semibold text-zinc-100 leading-tight">{p.label}</span>
               <span className="text-[10px] text-zinc-500 truncate w-full">{p.tagline}</span>
-            </button>
+            </Button>
           ))}
         </div>
 
         {keepScreenOnSupported && (
-          <button
-            type="button"
-            role="switch"
-            aria-checked={keepScreenOn}
-            onClick={() => onToggleKeepScreenOn(!keepScreenOn)}
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 active:bg-zinc-800/70 transition-colors mb-3"
+          <Button
+            variant="ghost"
+            fullWidth
+            aria-label={`Keep screen on: ${keepScreenOn ? 'enabled' : 'disabled'}`}
+            aria-pressed={keepScreenOn}
+            onPress={() => onToggleKeepScreenOn(!keepScreenOn)}
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 active:bg-zinc-800/70 transition-colors mb-3 h-auto justify-start"
           >
             <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${keepScreenOn ? 'bg-amber-500/20' : 'bg-zinc-800/80'}`}>
               <Sun className={`w-4 h-4 ${keepScreenOn ? 'text-amber-300' : 'text-zinc-500'}`} />
@@ -247,7 +298,7 @@ export function MobileHome({
             <span className={`relative w-10 h-6 rounded-full shrink-0 transition-colors ${keepScreenOn ? 'bg-amber-500/70' : 'bg-zinc-700'}`}>
               <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${keepScreenOn ? 'translate-x-4' : 'translate-x-0'}`} />
             </span>
-          </button>
+          </Button>
         )}
 
         <div className="rounded-xl bg-[#161616] border border-white/5 py-1 mb-3">
@@ -264,10 +315,11 @@ export function MobileHome({
               const hasActivity = members.some((m) => hasPermission?.[m.id]);
               return (
                 <li key={`grp-${group.id}`} className="flex flex-col gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => toggleGroup(group.id)}
-                    className="relative flex w-full items-center gap-2 px-2 min-h-10 text-[13px] rounded-md text-zinc-300 active:bg-surface/60 text-left"
+                  <Button
+                    variant="ghost"
+                    fullWidth
+                    onPress={() => toggleGroup(group.id)}
+                    className="relative flex w-full items-center gap-2 px-2 min-h-10 text-[13px] rounded-md text-zinc-300 active:bg-surface/60 justify-start! h-auto text-left!"
                   >
                     {isCollapsed ? (
                       <ChevronRight size={14} className="shrink-0 text-zinc-500" />
@@ -277,7 +329,7 @@ export function MobileHome({
                     <span className={`w-2 h-2 rounded-full shrink-0 ${dot} ${isCollapsed && hasActivity ? 'animate-pulse' : ''}`} />
                     <span className="truncate flex-1 font-medium">{group.name}</span>
                     <span className="text-[11px] text-zinc-500 shrink-0">{members.length}</span>
-                  </button>
+                  </Button>
                   {!isCollapsed && (
                     <ul className="flex flex-col gap-0.5">
                       {members.map((m) => renderTab(m, { indented: true }))}
@@ -291,23 +343,25 @@ export function MobileHome({
 
         {closedSessions.length > 0 && (
           <div className="rounded-xl bg-white/[0.02] border border-white/5">
-            <button
-              type="button"
-              onClick={() => setShowClosed((v) => !v)}
-              className="w-full flex items-center gap-2 px-3 min-h-11 text-[12px] text-zinc-400 active:text-zinc-200 active:bg-white/5 rounded-xl"
+            <Button
+              variant="ghost"
+              fullWidth
+              onPress={() => setShowClosed((v) => !v)}
+              className="w-full flex items-center gap-2 px-3 min-h-11 text-[12px] text-zinc-400 active:text-zinc-200 active:bg-white/5 rounded-xl justify-start h-auto"
             >
               {showClosed ? <ChevronDown size={14} className="shrink-0 text-zinc-500" /> : <ChevronRight size={14} className="shrink-0 text-zinc-500" />}
               <span className="uppercase tracking-wider font-semibold flex-1 text-left">Closed sessions</span>
               <span className="text-[11px] text-zinc-500">{closedSessions.length}</span>
-            </button>
+            </Button>
             {showClosed && (
               <ul className="flex flex-col px-1.5 pb-1.5">
                 {closedSessions.map((s) => (
                   <li key={s.id}>
-                    <button
-                      type="button"
-                      onClick={() => onReopenSession(s.id)}
-                      className="group relative flex w-full items-center gap-2 px-3 min-h-11 text-[13px] rounded-md text-zinc-400 active:bg-surface/60 active:text-zinc-200 text-left"
+                    <Button
+                      variant="ghost"
+                      fullWidth
+                      onPress={() => onReopenSession(s.id)}
+                      className="group relative flex w-full items-center gap-2 px-3 min-h-11 text-[13px] rounded-md text-zinc-400 active:bg-surface/60 active:text-zinc-200 justify-start h-auto"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
                       <span className="truncate flex-1">{s.name}</span>
@@ -324,7 +378,7 @@ export function MobileHome({
                       >
                         <Archive size={14} strokeWidth={2} />
                       </span>
-                    </button>
+                    </Button>
                   </li>
                 ))}
               </ul>

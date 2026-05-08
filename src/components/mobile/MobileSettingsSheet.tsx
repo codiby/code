@@ -1,25 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Switch, SwitchControl, SwitchThumb } from '@heroui/react';
+import { Button, Switch, SwitchControl, SwitchThumb } from '@heroui/react';
 import { BottomSheet } from './BottomSheet';
 import { resolveServerUrl, getAuthToken, setAuthToken } from '../../lib/claude-client';
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** Permission mode of the active session (e.g. 'default', 'acceptEdits', 'bypassPermissions', 'plan'). */
-  permissionMode?: string;
-  /** Called to change the permission mode on the active session. */
-  onPermissionModeChange?: (mode: string) => void;
 }
 
-const PERMISSION_MODES = [
-  { value: 'default', label: 'Default', desc: 'Prompt for every tool' },
-  { value: 'acceptEdits', label: 'Accept edits', desc: 'Auto-approve file edits' },
-  { value: 'plan', label: 'Plan', desc: 'Read-only, no writes' },
-  { value: 'bypassPermissions', label: 'Bypass', desc: 'Auto-approve everything' },
-];
-
-export function MobileSettingsSheet({ open, onClose, permissionMode, onPermissionModeChange }: Props) {
+export function MobileSettingsSheet({ open, onClose }: Props) {
   const [token, setToken] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [tgRunning, setTgRunning] = useState<boolean | null>(null);
@@ -115,35 +104,6 @@ export function MobileSettingsSheet({ open, onClose, permissionMode, onPermissio
   return (
     <BottomSheet open={open} onClose={onClose} title="Settings">
       <div className="space-y-5">
-        {/* Permission mode */}
-        {onPermissionModeChange && (
-          <section>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 px-1">
-              Permission mode (active session)
-            </div>
-            <div className="grid grid-cols-1 gap-2">
-              {PERMISSION_MODES.map((m) => {
-                const isActive = m.value === permissionMode;
-                return (
-                  <button
-                    key={m.value}
-                    type="button"
-                    onClick={() => onPermissionModeChange(m.value)}
-                    className={`text-left p-3 rounded-xl border transition ${
-                      isActive
-                        ? 'bg-indigo-500/15 border-indigo-500/40'
-                        : 'bg-white/5 border-white/10 active:bg-white/10'
-                    }`}
-                  >
-                    <div className="text-sm font-medium text-zinc-100">{m.label}</div>
-                    <div className="text-[11px] text-zinc-500 mt-0.5">{m.desc}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
         {/* Sessions */}
         <section>
           <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 px-1">
@@ -188,14 +148,15 @@ export function MobileSettingsSheet({ open, onClose, permissionMode, onPermissio
             <p className="text-[11px] text-zinc-500 mt-1.5 leading-relaxed">
               Configure the bot from the desktop app to receive permission alerts and turn-complete pings.
             </p>
-            <button
-              type="button"
-              onClick={sendTest}
-              disabled={testing}
-              className="mt-3 w-full min-h-12 rounded-xl bg-white/5 border border-white/10 text-sm text-zinc-200 font-medium active:bg-white/10 disabled:opacity-50"
+            <Button
+              variant="ghost"
+              fullWidth
+              onPress={sendTest}
+              isDisabled={testing}
+              className="mt-3 h-auto min-w-0 min-h-12 rounded-xl bg-white/5 border border-white/10 text-sm text-zinc-200 font-medium active:bg-white/10 disabled:opacity-50"
             >
               {testing ? 'Sending…' : 'Send test notification'}
-            </button>
+            </Button>
             {testResult && <div className="text-[11px] text-zinc-400 mt-2 px-1">{testResult}</div>}
           </div>
         </section>
@@ -212,29 +173,29 @@ export function MobileSettingsSheet({ open, onClose, permissionMode, onPermissio
                 {token ? (showToken ? token : token.slice(0, 8) + '…' + token.slice(-4)) : '(none)'}
               </div>
               <div className="flex gap-2 mt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowToken((v) => !v)}
-                  className="flex-1 min-h-10 rounded-lg bg-white/5 border border-white/10 text-[12px] text-zinc-200 active:bg-white/10"
+                <Button
+                  variant="ghost"
+                  onPress={() => setShowToken((v) => !v)}
+                  className="flex-1 h-auto min-w-0 min-h-10 rounded-lg bg-white/5 border border-white/10 text-[12px] text-zinc-200 active:bg-white/10"
                 >
                   {showToken ? 'Hide' : 'Show'}
-                </button>
-                <button
-                  type="button"
-                  onClick={copyToken}
-                  disabled={!token}
-                  className="flex-1 min-h-10 rounded-lg bg-white/5 border border-white/10 text-[12px] text-zinc-200 active:bg-white/10 disabled:opacity-50"
+                </Button>
+                <Button
+                  variant="ghost"
+                  onPress={copyToken}
+                  isDisabled={!token}
+                  className="flex-1 h-auto min-w-0 min-h-10 rounded-lg bg-white/5 border border-white/10 text-[12px] text-zinc-200 active:bg-white/10 disabled:opacity-50"
                 >
                   {copied ? 'Copied' : 'Copy'}
-                </button>
-                <button
-                  type="button"
-                  onClick={forgetToken}
-                  disabled={!token}
-                  className="flex-1 min-h-10 rounded-lg bg-red-500/10 border border-red-500/30 text-[12px] text-red-300 active:bg-red-500/20 disabled:opacity-50"
+                </Button>
+                <Button
+                  variant="ghost"
+                  onPress={forgetToken}
+                  isDisabled={!token}
+                  className="flex-1 h-auto min-w-0 min-h-10 rounded-lg bg-red-500/10 border border-red-500/30 text-[12px] text-red-300 active:bg-red-500/20 disabled:opacity-50"
                 >
                   Forget
-                </button>
+                </Button>
               </div>
             </div>
             <div className="text-[11px] text-zinc-500">

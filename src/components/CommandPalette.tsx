@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Kbd } from '@heroui/react';
+import { Button, Kbd, KbdAbbr, KbdContent, TextField, Input } from '@heroui/react';
 import { searchFiles, type FileEntry } from '../lib/fuzzy-file-search';
 
 export interface PaletteAction {
@@ -104,14 +104,15 @@ export function CommandPalette({ isOpen, onClose, actions, fileIndex, onFileOpen
         onClick={(e) => e.stopPropagation()}
       >
         <div className="px-4 py-3 border-b border-border">
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type a command or file name..."
-            className="w-full bg-transparent text-sm text-zinc-200 placeholder:text-zinc-600 outline-none"
-          />
+          <TextField value={query} onChange={setQuery} aria-label="Command search">
+            <Input
+              ref={inputRef}
+              onKeyDown={handleKeyDown}
+              placeholder="Type a command or file name..."
+              className="bg-transparent border-0 px-0 py-0 text-sm text-zinc-200 placeholder:text-zinc-600"
+              autoFocus
+            />
+          </TextField>
         </div>
 
         <div ref={listRef} className="max-h-72 overflow-y-auto py-1">
@@ -128,26 +129,28 @@ export function CommandPalette({ isOpen, onClose, actions, fileIndex, onFileOpen
                     {action.section}
                   </div>
                 )}
-                <button
-                  className={`w-full flex items-center justify-between px-4 py-2 text-sm transition-colors ${
+                <Button
+                  variant="ghost"
+                  fullWidth
+                  className={`flex items-center justify-between px-4 py-2 h-auto rounded-none text-sm transition-colors ${
                     i === selectedIndex
                       ? 'bg-surface-light text-zinc-100'
                       : 'text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200'
                   }`}
-                  onMouseEnter={() => setSelectedIndex(i)}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => run(action)}
+                  onHoverStart={() => setSelectedIndex(i)}
+                  onPress={() => run(action)}
                 >
                   <span className="truncate">{action.label}</span>
                   {action.section === 'Files' && action.key && (
                     <span className="text-[11px] text-zinc-600 font-mono truncate ml-3 shrink-0 max-w-[50%] text-right">{action.key}</span>
                   )}
                   {action.section !== 'Files' && (action.keys || action.key) && (
-                    <Kbd keys={action.keys as any} className="bg-surface text-zinc-500 border-border-light">
-                      {action.key || ''}
+                    <Kbd className="bg-surface text-zinc-500 border-border-light">
+                      {action.keys?.map(k => <KbdAbbr key={k} keyValue={k as any} />)}
+                      {action.key && <KbdContent>{action.key}</KbdContent>}
                     </Kbd>
                   )}
-                </button>
+                </Button>
               </div>
             );
           })}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { Button } from '@heroui/react';
 import { BottomSheet } from './BottomSheet';
 import { MobileDiffModal } from './MobileDiffModal';
 import type { ClaudeClient } from '../../lib/claude-client';
@@ -87,34 +88,34 @@ export function MobileGitSheet({ open, onClose, client, cwd }: Props) {
           {/* Branch */}
           <div className="rounded-xl bg-white/5 border border-white/10 p-3">
             <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Branch</div>
-            <button
-              type="button"
-              onClick={() => setShowBranches((v) => !v)}
-              className="w-full text-left text-base font-mono text-zinc-100 active:opacity-70 flex items-center justify-between"
+            <Button
+              variant="ghost"
+              onPress={() => setShowBranches((v) => !v)}
+              className="w-full h-auto min-w-0 justify-between text-left text-base font-mono text-zinc-100 active:opacity-70 flex items-center px-0"
             >
               <span className="truncate">{info.branch || '(detached)'}</span>
               <span className="text-zinc-500 shrink-0">
                 {showBranches ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
               </span>
-            </button>
+            </Button>
             {showBranches && (
               <ul className="mt-3 max-h-72 overflow-y-auto divide-y divide-white/5">
                 {branches.local.map((b) => {
                   const isCurrent = b === branches.current;
                   return (
                     <li key={b}>
-                      <button
-                        type="button"
-                        disabled={isCurrent || switchingTo !== null}
-                        onClick={() => switchBranch(b)}
-                        className={`w-full text-left flex items-center justify-between py-2.5 px-1 ${
+                      <Button
+                        variant="ghost"
+                        isDisabled={isCurrent || switchingTo !== null}
+                        onPress={() => switchBranch(b)}
+                        className={`w-full h-auto min-w-0 justify-between text-left flex items-center py-2.5 px-1 ${
                           isCurrent ? 'text-indigo-300' : 'text-zinc-300 active:bg-white/5'
                         }`}
                       >
                         <span className="font-mono text-sm truncate">{b}</span>
                         {isCurrent && <span className="text-[10px] uppercase tracking-wider">current</span>}
                         {switchingTo === b && <span className="text-[10px]">switching…</span>}
-                      </button>
+                      </Button>
                     </li>
                   );
                 })}
@@ -128,13 +129,13 @@ export function MobileGitSheet({ open, onClose, client, cwd }: Props) {
               <div className="text-[10px] uppercase tracking-wider text-zinc-500">
                 {modified.length === 0 ? 'No changes' : `${modified.length} changed file${modified.length === 1 ? '' : 's'}`}
               </div>
-              <button
-                type="button"
-                onClick={refresh}
-                className="text-[11px] text-zinc-400 active:text-zinc-200 px-2 py-1 rounded-md bg-white/5 active:bg-white/10"
+              <Button
+                variant="ghost"
+                onPress={refresh}
+                className="h-auto min-w-0 text-[11px] text-zinc-400 active:text-zinc-200 px-2 py-1 rounded-md bg-white/5 active:bg-white/10"
               >
                 Refresh
-              </button>
+              </Button>
             </div>
 
             {staged.length > 0 && (
@@ -193,17 +194,17 @@ function FileGroup({
           const dirPart = f.path.slice(0, f.path.length - fileName.length).replace(/\/$/, '');
           return (
             <li key={f.path}>
-              <button
-                type="button"
-                onClick={() => onOpen(f.path)}
-                className="w-full text-left px-3 py-2.5 min-h-11 text-[12px] font-mono text-zinc-200 active:bg-white/5 flex items-center gap-2"
+              <Button
+                variant="ghost"
+                onPress={() => onOpen(f.path)}
+                className="w-full h-auto min-w-0 justify-start text-left px-3 py-2.5 min-h-11 text-[12px] font-mono text-zinc-200 active:bg-white/5 flex items-center gap-2"
               >
                 <span className="truncate flex-1">
                   <span className="text-zinc-100">{fileName}</span>
                   {dirPart && <span className="text-zinc-600">  {dirPart}</span>}
                 </span>
                 <ChevronRight size={14} className="shrink-0 text-zinc-600" />
-              </button>
+              </Button>
             </li>
           );
         })}

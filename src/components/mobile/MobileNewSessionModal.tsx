@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, Folder, Home, Clock, GitBranch, Plus } from 'lucide-react';
-import { ListBox, ListBoxItem, Select, SelectPopover, SelectTrigger, SelectValue } from '@heroui/react';
+import {
+  Button,
+  TextField, Input,
+  ListBox, ListBoxItem,
+  Select, SelectPopover, SelectTrigger, SelectValue,
+} from '@heroui/react';
 import type { ClaudeClient } from '../../lib/claude-client';
 import { MobileWorktreeModal } from './MobileWorktreeModal';
 
@@ -176,30 +181,35 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
       {/* Header — Cancel / Title / Create. Title is a path breadcrumb too
           so the user always sees where they are. */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-        <button
-          onClick={onClose}
-          disabled={creating}
-          className="text-[13px] text-zinc-400 active:text-zinc-200 disabled:opacity-50"
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={onClose}
+          isDisabled={creating}
+          className="text-[13px] text-zinc-400 active:text-zinc-200 disabled:opacity-50 h-auto px-0 min-w-0"
         >
           Cancel
-        </button>
+        </Button>
         <span className="text-[13px] font-semibold text-zinc-100">New Session</span>
-        <button
-          onClick={handleCreate}
-          disabled={creating}
-          className="text-[13px] font-semibold text-indigo-300 active:text-indigo-200 disabled:opacity-50"
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={handleCreate}
+          isDisabled={creating}
+          className="text-[13px] font-semibold text-indigo-300 active:text-indigo-200 disabled:opacity-50 h-auto px-0 min-w-0"
         >
           {creating ? '…' : 'Create'}
-        </button>
+        </Button>
       </div>
 
       {/* Tabs */}
       <div className="flex items-center border-b border-border px-2 shrink-0">
         {(['browse', 'recent'] as const).map((t) => (
-          <button
+          <Button
             key={t}
-            onClick={() => setTab(t)}
-            className={`flex items-center gap-1.5 px-3 py-2 text-[12px] border-b-2 transition-colors ${
+            variant="ghost"
+            onPress={() => setTab(t)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-[12px] border-b-2 transition-colors h-auto min-w-0 rounded-none ${
               tab === t
                 ? 'border-indigo-500 text-zinc-100'
                 : 'border-transparent text-zinc-500 active:text-zinc-300'
@@ -207,7 +217,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
           >
             {t === 'browse' ? <Folder size={13} /> : <Clock size={13} />}
             {t === 'browse' ? 'Browse' : `Recent (${recentDirs.length})`}
-          </button>
+          </Button>
         ))}
         {gitInfo?.is_git && gitInfo.branch && (
           <span className="ml-auto flex items-center gap-1.5 px-2 text-[11px] text-green-400 font-mono truncate max-w-[140px]" title={gitInfo.branch}>
@@ -216,14 +226,15 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
           </span>
         )}
         {gitInfo?.is_git && gitInfo.top_level && (
-          <button
-            onClick={() => setWorktreeOpen(true)}
-            className="ml-1 shrink-0 flex items-center gap-1 text-[11px] text-indigo-300 active:text-indigo-200 px-2 py-1.5 rounded active:bg-white/5"
+          <Button
+            variant="ghost"
+            onPress={() => setWorktreeOpen(true)}
+            className="ml-1 shrink-0 flex items-center gap-1 text-[11px] text-indigo-300 active:text-indigo-200 px-2 py-1.5 rounded active:bg-white/5 h-auto min-w-0"
             aria-label="New worktree"
           >
             <Plus size={12} />
             <GitBranch size={12} />
-          </button>
+          </Button>
         )}
       </div>
 
@@ -231,35 +242,42 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
           so deep paths don't break the layout. */}
       {tab === 'browse' && (
         <div className="flex items-center gap-1 px-3 py-2 border-b border-border shrink-0 overflow-x-auto">
-          <button
-            onClick={goUp}
-            disabled={cwd === '/' || !cwd}
-            className="shrink-0 w-8 h-8 flex items-center justify-center rounded text-zinc-400 active:text-zinc-200 active:bg-white/10 disabled:opacity-30"
+          <Button
+            variant="ghost"
+            isIconOnly
+            size="sm"
+            onPress={goUp}
+            isDisabled={cwd === '/' || !cwd}
+            className="shrink-0 w-8 h-8 flex items-center justify-center rounded text-zinc-400 active:text-zinc-200 active:bg-white/10 disabled:opacity-30 min-w-0"
             aria-label="Parent directory"
           >
             <ChevronLeft size={16} />
-          </button>
-          <button
-            onClick={() => navigate('/')}
-            className="shrink-0 w-8 h-8 flex items-center justify-center rounded text-zinc-400 active:text-zinc-200 active:bg-white/10"
+          </Button>
+          <Button
+            variant="ghost"
+            isIconOnly
+            size="sm"
+            onPress={() => navigate('/')}
+            className="shrink-0 w-8 h-8 flex items-center justify-center rounded text-zinc-400 active:text-zinc-200 active:bg-white/10 min-w-0"
             aria-label="Root"
           >
             <Home size={14} />
-          </button>
+          </Button>
           {segments.map((seg, i) => {
             const path = '/' + segments.slice(0, i + 1).join('/');
             const isLast = i === segments.length - 1;
             return (
               <span key={path} className="flex items-center gap-1 shrink-0">
                 <span className="text-zinc-700 text-[11px]">/</span>
-                <button
-                  className={`text-[12px] px-1 ${
+                <Button
+                  variant="ghost"
+                  className={`text-[12px] px-1 h-auto min-w-0 rounded-none ${
                     isLast ? 'text-zinc-100 font-medium' : 'text-zinc-500 active:text-zinc-200'
                   }`}
-                  onClick={() => navigate(path)}
+                  onPress={() => navigate(path)}
                 >
                   {seg}
-                </button>
+                </Button>
               </span>
             );
           })}
@@ -278,10 +296,11 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
             {gitInfo.worktrees.map((wt) => {
               const isActive = cwd === wt.path;
               return (
-                <button
+                <Button
                   key={wt.path}
-                  onClick={() => navigate(wt.path)}
-                  className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-mono border transition-colors ${
+                  variant="ghost"
+                  onPress={() => navigate(wt.path)}
+                  className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-mono border transition-colors h-auto min-w-0 ${
                     isActive
                       ? 'bg-green-500/15 border-green-500/40 text-green-100'
                       : 'bg-white/5 border-white/10 text-zinc-300 active:bg-white/10'
@@ -289,7 +308,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
                 >
                   <GitBranch size={11} className="shrink-0" />
                   <span className="truncate max-w-[160px]">{wt.branch}</span>
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -310,13 +329,15 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
                 const dirName = clean.split('/').pop() || clean;
                 return (
                   <li key={dir}>
-                    <button
-                      onClick={() => navigate(clean)}
-                      className="w-full flex items-center gap-3 px-4 min-h-11 text-[14px] text-zinc-200 active:bg-white/5 active:text-white text-left"
+                    <Button
+                      variant="ghost"
+                      fullWidth
+                      onPress={() => navigate(clean)}
+                      className="w-full flex items-center gap-3 px-4 min-h-11 text-[14px] text-zinc-200 active:bg-white/5 active:text-white justify-start h-auto rounded-none"
                     >
                       <Folder size={16} className="shrink-0 text-zinc-500" />
                       <span className="truncate">{dirName}</span>
-                    </button>
+                    </Button>
                   </li>
                 );
               })}
@@ -330,9 +351,11 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
               const dirName = dir.replace(/\/$/, '').split('/').pop() || dir;
               return (
                 <li key={dir}>
-                  <button
-                    onClick={() => { setTab('browse'); navigate(dir); }}
-                    className="w-full flex flex-col items-start gap-0.5 px-4 py-2 min-h-11 text-[14px] text-zinc-200 active:bg-white/5 active:text-white text-left"
+                  <Button
+                    variant="ghost"
+                    fullWidth
+                    onPress={() => { setTab('browse'); navigate(dir); }}
+                    className="w-full flex flex-col items-start gap-0.5 px-4 py-2 min-h-11 text-[14px] text-zinc-200 active:bg-white/5 active:text-white justify-start h-auto rounded-none"
                   >
                     <span className="flex items-center gap-2 min-w-0 w-full">
                       <Folder size={14} className="shrink-0 text-zinc-500" />
@@ -341,7 +364,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
                     <span className="pl-6 text-[11px] text-zinc-600 font-mono truncate max-w-full">
                       {dir}
                     </span>
-                  </button>
+                  </Button>
                 </li>
               );
             })}
@@ -362,17 +385,18 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
         <div className="flex items-center gap-1.5 -mx-1">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold px-1">Provider</span>
           {availableProviders.map(opt => (
-            <button
+            <Button
               key={opt.key}
-              onClick={() => setProvider(opt.key)}
-              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
+              variant="ghost"
+              onPress={() => setProvider(opt.key)}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors h-auto min-w-0 ${
                 provider === opt.key
                   ? 'bg-indigo-500/20 text-indigo-200 border border-indigo-500/40'
                   : 'bg-white/5 text-zinc-400 border border-white/10 active:bg-white/10'
               }`}
             >
               {opt.label}
-            </button>
+            </Button>
           ))}
         </div>
         <label className="flex items-center gap-2 min-w-0">
@@ -400,13 +424,12 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
             </SelectPopover>
           </Select>
         </label>
-        <input
-          type="text"
-          placeholder="Session name (optional)"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="w-full px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-[14px] text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
-        />
+        <TextField value={name} onChange={setName} aria-label="Session name">
+          <Input
+            placeholder="Session name (optional)"
+            className="w-full px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-[14px] text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+          />
+        </TextField>
         {error && (
           <div className="text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
             {error}

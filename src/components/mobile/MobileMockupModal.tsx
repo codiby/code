@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X as XIcon } from 'lucide-react';
+import { Button, TextField, TextArea } from '@heroui/react';
 import { wrapMockupHtml, type MockupComment, type MockupInboundMsg } from '../../lib/mockup-inspector';
 
 type Popup = {
@@ -182,29 +183,33 @@ export function MobileMockupModal({
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
     >
       <div className="flex items-center px-2 py-2 border-b border-border shrink-0 gap-2">
-        <button
-          onClick={onClose}
-          className="w-9 h-9 flex items-center justify-center rounded-full text-zinc-400 active:text-zinc-100 active:bg-white/10"
+        <Button
+          variant="ghost"
+          isIconOnly
+          size="sm"
+          onPress={onClose}
+          className="w-9 h-9 flex items-center justify-center rounded-full text-zinc-400 active:text-zinc-100 active:bg-white/10 min-w-0"
           aria-label="Close mockup"
         >
           <XIcon size={18} />
-        </button>
+        </Button>
         <div className="flex-1 flex items-center justify-center gap-1.5 min-w-0 px-1">
           <span className="text-[10px] text-violet-400 shrink-0">▣</span>
           <span className="text-[12px] font-mono text-violet-300 truncate">{name}</span>
         </div>
-        <button
-          onClick={() => setInspect(v => !v)}
-          className={`shrink-0 h-7 px-2.5 flex items-center rounded-full text-[11px] font-medium transition-colors ${
+        <Button
+          variant="ghost"
+          onPress={() => setInspect(v => !v)}
+          className={`shrink-0 h-7 px-2.5 flex items-center rounded-full text-[11px] font-medium transition-colors min-w-0 ${
             inspect
               ? 'bg-violet-500/20 text-violet-200 border border-violet-500/40'
               : 'bg-zinc-900/70 text-zinc-300 border border-white/10 active:bg-zinc-900/90'
           }`}
           aria-pressed={inspect}
-          title={inspect ? 'Exit inspect mode' : 'Pick elements to comment on'}
+          aria-label={inspect ? 'Exit inspect mode' : 'Pick elements to comment on'}
         >
           {inspect ? '◉ Inspecting' : '◉ Inspect'}
-        </button>
+        </Button>
       </div>
 
       <div className="flex-1 relative min-h-0 bg-white">
@@ -227,26 +232,26 @@ export function MobileMockupModal({
             {comments.length} comment{comments.length !== 1 ? 's' : ''}
           </span>
           <span className="flex-1" />
-          <button
-            type="button"
-            onClick={() => {
+          <Button
+            variant="ghost"
+            onPress={() => {
               const md = buildChatMessage(name, comments);
               if (md) onWriteToChat(md);
             }}
-            className="text-[12px] text-zinc-400 active:text-zinc-200 px-2 py-1.5"
+            className="text-[12px] text-zinc-400 active:text-zinc-200 px-2 py-1.5 h-auto min-w-0"
           >
             Write only
-          </button>
-          <button
-            type="button"
-            onClick={() => {
+          </Button>
+          <Button
+            variant="primary"
+            onPress={() => {
               const md = buildChatMessage(name, comments);
               if (md) onSendToChat(md);
             }}
-            className="text-[12px] font-semibold text-white bg-violet-600 active:bg-violet-500 rounded-full px-3 py-1.5"
+            className="text-[12px] font-semibold text-white bg-violet-600 active:bg-violet-500 rounded-full px-3 py-1.5 h-auto min-w-0"
           >
             Send {comments.length} to chat
-          </button>
+          </Button>
         </div>
       )}
 
@@ -260,44 +265,54 @@ export function MobileMockupModal({
             <span className="text-[11px] font-mono text-zinc-400 truncate flex-1" title={popup.selector}>
               {popup.summary}
             </span>
-            <button
-              onClick={closePopup}
-              className="w-6 h-6 flex items-center justify-center rounded-full text-zinc-500 active:text-zinc-200"
+            <Button
+              variant="ghost"
+              isIconOnly
+              size="sm"
+              onPress={closePopup}
+              className="w-6 h-6 flex items-center justify-center rounded-full text-zinc-500 active:text-zinc-200 min-w-0"
               aria-label="Close"
             >
               <XIcon size={14} />
-            </button>
+            </Button>
           </div>
-          <textarea
-            autoFocus
+          <TextField
             value={popup.text}
-            onChange={(e) => setPopup(p => p ? { ...p, text: e.target.value } : p)}
-            placeholder="Comment on this element…"
-            className="block w-full bg-transparent px-3 py-2 text-[14px] resize-none focus:outline-none placeholder:text-zinc-600"
-            rows={4}
-          />
+            onChange={(v) => setPopup(p => p ? { ...p, text: v } : p)}
+            aria-label="Comment text"
+          >
+            <TextArea
+              autoFocus
+              placeholder="Comment on this element…"
+              className="block w-full bg-transparent px-3 py-2 text-[14px] resize-none focus:outline-none placeholder:text-zinc-600"
+              rows={4}
+            />
+          </TextField>
           <div className="flex items-center justify-end gap-1 px-2 py-2 border-t border-border-light">
             {popup.commentId && (
-              <button
-                className="text-[12px] text-red-400 active:text-red-300 px-2 py-1.5"
-                onClick={deletePopup}
+              <Button
+                variant="ghost"
+                className="text-[12px] text-red-400 active:text-red-300 px-2 py-1.5 h-auto min-w-0"
+                onPress={deletePopup}
               >
                 Delete
-              </button>
+              </Button>
             )}
             <span className="flex-1" />
-            <button
-              className="text-[12px] text-zinc-400 active:text-zinc-200 px-2 py-1.5"
-              onClick={closePopup}
+            <Button
+              variant="ghost"
+              className="text-[12px] text-zinc-400 active:text-zinc-200 px-2 py-1.5 h-auto min-w-0"
+              onPress={closePopup}
             >
               Cancel
-            </button>
-            <button
-              className="text-[12px] font-semibold text-white bg-violet-600 active:bg-violet-500 rounded-full px-3 py-1.5"
-              onClick={savePopup}
+            </Button>
+            <Button
+              variant="primary"
+              className="text-[12px] font-semibold text-white bg-violet-600 active:bg-violet-500 rounded-full px-3 py-1.5 h-auto min-w-0"
+              onPress={savePopup}
             >
               Save
-            </button>
+            </Button>
           </div>
         </div>
       )}

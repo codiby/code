@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Button, TextField, Input } from '@heroui/react';
 import type { PermissionRequest } from '../../lib/claude-client';
 
 type AskQuestion = {
@@ -97,17 +98,17 @@ export function MobileAskQuestionCard({ request, onSubmit }: Props) {
                   {q.options.map((opt, j) => {
                     const isActive = selected === opt.label;
                     return (
-                      <button
+                      <Button
                         key={j}
-                        type="button"
-                        onClick={() => handleSelect(i, opt.label)}
-                        className={`w-full text-left px-3 py-3 rounded-xl border transition-colors active:scale-[0.99] ${
+                        variant="ghost"
+                        onPress={() => handleSelect(i, opt.label)}
+                        className={`w-full h-auto min-w-0 justify-start text-left px-3 py-3 rounded-xl border transition-colors active:scale-[0.99] ${
                           isActive
                             ? 'border-violet-400/60 bg-violet-500/15 ring-1 ring-violet-400/30'
                             : 'border-white/10 bg-white/[0.03] active:border-zinc-500 active:bg-white/5'
                         }`}
                       >
-                        <div className="flex items-start gap-2.5">
+                        <div className="flex items-start gap-2.5 w-full">
                           <span
                             className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
                               isActive ? 'border-violet-400' : 'border-zinc-600'
@@ -122,48 +123,52 @@ export function MobileAskQuestionCard({ request, onSubmit }: Props) {
                             )}
                           </div>
                         </div>
-                      </button>
+                      </Button>
                     );
                   })}
                   {isCustom ? (
                     <div className="flex items-stretch gap-1.5">
-                      <input
-                        autoFocus
-                        type="text"
+                      <TextField
                         value={selections[key] || ''}
-                        onChange={(e) => handleCustomChange(i, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && questions.length === 1) {
-                            e.preventDefault();
-                            submitCustomSingle(i);
-                          } else if (e.key === 'Escape') {
-                            e.preventDefault();
-                            setCustomMode(prev => ({ ...prev, [key]: false }));
-                            setSelections(prev => ({ ...prev, [key]: '' }));
-                          }
-                        }}
-                        placeholder="Type your own answer…"
-                        className="flex-1 px-3 py-3 rounded-xl border border-violet-400/60 bg-violet-500/15 ring-1 ring-violet-400/30 text-[14px] text-zinc-100 placeholder:text-zinc-500 outline-none"
-                      />
+                        onChange={(text) => handleCustomChange(i, text)}
+                        aria-label="Custom answer"
+                        autoFocus
+                        className="flex-1"
+                      >
+                        <Input
+                          placeholder="Type your own answer…"
+                          className="px-3 py-3 rounded-xl border border-violet-400/60 bg-violet-500/15 ring-1 ring-violet-400/30 text-[14px] text-zinc-100 placeholder:text-zinc-500 outline-none"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && questions.length === 1) {
+                              e.preventDefault();
+                              submitCustomSingle(i);
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setCustomMode(prev => ({ ...prev, [key]: false }));
+                              setSelections(prev => ({ ...prev, [key]: '' }));
+                            }
+                          }}
+                        />
+                      </TextField>
                       {questions.length === 1 && (
-                        <button
-                          type="button"
-                          disabled={!(selections[key] || '').trim()}
-                          onClick={() => submitCustomSingle(i)}
-                          className="px-4 rounded-xl text-[13px] font-semibold bg-violet-500/20 border border-violet-500/40 text-violet-100 active:bg-violet-500/30 disabled:opacity-40 transition-colors"
+                        <Button
+                          variant="ghost"
+                          isDisabled={!(selections[key] || '').trim()}
+                          onPress={() => submitCustomSingle(i)}
+                          className="h-auto min-w-0 px-4 rounded-xl text-[13px] font-semibold bg-violet-500/20 border border-violet-500/40 text-violet-100 active:bg-violet-500/30 disabled:opacity-40 transition-colors"
                         >
                           Send
-                        </button>
+                        </Button>
                       )}
                     </div>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleEnterCustom(i)}
-                      className="w-full text-left px-3 py-3 rounded-xl border border-dashed border-white/15 text-[13px] text-zinc-400 active:bg-white/5 transition-colors"
+                    <Button
+                      variant="ghost"
+                      onPress={() => handleEnterCustom(i)}
+                      className="w-full h-auto min-w-0 justify-start text-left px-3 py-3 rounded-xl border border-dashed border-white/15 text-[13px] text-zinc-400 active:bg-white/5 transition-colors"
                     >
                       + Other (write your own answer)
-                    </button>
+                    </Button>
                   )}
                 </div>
               )}
@@ -173,14 +178,15 @@ export function MobileAskQuestionCard({ request, onSubmit }: Props) {
       </div>
 
       {questions.length > 1 && (
-        <button
-          type="button"
-          disabled={!allAnswered}
-          onClick={() => onSubmit(buildAnswers(selections))}
-          className="mt-3 w-full min-h-12 rounded-xl bg-violet-500/20 border border-violet-500/40 text-violet-100 font-semibold active:bg-violet-500/30 disabled:opacity-40 transition-colors"
+        <Button
+          variant="ghost"
+          fullWidth
+          isDisabled={!allAnswered}
+          onPress={() => onSubmit(buildAnswers(selections))}
+          className="mt-3 h-auto min-h-12 rounded-xl bg-violet-500/20 border border-violet-500/40 text-violet-100 font-semibold active:bg-violet-500/30 disabled:opacity-40 transition-colors"
         >
           Submit answers
-        </button>
+        </Button>
       )}
     </div>
   );

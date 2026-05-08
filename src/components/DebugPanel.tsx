@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown, ChevronRight, Play, Pause, CornerDownRight, ArrowDown, ArrowUp } from 'lucide-react';
 import {
+  Button,
+  TextField, Input,
+  Checkbox, CheckboxControl, CheckboxIndicator,
+} from '@heroui/react';
+import {
   CdpClient,
   fetchDebugTargets,
   requestDebugConnect,
@@ -106,10 +111,10 @@ function ScopeSection({ scope, cdp }: { scope: CallFrame['scopeChain'][0]; cdp: 
 
   return (
     <div>
-      <button className="flex items-center gap-1 w-full text-left px-2 py-1 text-[11px] text-zinc-400 hover:bg-surface-light uppercase tracking-wider" onClick={toggle}>
+      <Button variant="ghost" fullWidth className="flex items-center gap-1 justify-start text-left px-2 py-1 h-auto rounded-none text-[11px] text-zinc-400 hover:bg-surface-light uppercase tracking-wider" onPress={toggle}>
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         {label}{scope.name ? ` (${scope.name})` : ''}
-      </button>
+      </Button>
       {expanded && properties?.map(prop => (
         prop.value ? (
           <VariableNode key={prop.name} name={prop.name} value={prop.value} cdp={cdp} depth={1} />
@@ -239,7 +244,9 @@ export function DebugPanel({ serverUrl, onNavigate, onClose, breakpoints, onTogg
           }`} />
           <span className="text-zinc-500 text-[11px]">{state}</span>
         </div>
-        <button className="text-zinc-500 hover:text-zinc-300 text-[14px] leading-none" onClick={onClose}>&times;</button>
+        <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close">
+          <span className="text-[14px] leading-none">&times;</span>
+        </Button>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -247,60 +254,55 @@ export function DebugPanel({ serverUrl, onNavigate, onClose, breakpoints, onTogg
         {!connected && (
           <div className="p-3 space-y-2 border-b border-border">
             <div className="flex items-center gap-2">
-              <input
-                value={host} onChange={e => setHost(e.target.value)}
-                className="flex-1 bg-surface-light border border-border rounded px-2 py-1 text-[12px] text-zinc-200 outline-none focus:border-blue-500"
-                placeholder="Host"
-              />
+              <TextField value={host} onChange={setHost} aria-label="Host" className="flex-1">
+                <Input placeholder="Host" className="text-[12px]" />
+              </TextField>
               <span className="text-zinc-600">:</span>
-              <input
-                value={port} onChange={e => setPort(e.target.value)}
-                className="w-16 bg-surface-light border border-border rounded px-2 py-1 text-[12px] text-zinc-200 outline-none focus:border-blue-500"
-                placeholder="Port"
-              />
-              <button
-                className="px-2 py-1 bg-surface-light border border-border rounded text-zinc-300 hover:bg-zinc-700 transition-colors"
-                onClick={discover}
-              >
-                Discover
-              </button>
+              <TextField value={port} onChange={setPort} aria-label="Port" className="w-16">
+                <Input placeholder="Port" className="text-[12px]" />
+              </TextField>
+              <Button size="sm" variant="secondary" onPress={discover}>Discover</Button>
             </div>
             {targets.length > 0 && (
               <div className="space-y-1">
                 {targets.map(t => (
-                  <button
+                  <Button
                     key={t.id}
-                    className={`w-full text-left px-2 py-1.5 rounded text-[11px] transition-colors ${
+                    variant="ghost"
+                    fullWidth
+                    className={`text-left px-2 py-1.5 h-auto rounded text-[11px] flex flex-col items-stretch transition-colors ${
                       selectedTarget === t.id ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : 'text-zinc-400 hover:bg-surface-light border border-transparent'
                     }`}
-                    onClick={() => setSelectedTarget(t.id)}
+                    onPress={() => setSelectedTarget(t.id)}
                   >
                     <div className="truncate">{t.title || t.url}</div>
                     <div className="text-zinc-600 truncate text-[10px]">{t.url}</div>
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}
-            <button
-              className="w-full px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors disabled:opacity-50"
-              onClick={connect}
-              disabled={state === 'connecting'}
+            <Button
+              fullWidth
+              size="sm"
+              className="bg-blue-600 hover:bg-blue-500 text-white"
+              onPress={connect}
+              isDisabled={state === 'connecting'}
             >
               {state === 'connecting' ? 'Connecting...' : 'Connect'}
-            </button>
+            </Button>
           </div>
         )}
 
         {/* Step Controls */}
         {connected && (
           <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-[#1a1a1a]">
-            <button className="p-1 rounded hover:bg-surface-light text-green-400 disabled:text-zinc-600" onClick={() => step('resume')} disabled={!cdpRef.current?.paused} title="Continue (F5)"><Play size={14} /></button>
-            <button className="p-1 rounded hover:bg-surface-light text-amber-400 disabled:text-zinc-600" onClick={() => step('pause')} disabled={cdpRef.current?.paused} title="Pause (F6)"><Pause size={14} /></button>
-            <button className="p-1 rounded hover:bg-surface-light text-zinc-300 disabled:text-zinc-600" onClick={() => step('stepOver')} disabled={!cdpRef.current?.paused} title="Step Over (F10)"><CornerDownRight size={14} /></button>
-            <button className="p-1 rounded hover:bg-surface-light text-zinc-300 disabled:text-zinc-600" onClick={() => step('stepInto')} disabled={!cdpRef.current?.paused} title="Step Into (F11)"><ArrowDown size={14} /></button>
-            <button className="p-1 rounded hover:bg-surface-light text-zinc-300 disabled:text-zinc-600" onClick={() => step('stepOut')} disabled={!cdpRef.current?.paused} title="Step Out (Shift+F11)"><ArrowUp size={14} /></button>
+            <Button isIconOnly size="sm" variant="ghost" className="p-1 h-auto rounded hover:bg-surface-light text-green-400 disabled:text-zinc-600" onPress={() => step('resume')} isDisabled={!cdpRef.current?.paused} aria-label="Continue (F5)"><Play size={14} /></Button>
+            <Button isIconOnly size="sm" variant="ghost" className="p-1 h-auto rounded hover:bg-surface-light text-amber-400 disabled:text-zinc-600" onPress={() => step('pause')} isDisabled={cdpRef.current?.paused} aria-label="Pause (F6)"><Pause size={14} /></Button>
+            <Button isIconOnly size="sm" variant="ghost" className="p-1 h-auto rounded hover:bg-surface-light text-zinc-300 disabled:text-zinc-600" onPress={() => step('stepOver')} isDisabled={!cdpRef.current?.paused} aria-label="Step Over (F10)"><CornerDownRight size={14} /></Button>
+            <Button isIconOnly size="sm" variant="ghost" className="p-1 h-auto rounded hover:bg-surface-light text-zinc-300 disabled:text-zinc-600" onPress={() => step('stepInto')} isDisabled={!cdpRef.current?.paused} aria-label="Step Into (F11)"><ArrowDown size={14} /></Button>
+            <Button isIconOnly size="sm" variant="ghost" className="p-1 h-auto rounded hover:bg-surface-light text-zinc-300 disabled:text-zinc-600" onPress={() => step('stepOut')} isDisabled={!cdpRef.current?.paused} aria-label="Step Out (Shift+F11)"><ArrowUp size={14} /></Button>
             <div className="flex-1" />
-            <button className="px-2 py-0.5 text-red-400 hover:bg-red-400/10 rounded text-[11px]" onClick={disconnect}>Disconnect</button>
+            <Button size="sm" variant="ghost" className="px-2 py-0.5 h-auto text-red-400 hover:bg-red-400/10 rounded text-[11px]" onPress={disconnect}>Disconnect</Button>
           </div>
         )}
 
@@ -315,15 +317,17 @@ export function DebugPanel({ serverUrl, onNavigate, onClose, breakpoints, onTogg
                 const script = cdpRef.current?.getScriptById(frame.location.scriptId);
                 const fileName = (script?.url || frame.url || '').split('/').pop() || 'anonymous';
                 return (
-                  <button
+                  <Button
                     key={i}
-                    className={`w-full text-left px-3 py-1 flex items-center gap-2 hover:bg-surface-light transition-colors ${i === selectedFrame ? 'bg-surface-light text-zinc-200' : 'text-zinc-400'}`}
-                    onClick={() => selectFrame(i)}
+                    variant="ghost"
+                    fullWidth
+                    className={`text-left justify-start px-3 py-1 h-auto rounded-none flex items-center gap-2 hover:bg-surface-light transition-colors ${i === selectedFrame ? 'bg-surface-light text-zinc-200' : 'text-zinc-400'}`}
+                    onPress={() => selectFrame(i)}
                   >
                     {i === 0 && <ChevronRight size={12} className="text-amber-400 shrink-0" />}
                     <span className="truncate">{frame.functionName || '(anonymous)'}</span>
                     <span className="text-zinc-600 shrink-0 ml-auto">{fileName}:{frame.location.lineNumber + 1}</span>
-                  </button>
+                  </Button>
                 );
               })}
             </div>
@@ -354,19 +358,21 @@ export function DebugPanel({ serverUrl, onNavigate, onClose, breakpoints, onTogg
                 const fileName = bp.file.split('/').pop() || bp.file;
                 return (
                   <div key={i} className="flex items-center gap-2 px-3 py-0.5 hover:bg-surface-light text-zinc-400">
-                    <input
-                      type="checkbox"
-                      checked={bp.enabled}
+                    <Checkbox
+                      isSelected={bp.enabled}
                       onChange={() => onToggleBreakpoint(bp.file, bp.line)}
-                      className="accent-red-500"
-                    />
-                    <button
-                      className="flex-1 text-left truncate hover:text-zinc-200 transition-colors"
-                      onClick={() => onNavigate(bp.file, bp.line)}
+                      aria-label={`Toggle breakpoint ${fileName}:${bp.line}`}
+                    >
+                      <CheckboxControl><CheckboxIndicator /></CheckboxControl>
+                    </Checkbox>
+                    <Button
+                      variant="ghost"
+                      className="flex-1 text-left justify-start px-0 py-0 h-auto rounded-none truncate hover:text-zinc-200 transition-colors"
+                      onPress={() => onNavigate(bp.file, bp.line)}
                     >
                       <span className="text-zinc-300">{fileName}</span>
                       <span className="text-zinc-600">:{bp.line}</span>
-                    </button>
+                    </Button>
                   </div>
                 );
               })}

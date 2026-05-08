@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Button } from '@heroui/react';
 import { Markdown } from './Markdown';
 import { resolveServerUrl } from '../lib/claude-client';
 
@@ -120,30 +121,34 @@ export function PRDetail({ pr, cwd, onClose }: { pr: PRInfo; cwd?: string; onClo
           {loading && <span className="w-3 h-3 border border-zinc-600 border-t-zinc-300 rounded-full animate-spin shrink-0" />}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button className="text-zinc-500 hover:text-zinc-200 transition-colors px-1" onClick={fetchPR} disabled={loading} title="Reload">
+          <Button isIconOnly size="sm" variant="ghost" onPress={fetchPR} isDisabled={loading} aria-label="Reload">
             <svg className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M21 12a9 9 0 1 1-3.36-7H14" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M21 3v5h-5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-          </button>
-          <button className="text-zinc-500 hover:text-zinc-200 text-sm px-1" onClick={onClose}>×</button>
+          </Button>
+          <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close">
+            <span className="text-sm">×</span>
+          </Button>
         </div>
       </div>
 
       {/* Tabs */}
       <div className="flex border-b border-border px-3 shrink-0">
         {(['detail', 'commits', 'reviews'] as const).map(tab => (
-          <button
+          <Button
             key={tab}
-            className={`text-[11px] px-3 py-1.5 border-b-2 transition-colors capitalize ${
+            size="sm"
+            variant="ghost"
+            className={`text-[11px] px-3 py-1.5 h-auto rounded-none border-b-2 transition-colors capitalize ${
               activeTab === tab ? 'border-blue-500 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'
             }`}
-            onClick={() => setActiveTab(tab)}
+            onPress={() => setActiveTab(tab)}
           >
             {tab}
             {tab === 'commits' && detail ? ` (${detail.commits?.length || 0})` : ''}
             {tab === 'reviews' && detail ? ` (${(detail.reviews?.length || 0) + (detail.comments?.length || 0)})` : ''}
-          </button>
+          </Button>
         ))}
       </div>
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Download, Share, X } from 'lucide-react';
+import { Button } from '@heroui/react';
 
 const DISMISSED_KEY = 'pwaInstallDismissedAt';
 // Re-prompt after 14 days if the user dismissed.
@@ -140,22 +141,24 @@ export function PwaInstallBanner() {
         )}
       </div>
       {deferredPrompt && (
-        <button
-          type="button"
-          onClick={onInstall}
-          className="shrink-0 px-3 min-h-9 rounded-full bg-indigo-500 text-white text-[12px] font-semibold active:bg-indigo-600"
+        <Button
+          variant="ghost"
+          onPress={onInstall}
+          className="shrink-0 h-auto min-w-0 px-3 min-h-9 rounded-full bg-indigo-500 text-white text-[12px] font-semibold active:bg-indigo-600"
         >
           Install
-        </button>
+        </Button>
       )}
-      <button
-        type="button"
-        onClick={onDismiss}
+      <Button
+        isIconOnly
+        size="sm"
+        variant="ghost"
+        onPress={onDismiss}
         aria-label="Dismiss install prompt"
-        className="shrink-0 w-8 h-8 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center"
+        className="shrink-0 w-8 h-8 min-w-0 rounded-full text-zinc-400 active:text-zinc-200 active:bg-white/10 flex items-center justify-center"
       >
         <X size={16} />
-      </button>
+      </Button>
     </div>
   );
 }

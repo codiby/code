@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import {
+  Button,
+  TextField, Input,
+  Checkbox, CheckboxControl, CheckboxIndicator, CheckboxContent,
+  Autocomplete, AutocompleteTrigger, AutocompleteValue, AutocompleteIndicator,
+  AutocompletePopover, AutocompleteFilter,
+  SearchField, SearchFieldInput,
+  ListBox, ListBoxItem,
+  ToggleButtonGroup, ToggleButton,
+} from '@heroui/react';
 import type { ClaudeClient } from '../../lib/claude-client';
 
 const PM_OPTIONS = ['bun', 'npm', 'yarn', 'pnpm'] as const;
@@ -44,7 +53,6 @@ export function MobileWorktreeModal({
   const [sourceBranch, setSourceBranch] = useState('');
   const [pullSource, setPullSource] = useState(true);
   const [branchesInfo, setBranchesInfo] = useState<{ current: string; local: string[]; remote: string[] } | null>(null);
-  const [showBranchPicker, setShowBranchPicker] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [status, setStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [resultPath, setResultPath] = useState<string | null>(null);
@@ -66,7 +74,6 @@ export function MobileWorktreeModal({
         ? (detectedPackageManager as PackageManager)
         : 'npm',
     );
-    setShowBranchPicker(false);
   }, [open, hasEnv, detectedPackageManager]);
 
   // Load the repo's branches once the modal opens so the user can pick a
@@ -162,21 +169,25 @@ export function MobileWorktreeModal({
     >
       {/* Header — Cancel / Title / Use-it (only after success) */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-        <button
-          onClick={onClose}
-          disabled={!canClose}
-          className="text-[13px] text-zinc-400 active:text-zinc-200 disabled:opacity-40"
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={onClose}
+          isDisabled={!canClose}
+          className="text-[13px] text-zinc-400 active:text-zinc-200 disabled:opacity-40 h-auto px-0 min-w-0"
         >
           {status === 'done' ? 'Close' : 'Cancel'}
-        </button>
+        </Button>
         <span className="text-[13px] font-semibold text-zinc-100">New Worktree</span>
-        <button
-          onClick={() => { if (resultPath) { onCreated(resultPath); onClose(); } }}
-          disabled={status !== 'done' || !resultPath}
-          className="text-[13px] font-semibold text-indigo-300 active:text-indigo-200 disabled:opacity-30"
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={() => { if (resultPath) { onCreated(resultPath); onClose(); } }}
+          isDisabled={status !== 'done' || !resultPath}
+          className="text-[13px] font-semibold text-indigo-300 active:text-indigo-200 disabled:opacity-30 h-auto px-0 min-w-0"
         >
           Use it
-        </button>
+        </Button>
       </div>
 
       {/* Repo info */}
@@ -188,134 +199,136 @@ export function MobileWorktreeModal({
       <div className="px-4 py-3 space-y-3 shrink-0 border-b border-border">
         <div>
           <label className="block text-[11px] text-zinc-500 mb-1 font-semibold uppercase tracking-wider">New Branch</label>
-          <input
-            type="text"
-            placeholder="new-branch-name"
+          <TextField
             value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            disabled={status === 'running'}
-            autoCapitalize="off"
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck={false}
-            className="w-full px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-[14px] text-zinc-100 placeholder:text-zinc-600 font-mono focus:outline-none focus:border-indigo-500/50 disabled:opacity-50"
-          />
+            onChange={setBranch}
+            isDisabled={status === 'running'}
+            aria-label="New branch name"
+          >
+            <Input
+              placeholder="new-branch-name"
+              className="font-mono text-[14px] py-2.5"
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </TextField>
         </div>
 
         <div>
           <label className="block text-[11px] text-zinc-500 mb-1 font-semibold uppercase tracking-wider">Source Branch</label>
-          <div className="relative">
-            <button
-              onClick={() => setShowBranchPicker((v) => !v)}
-              disabled={status === 'running' || !branchesInfo}
-              className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-[14px] font-mono text-zinc-100 active:bg-white/10 disabled:opacity-50"
-            >
-              <span className="truncate">
-                {sourceBranch || (branchesInfo ? 'HEAD' : 'Loading…')}
+          <Autocomplete
+            aria-label="Source branch"
+            selectedKey={sourceBranch || null}
+            onSelectionChange={(key) => setSourceBranch((key as string) || '')}
+            isDisabled={status === 'running' || !branchesInfo}
+          >
+            <AutocompleteTrigger className="w-full">
+              <AutocompleteValue className="font-mono text-[14px] truncate" />
+              <AutocompleteIndicator />
+            </AutocompleteTrigger>
+            <AutocompletePopover>
+              <AutocompleteFilter filter={(textValue, inputValue) => textValue.toLowerCase().includes(inputValue.toLowerCase())}>
+                <SearchField aria-label="Filter branches" autoFocus>
+                  <SearchFieldInput placeholder="Search branches…" className="font-mono text-[13px] text-zinc-100" />
+                </SearchField>
+                <ListBox>
+                  {availableBranches.map((b) => (
+                    <ListBoxItem key={b} id={b} textValue={b}>
+                      <span className={`w-1.5 h-1.5 rounded-full mr-2 inline-block align-middle ${b === branchesInfo?.current ? 'bg-green-400' : 'bg-zinc-600'}`} />
+                      <span className="font-mono">{b}</span>
+                      {b === branchesInfo?.current && <span className="text-[10px] text-green-400 ml-1.5">current</span>}
+                    </ListBoxItem>
+                  ))}
+                </ListBox>
+              </AutocompleteFilter>
+            </AutocompletePopover>
+          </Autocomplete>
+          <Checkbox
+            isSelected={pullSource}
+            onChange={setPullSource}
+            isDisabled={status === 'running' || !sourceBranch}
+            className="mt-2"
+          >
+            <CheckboxControl><CheckboxIndicator /></CheckboxControl>
+            <CheckboxContent>
+              <span className="text-[12px] text-zinc-300">
+                Pull <code className="text-zinc-400 font-mono">origin/{sourceBranch || '…'}</code> first
               </span>
-              <ChevronDown size={14} className={`shrink-0 text-zinc-500 transition-transform ${showBranchPicker ? 'rotate-180' : ''}`} />
-            </button>
-            {showBranchPicker && availableBranches.length > 0 && (
-              <div className="absolute left-0 right-0 top-full mt-1 max-h-60 overflow-y-auto rounded-lg bg-zinc-900 border border-white/10 shadow-2xl z-10">
-                {availableBranches.map((b) => {
-                  const isCurrent = b === branchesInfo?.current;
-                  const isSelected = b === sourceBranch;
-                  return (
-                    <button
-                      key={b}
-                      onClick={() => { setSourceBranch(b); setShowBranchPicker(false); }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] font-mono ${
-                        isSelected ? 'bg-indigo-500/20 text-indigo-100' : 'text-zinc-300 active:bg-white/5'
-                      }`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isCurrent ? 'bg-green-400' : 'bg-zinc-600'}`} />
-                      <span className="truncate flex-1">{b}</span>
-                      {isCurrent && <span className="text-[10px] text-green-400 shrink-0">current</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <label className="flex items-center gap-2 mt-2 text-[12px] text-zinc-300">
-            <input
-              type="checkbox"
-              checked={pullSource}
-              onChange={(e) => setPullSource(e.target.checked)}
-              disabled={status === 'running' || !sourceBranch}
-              className="w-4 h-4 accent-indigo-500"
-            />
-            <span>
-              Pull <code className="text-zinc-400 font-mono">origin/{sourceBranch || '…'}</code> first
-            </span>
-          </label>
+            </CheckboxContent>
+          </Checkbox>
         </div>
 
         <div>
           <label className="block text-[11px] text-zinc-500 mb-1.5 font-semibold uppercase tracking-wider">node_modules</label>
-          <div className="flex gap-1.5">
-            {(['install', 'copy', 'link', 'none'] as const).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setDepsMode(mode)}
-                disabled={status === 'running'}
-                className={`flex-1 min-h-9 rounded-md text-[12px] transition-colors ${
-                  depsMode === mode
-                    ? 'bg-indigo-500/20 border border-indigo-500/40 text-indigo-100'
-                    : 'bg-white/5 border border-white/10 text-zinc-400 active:bg-white/10'
-                } disabled:opacity-50`}
-              >
-                {mode === 'install' ? 'Install' : mode === 'copy' ? 'Copy' : mode === 'link' ? 'Link' : 'Skip'}
-              </button>
-            ))}
-          </div>
+          <ToggleButtonGroup
+            aria-label="node_modules strategy"
+            selectionMode="single"
+            disallowEmptySelection
+            selectedKeys={new Set([depsMode])}
+            onSelectionChange={(keys) => {
+              const k = Array.from(keys as Set<string>)[0];
+              if (k) setDepsMode(k as DepsMode);
+            }}
+            isDisabled={status === 'running'}
+            fullWidth
+          >
+            <ToggleButton id="install">Install</ToggleButton>
+            <ToggleButton id="copy">Copy</ToggleButton>
+            <ToggleButton id="link">Link</ToggleButton>
+            <ToggleButton id="none">Skip</ToggleButton>
+          </ToggleButtonGroup>
         </div>
 
         {depsMode === 'install' && (
           <div>
             <label className="block text-[11px] text-zinc-500 mb-1.5 font-semibold uppercase tracking-wider">Package Manager</label>
-            <div className="flex gap-1.5">
+            <ToggleButtonGroup
+              aria-label="Package manager"
+              selectionMode="single"
+              disallowEmptySelection
+              selectedKeys={new Set([packageManager])}
+              onSelectionChange={(keys) => {
+                const k = Array.from(keys as Set<string>)[0];
+                if (k) setPackageManager(k as PackageManager);
+              }}
+              isDisabled={status === 'running'}
+              fullWidth
+            >
               {PM_OPTIONS.map((pm) => (
-                <button
-                  key={pm}
-                  onClick={() => setPackageManager(pm)}
-                  disabled={status === 'running'}
-                  className={`flex-1 min-h-9 rounded-md text-[12px] font-mono transition-colors ${
-                    packageManager === pm
-                      ? 'bg-indigo-500/20 border border-indigo-500/40 text-indigo-100'
-                      : 'bg-white/5 border border-white/10 text-zinc-400 active:bg-white/10'
-                  } disabled:opacity-50`}
-                >
-                  {pm}
+                <ToggleButton key={pm} id={pm}>
+                  <span className="font-mono">{pm}</span>
                   {pm === detectedPackageManager && <span className="text-[9px] opacity-60 ml-1">•</span>}
-                </button>
+                </ToggleButton>
               ))}
-            </div>
+            </ToggleButtonGroup>
           </div>
         )}
 
-        <label className="flex items-center gap-2 text-[13px] text-zinc-300">
-          <input
-            type="checkbox"
-            checked={copyEnv}
-            onChange={(e) => setCopyEnv(e.target.checked)}
-            disabled={status === 'running' || !hasEnv}
-            className="w-4 h-4 accent-indigo-500"
-          />
-          <span>
-            Copy <code className="text-zinc-400 font-mono">.env</code>
-            {!hasEnv && <span className="text-zinc-600"> (repo has none)</span>}
-          </span>
-        </label>
+        <Checkbox
+          isSelected={copyEnv}
+          onChange={setCopyEnv}
+          isDisabled={status === 'running' || !hasEnv}
+        >
+          <CheckboxControl><CheckboxIndicator /></CheckboxControl>
+          <CheckboxContent>
+            <span className="text-[13px] text-zinc-300">
+              Copy <code className="text-zinc-400 font-mono">.env</code>
+              {!hasEnv && <span className="text-zinc-600"> (repo has none)</span>}
+            </span>
+          </CheckboxContent>
+        </Checkbox>
 
         {status !== 'running' && status !== 'done' && (
-          <button
-            onClick={start}
-            disabled={!branch.trim()}
-            className="w-full min-h-11 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-100 text-[14px] font-semibold active:bg-indigo-500/30 disabled:opacity-40"
+          <Button
+            fullWidth
+            onPress={start}
+            isDisabled={!branch.trim()}
+            className="min-h-11 h-auto rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-100 text-[14px] font-semibold active:bg-indigo-500/30"
           >
             {status === 'error' ? 'Retry' : 'Create worktree'}
-          </button>
+          </Button>
         )}
       </div>
 

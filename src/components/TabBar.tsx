@@ -6,6 +6,7 @@ import {
   ChevronDown, ChevronRight, PanelLeft, Search, Archive, X, Pin,
   type LucideIcon,
 } from 'lucide-react';
+import { Button, TextField, Input } from '@heroui/react';
 import type { SessionInfo, ConnectionStatus } from '../lib/claude-client';
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 
@@ -139,9 +140,14 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
     >
       <span className={`w-2 h-2 rounded-full shrink-0 ${getDotClass(connStatus, isStreaming, !!turnComplete, wasInterrupted)}`} />
       {editingId === session.id ? (
-        <input ref={editRef} value={editName} onChange={e => setEditName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingId(null); }}
-          onBlur={commitRename} className="bg-transparent border-none outline-none text-[12px] text-zinc-200 w-full min-w-0" />
+        <TextField value={editName} onChange={setEditName} aria-label="Rename tab" className="w-full min-w-0">
+          <Input
+            ref={editRef}
+            onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingId(null); }}
+            onBlur={commitRename}
+            className="bg-transparent border-0 px-0 py-0 text-[12px] text-zinc-200"
+          />
+        </TextField>
       ) : (
         <span className="truncate flex-1" onDoubleClick={e => { e.stopPropagation(); startRename(session); }}>{session.name}</span>
       )}
@@ -164,9 +170,22 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
           {ageLabel}
         </span>
       )}
-      <button className={`shrink-0 w-4 h-4 items-center justify-center rounded-sm leading-none transition-colors ${
-        isActive ? 'flex text-zinc-400 hover:text-zinc-200 hover:bg-surface-light' : 'hidden group-hover:flex text-zinc-600 hover:text-zinc-300 hover:bg-surface-light'
-      }`} onClick={e => { e.stopPropagation(); onClose(session.id); }} onPointerDown={e => e.stopPropagation()} title="Close (keeps history)"><X size={12} strokeWidth={2} /></button>
+      <span onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} className={`shrink-0 ${
+        isActive ? 'flex' : 'hidden group-hover:flex'
+      }`}>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          onPress={() => onClose(session.id)}
+          aria-label="Close (keeps history)"
+          className={`w-4 h-4 min-w-0 p-0 items-center justify-center rounded-sm leading-none transition-colors ${
+            isActive ? 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light' : 'text-zinc-600 hover:text-zinc-300 hover:bg-surface-light'
+          }`}
+        >
+          <X size={12} strokeWidth={2} />
+        </Button>
+      </span>
       {hasPermission && !isActive && (
         <span className="absolute -top-0.5 -right-0.5 flex h-3 w-3">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
@@ -226,11 +245,16 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivi
         );
       })()}
       {editing ? (
-        <input ref={inputRef} value={name} onChange={e => setName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { onRename(name); setEditing(false); } if (e.key === 'Escape') setEditing(false); }}
-          onBlur={() => { onRename(name); setEditing(false); }}
-          onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}
-          className="bg-transparent border-none outline-none text-[12px] text-zinc-200 w-16 min-w-0" />
+        <TextField value={name} onChange={setName} aria-label="Group name" className="w-16 min-w-0">
+          <Input
+            ref={inputRef}
+            onKeyDown={e => { if (e.key === 'Enter') { onRename(name); setEditing(false); } if (e.key === 'Escape') setEditing(false); }}
+            onBlur={() => { onRename(name); setEditing(false); }}
+            onClick={e => e.stopPropagation()}
+            onPointerDown={e => e.stopPropagation()}
+            className="bg-transparent border-0 px-0 py-0 text-[12px] text-zinc-200"
+          />
+        </TextField>
       ) : (
         <span className="text-[12px] truncate flex-1" onDoubleClick={e => { e.stopPropagation(); setEditing(true); setName(group.name); }}>
           {group.name}
@@ -238,20 +262,28 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivi
       )}
       <span className="text-[11px] text-zinc-600">{memberCount}</span>
       {/* Dropdown arrow */}
-      <button ref={btnRef}
-        className="shrink-0 w-4 h-4 flex items-center justify-center rounded-sm leading-none text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-opacity opacity-0 group-hover:opacity-100"
-        onClick={e => {
-          e.stopPropagation();
-          if (btnRef.current) {
-            const r = btnRef.current.getBoundingClientRect();
-            onMenuOpen(r.left, r.bottom + 4);
-          }
-        }}
+      <span
+        onClick={e => e.stopPropagation()}
         onPointerDown={e => e.stopPropagation()}
-        title="Group options"
+        className="shrink-0"
       >
-        <ChevronDown size={12} />
-      </button>
+        <Button
+          ref={btnRef}
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label="Group options"
+          className="w-4 h-4 min-w-0 p-0 flex items-center justify-center rounded-sm leading-none text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-opacity opacity-0 group-hover:opacity-100"
+          onPress={() => {
+            if (btnRef.current) {
+              const r = btnRef.current.getBoundingClientRect();
+              onMenuOpen(r.left, r.bottom + 4);
+            }
+          }}
+        >
+          <ChevronDown size={12} />
+        </Button>
+      </span>
     </div>
   );
 }
@@ -275,16 +307,19 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
   const renderIconButton = (key: string, Icon: LucideIcon) => {
     const isActive = currentIcon === key;
     return (
-      <button
+      <Button
         key={key}
-        className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
+        isIconOnly
+        size="sm"
+        variant="ghost"
+        className={`w-6 h-6 min-w-0 p-0 flex items-center justify-center rounded-md transition-colors ${
           isActive ? `bg-surface-light ring-1 ring-white/20 ${colorCls}` : 'text-zinc-500 hover:text-zinc-200 hover:bg-surface-light'
         }`}
-        onClick={() => onSelect(key)}
-        title={key}
+        onPress={() => onSelect(key)}
+        aria-label={key}
       >
         <Icon size={12} strokeWidth={2.25} />
-      </button>
+      </Button>
     );
   };
 
@@ -293,13 +328,15 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
       <div className="text-[10px] text-zinc-600 mb-1 flex items-center justify-between">
         <span>Icon</span>
         {currentIcon && (
-          <button
-            className="text-[10px] text-zinc-500 hover:text-zinc-300"
-            onClick={onClear}
-            title="Clear icon (use colored dot)"
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-auto px-1 py-0 min-w-0 text-[10px] text-zinc-500 hover:text-zinc-300"
+            onPress={onClear}
+            aria-label="Clear icon (use colored dot)"
           >
             Clear
-          </button>
+          </Button>
         )}
       </div>
 
@@ -308,29 +345,33 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
           <div className="grid grid-cols-6 gap-1">
             {Object.entries(ICON_MAP_QUICK).map(([k, I]) => renderIconButton(k, I))}
           </div>
-          <button
-            type="button"
-            onClick={() => setExpanded(true)}
-            className="w-full mt-1.5 flex items-center justify-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 py-1 rounded hover:bg-surface-light transition-colors"
+          <Button
+            variant="ghost"
+            fullWidth
+            onPress={() => setExpanded(true)}
+            className="mt-1.5 flex items-center justify-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 py-1 h-auto rounded hover:bg-surface-light transition-colors"
           >
             <Search size={10} />
             Browse all icons…
-          </button>
+          </Button>
         </>
       ) : (
         <>
           <div className="relative mb-1.5">
-            <Search size={10} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
-            <input
-              autoFocus
-              type="text"
+            <Search size={10} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600 z-10" />
+            <TextField
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search icons…"
-              className="w-full pl-6 pr-2 py-1 text-[11px] bg-base border border-border rounded outline-none focus:border-border-light text-zinc-200 placeholder:text-zinc-600"
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-            />
+              onChange={setQuery}
+              aria-label="Search icons"
+              autoFocus
+            >
+              <Input
+                placeholder="Search icons…"
+                className="pl-6 pr-2 py-1 text-[11px]"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              />
+            </TextField>
           </div>
           <div className="grid grid-cols-6 gap-1 max-h-48 overflow-y-auto">
             {filtered.map(([k, I]) => renderIconButton(k, I))}
@@ -340,13 +381,14 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
               </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => { setExpanded(false); setQuery(''); }}
-            className="w-full mt-1.5 text-[10px] text-zinc-500 hover:text-zinc-300 py-1 rounded hover:bg-surface-light transition-colors"
+          <Button
+            variant="ghost"
+            fullWidth
+            onPress={() => { setExpanded(false); setQuery(''); }}
+            className="mt-1.5 text-[10px] text-zinc-500 hover:text-zinc-300 py-1 h-auto rounded hover:bg-surface-light transition-colors"
           >
             ← Back to favorites
-          </button>
+          </Button>
         </>
       )}
     </div>
@@ -521,13 +563,16 @@ export const TabBar = memo(function TabBar(props: Props) {
   // the session bar instead of switching orientations. When collapsed the bar
   // shrinks to a thin strip showing only this button so users can re-expand.
   const toggleBtn = onToggleCollapsed ? (
-    <button
-      onClick={onToggleCollapsed}
-      title={collapsed ? 'Expand session bar' : 'Collapse session bar'}
-      className="shrink-0 flex items-center justify-center w-7 h-7 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface/60 transition-colors"
+    <Button
+      isIconOnly
+      size="sm"
+      variant="ghost"
+      onPress={onToggleCollapsed}
+      aria-label={collapsed ? 'Expand session bar' : 'Collapse session bar'}
+      className="shrink-0 w-7 h-7 min-w-0 p-0 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface/60 transition-colors"
     >
       <PanelLeft size={14} />
-    </button>
+    </Button>
   ) : null;
 
   // Collapsed: thin strip with toggle + new-session button. Tabs and resize
@@ -541,8 +586,8 @@ export const TabBar = memo(function TabBar(props: Props) {
       >
         <div className="px-1 pt-1">{toggleBtn}</div>
         <div className="px-1 pt-1 shrink-0" ref={menuRef}>
-          <button className="flex items-center justify-center w-full h-[26px] text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md text-lg leading-none transition-colors"
-            onClick={() => setShowMenu(m => !m)} title="Open session">+</button>
+          <Button variant="ghost" fullWidth className="flex items-center justify-center h-[26px] text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md text-lg leading-none transition-colors"
+            onPress={() => setShowMenu(m => !m)} aria-label="Open session">+</Button>
           {showMenu && (() => {
             const rect = menuRef.current?.getBoundingClientRect();
             return (
@@ -550,10 +595,10 @@ export const TabBar = memo(function TabBar(props: Props) {
                 <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
                 <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl w-[260px] py-1 overflow-y-auto max-h-80"
                   style={{ top: (rect?.bottom ?? 38) + 4, left: (rect?.right ?? 36) + 4 }}>
-                  <button className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-zinc-300 hover:bg-surface-light transition-colors"
-                    onClick={() => { setShowMenu(false); onNew(); }}>
+                  <Button variant="ghost" fullWidth className="flex items-center gap-2 justify-start px-3 py-2 h-auto rounded-none text-[12px] text-zinc-300 hover:bg-surface-light transition-colors"
+                    onPress={() => { setShowMenu(false); onNew(); }}>
                     <span className="text-zinc-500">+</span><span>New session</span>
-                  </button>
+                  </Button>
                   {closedSessions.length > 0 && (
                     <>
                       <div className="h-px bg-border mx-2 my-1" />
@@ -572,17 +617,18 @@ export const TabBar = memo(function TabBar(props: Props) {
                           <span className="truncate flex-1">{s.name}</span>
                           <span className="text-[10px] text-zinc-600 shrink-0 font-mono group-hover/arch:hidden">{s.cwd.split('/').pop()}</span>
                           {onArchiveSession && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onArchiveSession(s.id);
-                              }}
-                              className="hidden group-hover/arch:flex shrink-0 w-5 h-5 items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-surface transition-colors"
-                              title="Archive (hide from this list, keeps history)"
-                            >
-                              <Archive size={11} strokeWidth={2} />
-                            </button>
+                            <span onClick={(e) => e.stopPropagation()} className="hidden group-hover/arch:flex shrink-0">
+                              <Button
+                                isIconOnly
+                                size="sm"
+                                variant="ghost"
+                                onPress={() => onArchiveSession(s.id)}
+                                className="w-5 h-5 min-w-0 p-0 items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-surface transition-colors"
+                                aria-label="Archive (hide from this list, keeps history)"
+                              >
+                                <Archive size={11} strokeWidth={2} />
+                              </Button>
+                            </span>
                           )}
                         </div>
                       ))}
@@ -616,8 +662,8 @@ export const TabBar = memo(function TabBar(props: Props) {
       />
       {/* Toolbar row: new-session button on the left, collapse toggle on the right. */}
       <div className="shrink-0 flex items-center px-2 pt-1" ref={menuRef}>
-        <button className="flex items-center justify-center w-7 h-7 text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md text-lg leading-none transition-colors"
-          onClick={() => setShowMenu(m => !m)} title="Open session">+</button>
+        <Button isIconOnly size="sm" variant="ghost" className="flex items-center justify-center w-7 h-7 min-w-0 p-0 text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md text-lg leading-none transition-colors"
+          onPress={() => setShowMenu(m => !m)} aria-label="Open session">+</Button>
         {toggleBtn && <div className="ml-auto">{toggleBtn}</div>}
         {showMenu && (() => {
           const rect = menuRef.current?.getBoundingClientRect();
@@ -626,10 +672,10 @@ export const TabBar = memo(function TabBar(props: Props) {
             <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
             <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl w-[260px] py-1 overflow-y-auto max-h-80"
               style={{ top: (rect?.bottom ?? 38) + 4, left: rect?.left ?? 0 }}>
-              <button className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-zinc-300 hover:bg-surface-light transition-colors"
-                onClick={() => { setShowMenu(false); onNew(); }}>
+              <Button variant="ghost" fullWidth className="flex items-center gap-2 justify-start px-3 py-2 h-auto rounded-none text-[12px] text-zinc-300 hover:bg-surface-light transition-colors"
+                onPress={() => { setShowMenu(false); onNew(); }}>
                 <span className="text-zinc-500">+</span><span>New session</span>
-              </button>
+              </Button>
               {closedSessions.length > 0 && (
                 <>
                   <div className="h-px bg-border mx-2 my-1" />
@@ -648,17 +694,18 @@ export const TabBar = memo(function TabBar(props: Props) {
                       <span className="truncate flex-1">{s.name}</span>
                       <span className="text-[10px] text-zinc-600 shrink-0 font-mono group-hover/arch:hidden">{s.cwd.split('/').pop()}</span>
                       {onArchiveSession && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onArchiveSession(s.id);
-                          }}
-                          className="hidden group-hover/arch:flex shrink-0 w-5 h-5 items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-surface transition-colors"
-                          title="Archive (hide from this list, keeps history)"
-                        >
-                          <Archive size={11} strokeWidth={2} />
-                        </button>
+                        <span onClick={(e) => e.stopPropagation()} className="hidden group-hover/arch:flex shrink-0">
+                          <Button
+                            isIconOnly
+                            size="sm"
+                            variant="ghost"
+                            onPress={() => onArchiveSession(s.id)}
+                            className="w-5 h-5 min-w-0 p-0 items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-surface transition-colors"
+                            aria-label="Archive (hide from this list, keeps history)"
+                          >
+                            <Archive size={11} strokeWidth={2} />
+                          </Button>
+                        </span>
                       )}
                     </div>
                   ))}
@@ -722,31 +769,35 @@ export const TabBar = memo(function TabBar(props: Props) {
                   📁 {grpCwd.split('/').slice(-2).join('/') || grpCwd}
                 </div>
               )}
-              <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
-                onClick={() => { onToggleGroup(groupMenu.groupId); setGroupMenu(null); }}>
+              <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                onPress={() => { onToggleGroup(groupMenu.groupId); setGroupMenu(null); }}>
                 {expandedGroupIds.has(groupMenu.groupId) ? 'Collapse' : 'Expand'}
-              </button>
+              </Button>
               {onNewSessionInGroup && grpCwd && (
-                <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-200 hover:bg-surface-light flex items-center gap-2 transition-colors"
-                  onClick={() => { onNewSessionInGroup(groupMenu.groupId); setGroupMenu(null); }}>
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-200 hover:bg-surface-light flex items-center gap-2 transition-colors"
+                  onPress={() => { onNewSessionInGroup(groupMenu.groupId); setGroupMenu(null); }}>
                   <span className="text-zinc-500">+</span>
                   New session in group
-                </button>
+                </Button>
               )}
               {onNewSessionInWorktreeForGroup && grpCwd && (
-                <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-200 hover:bg-surface-light flex items-center gap-2 transition-colors"
-                  onClick={() => { onNewSessionInWorktreeForGroup(groupMenu.groupId); setGroupMenu(null); }}>
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-200 hover:bg-surface-light flex items-center gap-2 transition-colors"
+                  onPress={() => { onNewSessionInWorktreeForGroup(groupMenu.groupId); setGroupMenu(null); }}>
                   <span className="text-zinc-500">⌥</span>
                   New session in worktree…
-                </button>
+                </Button>
               )}
               <div className="px-3 py-1.5">
                 <div className="text-[10px] text-zinc-600 mb-1">Color</div>
                 <div className="flex items-center gap-1">
                   {Object.entries(COLOR_MAP).map(([key, c]) => (
-                    <button key={key}
-                      className={`w-4 h-4 rounded-full ${c.dot} transition-transform ${tabGroups[groupMenu.groupId]?.color === key ? 'ring-2 ring-white/40 scale-110' : 'hover:scale-110'}`}
-                      onClick={() => { onChangeGroupColor(groupMenu.groupId, key); setGroupMenu(null); }}
+                    <Button key={key}
+                      isIconOnly
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Color ${key}`}
+                      className={`w-4 h-4 min-w-0 p-0 rounded-full ${c.dot} transition-transform ${tabGroups[groupMenu.groupId]?.color === key ? 'ring-2 ring-white/40 scale-110' : 'hover:scale-110'}`}
+                      onPress={() => { onChangeGroupColor(groupMenu.groupId, key); setGroupMenu(null); }}
                     />
                   ))}
                 </div>
@@ -762,19 +813,19 @@ export const TabBar = memo(function TabBar(props: Props) {
                 </div>
               )}
               <div className="h-px bg-border mx-2 my-1" />
-              <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
-                onClick={() => {
+              <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                onPress={() => {
                   const members = sessions.filter(s => tabGroupMap[s.id] === groupMenu.groupId);
                   for (const m of members) props.onUngroupTab(m.id);
                   setGroupMenu(null);
                 }}>
                 Ungroup all
-              </button>
+              </Button>
               {onRequestDeleteGroup && (
-                <button className="w-full text-left px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
-                  onClick={() => { onRequestDeleteGroup(groupMenu.groupId); setGroupMenu(null); }}>
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
+                  onPress={() => { onRequestDeleteGroup(groupMenu.groupId); setGroupMenu(null); }}>
                   Delete group…
-                </button>
+                </Button>
               )}
             </div>
           </>
@@ -795,39 +846,39 @@ export const TabBar = memo(function TabBar(props: Props) {
               style={{ top: tabMenu.y, left: tabMenu.x }}>
 
               {/* Rename */}
-              <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
-                onClick={() => {
+              <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                onPress={() => {
                   const s = sessions.find(s => s.id === tabMenu.tabId);
                   if (s) startRename(s);
                   setTabMenu(null);
                 }}>
                 Rename
-              </button>
+              </Button>
 
               {/* Pin / Unpin (only for grouped tabs — pin order only matters
                   inside a group, where group members sort by recency). */}
               {isGrouped && onTogglePin && (
-                <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                  onClick={() => { onTogglePin(tabMenu.tabId); setTabMenu(null); }}>
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                  onPress={() => { onTogglePin(tabMenu.tabId); setTabMenu(null); }}>
                   <Pin size={11} strokeWidth={2.25} className={pinnedSessionIds?.has(tabMenu.tabId) ? 'fill-current text-zinc-300' : ''} />
                   {pinnedSessionIds?.has(tabMenu.tabId) ? 'Unpin from top' : 'Pin to top'}
-                </button>
+                </Button>
               )}
 
               {/* Close */}
-              <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
-                onClick={() => { onClose(tabMenu.tabId); setTabMenu(null); }}>
+              <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                onPress={() => { onClose(tabMenu.tabId); setTabMenu(null); }}>
                 Close
-              </button>
+              </Button>
 
               {/* Copy Session ID */}
               {(() => {
                 const s = sessions.find(s => s.id === tabMenu.tabId);
                 return s?.claude_session_id ? (
-                  <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
-                    onClick={() => { navigator.clipboard.writeText(s.claude_session_id!); setTabMenu(null); }}>
+                  <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                    onPress={() => { navigator.clipboard.writeText(s.claude_session_id!); setTabMenu(null); }}>
                     Copy Session ID
-                  </button>
+                  </Button>
                 ) : null;
               })()}
 
@@ -835,18 +886,18 @@ export const TabBar = memo(function TabBar(props: Props) {
 
               {/* Ungroup (if in a group) */}
               {isGrouped && (
-                <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
-                  onClick={() => { props.onUngroupTab(tabMenu.tabId); setTabMenu(null); }}>
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                  onPress={() => { props.onUngroupTab(tabMenu.tabId); setTabMenu(null); }}>
                   Remove from group
-                </button>
+                </Button>
               )}
 
               {/* Create group (solo) */}
               {!isGrouped && (
-                <button className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
-                  onClick={() => { onCreateGroup([tabMenu.tabId]); setTabMenu(null); }}>
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
+                  onPress={() => { onCreateGroup([tabMenu.tabId]); setTabMenu(null); }}>
                   Create group
-                </button>
+                </Button>
               )}
 
               {/* Create group with another tab */}
@@ -854,10 +905,10 @@ export const TabBar = memo(function TabBar(props: Props) {
                 <>
                   <div className="px-3 py-1 text-[10px] text-zinc-600 uppercase tracking-wider">Group with</div>
                   {otherUngroupedTabs.slice(0, 8).map(t => (
-                    <button key={t.id} className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors truncate"
-                      onClick={() => { onGroupTabs(tabMenu.tabId, t.id); setTabMenu(null); }}>
+                    <Button key={t.id} variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors truncate"
+                      onPress={() => { onGroupTabs(tabMenu.tabId, t.id); setTabMenu(null); }}>
                       {t.name}
-                    </button>
+                    </Button>
                   ))}
                 </>
               )}
@@ -870,11 +921,11 @@ export const TabBar = memo(function TabBar(props: Props) {
                   {existingGroups.map(g => {
                     const c = COLOR_MAP[g.color] || COLOR_MAP.blue!;
                     return (
-                      <button key={g.id} className="w-full text-left px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                        onClick={() => { onAddToGroup(tabMenu.tabId, g.id); setTabMenu(null); }}>
+                      <Button key={g.id} variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                        onPress={() => { onAddToGroup(tabMenu.tabId, g.id); setTabMenu(null); }}>
                         <span className={`w-2 h-2 rounded-full shrink-0 ${c.dot}`} />
                         {g.name}
-                      </button>
+                      </Button>
                     );
                   })}
                 </>
@@ -884,10 +935,10 @@ export const TabBar = memo(function TabBar(props: Props) {
               {onRequestDelete && tabMenu.tabId !== 'main-session' && (
                 <>
                   <div className="h-px bg-border mx-2 my-1" />
-                  <button className="w-full text-left px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
-                    onClick={() => { onRequestDelete(tabMenu.tabId); setTabMenu(null); }}>
+                  <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
+                    onPress={() => { onRequestDelete(tabMenu.tabId); setTabMenu(null); }}>
                     Delete…
-                  </button>
+                  </Button>
                 </>
               )}
             </div>

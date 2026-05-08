@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { Button } from '@heroui/react';
 import type { PermissionRequest } from '../../lib/claude-client';
 import { DiffView } from './DiffView';
 import { MobileDiffModal } from './MobileDiffModal';
@@ -85,15 +86,15 @@ export function PermissionCard({ request, onRespond }: Props) {
                 <span className="text-[11px] font-mono text-zinc-400 truncate" title={parts.filePath}>
                   {parts.filePath.split('/').pop()}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setDiffFullscreen(true)}
-                  className="shrink-0 flex items-center gap-1 text-[10px] text-zinc-500 active:text-zinc-200 px-1.5 py-0.5 rounded active:bg-white/5"
+                <Button
+                  variant="ghost"
+                  onPress={() => setDiffFullscreen(true)}
+                  className="h-auto min-w-0 shrink-0 flex items-center gap-1 text-[10px] text-zinc-500 active:text-zinc-200 px-1.5 py-0.5 rounded active:bg-white/5"
                   aria-label="Open diff fullscreen"
                 >
                   <Maximize2 size={11} />
                   Expand
-                </button>
+                </Button>
               </div>
             )}
             <div className="rounded-lg overflow-hidden border border-white/10">
@@ -129,22 +130,22 @@ export function PermissionCard({ request, onRespond }: Props) {
 
       {/* Actions */}
       <div className="flex border-t border-white/10">
-        <button
-          type="button"
-          onClick={() => onRespond(false)}
-          className="flex-1 min-h-11 flex items-center justify-center gap-1.5 text-[13px] font-medium text-red-300 active:bg-red-500/10 border-r border-white/10"
+        <Button
+          variant="ghost"
+          onPress={() => onRespond(false)}
+          className="flex-1 h-auto min-w-0 min-h-11 rounded-none flex items-center justify-center gap-1.5 text-[13px] font-medium text-red-300 active:bg-red-500/10 border-r border-white/10"
         >
           <X size={14} strokeWidth={2.5} />
           Deny
-        </button>
-        <button
-          type="button"
-          onClick={() => onRespond(true)}
-          className="flex-1 min-h-11 flex items-center justify-center gap-1.5 text-[13px] font-semibold text-emerald-300 active:bg-emerald-500/10"
+        </Button>
+        <Button
+          variant="ghost"
+          onPress={() => onRespond(true)}
+          className="flex-1 h-auto min-w-0 min-h-11 rounded-none flex items-center justify-center gap-1.5 text-[13px] font-semibold text-emerald-300 active:bg-emerald-500/10"
         >
           <Check size={14} strokeWidth={2.5} />
           Allow
-        </button>
+        </Button>
       </div>
     </div>
   );
