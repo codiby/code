@@ -3717,27 +3717,52 @@ export function ChatApp() {
                                 {!running && code !== undefined && (
                                   <span className="text-[9px] opacity-70 shrink-0">exit {code}</span>
                                 )}
-                                {running && clientRef.current && (
-                                  <span
-                                    role="button"
-                                    tabIndex={0}
-                                    className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 shrink-0 transition-opacity"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      clientRef.current!.killTerminal(activeId, sh.procId || sh.id);
-                                    }}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter' || e.key === ' ') {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        clientRef.current!.killTerminal(activeId, sh.procId || sh.id);
-                                      }
-                                    }}
-                                    title="Kill shell"
-                                  >
-                                    ×
-                                  </span>
-                                )}
+                                {clientRef.current && (() => {
+                                  const procId = sh.procId || sh.id;
+                                  const handleAction = () => {
+                                    if (running) {
+                                      clientRef.current!.killTerminal(activeId, procId);
+                                      return;
+                                    }
+                                    // Already exited — second click removes the bubble.
+                                    // Best-effort kill_process speeds up server-side cleanup
+                                    // (the registry auto-prunes 30 s after exit anyway).
+                                    try { clientRef.current!.killProcess(activeId, procId); } catch {}
+                                    updateLocalState(activeId, s => ({
+                                      ...s,
+                                      messages: s.messages.filter(m => m.id !== sh.id),
+                                    }));
+                                    setMinimizedShells(prev => {
+                                      if (!prev.has(sh.id)) return prev;
+                                      const n = new Set(prev);
+                                      n.delete(sh.id);
+                                      return n;
+                                    });
+                                    setActiveShellBySession(prev => {
+                                      if (prev[activeId] !== sh.id) return prev;
+                                      const { [activeId]: _drop, ...rest } = prev;
+                                      return rest;
+                                    });
+                                  };
+                                  return (
+                                    <span
+                                      role="button"
+                                      tabIndex={0}
+                                      className={`${running ? 'opacity-0 group-hover:opacity-100' : 'opacity-60 hover:opacity-100'} text-zinc-500 hover:text-red-400 shrink-0 transition-opacity`}
+                                      onClick={(e) => { e.stopPropagation(); handleAction(); }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          handleAction();
+                                        }
+                                      }}
+                                      title={running ? 'Kill shell' : 'Remove shell'}
+                                    >
+                                      ×
+                                    </span>
+                                  );
+                                })()}
                               </button>
                             );
                           })}
