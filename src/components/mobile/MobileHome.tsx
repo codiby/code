@@ -347,7 +347,7 @@ export function MobileHome({
               variant="ghost"
               fullWidth
               onPress={() => setShowClosed((v) => !v)}
-              className="w-full flex items-center gap-2 px-3 min-h-11 text-[12px] text-zinc-400 active:text-zinc-200 active:bg-white/5 rounded-xl justify-start h-auto"
+              className="w-full flex items-center gap-2 px-3 min-h-11 text-[12px] text-zinc-400 active:text-zinc-200 active:bg-white/5 rounded-xl justify-start! text-left! h-auto"
             >
               {showClosed ? <ChevronDown size={14} className="shrink-0 text-zinc-500" /> : <ChevronRight size={14} className="shrink-0 text-zinc-500" />}
               <span className="uppercase tracking-wider font-semibold flex-1 text-left">Closed sessions</span>
@@ -361,7 +361,7 @@ export function MobileHome({
                       variant="ghost"
                       fullWidth
                       onPress={() => onReopenSession(s.id)}
-                      className="group relative flex w-full items-center gap-2 px-3 min-h-11 text-[13px] rounded-md text-zinc-400 active:bg-surface/60 active:text-zinc-200 justify-start h-auto"
+                      className="group relative flex w-full items-center gap-2 px-3 min-h-11 text-[13px] rounded-md text-zinc-400 active:bg-surface/60 active:text-zinc-200 justify-start! text-left! h-auto"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
                       <span className="truncate flex-1">{s.name}</span>
