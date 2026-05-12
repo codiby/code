@@ -19,7 +19,7 @@
     "tauri:dev:no-server": "SKIP_DEV_SERVER_START=1 tauri dev",
     "version:bump": "bun run scripts/bump-version.ts",
     "electron:typecheck": "bunx tsc -p electron/tsconfig.json --noEmit",
-    "electron:build:main": "bunx tsc -p electron/tsconfig.json",
+    "electron:build:main": "bunx tsc -p electron/tsconfig.json && bun -e \"require('fs').writeFileSync('electron-dist/package.json', '{\\\"type\\\":\\\"commonjs\\\"}\\n')\"",
     "electron:bundle-resources": "bash scripts/electron-bundle-resources.sh",
     "electron:dev": "bun run scripts/electron-dev.ts",
     "electron:build": "bun run build-server && bun run electron:bundle-resources && bun run electron:build:main && electron-builder",
