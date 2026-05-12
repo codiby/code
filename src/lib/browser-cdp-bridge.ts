@@ -33,11 +33,19 @@ export type BrowserRequest = {
 
 const ALLOWED_ACTIONS = new Set([
   'snapshot',
-  'screenshot',
+  'take_screenshot',
   'click',
-  'fill',
+  'hover',
+  'type',
+  'press_key',
+  'select_option',
   'scroll',
-  'network',
+  'navigate',
+  'evaluate',
+  'wait_for',
+  'console_messages',
+  'network_requests',
+  'handle_dialog',
 ]);
 
 /** Build the request → response handler. Hand the returned function to

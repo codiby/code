@@ -1,22 +1,29 @@
 /**
- * CDP wrappers for each browser preview.
+ * CDP wrappers for each browser preview — playwright-cli–compatible surface.
  *
- * On preview create, `attachCdp(label, webContents)` attaches the Chrome
- * DevTools Protocol debugger and enables the Page/DOM/Runtime/Network
- * domains. The tools below issue commands against the resulting
- * `webContents.debugger`:
+ * Per-preview state attaches once on `attachCdp(label, webContents)` and is
+ * teared down on `detachCdp(label)`. The exported functions are called from
+ * `electron/main.ts`'s `ipcMain.handle('tauri:cdp_*')` handlers, which the
+ * bridge reaches via the renderer → preload `__TAURI_INTERNALS__.invoke`
+ * shim.
  *
- *   - snapshot(label)         → flat list of interactive nodes with ids
- *   - screenshot(label)       → base64 PNG of the viewport
- *   - click(label, id)        → click by snapshot id
- *   - fill(label, id, value)  → set value + fire input/change
- *   - scroll(label, opts)     → scroll element into view OR scroll viewport
- *   - network(label, opts)    → ring buffer of recent requests
+ * Snapshot uses the full accessibility tree (CDP `Accessibility.getFullAXTree`)
+ * rendered as indented YAML with `[ref=eN]` handles, exactly the shape
+ * playwright-cli's `browser_snapshot` returns. The same `eN` handles are then
+ * accepted by every action tool (click / type / hover / select / etc.) until
+ * the next snapshot regenerates the table.
  *
- * Ids are synthetic strings handed out by the most recent snapshot. Each
- * snapshot rebuilds the id→backendNodeId map; stale ids fail loudly.
+ * Buffered domains:
+ *   - Network — last 200 `Network.requestWillBeSent` + response/finish/fail.
+ *   - Console — last 200 `Runtime.consoleAPICalled` + `Runtime.exceptionThrown`.
+ *   - Dialog  — single in-flight `Page.javascriptDialogOpening`. `handle_dialog`
+ *               drains it via `Page.handleJavaScriptDialog`.
  */
 import type { WebContents } from 'electron';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 type NetEntry = {
   requestId: string;
@@ -31,16 +38,47 @@ type NetEntry = {
   endTs?: number;
 };
 
+type ConsoleEntry = {
+  level: 'log' | 'info' | 'warn' | 'error' | 'debug' | 'exception';
+  text: string;
+  url?: string;
+  line?: number;
+  ts: number;
+};
+
+type DialogState = {
+  type: 'alert' | 'confirm' | 'prompt' | 'beforeunload';
+  message: string;
+  defaultPrompt?: string;
+};
+
+type AxValue<T = unknown> = { type: string; value?: T };
+type AxProperty = { name: string; value: AxValue };
+type AxNode = {
+  nodeId: string;
+  parentId?: string;
+  backendDOMNodeId?: number;
+  role?: AxValue<string>;
+  name?: AxValue<string>;
+  value?: AxValue<string>;
+  description?: AxValue<string>;
+  properties?: AxProperty[];
+  childIds?: string[];
+  ignored?: boolean;
+};
+
 type CdpState = {
   wc: WebContents;
-  idToBackendNode: Map<string, number>;
-  /** Ring buffer of recent network requests. */
+  refToBackendNode: Map<string, number>;
   network: NetEntry[];
-  /** Lookup of in-flight requests by CDP requestId. */
   netInflight: Map<string, NetEntry>;
+  consoleBuf: ConsoleEntry[];
+  pendingDialog: DialogState | null;
 };
 
 const NET_BUFFER = 200;
+const CONSOLE_BUFFER = 200;
+
 const states = new Map<string, CdpState>();
 
 function getState(label: string): CdpState {
@@ -53,70 +91,104 @@ function send<T = unknown>(wc: WebContents, method: string, params?: object): Pr
   return wc.debugger.sendCommand(method, params ?? {}) as Promise<T>;
 }
 
+// ---------------------------------------------------------------------------
+// attach / detach
+// ---------------------------------------------------------------------------
+
 export function attachCdp(label: string, wc: WebContents): void {
   try {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-  } catch (e) {
-    // Attach can throw if a devtools window is already attached; degrade
-    // silently — the tool calls will surface a clearer error.
+  } catch {
     return;
   }
 
   const state: CdpState = {
     wc,
-    idToBackendNode: new Map(),
+    refToBackendNode: new Map(),
     network: [],
     netInflight: new Map(),
+    consoleBuf: [],
+    pendingDialog: null,
   };
   states.set(label, state);
 
-  // Enable the domains the tools need. Failures are non-fatal — surface at
-  // call time instead of crashing the preview open.
+  // Domains we drive — all best-effort, failures surface at call time.
   send(wc, 'Page.enable').catch(() => {});
   send(wc, 'DOM.enable').catch(() => {});
   send(wc, 'Runtime.enable').catch(() => {});
   send(wc, 'Network.enable').catch(() => {});
+  send(wc, 'Accessibility.enable').catch(() => {});
+  // Page.javascriptDialogOpening is fired by Page.enable; no extra enable needed.
 
   wc.debugger.on('message', (_e, method, params) => {
     if (method === 'Network.requestWillBeSent') {
-      const p = params as {
-        requestId: string;
-        request: { url: string; method: string };
-        timestamp?: number;
-      };
-      const entry: NetEntry = {
-        requestId: p.requestId,
-        method: p.request.method,
-        url: p.request.url,
-        ts: Date.now(),
-      };
+      const p = params as { requestId: string; request: { url: string; method: string } };
+      const entry: NetEntry = { requestId: p.requestId, method: p.request.method, url: p.request.url, ts: Date.now() };
       state.netInflight.set(p.requestId, entry);
       state.network.push(entry);
       if (state.network.length > NET_BUFFER) state.network.splice(0, state.network.length - NET_BUFFER);
-    } else if (method === 'Network.responseReceived') {
-      const p = params as {
-        requestId: string;
-        response: { status: number; statusText: string; mimeType: string; fromDiskCache?: boolean; fromServiceWorker?: boolean };
-      };
-      const entry = state.netInflight.get(p.requestId);
-      if (!entry) return;
-      entry.status = p.response.status;
-      entry.statusText = p.response.statusText;
-      entry.mimeType = p.response.mimeType;
-      entry.fromCache = !!(p.response.fromDiskCache || p.response.fromServiceWorker);
-    } else if (method === 'Network.loadingFinished') {
+      return;
+    }
+    if (method === 'Network.responseReceived') {
+      const p = params as { requestId: string; response: { status: number; statusText: string; mimeType: string; fromDiskCache?: boolean; fromServiceWorker?: boolean } };
+      const e = state.netInflight.get(p.requestId);
+      if (!e) return;
+      e.status = p.response.status;
+      e.statusText = p.response.statusText;
+      e.mimeType = p.response.mimeType;
+      e.fromCache = !!(p.response.fromDiskCache || p.response.fromServiceWorker);
+      return;
+    }
+    if (method === 'Network.loadingFinished') {
       const p = params as { requestId: string };
-      const entry = state.netInflight.get(p.requestId);
-      if (!entry) return;
-      entry.endTs = Date.now();
+      const e = state.netInflight.get(p.requestId);
+      if (!e) return;
+      e.endTs = Date.now();
       state.netInflight.delete(p.requestId);
-    } else if (method === 'Network.loadingFailed') {
+      return;
+    }
+    if (method === 'Network.loadingFailed') {
       const p = params as { requestId: string; errorText?: string };
-      const entry = state.netInflight.get(p.requestId);
-      if (!entry) return;
-      entry.endTs = Date.now();
-      entry.errorText = p.errorText;
+      const e = state.netInflight.get(p.requestId);
+      if (!e) return;
+      e.endTs = Date.now();
+      e.errorText = p.errorText;
       state.netInflight.delete(p.requestId);
+      return;
+    }
+    if (method === 'Runtime.consoleAPICalled') {
+      const p = params as {
+        type: string;
+        args: Array<{ type: string; value?: unknown; description?: string }>;
+        timestamp: number;
+        stackTrace?: { callFrames: Array<{ url: string; lineNumber: number }> };
+      };
+      const text = p.args
+        .map((a) => (a.value !== undefined ? String(a.value) : a.description ?? a.type))
+        .join(' ');
+      const frame = p.stackTrace?.callFrames?.[0];
+      const level = (['log', 'info', 'warn', 'error', 'debug'] as const).includes(p.type as 'log')
+        ? (p.type as ConsoleEntry['level'])
+        : 'log';
+      state.consoleBuf.push({ level, text, url: frame?.url, line: frame?.lineNumber, ts: Date.now() });
+      if (state.consoleBuf.length > CONSOLE_BUFFER) state.consoleBuf.splice(0, state.consoleBuf.length - CONSOLE_BUFFER);
+      return;
+    }
+    if (method === 'Runtime.exceptionThrown') {
+      const p = params as { exceptionDetails: { text: string; exception?: { description?: string }; url?: string; lineNumber?: number } };
+      const text = p.exceptionDetails.exception?.description || p.exceptionDetails.text;
+      state.consoleBuf.push({ level: 'exception', text, url: p.exceptionDetails.url, line: p.exceptionDetails.lineNumber, ts: Date.now() });
+      if (state.consoleBuf.length > CONSOLE_BUFFER) state.consoleBuf.splice(0, state.consoleBuf.length - CONSOLE_BUFFER);
+      return;
+    }
+    if (method === 'Page.javascriptDialogOpening') {
+      const p = params as { type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string; defaultPrompt?: string };
+      state.pendingDialog = { type: p.type, message: p.message, defaultPrompt: p.defaultPrompt };
+      return;
+    }
+    if (method === 'Page.javascriptDialogClosed') {
+      state.pendingDialog = null;
+      return;
     }
   });
 }
@@ -131,108 +203,83 @@ export function detachCdp(label: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// snapshot
+// snapshot — AX tree → YAML
 // ---------------------------------------------------------------------------
 
 /**
- * Walk the DOM via Runtime.evaluate (cheaper than DOM.getDocument+pierce for
- * a one-shot snapshot; we don't need a live tree, just a flat list of
- * candidates with stable handles). Each interactive node gets a synthetic id;
- * the corresponding `backendNodeId` is recorded so click/fill/scroll can
- * later resolve to it.
+ * Properties we surface alongside the role/name in the YAML output. AX nodes
+ * carry many more (focusable, focused, busy, etc.); we keep the ones that
+ * usefully constrain identification or describe state.
  */
-const SNAPSHOT_SCRIPT = `
-(() => {
-  const SELECTORS = [
-    'a[href]', 'button', 'input:not([type=hidden])', 'select', 'textarea',
-    '[role=button]', '[role=link]', '[role=textbox]', '[role=checkbox]',
-    '[role=radio]', '[role=tab]', '[role=menuitem]', '[contenteditable=true]',
-  ];
-  const nodes = Array.from(document.querySelectorAll(SELECTORS.join(',')));
-  return nodes.map((el, i) => {
-    const r = el.getBoundingClientRect();
-    const tag = el.tagName.toLowerCase();
-    const role = el.getAttribute('role') || tag;
-    const name =
-      (el.getAttribute('aria-label') ||
-        el.getAttribute('title') ||
-        (el.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 80) ||
-        el.getAttribute('placeholder') ||
-        el.getAttribute('name') ||
-        ''
-      ).slice(0, 120);
-    const value = (el).value != null ? String((el).value).slice(0, 200) : undefined;
-    const href = el.getAttribute('href') || undefined;
-    return {
-      idx: i,
-      tag, role, name, value, href,
-      x: Math.round(r.left), y: Math.round(r.top),
-      w: Math.round(r.width), h: Math.round(r.height),
-      visible: r.width > 0 && r.height > 0,
-    };
-  });
-})()
-`;
+const ECHOED_PROPS = new Set(['level', 'checked', 'pressed', 'expanded', 'selected', 'disabled', 'readonly', 'required', 'placeholder']);
 
-export async function snapshot(label: string): Promise<{
-  url: string;
-  title: string;
-  nodes: Array<{
-    id: string; tag: string; role: string; name: string; value?: string; href?: string;
-    bounds: { x: number; y: number; width: number; height: number };
-    visible: boolean;
-  }>;
-}> {
+function quoteForYaml(s: string | undefined): string {
+  if (!s) return '';
+  // Match playwright's quoting: double-quotes with backslash-escapes.
+  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').slice(0, 200)}"`;
+}
+
+export async function snapshot(label: string): Promise<{ url: string; title: string; yaml: string }> {
   const state = getState(label);
   const wc = state.wc;
 
-  const url = wc.getURL();
-  const title = wc.getTitle();
+  // Refresh the ref table so old refs from a previous snapshot fail loudly.
+  state.refToBackendNode.clear();
 
-  // 1. Get the raw list of candidates from the page.
-  type RawNode = {
-    idx: number; tag: string; role: string; name: string; value?: string; href?: string;
-    x: number; y: number; w: number; h: number; visible: boolean;
-  };
-  const result = await send<{ result: { value: RawNode[] } }>(wc, 'Runtime.evaluate', {
-    expression: SNAPSHOT_SCRIPT,
-    returnByValue: true,
-  });
-  const raw = (result.result?.value as RawNode[] | undefined) ?? [];
+  const { nodes } = await send<{ nodes: AxNode[] }>(wc, 'Accessibility.getFullAXTree');
+  const byId = new Map<string, AxNode>();
+  for (const n of nodes) byId.set(n.nodeId, n);
 
-  // 2. Resolve each one to a backendNodeId so click/fill can address it
-  //    even after the DOM rearranges.
-  state.idToBackendNode.clear();
-  const nodes: Awaited<ReturnType<typeof snapshot>>['nodes'] = [];
-  for (const item of raw) {
-    const synthId = `n${item.idx}`;
-    try {
-      // Re-evaluate to get an object handle for *this specific* node, then
-      // pull its backendNodeId via DOM.describeNode.
-      const handle = await send<{ result: { objectId?: string } }>(wc, 'Runtime.evaluate', {
-        expression: `document.querySelectorAll('a[href], button, input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=textbox], [role=checkbox], [role=radio], [role=tab], [role=menuitem], [contenteditable=true]')[${item.idx}]`,
-        returnByValue: false,
-      });
-      const objectId = handle.result?.objectId;
-      if (objectId) {
-        const desc = await send<{ node: { backendNodeId: number } }>(wc, 'DOM.describeNode', { objectId });
-        const backendNodeId = desc.node?.backendNodeId;
-        if (backendNodeId) state.idToBackendNode.set(synthId, backendNodeId);
-        await send(wc, 'Runtime.releaseObject', { objectId }).catch(() => {});
-      }
-    } catch {
-      // Snapshot is best-effort; skip unresolvable nodes.
+  // Identify roots: a node whose parent isn't in the slice we got.
+  const roots = nodes.filter((n) => !n.parentId || !byId.has(n.parentId));
+
+  let counter = 0;
+  const lines: string[] = [];
+
+  function describeProps(node: AxNode): string {
+    if (!node.properties) return '';
+    const parts: string[] = [];
+    for (const p of node.properties) {
+      if (!ECHOED_PROPS.has(p.name)) continue;
+      const v = p.value?.value;
+      if (v === undefined || v === false) continue;
+      if (v === true) parts.push(p.name);
+      else parts.push(`${p.name}=${typeof v === 'string' ? quoteForYaml(v) : String(v)}`);
     }
-    nodes.push({
-      id: synthId,
-      tag: item.tag, role: item.role, name: item.name,
-      value: item.value, href: item.href,
-      bounds: { x: item.x, y: item.y, width: item.w, height: item.h },
-      visible: item.visible,
-    });
+    return parts.length ? ' [' + parts.join('] [') + ']' : '';
   }
 
-  return { url, title, nodes };
+  function walk(node: AxNode, depth: number) {
+    const role = node.role?.value || 'unknown';
+    const ignored = !!node.ignored || role === 'none' || role === 'presentation' || role === 'InlineTextBox';
+    const name = node.name?.value || '';
+    const value = node.value?.value;
+
+    let printedSelf = false;
+    if (!ignored && node.backendDOMNodeId) {
+      counter++;
+      const ref = `e${counter}`;
+      state.refToBackendNode.set(ref, node.backendDOMNodeId);
+      const indent = '  '.repeat(depth);
+      const headParts = [`- ${role}`];
+      if (name) headParts.push(quoteForYaml(name));
+      if (value) headParts.push(`value=${quoteForYaml(String(value))}`);
+      const props = describeProps(node);
+      lines.push(`${indent}${headParts.join(' ')}${props} [ref=${ref}]`);
+      printedSelf = true;
+    }
+
+    const nextDepth = printedSelf ? depth + 1 : depth;
+    for (const id of node.childIds ?? []) {
+      const child = byId.get(id);
+      if (!child) continue;
+      walk(child, nextDepth);
+    }
+  }
+
+  for (const root of roots) walk(root, 0);
+
+  return { url: wc.getURL(), title: wc.getTitle(), yaml: lines.join('\n') };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,50 +288,104 @@ export async function snapshot(label: string): Promise<{
 
 export async function screenshot(label: string): Promise<{ format: 'png'; data: string }> {
   const state = getState(label);
-  const r = await send<{ data: string }>(state.wc, 'Page.captureScreenshot', {
-    format: 'png',
-    captureBeyondViewport: false,
-  });
+  const r = await send<{ data: string }>(state.wc, 'Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   return { format: 'png', data: r.data };
 }
 
 // ---------------------------------------------------------------------------
-// click / fill / scroll
+// helpers for action tools
 // ---------------------------------------------------------------------------
 
-async function resolveBackendObjectId(state: CdpState, id: string): Promise<string> {
-  const backendNodeId = state.idToBackendNode.get(id);
-  if (!backendNodeId) {
-    throw new Error(`unknown id "${id}" — call browser_snapshot first to refresh ids`);
-  }
+async function resolveBackendObjectId(state: CdpState, ref: string): Promise<string> {
+  const backendNodeId = state.refToBackendNode.get(ref);
+  if (!backendNodeId) throw new Error(`unknown ref "${ref}" — call browser_snapshot first to refresh refs`);
   const r = await send<{ object: { objectId: string } }>(state.wc, 'DOM.resolveNode', { backendNodeId });
   return r.object.objectId;
 }
 
-export async function click(label: string, id: string): Promise<{ ok: true }> {
+async function withObjectId<T>(state: CdpState, ref: string, fn: (objectId: string) => Promise<T>): Promise<T> {
+  const objectId = await resolveBackendObjectId(state, ref);
+  try { return await fn(objectId); }
+  finally { await send(state.wc, 'Runtime.releaseObject', { objectId }).catch(() => {}); }
+}
+
+async function getElementCenter(state: CdpState, objectId: string): Promise<{ x: number; y: number }> {
+  // Scroll into view first so the rect is meaningful.
+  await send(state.wc, 'Runtime.callFunctionOn', {
+    objectId,
+    functionDeclaration: `function() { this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); }`,
+    awaitPromise: false,
+  });
+  const result = await send<{ result: { value: { x: number; y: number; w: number; h: number } } }>(state.wc, 'Runtime.callFunctionOn', {
+    objectId,
+    functionDeclaration: `function() { var r = this.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; }`,
+    returnByValue: true,
+  });
+  const r = result.result.value;
+  return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+}
+
+// ---------------------------------------------------------------------------
+// click / hover / drag
+// ---------------------------------------------------------------------------
+
+export async function click(label: string, ref: string, opts: { button?: 'left' | 'right' | 'middle'; doubleClick?: boolean } = {}): Promise<{ ok: true }> {
   const state = getState(label);
-  const objectId = await resolveBackendObjectId(state, id);
-  try {
-    await send(state.wc, 'Runtime.callFunctionOn', {
-      objectId,
-      functionDeclaration: `function() {
-        this.scrollIntoView({ behavior: 'instant', block: 'center' });
-        if (typeof this.click === 'function') { this.click(); return; }
-        var ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-        this.dispatchEvent(ev);
-      }`,
-      awaitPromise: false,
-    });
-  } finally {
-    await send(state.wc, 'Runtime.releaseObject', { objectId }).catch(() => {});
-  }
+  await withObjectId(state, ref, async (objectId) => {
+    if (!opts.doubleClick && (opts.button ?? 'left') === 'left') {
+      // Fast path — programmatic .click() for plain left-clicks. Survives
+      // overlays + works for elements that may not be hit-testable via
+      // dispatched mouse events.
+      await send(state.wc, 'Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: `function() {
+          this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+          if (typeof this.click === 'function') { this.click(); return; }
+          var ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+          this.dispatchEvent(ev);
+        }`,
+        awaitPromise: false,
+      });
+      return;
+    }
+    // Synthetic mouse events for right/middle/double clicks.
+    const { x, y } = await getElementCenter(state, objectId);
+    const button = opts.button ?? 'left';
+    const clickCount = opts.doubleClick ? 2 : 1;
+    await send(state.wc, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await send(state.wc, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount });
+    await send(state.wc, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount });
+    if (opts.doubleClick) {
+      // Two press/release pairs is what dispatchMouseEvent expects for dblclick.
+      await send(state.wc, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount });
+      await send(state.wc, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount });
+    }
+  });
   return { ok: true };
 }
 
-export async function fill(label: string, id: string, value: string): Promise<{ ok: true }> {
+export async function hover(label: string, ref: string): Promise<{ ok: true }> {
   const state = getState(label);
-  const objectId = await resolveBackendObjectId(state, id);
-  try {
+  await withObjectId(state, ref, async (objectId) => {
+    const { x, y } = await getElementCenter(state, objectId);
+    await send(state.wc, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// type / press_key / select_option
+// ---------------------------------------------------------------------------
+
+/**
+ * Set the value of an input/textarea (replaces existing content) and fire
+ * input + change. If `submit` is true, also dispatch a synthetic Enter
+ * keydown so form-submission handlers fire. Matches playwright's
+ * `browser_type({ ref, text, submit })`.
+ */
+export async function type_(label: string, ref: string, text: string, opts: { submit?: boolean } = {}): Promise<{ ok: true }> {
+  const state = getState(label);
+  await withObjectId(state, ref, async (objectId) => {
     await send(state.wc, 'Runtime.callFunctionOn', {
       objectId,
       functionDeclaration: `function(v) {
@@ -296,48 +397,252 @@ export async function fill(label: string, id: string, value: string): Promise<{ 
         this.dispatchEvent(new Event('input', { bubbles: true }));
         this.dispatchEvent(new Event('change', { bubbles: true }));
       }`,
-      arguments: [{ value }],
+      arguments: [{ value: text }],
       awaitPromise: false,
     });
-  } finally {
-    await send(state.wc, 'Runtime.releaseObject', { objectId }).catch(() => {});
+  });
+  if (opts.submit) {
+    await pressKey(label, 'Enter');
   }
   return { ok: true };
 }
 
-export async function scroll(
-  label: string,
-  opts: { id?: string; x?: number; y?: number },
-): Promise<{ ok: true }> {
-  const state = getState(label);
-  if (opts.id) {
-    const objectId = await resolveBackendObjectId(state, opts.id);
-    try {
-      await send(state.wc, 'Runtime.callFunctionOn', {
-        objectId,
-        functionDeclaration: `function() { this.scrollIntoView({ behavior: 'instant', block: 'center' }); }`,
-        awaitPromise: false,
-      });
-    } finally {
-      await send(state.wc, 'Runtime.releaseObject', { objectId }).catch(() => {});
-    }
-    return { ok: true };
+/**
+ * Map a playwright-style key name (e.g. 'Enter', 'Escape', 'ArrowDown',
+ * 'Control+a') to a CDP `Input.dispatchKeyEvent` payload. Single
+ * printable characters fall through to type 'char'.
+ */
+function buildKeyEvent(key: string): { type: 'keyDown' | 'rawKeyDown' | 'char'; key: string; code?: string; modifiers?: number }[] {
+  // Modifier bitmask used by CDP: Alt=1, Ctrl=2, Meta=4, Shift=8.
+  const MOD: Record<string, number> = { alt: 1, control: 2, ctrl: 2, meta: 4, cmd: 4, command: 4, shift: 8 };
+  const parts = key.split('+');
+  const lastRaw = parts.pop()!;
+  let modifiers = 0;
+  for (const p of parts) modifiers |= MOD[p.toLowerCase()] ?? 0;
+
+  // Named keys table — playwright's small set. CDP wants `key` (the
+  // value-like form, e.g. 'Enter') and ideally a `code` (e.g. 'Enter').
+  const named: Record<string, { key: string; code: string }> = {
+    Enter: { key: 'Enter', code: 'Enter' },
+    Escape: { key: 'Escape', code: 'Escape' },
+    Tab: { key: 'Tab', code: 'Tab' },
+    Backspace: { key: 'Backspace', code: 'Backspace' },
+    Delete: { key: 'Delete', code: 'Delete' },
+    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp' },
+    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown' },
+    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft' },
+    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight' },
+    Home: { key: 'Home', code: 'Home' },
+    End: { key: 'End', code: 'End' },
+    PageUp: { key: 'PageUp', code: 'PageUp' },
+    PageDown: { key: 'PageDown', code: 'PageDown' },
+    Space: { key: ' ', code: 'Space' },
+    ' ': { key: ' ', code: 'Space' },
+  };
+  const named1 = named[lastRaw] ?? named[lastRaw.charAt(0).toUpperCase() + lastRaw.slice(1)];
+  if (named1) {
+    return [
+      { type: 'rawKeyDown', key: named1.key, code: named1.code, modifiers },
+      // CDP doesn't need an explicit keyUp for most named keys to fire
+      // listeners; rawKeyDown carries the listener-visible event. If a page
+      // hangs on this we can add an Input.dispatchKeyEvent({ type: 'keyUp' })
+      // here in the future.
+    ];
   }
-  const x = Number.isFinite(opts.x) ? Number(opts.x) : 0;
-  const y = Number.isFinite(opts.y) ? Number(opts.y) : 0;
-  await send(state.wc, 'Runtime.evaluate', {
-    expression: `window.scrollTo(${x}, ${y})`,
+  // Single-char fallback.
+  if (lastRaw.length === 1) {
+    return [{ type: 'char', key: lastRaw, modifiers }];
+  }
+  // Last-ditch: send as `key` and hope the page handles it.
+  return [{ type: 'rawKeyDown', key: lastRaw, modifiers }];
+}
+
+export async function pressKey(label: string, key: string): Promise<{ ok: true }> {
+  const state = getState(label);
+  for (const ev of buildKeyEvent(key)) {
+    await send(state.wc, 'Input.dispatchKeyEvent', ev);
+  }
+  return { ok: true };
+}
+
+export async function selectOption(label: string, ref: string, values: string[]): Promise<{ ok: true }> {
+  const state = getState(label);
+  await withObjectId(state, ref, async (objectId) => {
+    await send(state.wc, 'Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: `function(values) {
+        if (this.tagName !== 'SELECT') throw new Error('select_option requires a <select> element');
+        var wanted = new Set(values);
+        var changed = false;
+        for (var i = 0; i < this.options.length; i++) {
+          var opt = this.options[i];
+          var should = wanted.has(opt.value) || wanted.has(opt.label) || wanted.has(opt.text);
+          if (opt.selected !== should) { opt.selected = should; changed = true; }
+          if (!this.multiple && should) break;
+        }
+        if (changed) {
+          this.dispatchEvent(new Event('input', { bubbles: true }));
+          this.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }`,
+      arguments: [{ value: values }],
+      awaitPromise: false,
+    });
   });
   return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
-// network
+// scroll
 // ---------------------------------------------------------------------------
+
+export async function scroll(label: string, opts: { ref?: string; x?: number; y?: number }): Promise<{ ok: true }> {
+  const state = getState(label);
+  if (opts.ref) {
+    await withObjectId(state, opts.ref, async (objectId) => {
+      await send(state.wc, 'Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: `function() { this.scrollIntoView({ behavior: 'instant', block: 'center' }); }`,
+        awaitPromise: false,
+      });
+    });
+    return { ok: true };
+  }
+  const x = Number.isFinite(opts.x) ? Number(opts.x) : 0;
+  const y = Number.isFinite(opts.y) ? Number(opts.y) : 0;
+  await send(state.wc, 'Runtime.evaluate', { expression: `window.scrollTo(${x}, ${y})` });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// navigate
+// ---------------------------------------------------------------------------
+
+export async function navigate(label: string, action: 'goto' | 'back' | 'forward' | 'reload', url?: string): Promise<{ ok: true }> {
+  const state = getState(label);
+  const wc = state.wc;
+  if (action === 'goto') {
+    if (!url) throw new Error('goto requires `url`');
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Only http/https URLs are supported');
+    }
+    await wc.loadURL(parsed.toString());
+  } else if (action === 'back') {
+    if (wc.canGoBack()) wc.goBack();
+  } else if (action === 'forward') {
+    if (wc.canGoForward()) wc.goForward();
+  } else if (action === 'reload') {
+    wc.reload();
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// evaluate
+// ---------------------------------------------------------------------------
+
+/**
+ * Run an arbitrary JS function in the page. If `ref` is provided, the function
+ * receives the resolved element as its `this` (and as the first argument);
+ * otherwise the function runs in global scope. Returns the function's return
+ * value, JSON-serialised.
+ */
+export async function evaluate(label: string, fn: string, opts: { ref?: string } = {}): Promise<{ value: unknown }> {
+  const state = getState(label);
+  if (opts.ref) {
+    const result = await withObjectId(state, opts.ref, async (objectId) => {
+      return await send<{ result: { value: unknown } }>(state.wc, 'Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: fn,
+        returnByValue: true,
+        awaitPromise: true,
+        arguments: [{ objectId }],
+      });
+    });
+    return { value: result.result?.value };
+  }
+  const result = await send<{ result: { value: unknown } }>(state.wc, 'Runtime.evaluate', {
+    expression: `(${fn})()`,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+  return { value: result.result?.value };
+}
+
+// ---------------------------------------------------------------------------
+// wait_for
+// ---------------------------------------------------------------------------
+
+/**
+ * Block until one of:
+ *   - `text` appears in the page (textContent contains).
+ *   - `textGone` disappears from the page.
+ *   - `time` seconds elapse.
+ * Times out after `timeoutMs` (default 5s). Poll interval 100ms.
+ */
+export async function waitFor(
+  label: string,
+  opts: { text?: string; textGone?: string; time?: number; timeoutMs?: number },
+): Promise<{ ok: true }> {
+  const state = getState(label);
+  const timeoutMs = opts.timeoutMs ?? 5000;
+
+  if (opts.time != null) {
+    const seconds = opts.time;
+    await new Promise((r) => setTimeout(r, Math.max(0, seconds * 1000)));
+    return { ok: true };
+  }
+  if (opts.text == null && opts.textGone == null) {
+    throw new Error('wait_for requires one of `text`, `textGone`, or `time`');
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const expr = opts.text != null
+      ? `document.body && document.body.innerText.includes(${JSON.stringify(opts.text)})`
+      : `!document.body || !document.body.innerText.includes(${JSON.stringify(opts.textGone)})`;
+    const r = await send<{ result: { value: boolean } }>(state.wc, 'Runtime.evaluate', {
+      expression: expr,
+      returnByValue: true,
+    }).catch(() => ({ result: { value: false } as { value: boolean } }));
+    if (r.result?.value) return { ok: true };
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`wait_for timed out after ${timeoutMs}ms`);
+}
+
+// ---------------------------------------------------------------------------
+// console / network / dialog
+// ---------------------------------------------------------------------------
+
+export function consoleMessages(label: string, opts: { tail?: number } = {}): { entries: ConsoleEntry[] } {
+  const state = getState(label);
+  const tail = Math.max(1, Math.min(CONSOLE_BUFFER, opts.tail ?? 50));
+  return { entries: state.consoleBuf.slice(-tail) };
+}
 
 export function network(label: string, opts: { tail?: number } = {}): { entries: NetEntry[] } {
   const state = getState(label);
   const tail = Math.max(1, Math.min(NET_BUFFER, opts.tail ?? 50));
-  const entries = state.network.slice(-tail);
-  return { entries };
+  return { entries: state.network.slice(-tail) };
+}
+
+export async function handleDialog(
+  label: string,
+  opts: { accept: boolean; promptText?: string },
+): Promise<{ ok: true; handled: DialogState | null }> {
+  const state = getState(label);
+  const dialog = state.pendingDialog;
+  if (!dialog) return { ok: true, handled: null };
+  await send(state.wc, 'Page.handleJavaScriptDialog', {
+    accept: opts.accept,
+    promptText: opts.promptText,
+  });
+  state.pendingDialog = null;
+  return { ok: true, handled: dialog };
+}
+
+/** Read the in-flight dialog without acting on it (useful for tests). */
+export function peekDialog(label: string): DialogState | null {
+  return getState(label).pendingDialog;
 }

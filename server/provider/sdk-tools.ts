@@ -428,19 +428,25 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
         },
       ),
       // ---------------------------------------------------------------------
-      // CDP-driven browser automation. Each tool round-trips through the
-      // bridge → desktop frontend → Electron main → CDP. Ids in click /
-      // fill / scroll are the synthetic ones returned by the most recent
-      // browser_snapshot — call snapshot first, then act on its ids.
-      // Non-desktop viewers (browser, mobile PWA) don't service these
-      // requests; the call times out with a clear error.
+      // Playwright-cli-equivalent browser automation tools. Each round-trips:
+      //   bridge SDK tool → broadcastToSession('browser_request')
+      //   → desktop frontend WS → __TAURI_INTERNALS__.invoke('cdp_<action>')
+      //   → Electron main: webContents.debugger / CDP commands
+      //   → frontend respondBrowserRequest → bridge resolves the promise.
+      //
+      // `ref` parameters are the `eN` handles returned by the most recent
+      // `browser_snapshot`. Refs stale on the next snapshot or navigation;
+      // call snapshot again to refresh. Non-desktop viewers (browser, mobile
+      // PWA) don't service these — the call times out with a clear error.
       // ---------------------------------------------------------------------
       tool(
         'browser_snapshot',
         [
-          'Capture an ID-addressed list of interactive elements (links, buttons, inputs, selects, [role=*], contenteditable) in the current browser preview, along with each element\'s role, accessible name, value, bounds, and visibility.',
+          'Capture an accessibility snapshot of the current browser preview as an indented YAML tree. Each meaningful element gets a `[ref=eN]` handle that subsequent action tools (browser_click, browser_type, browser_hover, …) use to address it.',
           '',
-          'Use this BEFORE clicking, filling, or scrolling — the returned `id` is what `browser_click`, `browser_fill`, and `browser_scroll` address. Ids are valid only until the next snapshot or a navigation; refresh by calling snapshot again.',
+          'Example output line: `- button "Submit" [ref=e23]`',
+          '',
+          'Refs are only valid until the next snapshot or page navigation — refresh by calling browser_snapshot again. Always snapshot before clicking/typing/hovering; never assume a ref from a stale read.',
           '',
           'Requires an open browser preview (open one with `browser_open` first).',
         ].join('\n'),
@@ -450,27 +456,28 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
           }
           try {
-            const result = await cdpRequest(sessionId, 'snapshot', {}, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+            const r = (await cdpRequest(sessionId, 'snapshot', {}, deps.broadcastToSession)) as { url: string; title: string; yaml: string };
+            const head = `URL: ${r.url}\nTitle: ${r.title}\n\n`;
+            return { content: [{ type: 'text', text: head + (r.yaml || '(empty accessibility tree)') }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
         },
       ),
       tool(
-        'browser_screenshot',
-        'Capture a PNG screenshot of the current browser preview viewport. Returns base64-encoded data.',
+        'browser_take_screenshot',
+        'Capture a PNG screenshot of the current browser preview viewport. Returns base64-encoded image data.',
         {},
         async () => {
           if (!getBrowserPreview(sessionId)) {
             return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
           }
           try {
-            const result = (await cdpRequest(sessionId, 'screenshot', {}, deps.broadcastToSession)) as { format: string; data: string };
+            const r = (await cdpRequest(sessionId, 'take_screenshot', {}, deps.broadcastToSession)) as { format: string; data: string };
             return {
               content: [
-                { type: 'text', text: `Captured ${result.format} screenshot (${Math.round(result.data.length / 1024)} KB base64).` },
-                { type: 'image', data: result.data, mimeType: `image/${result.format}` },
+                { type: 'text', text: `Captured ${r.format} screenshot (${Math.round(r.data.length / 1024)} KB base64).` },
+                { type: 'image', data: r.data, mimeType: `image/${r.format}` },
               ],
             };
           } catch (e) {
@@ -480,36 +487,104 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_click',
-        'Click an element previously identified by `browser_snapshot`. The id is the synthetic id returned by the most recent snapshot. Calls `.click()` after scrolling the element into view; falls back to dispatching a synthetic MouseEvent if `.click()` is unavailable.',
+        [
+          'Click an element identified by a `ref` from `browser_snapshot`. Scrolls into view first, then calls `.click()` for plain left-clicks (works reliably even when the element is covered by an overlay). For right/middle/double clicks, dispatches synthetic mouse events at the element\'s centre.',
+        ].join('\n'),
         {
-          id: z.string().min(1).describe('Element id from the most recent browser_snapshot.'),
+          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot.'),
+          button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button to use. Defaults to left.'),
+          doubleClick: z.boolean().optional().describe('When true, dispatches a double-click instead of a single click.'),
         },
         async (args) => {
           if (!getBrowserPreview(sessionId)) {
             return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
           }
           try {
-            await cdpRequest(sessionId, 'click', { id: args.id }, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: `Clicked ${args.id}.` }] };
+            await cdpRequest(sessionId, 'click', { ref: args.ref, button: args.button, doubleClick: args.doubleClick }, deps.broadcastToSession);
+            const tag = (args.doubleClick ? 'double-' : '') + `${args.button ?? 'left'}-clicked`;
+            return { content: [{ type: 'text', text: `${tag} ${args.ref}.` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
         },
       ),
       tool(
-        'browser_fill',
-        'Set the value of an input/textarea/contenteditable element identified by `browser_snapshot`. Focuses the element, sets the value via the prototype setter (so React/Vue controlled inputs notice), and fires `input` + `change` events.',
+        'browser_hover',
+        'Move the mouse over the element identified by `ref`. Use for menus, tooltips, and any UI that reveals state on hover.',
         {
-          id: z.string().min(1).describe('Element id from the most recent browser_snapshot.'),
-          value: z.string().describe('New value. Empty string clears the field.'),
+          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot.'),
         },
         async (args) => {
           if (!getBrowserPreview(sessionId)) {
             return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
           }
           try {
-            await cdpRequest(sessionId, 'fill', { id: args.id, value: args.value }, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: `Filled ${args.id} with ${JSON.stringify(args.value).slice(0, 80)}.` }] };
+            await cdpRequest(sessionId, 'hover', { ref: args.ref }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Hovered ${args.ref}.` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_type',
+        [
+          'Set the value of an input/textarea/contenteditable identified by `ref` (replaces existing content). Uses the prototype setter so React/Vue controlled inputs see the new value; fires `input` + `change` events.',
+          '',
+          'Pass `submit: true` to dispatch a synthetic Enter key after typing — useful for search boxes and chat inputs that submit on Enter.',
+        ].join('\n'),
+        {
+          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot.'),
+          text: z.string().describe('Text to type. Empty string clears the field.'),
+          submit: z.boolean().optional().describe('When true, press Enter after typing.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'type', { ref: args.ref, text: args.text, submit: args.submit }, deps.broadcastToSession);
+            const tail = args.submit ? ' and pressed Enter' : '';
+            return { content: [{ type: 'text', text: `Typed ${JSON.stringify(args.text).slice(0, 80)} into ${args.ref}${tail}.` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_press_key',
+        [
+          'Dispatch a key press to the page. Accepts named keys (Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space) or single characters. Combine modifiers with `+`, e.g. `Control+a`, `Meta+k`, `Shift+Tab`.',
+        ].join('\n'),
+        {
+          key: z.string().min(1).describe('Key name or single character. Examples: "Enter", "Escape", "ArrowDown", "Control+a", "a".'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'press_key', { key: args.key }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Pressed ${args.key}.` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_select_option',
+        'Select option(s) on a <select> element identified by `ref`. Matches each entry in `values` against option.value, label, or text. For non-multiple selects, only the first match is selected.',
+        {
+          ref: z.string().min(1).describe('Element ref (`eN`) of a <select> from the most recent browser_snapshot.'),
+          values: z.array(z.string()).min(1).describe('Option values, labels, or visible text to select. Order matters only for multi-selects.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'select_option', { ref: args.ref, values: args.values }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Selected ${JSON.stringify(args.values)} on ${args.ref}.` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -517,19 +592,19 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_scroll',
-        'Scroll the browser preview. With `id`: scroll that element into view (centred). With `x` / `y`: scroll the viewport to those absolute coordinates. Pass exactly one form.',
+        'Scroll the browser preview. With `ref`: scroll that element into view (centred). With `x` / `y`: scroll the viewport to those absolute coordinates. Pass exactly one form.',
         {
-          id: z.string().optional().describe('Element id from the most recent browser_snapshot; scrolls the element into view.'),
-          x: z.number().optional().describe('Absolute viewport X to scroll to (used when `id` is omitted).'),
-          y: z.number().optional().describe('Absolute viewport Y to scroll to (used when `id` is omitted).'),
+          ref: z.string().optional().describe('Element ref (`eN`) from the most recent browser_snapshot — scrolls it into view.'),
+          x: z.number().optional().describe('Absolute viewport X to scroll to (used when `ref` is omitted).'),
+          y: z.number().optional().describe('Absolute viewport Y to scroll to (used when `ref` is omitted).'),
         },
         async (args) => {
           if (!getBrowserPreview(sessionId)) {
             return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
           }
           try {
-            await cdpRequest(sessionId, 'scroll', { id: args.id, x: args.x, y: args.y }, deps.broadcastToSession);
-            const where = args.id ? `id=${args.id}` : `(${args.x ?? 0}, ${args.y ?? 0})`;
+            await cdpRequest(sessionId, 'scroll', { ref: args.ref, x: args.x, y: args.y }, deps.broadcastToSession);
+            const where = args.ref ? `ref=${args.ref}` : `(${args.x ?? 0}, ${args.y ?? 0})`;
             return { content: [{ type: 'text', text: `Scrolled to ${where}.` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -537,8 +612,81 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
         },
       ),
       tool(
-        'browser_network',
-        'Return the last N HTTP requests observed by the browser preview (method, URL, status, mime type, timing, error). The buffer holds up to 200 entries; defaults to the last 50.',
+        'browser_navigate',
+        'Navigate the browser preview. With `action: "goto"` and a `url`, loads that URL. With `back` / `forward` / `reload`, drives the history. Same surface as the address-bar controls.',
+        {
+          action: z.enum(['goto', 'back', 'forward', 'reload']).describe('Navigation action.'),
+          url: z.string().optional().describe('Required for action="goto". Must be http:// or https://.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'navigate', { action: args.action, url: args.url }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: args.action === 'goto' ? `Navigating to ${args.url}.` : `Navigation: ${args.action}.` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_evaluate',
+        [
+          'Run a JavaScript function in the page and return its result.',
+          '',
+          'Without `ref`: the function runs in global scope. Example function: `() => document.title`.',
+          'With `ref`: the function runs with the resolved element as `this` (and as the first argument). Example function: `(el) => el.getBoundingClientRect()`.',
+          '',
+          'The function string must be a complete arrow function or `function` expression. Async functions are awaited.',
+        ].join('\n'),
+        {
+          function: z.string().min(1).describe('A JavaScript function expression. Examples: `() => document.title`, `(el) => el.textContent`.'),
+          ref: z.string().optional().describe('Optional element ref (`eN`) — the function receives the element as `this` and arg[0].'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            const r = (await cdpRequest(sessionId, 'evaluate', { function: args.function, ref: args.ref }, deps.broadcastToSession)) as { value: unknown };
+            return { content: [{ type: 'text', text: JSON.stringify(r.value, null, 2) ?? 'undefined' }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_wait_for',
+        [
+          'Wait until a condition is met. Provide one of:',
+          '  • `text` — wait for this string to appear in the visible page text.',
+          '  • `textGone` — wait for this string to disappear.',
+          '  • `time` — wait this many seconds.',
+          '',
+          'Polls every 100ms (for text conditions). Times out after `timeoutMs` (default 5000).',
+        ].join('\n'),
+        {
+          text: z.string().optional().describe('Wait until this text appears in document.body.innerText.'),
+          textGone: z.string().optional().describe('Wait until this text is no longer in document.body.innerText.'),
+          time: z.number().positive().optional().describe('Wait this many seconds, then return.'),
+          timeoutMs: z.number().int().positive().max(60_000).optional().describe('Hard timeout for text waits. Default 5000ms.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'wait_for', { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs }, deps.broadcastToSession, (args.timeoutMs ?? 5000) + 2000);
+            return { content: [{ type: 'text', text: 'Wait condition met.' }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_console_messages',
+        'Return the last N console messages (log/info/warn/error/debug + uncaught exceptions) captured by the browser preview. Buffer holds up to 200; defaults to the last 50.',
         {
           tail: z.number().int().positive().max(200).optional().describe('Number of most-recent entries to return. Defaults to 50.'),
         },
@@ -547,8 +695,52 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
           }
           try {
-            const result = await cdpRequest(sessionId, 'network', { tail: args.tail ?? 50 }, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+            const r = await cdpRequest(sessionId, 'console_messages', { tail: args.tail ?? 50 }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_network_requests',
+        'Return the last N HTTP requests observed by the browser preview (method, URL, status, mime type, timing, error). Buffer holds up to 200; defaults to the last 50.',
+        {
+          tail: z.number().int().positive().max(200).optional().describe('Number of most-recent entries to return. Defaults to 50.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            const r = await cdpRequest(sessionId, 'network_requests', { tail: args.tail ?? 50 }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_handle_dialog',
+        [
+          'Accept or dismiss a JavaScript dialog (alert/confirm/prompt/beforeunload). Call this after an action that triggered a dialog — Electron pauses the page until the dialog is handled.',
+          '',
+          'Pass `accept: true` to click OK; `accept: false` to click Cancel. For prompts, `promptText` becomes the value.',
+        ].join('\n'),
+        {
+          accept: z.boolean().describe('true → click OK / accept the dialog. false → click Cancel.'),
+          promptText: z.string().optional().describe('Text for prompt() dialogs. Ignored for alert / confirm.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            const r = (await cdpRequest(sessionId, 'handle_dialog', { accept: args.accept, promptText: args.promptText }, deps.broadcastToSession)) as { ok: true; handled: { type: string; message: string } | null };
+            const text = r.handled
+              ? `${args.accept ? 'Accepted' : 'Dismissed'} ${r.handled.type}: ${r.handled.message}`
+              : 'No dialog was pending.';
+            return { content: [{ type: 'text', text }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }

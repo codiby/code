@@ -30,9 +30,17 @@ import {
   snapshot as cdpSnapshot,
   screenshot as cdpScreenshot,
   click as cdpClick,
-  fill as cdpFill,
+  hover as cdpHover,
+  type_ as cdpType,
+  pressKey as cdpPressKey,
+  selectOption as cdpSelectOption,
   scroll as cdpScroll,
+  navigate as cdpNavigate,
+  evaluate as cdpEvaluate,
+  waitFor as cdpWaitFor,
+  consoleMessages as cdpConsoleMessages,
   network as cdpNetwork,
+  handleDialog as cdpHandleDialog,
 } from './cdp';
 import { pluginOauthLogin, type OAuthSpec } from './plugin_oauth';
 
@@ -40,6 +48,45 @@ const DEV = process.env.ELECTRON_DEV === '1' || !app.isPackaged;
 const DEV_URL = process.env.CODIBY_DEV_URL || 'http://localhost:3111';
 
 let mainWindow: BrowserWindow | null = null;
+
+// ---------------------------------------------------------------------------
+// Startup performance + memory budget
+//
+// 1. Single-instance lock: a second `electron .` (or dock double-click)
+//    focuses the existing window instead of spawning a whole second
+//    process tree (main + renderer + GPU + network = ~500MB duplicated).
+// 2. Disable Chromium subsystems we never reach: Cast/media-router,
+//    autofill server, translate, optimization-hints. Each saves a few MB
+//    and a background timer or two.
+// 3. process.noDeprecation: silence Node's deprecation printer (cosmetic,
+//    trivial perf). Electron release notes are the source of truth.
+// ---------------------------------------------------------------------------
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  process.exit(0);
+}
+app.on('second-instance', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+});
+
+app.commandLine.appendSwitch(
+  'disable-features',
+  [
+    'DialMediaRouteProvider',
+    'MediaRouter',
+    'AutofillServerCommunication',
+    'Translate',
+    'OptimizationHints',
+    'OptimizationHintsFetching',
+    'CalculateNativeWinOcclusion',
+    'SpareRendererForSitePerProcess',
+  ].join(','),
+);
+app.commandLine.appendSwitch('no-pings');
+
+process.noDeprecation = true;
 
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -50,13 +97,37 @@ function createMainWindow(): BrowserWindow {
     title: '',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0a0a',
+    // Defer the visual surface until the renderer commits its first paint.
+    // Eliminates the white flash and improves perceived startup latency
+    // without changing total work done.
+    show: false,
     webPreferences: {
       contextIsolation: true,
       sandbox: false,
       nodeIntegration: false,
       preload: join(__dirname, 'preload.js'),
+      // Persist V8 bytecode across launches — second-and-subsequent boots
+      // skip the parse+compile step for hot modules. Disk-resident, no
+      // resident-memory cost.
+      v8CacheOptions: 'code',
+      // The renderer renders a chat UI, so spellcheck stays on.
+      spellcheck: true,
+      // Default is true; pinned here so a future Electron upgrade can't
+      // flip the default to false and starve background tabs of CPU.
+      backgroundThrottling: true,
+      // Deprecated subsystem. Disabling drops one Blink module from the
+      // renderer at no functional cost.
+      enableWebSQL: false,
+      // The React UI doesn't draw via WebGL directly. Disabling here
+      // prevents Blink from initialising the WebGL context backing
+      // resources on first paint.
+      webgl: false,
     },
   });
+
+  // ready-to-show fires after the renderer commits its first paint — at
+  // that point the window can flip from hidden → visible in one frame.
+  win.once('ready-to-show', () => win.show());
 
   // External links open in the user's default browser, not inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -131,20 +202,44 @@ function registerIpcHandlers(): void {
   ipcMain.handle('tauri:cdp_snapshot', async (_e, args: { label: string }) => {
     return await cdpSnapshot(args.label);
   });
-  ipcMain.handle('tauri:cdp_screenshot', async (_e, args: { label: string }) => {
+  ipcMain.handle('tauri:cdp_take_screenshot', async (_e, args: { label: string }) => {
     return await cdpScreenshot(args.label);
   });
-  ipcMain.handle('tauri:cdp_click', async (_e, args: { label: string; id: string }) => {
-    return await cdpClick(args.label, args.id);
+  ipcMain.handle('tauri:cdp_click', async (_e, args: { label: string; ref: string; button?: 'left' | 'right' | 'middle'; doubleClick?: boolean }) => {
+    return await cdpClick(args.label, args.ref, { button: args.button, doubleClick: args.doubleClick });
   });
-  ipcMain.handle('tauri:cdp_fill', async (_e, args: { label: string; id: string; value: string }) => {
-    return await cdpFill(args.label, args.id, args.value);
+  ipcMain.handle('tauri:cdp_hover', async (_e, args: { label: string; ref: string }) => {
+    return await cdpHover(args.label, args.ref);
   });
-  ipcMain.handle('tauri:cdp_scroll', async (_e, args: { label: string; id?: string; x?: number; y?: number }) => {
-    return await cdpScroll(args.label, { id: args.id, x: args.x, y: args.y });
+  ipcMain.handle('tauri:cdp_type', async (_e, args: { label: string; ref: string; text: string; submit?: boolean }) => {
+    return await cdpType(args.label, args.ref, args.text, { submit: args.submit });
   });
-  ipcMain.handle('tauri:cdp_network', async (_e, args: { label: string; tail?: number }) => {
+  ipcMain.handle('tauri:cdp_press_key', async (_e, args: { label: string; key: string }) => {
+    return await cdpPressKey(args.label, args.key);
+  });
+  ipcMain.handle('tauri:cdp_select_option', async (_e, args: { label: string; ref: string; values: string[] }) => {
+    return await cdpSelectOption(args.label, args.ref, args.values);
+  });
+  ipcMain.handle('tauri:cdp_scroll', async (_e, args: { label: string; ref?: string; x?: number; y?: number }) => {
+    return await cdpScroll(args.label, { ref: args.ref, x: args.x, y: args.y });
+  });
+  ipcMain.handle('tauri:cdp_navigate', async (_e, args: { label: string; action: 'goto' | 'back' | 'forward' | 'reload'; url?: string }) => {
+    return await cdpNavigate(args.label, args.action, args.url);
+  });
+  ipcMain.handle('tauri:cdp_evaluate', async (_e, args: { label: string; function: string; ref?: string }) => {
+    return await cdpEvaluate(args.label, args.function, { ref: args.ref });
+  });
+  ipcMain.handle('tauri:cdp_wait_for', async (_e, args: { label: string; text?: string; textGone?: string; time?: number; timeoutMs?: number }) => {
+    return await cdpWaitFor(args.label, { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs });
+  });
+  ipcMain.handle('tauri:cdp_console_messages', async (_e, args: { label: string; tail?: number }) => {
+    return cdpConsoleMessages(args.label, { tail: args.tail });
+  });
+  ipcMain.handle('tauri:cdp_network_requests', async (_e, args: { label: string; tail?: number }) => {
     return cdpNetwork(args.label, { tail: args.tail });
+  });
+  ipcMain.handle('tauri:cdp_handle_dialog', async (_e, args: { label: string; accept: boolean; promptText?: string }) => {
+    return await cdpHandleDialog(args.label, { accept: args.accept, promptText: args.promptText });
   });
 
   // --- plugin OAuth ---------------------------------------------------------

@@ -27,9 +27,25 @@ type Pending = {
 
 const pending = new Map<string, Pending>();
 
+export type CdpAction =
+  | 'snapshot'
+  | 'take_screenshot'
+  | 'click'
+  | 'hover'
+  | 'type'
+  | 'press_key'
+  | 'select_option'
+  | 'scroll'
+  | 'navigate'
+  | 'evaluate'
+  | 'wait_for'
+  | 'console_messages'
+  | 'network_requests'
+  | 'handle_dialog';
+
 export async function cdpRequest(
   sessionId: string,
-  action: 'snapshot' | 'screenshot' | 'click' | 'fill' | 'scroll' | 'network',
+  action: CdpAction,
   args: Record<string, unknown>,
   broadcastToSession: (sessionId: string, msg: object) => void,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
