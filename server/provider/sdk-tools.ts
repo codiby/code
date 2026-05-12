@@ -19,6 +19,7 @@ import { addMessage } from '../state';
 import type { ChatMessage } from '../state';
 import { sessions, saveSessions } from '../sessions';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host';
+import { cdpRequest } from './browser-cdp';
 import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProcessOutput } from '../handlers/processes';
 import { spawnPty } from '../pty';
 import type { TrackedProcess } from '../types';
@@ -424,6 +425,133 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           setBrowserPreview(sessionId, null);
           deps.broadcastToSession(sessionId, { type: 'close_browser', sessionId });
           return { content: [{ type: 'text', text: had ? 'Closed browser preview.' : 'No browser preview was open.' }] };
+        },
+      ),
+      // ---------------------------------------------------------------------
+      // CDP-driven browser automation. Each tool round-trips through the
+      // bridge → desktop frontend → Electron main → CDP. Ids in click /
+      // fill / scroll are the synthetic ones returned by the most recent
+      // browser_snapshot — call snapshot first, then act on its ids.
+      // Non-desktop viewers (browser, mobile PWA) don't service these
+      // requests; the call times out with a clear error.
+      // ---------------------------------------------------------------------
+      tool(
+        'browser_snapshot',
+        [
+          'Capture an ID-addressed list of interactive elements (links, buttons, inputs, selects, [role=*], contenteditable) in the current browser preview, along with each element\'s role, accessible name, value, bounds, and visibility.',
+          '',
+          'Use this BEFORE clicking, filling, or scrolling — the returned `id` is what `browser_click`, `browser_fill`, and `browser_scroll` address. Ids are valid only until the next snapshot or a navigation; refresh by calling snapshot again.',
+          '',
+          'Requires an open browser preview (open one with `browser_open` first).',
+        ].join('\n'),
+        {},
+        async () => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            const result = await cdpRequest(sessionId, 'snapshot', {}, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_screenshot',
+        'Capture a PNG screenshot of the current browser preview viewport. Returns base64-encoded data.',
+        {},
+        async () => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            const result = (await cdpRequest(sessionId, 'screenshot', {}, deps.broadcastToSession)) as { format: string; data: string };
+            return {
+              content: [
+                { type: 'text', text: `Captured ${result.format} screenshot (${Math.round(result.data.length / 1024)} KB base64).` },
+                { type: 'image', data: result.data, mimeType: `image/${result.format}` },
+              ],
+            };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_click',
+        'Click an element previously identified by `browser_snapshot`. The id is the synthetic id returned by the most recent snapshot. Calls `.click()` after scrolling the element into view; falls back to dispatching a synthetic MouseEvent if `.click()` is unavailable.',
+        {
+          id: z.string().min(1).describe('Element id from the most recent browser_snapshot.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'click', { id: args.id }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Clicked ${args.id}.` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_fill',
+        'Set the value of an input/textarea/contenteditable element identified by `browser_snapshot`. Focuses the element, sets the value via the prototype setter (so React/Vue controlled inputs notice), and fires `input` + `change` events.',
+        {
+          id: z.string().min(1).describe('Element id from the most recent browser_snapshot.'),
+          value: z.string().describe('New value. Empty string clears the field.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'fill', { id: args.id, value: args.value }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Filled ${args.id} with ${JSON.stringify(args.value).slice(0, 80)}.` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_scroll',
+        'Scroll the browser preview. With `id`: scroll that element into view (centred). With `x` / `y`: scroll the viewport to those absolute coordinates. Pass exactly one form.',
+        {
+          id: z.string().optional().describe('Element id from the most recent browser_snapshot; scrolls the element into view.'),
+          x: z.number().optional().describe('Absolute viewport X to scroll to (used when `id` is omitted).'),
+          y: z.number().optional().describe('Absolute viewport Y to scroll to (used when `id` is omitted).'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            await cdpRequest(sessionId, 'scroll', { id: args.id, x: args.x, y: args.y }, deps.broadcastToSession);
+            const where = args.id ? `id=${args.id}` : `(${args.x ?? 0}, ${args.y ?? 0})`;
+            return { content: [{ type: 'text', text: `Scrolled to ${where}.` }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
+        },
+      ),
+      tool(
+        'browser_network',
+        'Return the last N HTTP requests observed by the browser preview (method, URL, status, mime type, timing, error). The buffer holds up to 200 entries; defaults to the last 50.',
+        {
+          tail: z.number().int().positive().max(200).optional().describe('Number of most-recent entries to return. Defaults to 50.'),
+        },
+        async (args) => {
+          if (!getBrowserPreview(sessionId)) {
+            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
+          }
+          try {
+            const result = await cdpRequest(sessionId, 'network', { tail: args.tail ?? 50 }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+          }
         },
       ),
       tool(

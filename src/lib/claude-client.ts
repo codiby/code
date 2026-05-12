@@ -215,6 +215,15 @@ type ClientCallbacks = {
   onOpenMockup: (sessionId: string, name: string, html: string) => void;
   onOpenBrowser: (sessionId: string, url: string, title: string) => void;
   onCloseBrowser: (sessionId: string) => void;
+  /**
+   * Bridge → frontend CDP request channel. The bridge issues `browser_request`
+   * over the WS when an SDK tool (browser_snapshot / browser_click / etc.)
+   * runs; the desktop frontend forwards to Electron main via the
+   * `__TAURI_INTERNALS__.invoke('cdp_<action>', args)` shim and replies with
+   * `respondBrowserRequest`. Optional — non-Electron viewers can leave it
+   * unimplemented; the bridge times out and the tool reports failure.
+   */
+  onBrowserRequest?: (req: { sessionId: string; requestId: string; action: string; args: unknown }) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
   onFocusSession: (sessionId: string) => void;
   onWelcome: (info: { spawnMode: SpawnMode }) => void;
@@ -423,6 +432,14 @@ export class ClaudeClient {
       case 'close_browser':
         this.callbacks.onCloseBrowser(sessionId);
         break;
+      case 'browser_request':
+        this.callbacks.onBrowserRequest?.({
+          sessionId,
+          requestId: msg.requestId as string,
+          action: msg.action as string,
+          args: msg.args,
+        });
+        break;
       case 'preferences':
         this.callbacks.onPreferences(msg.preferences as Record<string, unknown>);
         break;
@@ -478,6 +495,15 @@ export class ClaudeClient {
 
   interrupt(sessionId: string) {
     this.send({ type: 'interrupt', sessionId });
+  }
+
+  /** Reply to a `browser_request` from the bridge. */
+  respondBrowserRequest(
+    sessionId: string,
+    requestId: string,
+    payload: { result?: unknown; error?: string },
+  ) {
+    this.send({ type: 'browser_response', sessionId, requestId, ...payload });
   }
 
   // ---------------------------------------------------------------------------

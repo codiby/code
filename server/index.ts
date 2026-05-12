@@ -25,6 +25,7 @@ import { OpenCodeAdapter } from './provider/adapters/OpenCodeAdapter';
 import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision } from './provider/bridge';
+import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleExecCreate, terminalWsOpen, terminalWsClose, spawnTrackedProcess } from './handlers/exec';
 import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput } from './handlers/processes';
@@ -498,6 +499,16 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     // becomes "✅ Approved" / "❌ Denied" instead of staying as a stale
     // "🔔 Permission needed" record.
     notifyPermissionResolved(requestId, { allow });
+    return;
+  }
+
+  // ---- browser_response (from desktop frontend) ----------------------------
+  // Reply to a `browser_request` issued by an SDK browser_* tool. The CDP
+  // round-trip is bridge → frontend → Electron main → CDP; this is the
+  // last hop back. Non-desktop viewers never send these — `cdpRequest`
+  // times out and the tool reports failure.
+  if (type === 'browser_response') {
+    handleBrowserResponse(msg as { requestId?: string; result?: unknown; error?: string });
     return;
   }
 
