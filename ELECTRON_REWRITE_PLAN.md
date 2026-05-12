@@ -119,10 +119,10 @@ electron-rewrite/
 ├── server/                    Bridge server (unchanged)
 ├── scripts/
 │   ├── build.ts               Unchanged
-│   ├── bundle-bun.sh          Replaced/parallel: bundles bun + server.js into a resources dir consumable by electron-builder
+│   ├── bundle-bun.sh          Unchanged (Tauri path)
 │   ├── codiby                 Unchanged (CLI script)
-│   └── electron-resources.sh  NEW: bundles bun + server.js + dist/ into electron/resources/ for packaging
-├── src-tauri.legacy/          Renamed from src-tauri/ to make deprecation obvious; kept until Electron is verified
+│   └── electron-resources.sh  NEW: bundles bun + server.js into electron/resources/ for packaging
+├── src-tauri/                 Unchanged; kept side-by-side until Electron is verified
 ├── package.json               +electron, +electron-builder, +scripts, "main": "electron-dist/main.js"
 └── ELECTRON_REWRITE_PLAN.md   This file
 ```
@@ -417,20 +417,15 @@ for `onOpenBrowser` / `onCloseBrowser` is the template.
 
 ## 8. src-tauri migration strategy
 
-**Decision: rename `src-tauri/` → `src-tauri.legacy/`** during scaffolding.
+**Decision: keep `src-tauri/` and `electron/` side-by-side** during scaffolding. No rename.
 
 Reasons:
-- `.legacy` makes the deprecation obvious in PR diffs and editor file trees.
-- Anything that still imports it (none, since it's a separate Rust crate) breaks loudly.
-- We keep it on disk so the Tauri build still works as an escape hatch if Electron blocks.
-- Deletion happens in a separate commit once the Electron path is verified end-to-end.
+- Tauri scripts (`tauri:dev`, `tauri:build`, `bundle-bun.sh`, `bump-version.ts`) keep working unchanged — useful as an escape hatch if Electron blocks.
+- The path doesn't appear in any non-build artifact, so a rename buys only cosmetic deprecation signal.
+- Once the Electron path is verified end-to-end, **delete** `src-tauri/` outright in a single commit — no `.legacy/` intermediate state.
 
-Build scripts referencing the path get updated to point at `src-tauri.legacy/`:
-- `scripts/bundle-bun.sh` — `SIDECAR_DIR="$PROJECT_DIR/src-tauri.legacy/sidecar"`.
-- `scripts/bump-version.ts` — same.
-- `package.json` — `"tauri": "tauri"`, `"tauri:dev"`, etc., add a `TAURI_CONFIG_DIR=src-tauri.legacy` env override (or just remove the scripts; the user said Tauri side is being replaced).
-
-We will mostly leave the Tauri scripts in but mark them as legacy so the user can still run them manually if needed.
+Until that final delete, the Tauri toolchain is fully functional and the
+Electron toolchain is opt-in via the new `electron:*` package scripts.
 
 ---
 
