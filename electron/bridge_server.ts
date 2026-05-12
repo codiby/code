@@ -167,6 +167,18 @@ async function spawnSidecar(): Promise<number> {
 }
 
 export async function getBridgePort(): Promise<number> {
+  // Dev escape hatch: when `run.sh` is already running the bridge on a fixed
+  // port (typically 3111), point the renderer at that one instead of
+  // spawning a second sidecar that would race for the same port files.
+  const override = process.env.CODIBY_BRIDGE_PORT_OVERRIDE;
+  if (override) {
+    const n = Number.parseInt(override, 10);
+    if (Number.isFinite(n) && n > 0 && await healthCheck(n)) {
+      cachedPort = n;
+      return n;
+    }
+  }
+
   if (cachedPort != null && await healthCheck(cachedPort)) {
     return cachedPort;
   }

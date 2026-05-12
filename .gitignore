@@ -30,6 +30,11 @@ src-tauri/gen/
 src-tauri/sidecar/bun
 src-tauri/sidecar/bun-*
 
+# Electron
+electron-dist/
+electron-out/
+electron/resources/
+
 # Playwright
 .playwright-cli/
 
