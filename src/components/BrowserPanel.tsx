@@ -34,6 +34,23 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MockupComment } from '../lib/mockup-inspector';
 
+type CodibyBridge = {
+  onBrowserPreviewEvent(
+    eventName:
+      | 'browser-preview://ready'
+      | 'browser-preview://comments-changed'
+      | 'browser-preview://inspect-auto-off'
+      | 'browser-preview://url-changed',
+    cb: (payload: { label: string; payload: string | null }) => void,
+  ): () => void;
+};
+
+declare global {
+  interface Window {
+    codiby?: CodibyBridge;
+  }
+}
+
 export type BrowserPanelProps = {
   label: string;
   url: string;
@@ -241,9 +258,16 @@ export function BrowserPanel({
 
   // Listen for the relay events. Filter by label so two open browser
   // sessions in different tabs don't cross-talk.
+  //
+  // Under Electron we listen via `window.codiby.onBrowserPreviewEvent` —
+  // the Tauri-compat invoke shim covers `invoke(...)` calls but the event
+  // subsystem internals (`@tauri-apps/api/event`) require Tauri's
+  // transformCallback registry to actually deliver. Under legacy Tauri the
+  // old listen() path stays in use.
   useEffect(() => {
     let unlistens: UnlistenFn[] = [];
     let cancelled = false;
+    const codiby = (typeof window !== 'undefined' ? window.codiby : null) || null;
 
     (async () => {
       const handle = async (
@@ -254,14 +278,21 @@ export function BrowserPanel({
           | 'browser-preview://url-changed',
         cb: (parsed: unknown) => void,
       ) => {
-        const u = await listen<RelayPayload>(eventName, (e) => {
-          if (e.payload.label !== label) return;
+        const wrap = (p: { label: string; payload: string | null }) => {
+          if (p.label !== label) return;
           let parsed: unknown = null;
-          if (e.payload.payload != null) {
-            try { parsed = JSON.parse(e.payload.payload); } catch { parsed = null; }
+          if (p.payload != null) {
+            try { parsed = JSON.parse(p.payload); } catch { parsed = null; }
           }
           cb(parsed);
-        });
+        };
+        if (codiby) {
+          const u = codiby.onBrowserPreviewEvent(eventName, wrap);
+          if (cancelled) u();
+          else unlistens.push(u);
+          return;
+        }
+        const u = await listen<RelayPayload>(eventName, (e) => wrap(e.payload));
         if (cancelled) u();
         else unlistens.push(u);
       };

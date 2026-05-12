@@ -18,7 +18,25 @@ import { SettingsPanel } from './SettingsPanel';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
+// Notifications use the standard Web Notification API. Electron's Chromium
+// surface implements it natively; Tauri-on-WKWebView used to need the
+// `@tauri-apps/plugin-notification` polyfill, but the Electron rewrite no
+// longer ships it.
+async function isPermissionGranted(): Promise<boolean> {
+  if (typeof Notification === 'undefined') return false;
+  return Notification.permission === 'granted';
+}
+async function requestPermission(): Promise<'granted' | 'denied' | 'default'> {
+  if (typeof Notification === 'undefined') return 'denied';
+  if (Notification.permission === 'granted') return 'granted';
+  return await Notification.requestPermission();
+}
+function sendNotification(opts: { title: string; body?: string }): void {
+  if (typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'granted') return;
+  try { new Notification(opts.title, { body: opts.body }); } catch {}
+}
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   ClaudeClient,
@@ -1264,6 +1282,16 @@ export function ChatApp() {
         onCloseBrowser: (sid) => {
           updateLocalState(sid, s => ({ ...s, openBrowser: null, browserInspect: false }));
         },
+
+        // Bridge → Electron CDP request forwarding (browser_snapshot,
+        // browser_click, etc.). The handler routes to `cdp_*` IPC and
+        // replies via `client.respondBrowserRequest`. Non-Electron viewers
+        // (browser, mobile PWA) have no `__TAURI_INTERNALS__.invoke` and
+        // return an explicit error so the bridge surfaces it to the model.
+        onBrowserRequest: handleBrowserCdpRequest(
+          (sid, requestId, payload) => c.respondBrowserRequest(sid, requestId, payload),
+          (sid) => browserLabelFor(sid),
+        ),
 
         // Initial-load + server-pushed preferences. Sent as the first WS
         // message on connect (so closed/archived/tabOrder are populated
