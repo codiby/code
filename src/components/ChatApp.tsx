@@ -11,6 +11,7 @@ import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
 import { WorktreeModal } from './WorktreeModal';
 import { BypassWarningModal, shouldWarnBypass } from './BypassWarningModal';
+import { BrowserUrlModal } from './BrowserUrlModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
@@ -2563,6 +2564,10 @@ export function ChatApp() {
   // pops a confirmation modal the first time; the user can tick "don't show
   // again" to suppress it on future flips.
   const [pendingBypassSessionId, setPendingBypassSessionId] = useState<string | null>(null);
+  // "Open Browser…" palette action — flipped to true to show the URL modal.
+  // Replaces a `window.prompt` call that Chromium silently disables in
+  // Electron (the action used to no-op when the user picked it).
+  const [browserUrlModalOpen, setBrowserUrlModalOpen] = useState(false);
 
   const applyPermissionMode = useCallback((sessionId: string, mode: string) => {
     const c = clientRef.current;
@@ -2802,48 +2807,11 @@ export function ChatApp() {
     { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
     { id: 'open-browser', label: 'Open Browser…', section: 'Browser', onRun: () => {
       if (!activeId) return;
-      // System prompt keeps this lightweight — the palette closes when an
-      // action runs, so a real modal would just be another dismissable
-      // layer over the same input we already had focused. If the user
-      // cancels or leaves it blank, no-op.
-      const raw = window.prompt('Open URL in browser preview', 'https://');
-      if (!raw) return;
-      const trimmed = raw.trim();
-      if (!trimmed) return;
-      // localhost / loopback / private IPv4 / *.local default to http; everything
-      // else gets https. Kept in lockstep with BrowserPanel.coerceUrlScheme.
-      let next: string;
-      if (/^https?:\/\//i.test(trimmed)) {
-        next = trimmed;
-      } else {
-        const bare = trimmed.replace(/^\/\//, '');
-        const host = bare.split('/')[0]!.split('?')[0]!.split('#')[0]!;
-        const hostname = host.split(':')[0]!.toLowerCase();
-        const isLoopbackOrPrivate =
-          hostname === 'localhost' ||
-          hostname === '0.0.0.0' ||
-          hostname === '127.0.0.1' ||
-          hostname.startsWith('127.') ||
-          hostname === '::1' ||
-          hostname.endsWith('.local') ||
-          hostname.endsWith('.localhost') ||
-          /^10\./.test(hostname) ||
-          /^192\.168\./.test(hostname) ||
-          /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
-        next = `${isLoopbackOrPrivate ? 'http' : 'https'}://${bare}`;
-      }
-      try { new URL(next); } catch { return; }
-      const preview = { url: next, title: next };
-      updateLocalState(activeId, s => ({
-        ...s,
-        openBrowser: { ...preview, openSeq: Date.now() },
-        lastBrowser: preview,
-        openFile: null,
-        openMockup: null,
-        openTerminalId: null,
-        diffView: null,
-        editorDirty: false,
-      }));
+      // Defer the actual URL prompt to a React modal — `window.prompt` is
+      // disabled by Chromium in Electron and is also a no-op under Tauri 2's
+      // WKWebView host (no `runJavaScriptTextInputPanelWithPrompt` wiring),
+      // so the historical inline `prompt()` was a silent dead end.
+      setBrowserUrlModalOpen(true);
     } },
     ...(activeId && active.isStreaming ? [{ id: 'stop', label: 'Stop Generation', keys: ['escape'] as string[], section: 'Session', onRun: handleInterrupt }] : []),
     ...sessions.map(s => ({
@@ -4848,6 +4816,50 @@ export function ChatApp() {
           onConfirm={() => {
             if (pendingBypassSessionId) applyPermissionMode(pendingBypassSessionId, 'bypassPermissions');
             setPendingBypassSessionId(null);
+          }}
+        />
+        <BrowserUrlModal
+          open={browserUrlModalOpen}
+          onCancel={() => setBrowserUrlModalOpen(false)}
+          onConfirm={(raw) => {
+            setBrowserUrlModalOpen(false);
+            if (!activeId) return;
+            const trimmed = raw.trim();
+            if (!trimmed) return;
+            // localhost / loopback / private IPv4 / *.local default to http; everything
+            // else gets https. Kept in lockstep with BrowserPanel.coerceUrlScheme.
+            let next: string;
+            if (/^https?:\/\//i.test(trimmed)) {
+              next = trimmed;
+            } else {
+              const bare = trimmed.replace(/^\/\//, '');
+              const host = bare.split('/')[0]!.split('?')[0]!.split('#')[0]!;
+              const hostname = host.split(':')[0]!.toLowerCase();
+              const isLoopbackOrPrivate =
+                hostname === 'localhost' ||
+                hostname === '0.0.0.0' ||
+                hostname === '127.0.0.1' ||
+                hostname.startsWith('127.') ||
+                hostname === '::1' ||
+                hostname.endsWith('.local') ||
+                hostname.endsWith('.localhost') ||
+                /^10\./.test(hostname) ||
+                /^192\.168\./.test(hostname) ||
+                /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
+              next = `${isLoopbackOrPrivate ? 'http' : 'https'}://${bare}`;
+            }
+            try { new URL(next); } catch { return; }
+            const preview = { url: next, title: next };
+            updateLocalState(activeId, s => ({
+              ...s,
+              openBrowser: { ...preview, openSeq: Date.now() },
+              lastBrowser: preview,
+              openFile: null,
+              openMockup: null,
+              openTerminalId: null,
+              diffView: null,
+              editorDirty: false,
+            }));
           }}
         />
         {worktreeForGroup && clientRef.current && (
