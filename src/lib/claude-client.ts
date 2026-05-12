@@ -213,6 +213,8 @@ type ClientCallbacks = {
   onSupportedModels: (sessionId: string, models: SupportedModel[]) => void;
   onOpenFile: (sessionId: string, path: string, line: number | null) => void;
   onOpenMockup: (sessionId: string, name: string, html: string) => void;
+  onOpenBrowser: (sessionId: string, url: string, title: string) => void;
+  onCloseBrowser: (sessionId: string) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
   onFocusSession: (sessionId: string) => void;
   onWelcome: (info: { spawnMode: SpawnMode }) => void;
@@ -414,6 +416,12 @@ export class ClaudeClient {
         break;
       case 'open_mockup':
         this.callbacks.onOpenMockup(sessionId, msg.name as string, msg.html as string);
+        break;
+      case 'open_browser':
+        this.callbacks.onOpenBrowser(sessionId, msg.url as string, (msg.title as string) || '');
+        break;
+      case 'close_browser':
+        this.callbacks.onCloseBrowser(sessionId);
         break;
       case 'preferences':
         this.callbacks.onPreferences(msg.preferences as Record<string, unknown>);

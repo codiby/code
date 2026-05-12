@@ -34,7 +34,15 @@ import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
 import { type MockupComment } from '../lib/mockup-inspector';
 import { MockupPanel } from './MockupPanel';
+import { BrowserPanel } from './BrowserPanel';
 import { PlanPanel, type PlanComment } from './PlanPanel';
+
+/** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
+ *  Using `… || []` at the JSX site allocates a fresh array on every render
+ *  and trips child useEffects that depend on the prop reference — the
+ *  BrowserPanel was getting `set_comments([])` invoked continuously, which
+ *  was wiping its inspector's local state every render. */
+const NO_BROWSER_COMMENTS: MockupComment[] = [];
 
 type PendingMessage = {
   id: string;
@@ -58,6 +66,17 @@ type LocalSessionState = SessionState & {
   // survive `mockup_edit` re-broadcasts and tab switches.
   mockupComments: Record<string, MockupComment[]>;
   mockupInspect: boolean;
+  // Live browser preview opened by `browser_open` — UI-only, same caveat as
+  // `openMockup` so the `onSessionState` merge has to preserve it. `openSeq`
+  // is bumped on every `open_browser` broadcast so the BrowserPanel re-runs
+  // its open effect even when the URL didn't change (e.g. retry after a
+  // failed open) — without it, the panel sits in its stale error state.
+  openBrowser: { url: string; title: string; openSeq: number } | null;
+  lastBrowser: { url: string; title: string } | null;
+  // Inspector comments per browser URL. Keyed by URL so navigating away and
+  // back to the same page keeps the user's annotations.
+  browserComments: Record<string, MockupComment[]>;
+  browserInspect: boolean;
   // ExitPlanMode plan rendered in the side panel. UI-only — same merge
   // caveat as `openMockup`. `planRequestId` tracks the most recent perm
   // request id we auto-opened for so we don't reopen the panel after the
@@ -841,6 +860,8 @@ export function ChatApp() {
     pendingMessages: [],
     openMockup: null, lastMockup: null,
     mockupComments: {}, mockupInspect: false,
+    openBrowser: null, lastBrowser: null,
+    browserComments: {}, browserInspect: false,
     openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
   });
 
@@ -970,6 +991,10 @@ export function ChatApp() {
                 lastMockup: existing?.lastMockup ?? null,
                 mockupComments: existing?.mockupComments ?? {},
                 mockupInspect: false,
+                openBrowser: existing?.openBrowser ?? null,
+                lastBrowser: existing?.lastBrowser ?? null,
+                browserComments: existing?.browserComments ?? {},
+                browserInspect: false,
                 openPlan: existing?.openPlan ?? null,
                 lastPlan: existing?.lastPlan ?? null,
                 planComments: existing?.planComments ?? [],
@@ -1191,6 +1216,7 @@ export function ChatApp() {
             ...s,
             openFile: line != null ? { ...file, line } : file,
             openMockup: null,
+            openBrowser: null,
             openTerminalId: null,
             diffView: null,
             editorDirty: false,
@@ -1210,7 +1236,33 @@ export function ChatApp() {
             openTerminalId: null,
             diffView: null,
             editorDirty: false,
+            openBrowser: null,
           }));
+        },
+
+        // Server-initiated "open browser preview" — triggered by the
+        // `browser_open` SDK tool. Closes any other side-panel surface
+        // (file, mockup, terminal, diff) so the native window gets the
+        // room. `openSeq` increments on every broadcast so a repeat
+        // call (same URL, same session) still forces BrowserPanel to
+        // re-run its open effect — necessary for retry-after-error
+        // and any "reload via re-broadcast" model behavior.
+        onOpenBrowser: (sid, url, title) => {
+          if (!url) return;
+          updateLocalState(sid, s => ({
+            ...s,
+            openBrowser: { url, title: title || url, openSeq: Date.now() },
+            lastBrowser: { url, title: title || url },
+            openFile: null,
+            openMockup: null,
+            openTerminalId: null,
+            diffView: null,
+            editorDirty: false,
+          }));
+        },
+
+        onCloseBrowser: (sid) => {
+          updateLocalState(sid, s => ({ ...s, openBrowser: null, browserInspect: false }));
         },
 
         // Initial-load + server-pushed preferences. Sent as the first WS
@@ -1374,9 +1426,9 @@ export function ChatApp() {
   }, [activeId]);
 
   const active = getState(activeId);
-  const { openFile, openMockup, openPlan, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
+  const { openFile, openMockup, openBrowser, openPlan, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
-  const hasRightPanel = !!openFile || !!openMockup || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+  const hasRightPanel = !!openFile || !!openMockup || !!openBrowser || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
 
   // Snap back to the bottom whenever the active session changes — each tab
   // should open on its latest message, regardless of where the previous tab
@@ -1472,6 +1524,7 @@ export function ChatApp() {
       planRequestId: req.requestId,
       openFile: null,
       openMockup: null,
+      openBrowser: null,
       openTerminalId: null,
       diffView: null,
       editorDirty: false,
@@ -2719,6 +2772,51 @@ export function ChatApp() {
       persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
     } },
     { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
+    { id: 'open-browser', label: 'Open Browser…', section: 'Browser', onRun: () => {
+      if (!activeId) return;
+      // System prompt keeps this lightweight — the palette closes when an
+      // action runs, so a real modal would just be another dismissable
+      // layer over the same input we already had focused. If the user
+      // cancels or leaves it blank, no-op.
+      const raw = window.prompt('Open URL in browser preview', 'https://');
+      if (!raw) return;
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      // localhost / loopback / private IPv4 / *.local default to http; everything
+      // else gets https. Kept in lockstep with BrowserPanel.coerceUrlScheme.
+      let next: string;
+      if (/^https?:\/\//i.test(trimmed)) {
+        next = trimmed;
+      } else {
+        const bare = trimmed.replace(/^\/\//, '');
+        const host = bare.split('/')[0]!.split('?')[0]!.split('#')[0]!;
+        const hostname = host.split(':')[0]!.toLowerCase();
+        const isLoopbackOrPrivate =
+          hostname === 'localhost' ||
+          hostname === '0.0.0.0' ||
+          hostname === '127.0.0.1' ||
+          hostname.startsWith('127.') ||
+          hostname === '::1' ||
+          hostname.endsWith('.local') ||
+          hostname.endsWith('.localhost') ||
+          /^10\./.test(hostname) ||
+          /^192\.168\./.test(hostname) ||
+          /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
+        next = `${isLoopbackOrPrivate ? 'http' : 'https'}://${bare}`;
+      }
+      try { new URL(next); } catch { return; }
+      const preview = { url: next, title: next };
+      updateLocalState(activeId, s => ({
+        ...s,
+        openBrowser: { ...preview, openSeq: Date.now() },
+        lastBrowser: preview,
+        openFile: null,
+        openMockup: null,
+        openTerminalId: null,
+        diffView: null,
+        editorDirty: false,
+      }));
+    } },
     ...(activeId && active.isStreaming ? [{ id: 'stop', label: 'Stop Generation', keys: ['escape'] as string[], section: 'Session', onRun: handleInterrupt }] : []),
     ...sessions.map(s => ({
       id: `switch-${s.id}`,
@@ -3311,6 +3409,7 @@ export function ChatApp() {
                             ...s,
                             openMockup: s.lastMockup,
                             openFile: null,
+                            openBrowser: null,
                             openTerminalId: null,
                             diffView: null,
                             editorDirty: false,
@@ -3321,6 +3420,36 @@ export function ChatApp() {
                     >
                       <span className="text-[10px]">▣</span>
                       <span className="truncate max-w-[12rem]">{active.lastMockup.name}</span>
+                    </button>
+                  )}
+
+                  {active.lastBrowser && (
+                    <button
+                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
+                        active.openBrowser
+                          ? 'bg-sky-500/15 text-sky-300 border-sky-500/30 hover:bg-sky-500/25'
+                          : 'bg-surface-light text-zinc-400 border-border hover:text-sky-300 hover:border-sky-500/30'
+                      }`}
+                      onClick={() => {
+                        if (!activeId) return;
+                        updateLocalState(activeId, s => {
+                          if (s.openBrowser) return { ...s, openBrowser: null, editorFullWidth: false };
+                          if (!s.lastBrowser) return s;
+                          return {
+                            ...s,
+                            openBrowser: { ...s.lastBrowser, openSeq: Date.now() },
+                            openFile: null,
+                            openMockup: null,
+                            openTerminalId: null,
+                            diffView: null,
+                            editorDirty: false,
+                          };
+                        });
+                      }}
+                      title={active.openBrowser ? `Hide browser preview (${active.lastBrowser.url})` : `Reopen browser preview (${active.lastBrowser.url})`}
+                    >
+                      <span className="text-[10px]">◐</span>
+                      <span className="truncate max-w-[12rem]">{active.lastBrowser.title || active.lastBrowser.url}</span>
                     </button>
                   )}
 
@@ -3569,7 +3698,7 @@ export function ChatApp() {
                                     ...s,
                                     openPlan: { content: planContent, allowedPrompts },
                                     lastPlan: { content: planContent, allowedPrompts },
-                                    openFile: null, openMockup: null, openTerminalId: null, diffView: null,
+                                    openFile: null, openMockup: null, openBrowser: null, openTerminalId: null, diffView: null,
                                   }))}
                                   title="Reopen plan in the side panel"
                                 >
@@ -4278,7 +4407,69 @@ export function ChatApp() {
                     onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
                   />
                 )}
-                {!openFile && !openMockup && openPlan && activeId && (
+                {!openFile && !openMockup && openBrowser && activeId && (
+                  <BrowserPanel
+                    label={`browser-${activeId}`}
+                    url={openBrowser.url}
+                    title={openBrowser.title}
+                    openSeq={openBrowser.openSeq}
+                    obscured={showPalette}
+                    inspect={active.browserInspect}
+                    comments={active.browserComments[openBrowser.url] ?? NO_BROWSER_COMMENTS}
+                    onSetInspect={(next) => updateLocalState(activeId, s => ({ ...s, browserInspect: next }))}
+                    onSetComments={(next) => updateLocalState(activeId, s => ({
+                      ...s,
+                      browserComments: { ...s.browserComments, [openBrowser.url]: next },
+                    }))}
+                    onSendToChat={(md) => {
+                      if (!clientRef.current) return;
+                      const browserUrl = openBrowser.url;
+                      const streamingNow = active.isStreaming;
+                      if (streamingNow) {
+                        const pendingId = crypto.randomUUID();
+                        const pendingMsg = {
+                          id: pendingId,
+                          role: 'user' as const,
+                          content: md,
+                          timestamp: Date.now(),
+                          isPending: true,
+                        };
+                        updateLocalState(activeId, s => ({
+                          ...s,
+                          messages: [...s.messages, pendingMsg],
+                          pendingMessages: [...s.pendingMessages, { id: pendingId, text: md }],
+                          browserInspect: false,
+                          browserComments: { ...s.browserComments, [browserUrl]: [] },
+                        }));
+                      } else {
+                        const userMsg = {
+                          id: crypto.randomUUID(),
+                          role: 'user' as const,
+                          content: md,
+                          timestamp: Date.now(),
+                        };
+                        updateLocalState(activeId, s => ({
+                          ...s,
+                          messages: [...s.messages, userMsg],
+                          isStreaming: true,
+                          wasInterrupted: false,
+                          partialText: '',
+                          partialThinking: '',
+                          browserInspect: false,
+                          browserComments: { ...s.browserComments, [browserUrl]: [] },
+                        }));
+                        clientRef.current.sendMessage(activeId, md);
+                      }
+                    }}
+                    onWriteToChat={(md) => {
+                      setInput(prev => prev ? prev + (prev.endsWith('\n') ? '' : '\n\n') + md : md);
+                      updateLocalState(activeId, s => ({ ...s, browserInspect: false }));
+                      inputRef.current?.focus();
+                    }}
+                    onClose={() => updateLocalState(activeId, s => ({ ...s, openBrowser: null, editorFullWidth: false, browserInspect: false }))}
+                  />
+                )}
+                {!openFile && !openMockup && !openBrowser && openPlan && activeId && (
                   <PlanPanel
                     content={openPlan.content}
                     allowedPrompts={openPlan.allowedPrompts}
@@ -4344,13 +4535,13 @@ export function ChatApp() {
                     onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
                   />
                 )}
-                {!openFile && !openMockup && !openPlan && pluginDetailOpen && (
+                {!openFile && !openMockup && !openBrowser && !openPlan && pluginDetailOpen && (
                   <PluginDetailView />
                 )}
-                {!openFile && !openMockup && !openPlan && !pluginDetailOpen && openPR && (
+                {!openFile && !openMockup && !openBrowser && !openPlan && !pluginDetailOpen && openPR && (
                   <PRDetail pr={openPR} cwd={active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
                 )}
-                {!openFile && !openMockup && !openPlan && !pluginDetailOpen && !openPR && openTerminal && (
+                {!openFile && !openMockup && !openBrowser && !openPlan && !pluginDetailOpen && !openPR && openTerminal && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
@@ -4373,7 +4564,7 @@ export function ChatApp() {
                     </pre>
                   </div>
                 )}
-                {!openFile && !openMockup && !openPlan && !openTerminal && diffView && (
+                {!openFile && !openMockup && !openBrowser && !openPlan && !openTerminal && diffView && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     {/* Review status bar */}
                     {reviewMode && (

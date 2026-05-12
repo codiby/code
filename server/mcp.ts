@@ -24,6 +24,9 @@ import {
   persistMockup,
   loadMockup,
   listPersistedMockups,
+  sanitizeBrowserUrl,
+  setBrowserPreview,
+  getBrowserPreview,
 } from './provider/sdk-tools';
 
 /** Palette for auto-assigning a tab-group colour when the caller doesn't pick.
@@ -350,6 +353,23 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['name'],
       },
+    },
+    {
+      name: 'ui_browser_open',
+      description: 'Open an http(s) URL in the live browser preview side-panel of the current session. The bridge fetches the page server-side, strips frame-busting headers, and serves it back to a sandboxed iframe with an inspector overlay. Replaces any URL previously opened with this tool. Cookies/auth on the target domain are not forwarded; SPA-heavy pages that fire absolute XHRs may break on CORS.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          url: { type: 'string', description: 'Absolute http:// or https:// URL.' },
+          title: { type: 'string', description: 'Short label shown in the panel header. Defaults to the URL host.' },
+        },
+        required: ['url'],
+      },
+    },
+    {
+      name: 'ui_browser_close',
+      description: 'Close the live browser preview side-panel for the current session. No-op if no preview is open.',
+      inputSchema: { type: 'object' as const, properties: {} },
     },
   ],
 }));
@@ -805,6 +825,33 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `Mockup "${name}" not found.${tail}` }], isError: true };
         }
         return { content: [{ type: 'text', text: html }] };
+      }
+      case 'ui_browser_open': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const rawUrl = typeof args!.url === 'string' ? args!.url : '';
+        const rawTitle = typeof args!.title === 'string' ? args!.title : '';
+        const target = sanitizeBrowserUrl(rawUrl);
+        if (!target) {
+          return { content: [{ type: 'text', text: `Invalid URL "${rawUrl}". Must be an absolute http:// or https:// URL.` }], isError: true };
+        }
+        const title = rawTitle.trim() || target.host;
+        setBrowserPreview(uiSessionId, { url: target.toString(), title });
+        _deps.broadcastToSession(uiSessionId, {
+          type: 'open_browser',
+          sessionId: uiSessionId,
+          url: target.toString(),
+          title,
+        });
+        return { content: [{ type: 'text', text: `Opened browser preview for ${target.toString()}.` }] };
+      }
+      case 'ui_browser_close': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const had = !!getBrowserPreview(uiSessionId);
+        setBrowserPreview(uiSessionId, null);
+        _deps.broadcastToSession(uiSessionId, { type: 'close_browser', sessionId: uiSessionId });
+        return { content: [{ type: 'text', text: had ? 'Closed browser preview.' : 'No browser preview was open.' }] };
       }
       default:
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

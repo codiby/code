@@ -395,6 +395,11 @@ export function MobileApp() {
         // already-open mockup just refresh in place.
         setOpenMockupBySession((prev) => ({ ...prev, [sessionId]: name }));
       },
+      // Mobile doesn't render the browser preview yet — proxy iframe rendering
+      // needs a different chrome on phones. Stub the callbacks so the desktop
+      // `browser_open` tool doesn't crash on a connected mobile client.
+      onOpenBrowser: () => {},
+      onCloseBrowser: () => {},
       onPreferences: (prefs) => {
         if (prefs.tabGroups && typeof prefs.tabGroups === 'object') {
           setTabGroups(prefs.tabGroups as Record<string, { id: string; name: string; color: string }>);

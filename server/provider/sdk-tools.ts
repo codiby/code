@@ -125,6 +125,34 @@ export async function listPersistedMockups(sessionId: string): Promise<string[]>
   }
 }
 
+// Live browser previews — keyed by session, mirrors the mockup pattern but
+// without disk persistence. URLs are cheap to re-broadcast on reconnect and
+// the user can always re-issue `browser_open`. The store exists so the HTTP
+// `ui_browser_open` and SDK `browser_open` tools share the same in-memory
+// snapshot.
+export type BrowserPreview = { url: string; title?: string };
+const browserStore = new Map<string, BrowserPreview>();
+export function getBrowserPreview(sessionId: string): BrowserPreview | null {
+  return browserStore.get(sessionId) ?? null;
+}
+export function setBrowserPreview(sessionId: string, preview: BrowserPreview | null): void {
+  if (preview) browserStore.set(sessionId, preview);
+  else browserStore.delete(sessionId);
+}
+
+/** Validate a model-supplied URL: must parse, must be http/https. */
+export function sanitizeBrowserUrl(raw: string): URL | null {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u;
+  } catch {
+    return null;
+  }
+}
+
 export type SdkToolDeps = {
   broadcastToSession: (sessionId: string, msg: object) => void;
   broadcastSessionList: () => void;
@@ -353,6 +381,49 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             return { content: [{ type: 'text', text: `Mockup "${name}" not found.${tail}` }], isError: true };
           }
           return { content: [{ type: 'text', text: html }] };
+        },
+      ),
+      tool(
+        'browser_open',
+        [
+          'Open an http(s) URL in the live browser preview side-panel of Codiby Code. The bridge fetches the page server-side, strips frame-busting headers, and serves it back to a sandboxed iframe with an inspector overlay so the user can click elements to comment on them — same flow as `mockup_write` but for live pages.',
+          '',
+          'Use when the user is iterating on a real running app: previewing their local dev server, reviewing how a deployed page looks, or pointing at a public reference URL. Replaces any URL previously opened with this tool for the session.',
+          '',
+          'Caveats:',
+          '- Pages gated by cookies/Authorization on the target domain are not authenticated through the proxy — the logged-out view is what renders.',
+          '- Heavy SPAs that fire absolute fetch/XHR calls may break on CORS; static pages and simple SSR work fine.',
+          '- localhost dev servers reachable from the bridge process work best.',
+        ].join('\n'),
+        {
+          url: z.string().min(1).describe('Absolute http:// or https:// URL. localhost URLs are reachable as long as the bridge process can connect to them.'),
+          title: z.string().max(120).optional().describe('Short label shown in the panel header. Defaults to the URL host.'),
+        },
+        async (args) => {
+          const target = sanitizeBrowserUrl(args.url);
+          if (!target) {
+            return { content: [{ type: 'text', text: `Invalid URL "${args.url}". Must be an absolute http:// or https:// URL.` }], isError: true };
+          }
+          const title = (args.title || '').trim() || target.host;
+          setBrowserPreview(sessionId, { url: target.toString(), title });
+          deps.broadcastToSession(sessionId, {
+            type: 'open_browser',
+            sessionId,
+            url: target.toString(),
+            title,
+          });
+          return { content: [{ type: 'text', text: `Opened browser preview for ${target.toString()}.` }] };
+        },
+      ),
+      tool(
+        'browser_close',
+        'Close the live browser preview side-panel for the current session. No-op if no preview is open.',
+        {},
+        async () => {
+          const had = !!getBrowserPreview(sessionId);
+          setBrowserPreview(sessionId, null);
+          deps.broadcastToSession(sessionId, { type: 'close_browser', sessionId });
+          return { content: [{ type: 'text', text: had ? 'Closed browser preview.' : 'No browser preview was open.' }] };
         },
       ),
       tool(

@@ -8,6 +8,8 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use url::Url;
 
+mod browser_preview;
+
 struct BridgeServerState {
     port: Mutex<Option<u16>>,
     /// Handle to a sidecar server we spawned ourselves. Held so we can kill
@@ -416,6 +418,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_bridge_port,
             plugin_oauth_login,
+            browser_preview::open_browser_preview,
+            browser_preview::close_browser_preview,
+            browser_preview::browser_preview_set_bounds,
+            browser_preview::browser_preview_set_visible,
+            browser_preview::browser_preview_navigate,
+            browser_preview::browser_preview_set_inspect,
+            browser_preview::browser_preview_set_comments,
+            browser_preview::browser_preview_emit,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
