@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag name for the release (e.g. v0.1.0)"
+        description: "Tag name for the release (e.g. v0.6.0)"
         required: true
         type: string
 
@@ -19,6 +19,13 @@ jobs:
 
     permissions:
       contents: write
+
+    env:
+      # Skip auto cert discovery so the build doesn't fail looking for a
+      # local Developer ID keychain entry that doesn't exist on the
+      # runner. When the repo gets signing secrets (CSC_LINK +
+      # CSC_KEY_PASSWORD), flip this to "true".
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:
       - name: Checkout
@@ -34,18 +41,7 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          key: aarch64-apple-darwin
-
-      - name: Install frontend dependencies
+      - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Resolve release tag
@@ -58,17 +54,44 @@ jobs:
             echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and release DMG
-        uses: tauri-apps/tauri-action@v0
+      # Pipeline:
+      #   1. frontend dist/ via bun build
+      #   2. bun runtime + bundled server.js into electron/resources/
+      #   3. tsc electron/ → electron-dist/
+      #   4. electron-builder packages .app + .dmg under electron-out/
+      # Notarisation auto-skips when APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD
+      # / APPLE_TEAM_ID secrets are missing — the dmg ships ad-hoc signed.
+      - name: Build frontend
+        run: bun run build-server
+
+      - name: Bundle bun + server.js resources
+        run: bun run electron:bundle-resources
+
+      - name: Compile electron main
+        run: bun run electron:build:main
+
+      - name: Package with electron-builder (mac dmg, arm64)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bunx electron-builder --mac dmg --arm64
+
+      - name: List build artifacts
+        run: ls -lh electron-out/
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: ${{ steps.tag.outputs.name }}
-          releaseName: "Codiby Code ${{ steps.tag.outputs.name }}"
-          releaseBody: |
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: "Codiby Code ${{ steps.tag.outputs.name }}"
+          body: |
             Automated release built from `${{ steps.tag.outputs.name }}`.
 
-            **macOS (Apple Silicon)**: `*_aarch64.dmg`
-          releaseDraft: false
+            **macOS (Apple Silicon)**: `Codiby Code-*-arm64.dmg`
+          draft: false
           prerelease: false
-          args: --target aarch64-apple-darwin --bundles dmg
+          files: |
+            electron-out/Codiby Code-*-arm64.dmg
+            electron-out/Codiby Code-*-arm64.dmg.blockmap

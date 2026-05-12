@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "license": "SEE LICENSE IN LICENSE",
   "main": "electron-dist/main.js",
   "scripts": {
@@ -71,14 +71,14 @@
     },
     "files": [
       "electron-dist/**/*",
-      "dist/**/*",
       "package.json",
       "!node_modules/**/*"
     ],
     "extraResources": [
       { "from": "electron/resources/server.js", "to": "server.js" },
       { "from": "electron/resources/bun",       "to": "bun" },
-      { "from": "scripts/codiby",               "to": "scripts/codiby" }
+      { "from": "scripts/codiby",               "to": "scripts/codiby" },
+      { "from": "dist",                         "to": "dist" }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
