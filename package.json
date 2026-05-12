@@ -95,6 +95,6 @@
       "icon": "src-tauri/icons/icon.ico",
       "target": ["nsis"]
     },
-    "afterSign": "electron/build/notarize.js"
+    "afterSign": "electron/build/notarize.cjs"
   }
 }
