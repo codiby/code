@@ -3656,6 +3656,17 @@ export function ChatApp() {
                           </div>
                         ))}
                       </div>
+                      {todos.every(t => t.status === 'completed') && activeId && (
+                        <div className="border-t border-border p-1.5 shrink-0">
+                          <button
+                            type="button"
+                            className="w-full text-[11px] text-zinc-400 hover:text-zinc-100 bg-surface-light/40 hover:bg-surface-light rounded py-1 transition-colors"
+                            onClick={() => updateLocalState(activeId, s => ({ ...s, todos: [] }))}
+                          >
+                            Close
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                   </div>
