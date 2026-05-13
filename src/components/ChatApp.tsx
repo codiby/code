@@ -3984,7 +3984,7 @@ export function ChatApp() {
                           ? !cmdText.trim() || activeStatus !== 'connected'
                           : !input.trim() || activeStatus !== 'connected';
                         const triggerCls =
-                          'min-h-0 h-7 py-0 px-2.5 rounded-full bg-transparent hover:bg-surface-light data-[hovered]:bg-surface-light text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors';
+                          'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors';
                         return (
                           <div className="relative">
                             {/* Ambient color spots — four point-lights bouncing in pairs.
@@ -4007,7 +4007,7 @@ export function ChatApp() {
                             className={`relative transition-colors ${
                               isTerminalMode
                                 ? 'rounded-2xl border shadow-lg shadow-black/30 bg-[#141414] border-green-900/50 focus-within:border-green-700/60'
-                                : 'composer-glass-frame bg-zinc-900/55'
+                                : 'composer-glass-frame bg-[rgba(28,28,33,0.6)]'
                             }`}
                             style={isTerminalMode ? undefined : {
                               backdropFilter: 'blur(28px) saturate(180%)',
@@ -4049,7 +4049,7 @@ export function ChatApp() {
                               </div>
                             )}
 
-                            <div className="flex items-start px-3.5 pt-3 pb-1">
+                            <div className="flex items-start px-4 pt-3.5 pb-1">
                               {isTerminalMode && (
                                 <span className="text-green-500 text-sm font-mono pr-1 py-0.5 select-none shrink-0">&gt;</span>
                               )}
@@ -4145,7 +4145,7 @@ export function ChatApp() {
                               />
                             </div>
 
-                            <div className="flex items-center gap-1 px-2 pb-2 pt-1">
+                            <div className="flex items-center gap-1 px-2 pb-2 pt-1.5">
                               <Select
                                 aria-label="Model"
                                 selectedKey={activeSession?.model || 'default'}
@@ -4222,7 +4222,7 @@ export function ChatApp() {
                                 <button
                                   type="button"
                                   onClick={handleInterrupt}
-                                  className="text-amber-400 hover:text-amber-300 text-[12px] h-7 px-3 rounded-full hover:bg-surface-light transition-colors"
+                                  className="text-amber-400 hover:text-amber-300 text-[12px] h-[26px] px-2.5 rounded-full hover:bg-white/5 transition-colors"
                                 >
                                   Stop
                                 </button>
@@ -4233,10 +4233,10 @@ export function ChatApp() {
                                 onPress={handleSend}
                                 isDisabled={sendDisabled}
                                 aria-label={isTerminalMode ? 'Run' : (streaming ? 'Queue message' : 'Send message')}
-                                className={`rounded-full w-8 h-8 min-w-8 min-h-0 p-0 flex items-center justify-center transition-colors disabled:bg-surface-light disabled:text-zinc-600 ${
+                                className={`rounded-full w-[30px] h-[30px] min-w-[30px] min-h-0 p-0 flex items-center justify-center transition-colors disabled:bg-surface-light disabled:text-zinc-600 ${
                                   isTerminalMode
                                     ? 'bg-green-600 hover:bg-green-500 text-white'
-                                    : 'bg-zinc-100 text-zinc-900 hover:bg-white'
+                                    : 'bg-[#ececef] text-[#07070a] hover:bg-white'
                                 }`}
                               >
                                 <SendIcon className="w-4 h-4" />
