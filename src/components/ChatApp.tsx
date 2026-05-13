@@ -3949,25 +3949,7 @@ export function ChatApp() {
                   )}
 
                   {/* Input */}
-                  <div className="border-t border-border p-3 shrink-0 relative">
-                    {/* Ambient color spot — fades in while the active session is streaming. */}
-                    <div
-                      aria-hidden
-                      className="absolute inset-0 overflow-hidden pointer-events-none transition-opacity duration-300 ease-out"
-                      style={{ opacity: active.isStreaming && !active.permRequest ? 1 : 0 }}
-                    >
-                      <div
-                        className="blob-single absolute rounded-full"
-                        style={{
-                          left: '50%',
-                          top: '50%',
-                          width: '14rem',
-                          height: '14rem',
-                          background:
-                            'radial-gradient(circle, rgba(99,102,241,0.85) 0%, rgba(99,102,241,0) 70%)',
-                        }}
-                      />
-                    </div>
+                  <div className="p-3 shrink-0 relative">
                     <div className="max-w-4xl mx-auto relative">
                       {slash.isActive && (
                         <SlashCommandList
@@ -4004,12 +3986,33 @@ export function ChatApp() {
                         const triggerCls =
                           'min-h-0 h-7 py-0 px-2.5 rounded-full bg-transparent hover:bg-surface-light data-[hovered]:bg-surface-light text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors';
                         return (
+                          <div className="relative">
+                            {/* Ambient color spots — four point-lights bouncing in pairs.
+                                Clipped to the composer's rounded bounds. Fades in while
+                                the session is streaming. */}
+                            <div
+                              aria-hidden
+                              className="absolute inset-0 overflow-hidden pointer-events-none transition-opacity duration-300 ease-out"
+                              style={{
+                                opacity: active.isStreaming && !active.permRequest ? 1 : 0,
+                                borderRadius: isTerminalMode ? '1rem' : '18px',
+                              }}
+                            >
+                              <span className="composer-spot composer-spot--b1" />
+                              <span className="composer-spot composer-spot--b3" />
+                              <span className="composer-spot composer-spot--b4" />
+                              <span className="composer-spot composer-spot--b5" />
+                            </div>
                           <div
-                            className={`relative rounded-2xl border transition-colors shadow-lg shadow-black/30 ${
+                            className={`relative transition-colors ${
                               isTerminalMode
-                                ? 'bg-[#141414] border-green-900/50 focus-within:border-green-700/60'
-                                : 'bg-surface border-border focus-within:border-zinc-500/60'
+                                ? 'rounded-2xl border shadow-lg shadow-black/30 bg-[#141414] border-green-900/50 focus-within:border-green-700/60'
+                                : 'composer-glass-frame bg-zinc-900/55'
                             }`}
+                            style={isTerminalMode ? undefined : {
+                              backdropFilter: 'blur(28px) saturate(180%)',
+                              WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                            }}
                           >
                             {refs && refs.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
@@ -4239,6 +4242,7 @@ export function ChatApp() {
                                 <SendIcon className="w-4 h-4" />
                               </Button>
                             </div>
+                          </div>
                           </div>
                         );
                       })()}

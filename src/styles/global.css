@@ -138,6 +138,87 @@ code {
 }
 
 /* ---------------------------------------------------------------------------
+   Composer ambient spots — four small point-lights that bounce in pairs
+   inside the composer. Pair A (b1+b3, sky+cyan) sweeps ltr in 12s; Pair B
+   (b4+b5, cobalt+ice) sweeps rtl in 17s — coprime periods so they never
+   sync. Each spot is slightly offset horizontally so paired colors aren't
+   stacked exactly vertically. `plus-lighter` blend + a hot white core via
+   ::after give the LED-like glow look.
+   --------------------------------------------------------------------------- */
+@keyframes spot-bounce-ltr {
+  0%   { left: 0%; }
+  50%  { left: 100%; }
+  100% { left: 0%; }
+}
+@keyframes spot-bounce-rtl {
+  0%   { left: 100%; }
+  50%  { left: 0%; }
+  100% { left: 100%; }
+}
+.composer-spot {
+  position: absolute;
+  width: 4rem;
+  height: 4rem;
+  border-radius: 999px;
+  mix-blend-mode: plus-lighter;
+  filter: blur(6px) saturate(1.6);
+  transform: translate(-50%, -50%);
+  will-change: left;
+}
+.composer-spot::after {
+  content: '';
+  position: absolute;
+  inset: 30%;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0) 70%);
+  filter: blur(3px);
+}
+.composer-spot--b1 {
+  top: 30%;
+  transform: translate(calc(-50% - 18px), -50%);
+  background: radial-gradient(circle, rgba(56,189,248,1) 0%, rgba(56,189,248,0.75) 30%, rgba(56,189,248,0) 70%);
+  animation: spot-bounce-ltr 12s ease-in-out infinite;
+}
+.composer-spot--b3 {
+  top: 70%;
+  transform: translate(calc(-50% + 18px), -50%);
+  background: radial-gradient(circle, rgba(34,211,238,1) 0%, rgba(34,211,238,0.75) 30%, rgba(34,211,238,0) 70%);
+  animation: spot-bounce-ltr 12s ease-in-out infinite;
+}
+.composer-spot--b4 {
+  top: 30%;
+  transform: translate(calc(-50% + 18px), -50%);
+  background: radial-gradient(circle, rgba(59,130,246,1) 0%, rgba(59,130,246,0.75) 30%, rgba(59,130,246,0) 70%);
+  animation: spot-bounce-rtl 17s ease-in-out infinite;
+}
+.composer-spot--b5 {
+  top: 70%;
+  transform: translate(calc(-50% - 18px), -50%);
+  background: radial-gradient(circle, rgba(147,197,253,1) 0%, rgba(147,197,253,0.75) 30%, rgba(147,197,253,0) 70%);
+  animation: spot-bounce-rtl 17s ease-in-out infinite;
+}
+
+/* Modern glass frame for the composer — no hard border, just an inset
+   top-edge highlight that simulates light catching the glass, plus a soft
+   outer shadow for depth. On focus the highlight brightens and a subtle
+   1px ring fades in. */
+.composer-glass-frame {
+  border-radius: 18px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    0 1px 0 rgba(0,0,0,0.20),
+    0 6px 18px rgba(0,0,0,0.20);
+  transition: box-shadow 180ms;
+}
+.composer-glass-frame:focus-within {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    0 1px 0 rgba(0,0,0,0.25),
+    0 8px 22px rgba(0,0,0,0.28),
+    0 0 0 1px rgba(255,255,255,0.06);
+}
+
+/* ---------------------------------------------------------------------------
    Mobile WS connection indicator — indeterminate progress bar that slides a
    gradient sliver across a thin track. Fades in while the WebSocket is
    connecting / disconnected and fades out once `'connected'`.
