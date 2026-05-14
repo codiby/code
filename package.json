@@ -24,7 +24,9 @@
     "electron:dev": "bun run scripts/electron-dev.ts",
     "electron:build": "bun run build-server && bun run electron:bundle-resources && bun run electron:build:main && electron-builder",
     "electron:build:mac": "bun run build-server && bun run electron:bundle-resources && bun run electron:build:main && electron-builder --mac dmg",
-    "electron:build:win": "bun run build-server && bun run electron:bundle-resources && bun run electron:build:main && electron-builder --win nsis"
+    "electron:build:win": "bun run build-server && bun run electron:bundle-resources && bun run electron:build:main && electron-builder --win nsis",
+    "electron:replace": "nohup bash scripts/electron-replace-app.sh </dev/null >/tmp/codiby-electron-replace-bootstrap.log 2>&1 & disown",
+    "electron:build:replace": "bash scripts/electron-build-and-replace.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.114",
