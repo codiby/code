@@ -58,6 +58,11 @@ interface Props {
    *  animation and accept input independently of the other panes. */
   renderComposer?: (sessionId: string) => ReactNode;
 
+  /** Render the message scroll area for a given session id. Mirrors
+   *  `renderComposer` — the host owns the chat-content view, the grid
+   *  just hands each pane its session id. */
+  renderBody?: (sessionId: string) => ReactNode;
+
   /** Workspace state is owned by the host so the title bar can surface
    *  workspace-level actions ("add active chat to workspace", "new chat in
    *  workspace") next to the layout-mode switcher. */
@@ -65,6 +70,17 @@ interface Props {
   setWorkspaces: React.Dispatch<React.SetStateAction<Workspace[]>>;
   activeWorkspaceId: string;
   setActiveWorkspaceId: React.Dispatch<React.SetStateAction<string>>;
+  /** Close a workspace. Host decides what to do with sessions that lived in
+   *  it (typically: nothing — sessions are owned at the host level and just
+   *  lose this workspace grouping). The last remaining workspace cannot be
+   *  closed; the workspace bar hides the close affordance in that case. */
+  onCloseWorkspace?: (id: string) => void;
+  /** Rename a workspace. Triggered by double-click on a workspace tile. */
+  onRenameWorkspace?: (id: string, name: string) => void;
+  /** Reorder workspaces by drag-and-drop on the workspace bar. `position`
+   *  is relative to the target: 'above' inserts before, 'below' inserts
+   *  after. */
+  onReorderWorkspaces?: (fromId: string, toId: string, position: 'above' | 'below') => void;
 }
 
 const LS_KEY_WS = 'claude-ui-focus-workspaces';
@@ -184,10 +200,14 @@ export function ChatFocusLayout({
   onSelectSession,
   onCloseSession,
   renderComposer,
+  renderBody,
   workspaces,
   setWorkspaces,
   activeWorkspaceId,
   setActiveWorkspaceId,
+  onCloseWorkspace,
+  onRenameWorkspace,
+  onReorderWorkspaces,
 }: Props) {
   const activeWorkspace = useMemo(
     () => workspaces.find(w => w.id === activeWorkspaceId) ?? workspaces[0]!,
@@ -366,6 +386,9 @@ export function ChatFocusLayout({
         activeWorkspaceId={activeWorkspaceId}
         onSelect={selectWorkspace}
         onCreate={createWorkspace}
+        onClose={onCloseWorkspace}
+        onRename={onRenameWorkspace}
+        onReorder={onReorderWorkspaces}
       />
       <div className="flex-1 flex flex-col min-h-0 min-w-0 relative" data-focus-grid>
       {/* Grid */}
@@ -380,6 +403,7 @@ export function ChatFocusLayout({
             activeSessionId={activeSessionId}
             dragging={dragging}
             renderComposer={renderComposer}
+            renderBody={renderBody}
             onHeaderDragStart={onHeaderDragStart}
             onHeaderDragEnd={onHeaderDragEnd}
             onPaneDragOver={onPaneDragOver}
@@ -417,6 +441,7 @@ function RowView(props: {
   activeSessionId: string | null;
   dragging: string | null;
   renderComposer?: (sessionId: string) => ReactNode;
+  renderBody?: (sessionId: string) => ReactNode;
   onHeaderDragStart: (paneId: string) => (e: React.DragEvent) => void;
   onHeaderDragEnd: () => void;
   onPaneDragOver: (paneEl: HTMLElement) => (e: React.DragEvent) => void;
@@ -447,6 +472,7 @@ function RowView(props: {
               dragging={dragging}
               showRightHandle={cIdx < row.paneIds.length - 1}
               composer={props.renderComposer ? props.renderComposer(pid) : null}
+              body={props.renderBody ? props.renderBody(pid) : null}
               onColResizeStart={props.onColResizeStart(rIdx, cIdx)}
               onHeaderDragStart={props.onHeaderDragStart(pid)}
               onHeaderDragEnd={props.onHeaderDragEnd}
@@ -482,6 +508,7 @@ function PaneShell(props: {
   dragging: string | null;
   showRightHandle: boolean;
   composer: ReactNode;
+  body: ReactNode;
   onColResizeStart: (e: React.MouseEvent) => void;
   onHeaderDragStart: (e: React.DragEvent) => void;
   onHeaderDragEnd: () => void;
@@ -528,18 +555,26 @@ function PaneShell(props: {
           <button
             onClick={(e) => { e.stopPropagation(); props.onClose(); }}
             className="w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-surface-lighter shrink-0"
-            title="Close chat"
+            title="Remove from workspace (chat stays open in the tab bar)"
           >
             <X className="w-3 h-3" />
           </button>
         </div>
 
-        {/* Body placeholder — real chat content lands here next */}
-        <div className="flex-1 overflow-auto p-3 text-zinc-500 text-xs">
-          <div className="opacity-60">
-            Chat content for <span className="text-zinc-300">{session?.name ?? props.paneId}</span> renders here.
+        {/* Body — host-provided per-session chat content (messages,
+            streaming partials, inline permission requests). Falls back to
+            a placeholder so unwired sessions still show something. */}
+        {props.body ? (
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            {props.body}
           </div>
-        </div>
+        ) : (
+          <div className="flex-1 overflow-auto p-3 text-zinc-500 text-xs">
+            <div className="opacity-60">
+              Chat content for <span className="text-zinc-300">{session?.name ?? props.paneId}</span> renders here.
+            </div>
+          </div>
+        )}
 
         {/* Per-pane composer slot. Wrapper is borderless — the composer's
             glass frame already provides the visual separator from the chat. */}
@@ -679,27 +714,124 @@ function WorkspaceBar(props: {
   activeWorkspaceId: string;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  onClose?: (id: string) => void;
+  onRename?: (id: string, name: string) => void;
+  onReorder?: (fromId: string, toId: string, position: 'above' | 'below') => void;
 }) {
-  const { workspaces, activeWorkspaceId, onSelect, onCreate } = props;
+  const { workspaces, activeWorkspaceId, onSelect, onCreate, onClose, onRename, onReorder } = props;
+  const canClose = workspaces.length > 1 && !!onClose;
+  // Per-workspace rename popover (anchored to the right of the tile).
+  // Only one workspace can be renaming at a time.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  // Drag-to-reorder state. `dragId` is the workspace being dragged;
+  // `dropTarget` is where it would land if dropped now.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: 'above' | 'below' } | null>(null);
+  const beginRename = (w: Workspace) => {
+    if (!onRename) return;
+    setRenamingId(w.id);
+    setRenameDraft(w.name);
+  };
+  const commitRename = () => {
+    if (renamingId && onRename) onRename(renamingId, renameDraft);
+    setRenamingId(null);
+  };
+  const cancelRename = () => {
+    setRenamingId(null);
+  };
   return (
     <aside className="w-12 shrink-0 border-r border-border bg-base flex flex-col items-center py-2 gap-1.5">
       {workspaces.map((w, i) => {
         const isActive = w.id === activeWorkspaceId;
         const color = w.color ?? WORKSPACE_COLORS[i % WORKSPACE_COLORS.length]!;
         const initial = (w.name.trim().charAt(0) || 'W').toUpperCase();
+        const isRenaming = renamingId === w.id;
+        const isDragging = dragId === w.id;
+        const isDropTarget = dropTarget?.id === w.id;
         return (
-          <button
+          <div
             key={w.id}
-            onClick={() => onSelect(w.id)}
-            title={`${w.name} · ${w.sessionIds.length} chat${w.sessionIds.length === 1 ? '' : 's'}`}
-            className={`w-8 h-8 rounded-lg flex items-center justify-center text-[12px] font-semibold transition-all ${color} ${
-              isActive
-                ? 'ring-2 scale-[1.05]'
-                : 'opacity-70 hover:opacity-100 ring-1 ring-transparent'
-            }`}
+            className="relative group"
+            onDragOver={(e) => {
+              if (!onReorder || !dragId || dragId === w.id) return;
+              e.preventDefault();
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              const position: 'above' | 'below' = (e.clientY - rect.top) < rect.height / 2 ? 'above' : 'below';
+              setDropTarget(prev => (prev?.id === w.id && prev.position === position ? prev : { id: w.id, position }));
+            }}
+            onDragLeave={(e) => {
+              const next = e.relatedTarget as Node | null;
+              const current = e.currentTarget as Node;
+              if (next && current.contains(next)) return;
+              setDropTarget(prev => (prev?.id === w.id ? null : prev));
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const fromId = e.dataTransfer.getData('text/plain') || dragId;
+              const pos = dropTarget?.id === w.id ? dropTarget.position : 'above';
+              setDragId(null);
+              setDropTarget(null);
+              if (onReorder && fromId && fromId !== w.id) onReorder(fromId, w.id, pos);
+            }}
           >
-            {initial}
-          </button>
+            {/* Drop indicator (above) */}
+            {isDropTarget && dropTarget?.position === 'above' && (
+              <div className="absolute -top-1 left-0 right-0 h-0.5 bg-sky-400/80 rounded-full shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
+            )}
+            <button
+              onClick={() => onSelect(w.id)}
+              onDoubleClick={() => beginRename(w)}
+              draggable={!!onReorder && !isRenaming}
+              onDragStart={(e) => {
+                if (!onReorder) return;
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', w.id);
+                setDragId(w.id);
+              }}
+              onDragEnd={() => {
+                setDragId(null);
+                setDropTarget(null);
+              }}
+              title={`${w.name} · ${w.sessionIds.length} chat${w.sessionIds.length === 1 ? '' : 's'} · double-click to rename · drag to reorder`}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center text-[12px] font-semibold transition-all ${color} ${
+                isActive
+                  ? 'ring-2 scale-[1.05]'
+                  : 'opacity-70 hover:opacity-100 ring-1 ring-transparent'
+              } ${isDragging ? 'opacity-40' : ''}`}
+            >
+              {initial}
+            </button>
+            {/* Drop indicator (below) */}
+            {isDropTarget && dropTarget?.position === 'below' && (
+              <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-sky-400/80 rounded-full shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
+            )}
+            {canClose && !isRenaming && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onClose!(w.id); }}
+                title="Close workspace"
+                className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-800 border border-border text-zinc-400 hover:bg-red-500/80 hover:text-white hover:border-red-500/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            )}
+            {isRenaming && (
+              <div className="absolute left-10 top-0 z-20 flex items-center gap-1 bg-surface border border-border-light rounded-md shadow-xl px-2 py-1">
+                <input
+                  autoFocus
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename();
+                    else if (e.key === 'Escape') cancelRename();
+                  }}
+                  className="w-40 bg-transparent text-[12px] text-zinc-100 outline-none placeholder:text-zinc-500"
+                  placeholder="Workspace name"
+                />
+              </div>
+            )}
+          </div>
         );
       })}
       <button

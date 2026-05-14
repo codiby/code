@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, LayoutGrid } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, LayoutGrid, Search } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -3249,9 +3249,19 @@ export function ChatApp() {
 
   // Reconcile focus-mode workspaces with the host's open-sessions list:
   //   - drop sessions from workspaces that closed externally;
-  //   - assign newly-opened sessions to the active workspace.
+  //   - assign *newly-opened* sessions to the active workspace.
+  //
+  // Crucially we only auto-assign sessions that are newly appearing in the
+  // host's open list. A session that was previously assigned and is now
+  // orphan was deliberately removed from its workspace (via the pane × in
+  // focus mode) and must stay homeless until the user re-adds it.
+  const prevOpenSessionsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const hostIds = new Set(orderedOpenSessions.map(s => s.id));
+    const newlyOpened = orderedOpenSessions
+      .map(s => s.id)
+      .filter(id => !prevOpenSessionsRef.current.has(id));
+    prevOpenSessionsRef.current = hostIds;
     setFocusWorkspaces(prev => {
       const cleaned = prev.map(w => {
         const validIds = w.sessionIds.filter(id => hostIds.has(id));
@@ -3263,11 +3273,11 @@ export function ChatApp() {
         return { ...w, sessionIds: validIds, layout: newLayout };
       });
       const assigned = new Set(cleaned.flatMap(w => w.sessionIds));
-      const orphans = orderedOpenSessions.map(s => s.id).filter(id => !assigned.has(id));
-      if (orphans.length === 0) return cleaned;
+      const toAssign = newlyOpened.filter(id => !assigned.has(id));
+      if (toAssign.length === 0) return cleaned;
       return cleaned.map(w => {
         if (w.id !== activeWorkspaceId) return w;
-        const sessionIds = [...w.sessionIds, ...orphans];
+        const sessionIds = [...w.sessionIds, ...toAssign];
         const newLayout = reconcileWorkspaceLayout(w.layout, sessionIds);
         return { ...w, sessionIds, layout: newLayout };
       });
@@ -3277,6 +3287,51 @@ export function ChatApp() {
   useEffect(() => {
     persistWorkspaces(focusWorkspaces, activeWorkspaceId);
   }, [focusWorkspaces, activeWorkspaceId]);
+
+  const handleCloseWorkspace = useCallback((id: string) => {
+    setFocusWorkspaces(prev => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter(w => w.id !== id);
+      if (id === activeWorkspaceId) {
+        setActiveWorkspaceId(next[0]!.id);
+      }
+      return next;
+    });
+  }, [activeWorkspaceId]);
+
+  const handleRenameWorkspace = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setFocusWorkspaces(prev => prev.map(w => (w.id === id ? { ...w, name: trimmed } : w)));
+  }, []);
+
+  /** Remove a session from the currently-active workspace without closing
+   *  the underlying session. The chat remains open in the host's tab list
+   *  and can be re-added via the workspace's "+chat" picker. */
+  const handleRemoveFromActiveWorkspace = useCallback((sid: string) => {
+    setFocusWorkspaces(prev => prev.map(w => {
+      if (w.id !== activeWorkspaceId) return w;
+      if (!w.sessionIds.includes(sid)) return w;
+      const sessionIds = w.sessionIds.filter(id => id !== sid);
+      return { ...w, sessionIds, layout: reconcileWorkspaceLayout(w.layout, sessionIds) };
+    }));
+  }, [activeWorkspaceId]);
+
+  const handleReorderWorkspaces = useCallback((fromId: string, toId: string, position: 'above' | 'below') => {
+    if (fromId === toId) return;
+    setFocusWorkspaces(prev => {
+      const fromIdx = prev.findIndex(w => w.id === fromId);
+      if (fromIdx === -1) return prev;
+      const moved = prev[fromIdx]!;
+      const without = prev.filter((_, i) => i !== fromIdx);
+      const toIdx = without.findIndex(w => w.id === toId);
+      if (toIdx === -1) return prev;
+      const insertAt = position === 'below' ? toIdx + 1 : toIdx;
+      const next = [...without];
+      next.splice(insertAt, 0, moved);
+      return next;
+    });
+  }, []);
 
   // Render a composer for any given session. Used by both layouts: the
   // standard chat tree renders the active session's composer inline; the
@@ -3327,6 +3382,290 @@ export function ChatApp() {
 
   const composerNode = activeId ? renderComposer(activeId) : null;
 
+  /**
+   * Render the per-session chat scroll area (messages + streaming partials +
+   * inline permission request). Used by both layouts: the standard view
+   * mounts it once for the active session; focus mode mounts it per pane so
+   * every session's history and live stream is visible at once.
+   *
+   * `scrollRef` / `permRequestRef` are global refs tied to the currently-
+   * active session's auto-scroll behavior, so we only attach them when this
+   * pane is the active one. Non-active panes still scroll naturally — they
+   * just don't drive the global scroll-to-bottom indicator.
+   */
+  const renderChatBody = (sid: string): ReactNode => {
+    const cs = getState(sid);
+    const status: ConnectionStatus = statuses[sid] || 'disconnected';
+    const isActiveSession = sid === activeId;
+    return (
+      <div
+        ref={isActiveSession ? scrollRef : undefined}
+        onScroll={isActiveSession ? handleMessagesScroll : undefined}
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1"
+      >
+        {cs.messages.length === 0 && !cs.partialText && (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-zinc-600 text-sm">
+              {status === 'connecting' ? 'Connecting to Claude...' :
+               status === 'connected' ? 'Send a message to start' :
+               'Waiting for connection...'}
+            </p>
+          </div>
+        )}
+        {cs.messages.length > visibleMessageCount && (
+          <button
+            className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+            onClick={() => setVisibleMessageCount(prev => prev + 200)}
+          >
+            Show {Math.min(200, cs.messages.length - visibleMessageCount)} older messages ({cs.messages.length - visibleMessageCount} hidden)
+          </button>
+        )}
+        {(() => {
+          const grouped = collapseToolRuns(groupMessages(
+            [...cs.messages]
+              .filter(m => !m.isInteractiveTerminal && !(m.isTerminal && !m.isManagedTerminal))
+              .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))
+              .slice(-visibleMessageCount)
+          ));
+          const activeAskId = cs.permRequest?.toolName === 'AskUserQuestion' ? cs.permRequest.requestId : null;
+          return grouped.map((item, i) => {
+            const isLast = i === grouped.length - 1;
+            if ('agent' in item) {
+              return <AgentBubble key={item.agent.id} agent={item.agent} children={item.children} onOpenTerminal={handleOpenTerminal} />;
+            }
+            if ('toolRun' in item) {
+              const hasContentAfter = i < grouped.length - 1 || !!cs.partialText;
+              return (
+                <ToolRunBubble
+                  key={item.items[0]!.id}
+                  group={item}
+                  onOpenTerminal={handleOpenTerminal}
+                  sessionId={sid}
+                  client={clientRef.current || undefined}
+                  hasContentAfter={hasContentAfter}
+                />
+              );
+            }
+            const isAskTool = item.toolName === 'AskUserQuestion' && Array.isArray((item.toolInput as any)?.questions);
+            const hasResult = !!(item as any).toolResult;
+            const answerCb = isLast && isAskTool && !hasResult
+              ? (answers: Record<string, string>) => {
+                  if (activeAskId && item.id === activeAskId && cs.permRequest) {
+                    handlePermission(cs.permRequest.requestId, true, { ...cs.permRequest.input, answers });
+                    return;
+                  }
+                  if (!clientRef.current) return;
+                  clientRef.current.respondToPermission(sid, item.id, true, { ...(item.toolInput as object), answers });
+                  const lines = Object.entries(answers).map(([q, v]) => `- ${q} → ${v}`);
+                  clientRef.current.sendMessage(sid, lines.join('\n'));
+                }
+              : undefined;
+            return (
+              <div key={item.id} id={`msg-${item.id}`}>
+                <MessageBubble
+                  message={item}
+                  onOpenTerminal={handleOpenTerminal}
+                  isLast={isLast}
+                  onAnswerAskUser={answerCb}
+                  sessionId={sid}
+                  client={clientRef.current || undefined}
+                  interactiveMinimized={item.isInteractiveTerminal ? minimizedShells.has(item.id) : undefined}
+                  onToggleInteractiveMinimize={item.isInteractiveTerminal ? toggleShellMinimized : undefined}
+                  onCancelPending={(id) => removePendingMessage(sid, id)}
+                />
+              </div>
+            );
+          });
+        })()}
+        {cs.partialThinking && (
+          <div className="py-1">
+            <div className="flex items-start gap-1.5 text-[12px] text-zinc-500">
+              <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-70 text-violet-300/70 animate-pulse" />
+              <span className="font-medium uppercase tracking-wide text-[10px] mt-[3px] shrink-0">
+                Thinking
+              </span>
+            </div>
+            <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
+              <p className="text-[12px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
+                {cs.partialThinking}
+                <span className="inline-block ml-0.5 w-1.5 h-3 bg-zinc-500/70 align-middle animate-pulse" />
+              </p>
+            </div>
+          </div>
+        )}
+        {cs.partialText && (
+          <div className="py-1">
+            <p className="text-[13px] text-zinc-300 whitespace-pre-wrap break-words leading-relaxed">
+              {cs.partialText}
+            </p>
+          </div>
+        )}
+        {/* Inline permission request — skip for AskUserQuestion (rendered inline by the tool card) */}
+        {cs.permRequest && cs.permRequest.toolName !== 'AskUserQuestion' && (() => {
+          const req = cs.permRequest;
+          const input = req.input;
+          const isEdit = req.toolName === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string';
+          const isBash = req.toolName === 'Bash' && typeof input.command === 'string';
+          const isWrite = req.toolName === 'Write' && typeof input.content === 'string';
+          const isPlan = req.toolName === 'ExitPlanMode';
+          const planContent = isPlan && typeof input.plan === 'string' ? input.plan as string : null;
+          const allowedPrompts = isPlan && Array.isArray(input.allowedPrompts) ? input.allowedPrompts as { tool: string; prompt: string }[] : [];
+          const isAskUser = req.toolName === 'AskUserQuestion';
+          const askQuestions = isAskUser && Array.isArray(input.questions) ? input.questions as { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean }[] : [];
+          const filePath = typeof input.file_path === 'string' ? input.file_path : null;
+          const ext = filePath?.split('.').pop() || '';
+          const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact', py: 'python', rs: 'rust', go: 'go', json: 'json', css: 'css', html: 'html', md: 'markdown', sh: 'shell', bash: 'shell', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql' };
+          const lang = langMap[ext] || 'plaintext';
+          const oldLines = isEdit ? (input.old_string as string).split('\n').length : 0;
+          const newLines = isEdit ? (input.new_string as string).split('\n').length : 0;
+          const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
+          return (
+            <div ref={isActiveSession ? permRequestRef : undefined} className={`py-1 pl-3 ml-1 border-l-2 ${isAskUser ? 'border-violet-500/50' : 'border-amber-500/50'}`}>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[11px] font-mono text-violet-400">{isAskUser ? 'Question' : req.toolName}</span>
+                {!isAskUser && <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>}
+              </div>
+              {filePath && (
+                <p className="text-[11px] text-zinc-500 font-mono mb-1 truncate">{filePath}</p>
+              )}
+              {req.description && !filePath && (
+                <p className="text-[12px] text-zinc-400 mb-1">{req.description}</p>
+              )}
+              {isEdit && (
+                <div className="rounded overflow-hidden border border-border mb-2" style={{ height: diffHeight }}>
+                  <DiffEditor
+                    original={input.old_string as string}
+                    modified={input.new_string as string}
+                    language={lang}
+                    theme="vs-dark"
+                    options={{
+                      readOnly: true,
+                      renderSideBySide: true,
+                      minimap: { enabled: false },
+                      scrollBeyondLastLine: false,
+                      fontSize: 12,
+                      lineNumbers: 'off',
+                      glyphMargin: false,
+                      folding: false,
+                      lineDecorationsWidth: 0,
+                      overviewRulerLanes: 0,
+                      scrollbar: { vertical: 'hidden', horizontal: 'auto' },
+                      renderOverviewRuler: false,
+                      contextmenu: false,
+                      domReadOnly: true,
+                    }}
+                  />
+                </div>
+              )}
+              {isBash && (
+                <div className="rounded bg-[#0d0d0d] border border-border mb-2 px-3 py-2">
+                  <pre className="text-[12px] font-mono text-green-400 whitespace-pre-wrap break-all m-0 leading-snug">
+                    <span className="text-zinc-600 select-none">$ </span>{input.command as string}
+                  </pre>
+                </div>
+              )}
+              {isWrite && (
+                <div className="rounded overflow-hidden border border-border mb-2" style={{ height: Math.min(((input.content as string).split('\n').length) * 19 + 20, 250) }}>
+                  <Editor
+                    value={input.content as string}
+                    language={lang}
+                    theme="vs-dark"
+                    options={{
+                      readOnly: true,
+                      minimap: { enabled: false },
+                      scrollBeyondLastLine: false,
+                      fontSize: 12,
+                      lineNumbers: 'on',
+                      glyphMargin: false,
+                      folding: false,
+                      overviewRulerLanes: 0,
+                      scrollbar: { vertical: 'hidden', horizontal: 'auto' },
+                      renderOverviewRuler: false,
+                      contextmenu: false,
+                      domReadOnly: true,
+                    }}
+                  />
+                </div>
+              )}
+              {isPlan && (
+                <div className="rounded border border-violet-500/30 bg-violet-500/5 mb-2 px-3 py-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[10px] text-violet-400">◆</span>
+                    <span className="text-[11px] text-violet-300 font-semibold uppercase tracking-wide shrink-0">Plan</span>
+                    <span className="text-[11px] text-zinc-500 truncate">
+                      {planContent ? (planContent.split('\n').find(l => l.trim()) || '').slice(0, 80) : 'No plan content'}
+                    </span>
+                  </div>
+                  {planContent && !cs.openPlan && (
+                    <button
+                      className="text-[11px] text-violet-300 hover:text-violet-200 hover:bg-violet-500/15 rounded px-2 py-0.5 shrink-0"
+                      onClick={() => updateLocalState(sid, s => ({
+                        ...s,
+                        openPlan: { content: planContent, allowedPrompts },
+                        lastPlan: { content: planContent, allowedPrompts },
+                        openFile: null, openMockup: null, activeBrowserName: null, openTerminalId: null, diffView: null,
+                      }))}
+                      title="Reopen plan in the side panel"
+                    >
+                      Open in side panel
+                    </button>
+                  )}
+                </div>
+              )}
+              {isAskUser && askQuestions.length > 0 && (
+                <AskUserQuestionForm
+                  questions={askQuestions}
+                  onSubmit={(answers) => {
+                    handlePermission(req.requestId, true, { ...input, answers });
+                  }}
+                />
+              )}
+              {!isEdit && !isBash && !isWrite && !isPlan && !isAskUser && (
+                <pre className="text-[11px] text-zinc-500 whitespace-pre-wrap break-all m-0 mb-2 bg-transparent p-0 max-h-40 overflow-auto leading-tight">
+                  {JSON.stringify(input, null, 2)}
+                </pre>
+              )}
+              {!isAskUser && <div className="flex items-center gap-2">
+                <button
+                  className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-green-600/15 text-green-400 hover:bg-green-600/25 transition-colors"
+                  onClick={() => {
+                    handlePermission(req.requestId, true);
+                    if (isPlan && clientRef.current) {
+                      setSessions(prev => prev.map(s => s.id === sid ? { ...s, permission_mode: 'acceptEdits' } : s));
+                    }
+                  }}
+                >
+                  Allow
+                </button>
+                {isPlan && (
+                  <button
+                    className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors"
+                    onClick={() => {
+                      handlePermission(req.requestId, true);
+                      if (clientRef.current) {
+                        setSessions(prev => prev.map(s => s.id === sid ? { ...s, permission_mode: 'acceptEdits' } : s));
+                        clientRef.current.setPermissionMode(sid, 'acceptEdits');
+                        clientRef.current.updateSession(sid, { permissionMode: 'acceptEdits' }).catch(() => {});
+                      }
+                    }}
+                  >
+                    Approve &amp; Accept Edits
+                  </button>
+                )}
+                <button
+                  className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-red-600/15 text-red-400 hover:bg-red-600/25 transition-colors"
+                  onClick={() => handlePermission(req.requestId, false)}
+                >
+                  Deny
+                </button>
+              </div>}
+            </div>
+          );
+        })()}
+      </div>
+    );
+  };
+
   return (
     <Providers>
       <div className="h-screen bg-base flex flex-col overflow-hidden">
@@ -3343,8 +3682,24 @@ export function ChatApp() {
           {/* Reserve room for macOS traffic lights (close/min/max) */}
           <div className="w-20 shrink-0" />
 
-          {/* Center: drag area, intentionally empty for now */}
+          {/* Center: drag area + absolutely-centered search bar */}
           <div className="flex-1" />
+
+          <button
+            onClick={() => setShowPalette(true)}
+            title="Search sessions, files, commands (⌘P)"
+            className="group absolute left-1/2 -translate-x-1/2 h-6 w-[420px] max-w-[40vw] px-2.5 flex items-center gap-2 bg-surface hover:bg-surface-light border border-border hover:border-border-light rounded-md transition-colors"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            <Search className="w-3.5 h-3.5 shrink-0 text-zinc-500 group-hover:text-zinc-400" />
+            <span className="flex-1 min-w-0 text-center text-[12px] font-medium text-zinc-200 truncate">
+              {activeSession?.name ?? 'No active session'}
+            </span>
+            <span className="flex items-center gap-0.5 shrink-0 text-[10px] text-zinc-500 group-hover:text-zinc-400 font-mono">
+              <kbd className="px-1 py-px bg-surface-lighter border border-border rounded">⌘</kbd>
+              <kbd className="px-1 py-px bg-surface-lighter border border-border rounded">P</kbd>
+            </span>
+          </button>
 
           {/* Right cluster: workspace actions (only in focus mode) + layout
               switcher. Both groups opt out of the drag region so clicks
@@ -3471,12 +3826,16 @@ export function ChatApp() {
               sessions={orderedOpenSessions}
               activeSessionId={activeId}
               onSelectSession={handleSelectSession}
-              onCloseSession={handleCloseTab}
+              onCloseSession={handleRemoveFromActiveWorkspace}
               renderComposer={renderComposer}
+              renderBody={renderChatBody}
               workspaces={focusWorkspaces}
               setWorkspaces={setFocusWorkspaces}
               activeWorkspaceId={activeWorkspaceId}
               setActiveWorkspaceId={setActiveWorkspaceId}
+              onCloseWorkspace={handleCloseWorkspace}
+              onRenameWorkspace={handleRenameWorkspace}
+              onReorderWorkspaces={handleReorderWorkspaces}
             />
           </div>
         ) : (
@@ -3851,301 +4210,9 @@ export function ChatApp() {
                   style={hasRightPanel && !editorFullWidth ? { width: `${chatSplitPct}%` } : undefined}
                 >
                   <div className="flex flex-1 min-h-0">
-                  {/* Messages */}
-                  <div ref={scrollRef} onScroll={handleMessagesScroll} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1">
-                    {active.messages.length === 0 && !active.partialText && (
-                      <div className="flex items-center justify-center h-full">
-                        <p className="text-zinc-600 text-sm">
-                          {activeStatus === 'connecting' ? 'Connecting to Claude...' :
-                           activeStatus === 'connected' ? 'Send a message to start' :
-                           'Waiting for connection...'}
-                        </p>
-                      </div>
-                    )}
-                    {active.messages.length > visibleMessageCount && (
-                      <button
-                        className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-                        onClick={() => setVisibleMessageCount(prev => prev + 200)}
-                      >
-                        Show {Math.min(200, active.messages.length - visibleMessageCount)} older messages ({active.messages.length - visibleMessageCount} hidden)
-                      </button>
-                    )}
-                    {(() => {
-                      // Interactive PTY shells (isInteractiveTerminal) live in the sticky
-                      // bottom terminal panel. Legacy one-shot `isTerminal` bubbles
-                      // (listProcesses reattach / pre-PTY `>` path) stay hidden until
-                      // the user opens them from the Processes panel — but model-spawned
-                      // managed terminals (spawn_terminal SDK tool, isManagedTerminal)
-                      // render inline so the user sees them appear without clicking.
-                      const grouped = collapseToolRuns(groupMessages(
-                        [...active.messages]
-                          .filter(m => !m.isInteractiveTerminal && !(m.isTerminal && !m.isManagedTerminal))
-                          .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))
-                          .slice(-visibleMessageCount)
-                      ));
-                      const activeAskId = active.permRequest?.toolName === 'AskUserQuestion' ? active.permRequest.requestId : null;
-                      return grouped.map((item, i) => {
-                        const isLast = i === grouped.length - 1;
-                        if ('agent' in item) {
-                          return <AgentBubble key={item.agent.id} agent={item.agent} children={item.children} onOpenTerminal={handleOpenTerminal} />;
-                        }
-                        if ('toolRun' in item) {
-                          // Auto-collapse once anything follows this group:
-                          // a later grouped item, OR Claude's currently
-                          // streaming partial text (rendered below the map).
-                          const hasContentAfter = i < grouped.length - 1 || !!active.partialText;
-                          return (
-                            <ToolRunBubble
-                              key={item.items[0]!.id}
-                              group={item}
-                              onOpenTerminal={handleOpenTerminal}
-                              sessionId={activeId}
-                              client={clientRef.current || undefined}
-                              hasContentAfter={hasContentAfter}
-                            />
-                          );
-                        }
-                        // Provide the answer callback for every unanswered AskUserQuestion that's last in view —
-                        // if the pending permission is still alive, resolve it; otherwise post the answers as a
-                        // follow-up user message so the agent can continue.
-                        const isAskTool = item.toolName === 'AskUserQuestion' && Array.isArray((item.toolInput as any)?.questions);
-                        const hasResult = !!(item as any).toolResult;
-                        const answerCb = isLast && isAskTool && !hasResult
-                          ? (answers: Record<string, string>) => {
-                              if (activeAskId && item.id === activeAskId && active.permRequest) {
-                                handlePermission(active.permRequest.requestId, true, { ...active.permRequest.input, answers });
-                                return;
-                              }
-                              if (!clientRef.current || !activeId) return;
-                              // Stale: no live pending permission. Ask the server to persist a
-                              // synthetic tool_result for this tool_use (so the card flips to
-                              // answered), then send the answers as a follow-up user message so
-                              // the agent can continue the conversation.
-                              clientRef.current.respondToPermission(activeId, item.id, true, { ...(item.toolInput as object), answers });
-                              const lines = Object.entries(answers).map(([q, v]) => `- ${q} → ${v}`);
-                              clientRef.current.sendMessage(activeId, lines.join('\n'));
-                            }
-                          : undefined;
-                        return (
-                          <div key={item.id} id={`msg-${item.id}`}>
-                            <MessageBubble
-                              message={item}
-                              onOpenTerminal={handleOpenTerminal}
-                              isLast={isLast}
-                              onAnswerAskUser={answerCb}
-                              sessionId={activeId}
-                              client={clientRef.current || undefined}
-                              interactiveMinimized={item.isInteractiveTerminal ? minimizedShells.has(item.id) : undefined}
-                              onToggleInteractiveMinimize={item.isInteractiveTerminal ? toggleShellMinimized : undefined}
-                              onCancelPending={activeId ? (id) => removePendingMessage(activeId, id) : undefined}
-                            />
-                          </div>
-                        );
-                      });
-                    })()}
-                    {active.partialThinking && (
-                      <div className="py-1">
-                        <div className="flex items-start gap-1.5 text-[12px] text-zinc-500">
-                          <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-70 text-violet-300/70 animate-pulse" />
-                          <span className="font-medium uppercase tracking-wide text-[10px] mt-[3px] shrink-0">
-                            Thinking
-                          </span>
-                        </div>
-                        <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
-                          <p className="text-[12px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-                            {active.partialThinking}
-                            <span className="inline-block ml-0.5 w-1.5 h-3 bg-zinc-500/70 align-middle animate-pulse" />
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                    {active.partialText && (
-                      <div className="py-1">
-                        <p className="text-[13px] text-zinc-300 whitespace-pre-wrap break-words leading-relaxed">
-                          {active.partialText}
-                        </p>
-                      </div>
-                    )}
-                    {/* Inline permission request — skip for AskUserQuestion, the tool card renders it inline */}
-                    {active.permRequest && active.permRequest.toolName !== 'AskUserQuestion' && (() => {
-                      const req = active.permRequest;
-                      const input = req.input;
-                      const isEdit = req.toolName === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string';
-                      const isBash = req.toolName === 'Bash' && typeof input.command === 'string';
-                      const isWrite = req.toolName === 'Write' && typeof input.content === 'string';
-                      const isPlan = req.toolName === 'ExitPlanMode';
-                      const planContent = isPlan && typeof input.plan === 'string' ? input.plan as string : null;
-                      const allowedPrompts = isPlan && Array.isArray(input.allowedPrompts) ? input.allowedPrompts as { tool: string; prompt: string }[] : [];
-                      const isAskUser = req.toolName === 'AskUserQuestion';
-                      const askQuestions = isAskUser && Array.isArray(input.questions) ? input.questions as { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean }[] : [];
-                      const filePath = typeof input.file_path === 'string' ? input.file_path : null;
-                      const ext = filePath?.split('.').pop() || '';
-                      const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact', py: 'python', rs: 'rust', go: 'go', json: 'json', css: 'css', html: 'html', md: 'markdown', sh: 'shell', bash: 'shell', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql' };
-                      const lang = langMap[ext] || 'plaintext';
-                      const oldLines = isEdit ? (input.old_string as string).split('\n').length : 0;
-                      const newLines = isEdit ? (input.new_string as string).split('\n').length : 0;
-                      const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
-
-                      return (
-                        <div ref={permRequestRef} className={`py-1 pl-3 ml-1 border-l-2 ${isAskUser ? 'border-violet-500/50' : 'border-amber-500/50'}`}>
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[11px] font-mono text-violet-400">{isAskUser ? 'Question' : req.toolName}</span>
-                            {!isAskUser && <span className="text-[10px] text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded">permission required</span>}
-                          </div>
-                          {filePath && (
-                            <p className="text-[11px] text-zinc-500 font-mono mb-1 truncate">{filePath}</p>
-                          )}
-                          {req.description && !filePath && (
-                            <p className="text-[12px] text-zinc-400 mb-1">{req.description}</p>
-                          )}
-
-                          {/* Edit tool: inline diff */}
-                          {isEdit && (
-                            <div className="rounded overflow-hidden border border-border mb-2" style={{ height: diffHeight }}>
-                              <DiffEditor
-                                original={input.old_string as string}
-                                modified={input.new_string as string}
-                                language={lang}
-                                theme="vs-dark"
-                                options={{
-                                  readOnly: true,
-                                  renderSideBySide: true,
-                                  minimap: { enabled: false },
-                                  scrollBeyondLastLine: false,
-                                  fontSize: 12,
-                                  lineNumbers: 'off',
-                                  glyphMargin: false,
-                                  folding: false,
-                                  lineDecorationsWidth: 0,
-                                  overviewRulerLanes: 0,
-                                  scrollbar: { vertical: 'hidden', horizontal: 'auto' },
-                                  renderOverviewRuler: false,
-                                  contextmenu: false,
-                                  domReadOnly: true,
-                                }}
-                              />
-                            </div>
-                          )}
-
-                          {/* Bash tool: command block */}
-                          {isBash && (
-                            <div className="rounded bg-[#0d0d0d] border border-border mb-2 px-3 py-2">
-                              <pre className="text-[12px] font-mono text-green-400 whitespace-pre-wrap break-all m-0 leading-snug">
-                                <span className="text-zinc-600 select-none">$ </span>{input.command as string}
-                              </pre>
-                            </div>
-                          )}
-
-                          {/* Write tool: file content preview */}
-                          {isWrite && (
-                            <div className="rounded overflow-hidden border border-border mb-2" style={{ height: Math.min(((input.content as string).split('\n').length) * 19 + 20, 250) }}>
-                              <Editor
-                                value={input.content as string}
-                                language={lang}
-                                theme="vs-dark"
-                                options={{
-                                  readOnly: true,
-                                  minimap: { enabled: false },
-                                  scrollBeyondLastLine: false,
-                                  fontSize: 12,
-                                  lineNumbers: 'on',
-                                  glyphMargin: false,
-                                  folding: false,
-                                  overviewRulerLanes: 0,
-                                  scrollbar: { vertical: 'hidden', horizontal: 'auto' },
-                                  renderOverviewRuler: false,
-                                  contextmenu: false,
-                                  domReadOnly: true,
-                                }}
-                              />
-                            </div>
-                          )}
-
-                          {/* ExitPlanMode: plan body lives in the side panel
-                              (auto-opened by an effect above). Inline we just
-                              render a compact pointer + a Reopen button so the
-                              chat doesn't go blank if the user closed it. */}
-                          {isPlan && (
-                            <div className="rounded border border-violet-500/30 bg-violet-500/5 mb-2 px-3 py-2 flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="text-[10px] text-violet-400">◆</span>
-                                <span className="text-[11px] text-violet-300 font-semibold uppercase tracking-wide shrink-0">Plan</span>
-                                <span className="text-[11px] text-zinc-500 truncate">
-                                  {planContent ? (planContent.split('\n').find(l => l.trim()) || '').slice(0, 80) : 'No plan content'}
-                                </span>
-                              </div>
-                              {planContent && activeId && !openPlan && (
-                                <button
-                                  className="text-[11px] text-violet-300 hover:text-violet-200 hover:bg-violet-500/15 rounded px-2 py-0.5 shrink-0"
-                                  onClick={() => updateLocalState(activeId, s => ({
-                                    ...s,
-                                    openPlan: { content: planContent, allowedPrompts },
-                                    lastPlan: { content: planContent, allowedPrompts },
-                                    openFile: null, openMockup: null, activeBrowserName: null, openTerminalId: null, diffView: null,
-                                  }))}
-                                  title="Reopen plan in the side panel"
-                                >
-                                  Open in side panel
-                                </button>
-                              )}
-                            </div>
-                          )}
-
-                          {/* AskUserQuestion: interactive form */}
-                          {isAskUser && askQuestions.length > 0 && (
-                            <AskUserQuestionForm
-                              questions={askQuestions}
-                              onSubmit={(answers) => {
-                                handlePermission(req.requestId, true, { ...input, answers });
-                              }}
-                            />
-                          )}
-
-                          {/* Fallback for other tools */}
-                          {!isEdit && !isBash && !isWrite && !isPlan && !isAskUser && (
-                            <pre className="text-[11px] text-zinc-500 whitespace-pre-wrap break-all m-0 mb-2 bg-transparent p-0 max-h-40 overflow-auto leading-tight">
-                              {JSON.stringify(input, null, 2)}
-                            </pre>
-                          )}
-
-                          {!isAskUser && <div className="flex items-center gap-2">
-                            <button
-                              className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-green-600/15 text-green-400 hover:bg-green-600/25 transition-colors"
-                              onClick={() => {
-                                handlePermission(req.requestId, true);
-                                if (isPlan && activeId && clientRef.current) {
-                                  setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: 'acceptEdits' } : s));
-                                }
-                              }}
-                            >
-                              Allow
-                            </button>
-                            {isPlan && (
-                              <button
-                                className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors"
-                                onClick={() => {
-                                  handlePermission(req.requestId, true);
-                                  if (activeId && clientRef.current) {
-                                    setSessions(prev => prev.map(s => s.id === activeId ? { ...s, permission_mode: 'acceptEdits' } : s));
-                                    clientRef.current.setPermissionMode(activeId, 'acceptEdits');
-                                    clientRef.current.updateSession(activeId, { permissionMode: 'acceptEdits' }).catch(() => {});
-                                  }
-                                }}
-                              >
-                                Approve &amp; Accept Edits
-                              </button>
-                            )}
-                            <button
-                              className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-red-600/15 text-red-400 hover:bg-red-600/25 transition-colors"
-                              onClick={() => handlePermission(req.requestId, false)}
-                            >
-                              Deny
-                            </button>
-                          </div>}
-                        </div>
-                      );
-                    })()}
-                  </div>
+                  {/* Messages — rendered by renderChatBody so the same view
+                      mounts per pane in chat-focus mode. */}
+                  {activeId && renderChatBody(activeId)}
 
                   {/* Task panel */}
                   {todos.length > 0 && (
