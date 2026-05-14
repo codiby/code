@@ -20,6 +20,10 @@ import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from '
 import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
+// Browser names are validated by the bridge before any open_browser broadcast,
+// but the palette action constructs a label client-side, so keep the same
+// kebab/snake-case pattern in sync here.
+const BROWSER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/;
 // Notifications use the standard Web Notification API. Electron's Chromium
 // surface implements it natively; Tauri-on-WKWebView used to need the
 // `@tauri-apps/plugin-notification` polyfill, but the Electron rewrite no
@@ -85,17 +89,26 @@ type LocalSessionState = SessionState & {
   // survive `mockup_edit` re-broadcasts and tab switches.
   mockupComments: Record<string, MockupComment[]>;
   mockupInspect: boolean;
-  // Live browser preview opened by `browser_open` — UI-only, same caveat as
-  // `openMockup` so the `onSessionState` merge has to preserve it. `openSeq`
-  // is bumped on every `open_browser` broadcast so the BrowserPanel re-runs
-  // its open effect even when the URL didn't change (e.g. retry after a
-  // failed open) — without it, the panel sits in its stale error state.
-  openBrowser: { url: string; title: string; openSeq: number } | null;
-  lastBrowser: { url: string; title: string } | null;
-  // Inspector comments per browser URL. Keyed by URL so navigating away and
-  // back to the same page keeps the user's annotations.
-  browserComments: Record<string, MockupComment[]>;
-  browserInspect: boolean;
+  // Live browser previews opened by `browser_open` — UI-only, same caveat
+  // as `openMockup` so the `onSessionState` merge has to preserve them.
+  // `browsers` is keyed by the model-supplied `name` (e.g. "qa-admin-
+  // workflow"); multiple can coexist in a single session and the user
+  // switches between them via the tab strip in BrowserPanel. `openSeq` per
+  // entry is bumped on every `open_browser` broadcast so the panel re-runs
+  // its open effect when the same name is re-broadcast (retry after error,
+  // reopen from chat-header chip).
+  browsers: Record<string, { url: string; title: string; openSeq: number }>;
+  /** Which browser name is currently shown in the panel. `null` when none
+   *  is open (panel hidden). Matches a key in `browsers`. */
+  activeBrowserName: string | null;
+  /** Per-name "most recently open" snapshot, retained after the user closes
+   *  a tab so the chat-header chip can offer a one-click reopen. */
+  lastBrowsers: Record<string, { url: string; title: string }>;
+  /** Inspector comments, keyed by `name` then by URL — same name surviving
+   *  navigations + matching the per-page-mounted dot lifecycle. */
+  browserComments: Record<string, Record<string, MockupComment[]>>;
+  /** Per-name inspect-mode toggle. Switching tabs preserves per-tab state. */
+  browserInspect: Record<string, boolean>;
   // ExitPlanMode plan rendered in the side panel. UI-only — same merge
   // caveat as `openMockup`. `planRequestId` tracks the most recent perm
   // request id we auto-opened for so we don't reopen the panel after the
@@ -879,8 +892,8 @@ export function ChatApp() {
     pendingMessages: [],
     openMockup: null, lastMockup: null,
     mockupComments: {}, mockupInspect: false,
-    openBrowser: null, lastBrowser: null,
-    browserComments: {}, browserInspect: false,
+    browsers: {}, activeBrowserName: null, lastBrowsers: {},
+    browserComments: {}, browserInspect: {},
     openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
   });
 
@@ -1010,10 +1023,11 @@ export function ChatApp() {
                 lastMockup: existing?.lastMockup ?? null,
                 mockupComments: existing?.mockupComments ?? {},
                 mockupInspect: false,
-                openBrowser: existing?.openBrowser ?? null,
-                lastBrowser: existing?.lastBrowser ?? null,
+                browsers: existing?.browsers ?? {},
+                activeBrowserName: existing?.activeBrowserName ?? null,
+                lastBrowsers: existing?.lastBrowsers ?? {},
                 browserComments: existing?.browserComments ?? {},
-                browserInspect: false,
+                browserInspect: existing?.browserInspect ?? {},
                 openPlan: existing?.openPlan ?? null,
                 lastPlan: existing?.lastPlan ?? null,
                 planComments: existing?.planComments ?? [],
@@ -1235,7 +1249,7 @@ export function ChatApp() {
             ...s,
             openFile: line != null ? { ...file, line } : file,
             openMockup: null,
-            openBrowser: null,
+            activeBrowserName: null,
             openTerminalId: null,
             diffView: null,
             editorDirty: false,
@@ -1255,23 +1269,31 @@ export function ChatApp() {
             openTerminalId: null,
             diffView: null,
             editorDirty: false,
-            openBrowser: null,
+            // Hide any open browser panel (don't destroy state — the user
+            // can switch back via the lastBrowsers chip).
+            activeBrowserName: null,
           }));
         },
 
         // Server-initiated "open browser preview" — triggered by the
-        // `browser_open` SDK tool. Closes any other side-panel surface
-        // (file, mockup, terminal, diff) so the native window gets the
-        // room. `openSeq` increments on every broadcast so a repeat
-        // call (same URL, same session) still forces BrowserPanel to
-        // re-run its open effect — necessary for retry-after-error
-        // and any "reload via re-broadcast" model behavior.
-        onOpenBrowser: (sid, url, title) => {
-          if (!url) return;
+        // `browser_open` SDK tool. `name` selects/creates a named tab
+        // within the session's browsers map; multiple can co-exist.
+        // `openSeq` bumps per-name on every broadcast so the panel's
+        // open-effect re-fires even for retry-after-error on the same URL.
+        onOpenBrowser: (sid, name, url, title) => {
+          if (!name || !url) return;
+          const t = title || name;
           updateLocalState(sid, s => ({
             ...s,
-            openBrowser: { url, title: title || url, openSeq: Date.now() },
-            lastBrowser: { url, title: title || url },
+            browsers: {
+              ...s.browsers,
+              [name]: { url, title: t, openSeq: Date.now() },
+            },
+            lastBrowsers: {
+              ...s.lastBrowsers,
+              [name]: { url, title: t },
+            },
+            activeBrowserName: name,
             openFile: null,
             openMockup: null,
             openTerminalId: null,
@@ -1280,8 +1302,21 @@ export function ChatApp() {
           }));
         },
 
-        onCloseBrowser: (sid) => {
-          updateLocalState(sid, s => ({ ...s, openBrowser: null, browserInspect: false }));
+        // Server-initiated close for a specific named preview. The other
+        // tabs in this session keep running. If the closed one was active,
+        // fall back to whatever's still open (or `null` to hide the panel).
+        onCloseBrowser: (sid, name) => {
+          if (!name) return;
+          updateLocalState(sid, s => {
+            if (!s.browsers[name]) return s;
+            const { [name]: _gone, ...rest } = s.browsers;
+            const remaining = Object.keys(rest);
+            const nextActive = s.activeBrowserName === name
+              ? (remaining[0] ?? null)
+              : s.activeBrowserName;
+            const { [name]: _gi, ...nextInspect } = s.browserInspect;
+            return { ...s, browsers: rest, activeBrowserName: nextActive, browserInspect: nextInspect };
+          });
         },
 
         // Bridge → Electron CDP request forwarding (browser_snapshot,
@@ -1289,9 +1324,10 @@ export function ChatApp() {
         // replies via `client.respondBrowserRequest`. Non-Electron viewers
         // (browser, mobile PWA) have no `__TAURI_INTERNALS__.invoke` and
         // return an explicit error so the bridge surfaces it to the model.
+        // The handler reads `name` off the request payload and builds the
+        // correct OS-level webview label internally.
         onBrowserRequest: handleBrowserCdpRequest(
           (sid, requestId, payload) => c.respondBrowserRequest(sid, requestId, payload),
-          (sid) => browserLabelFor(sid),
         ),
 
         // Initial-load + server-pushed preferences. Sent as the first WS
@@ -1455,9 +1491,16 @@ export function ChatApp() {
   }, [activeId]);
 
   const active = getState(activeId);
-  const { openFile, openMockup, openBrowser, openPlan, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
+  const { openFile, openMockup, openPlan, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
-  const hasRightPanel = !!openFile || !!openMockup || !!openBrowser || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+  // Derived browser-panel state: a tab is "shown" only when there's an active
+  // name AND that name still has an entry. The panel itself is open when any
+  // browser exists AND an active one is selected — the panel-switch logic
+  // (file, mockup, plan, …) clears `activeBrowserName` to hide it without
+  // tearing down the BrowserView state stashed in `browsers`.
+  const browserOpen = !!active.activeBrowserName && !!active.browsers[active.activeBrowserName];
+  const activeBrowser = browserOpen ? active.browsers[active.activeBrowserName as string] : null;
+  const hasRightPanel = !!openFile || !!openMockup || browserOpen || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
 
   // Snap back to the bottom whenever the active session changes — each tab
   // should open on its latest message, regardless of where the previous tab
@@ -1553,7 +1596,7 @@ export function ChatApp() {
       planRequestId: req.requestId,
       openFile: null,
       openMockup: null,
-      openBrowser: null,
+      activeBrowserName: null,
       openTerminalId: null,
       diffView: null,
       editorDirty: false,
@@ -3405,7 +3448,7 @@ export function ChatApp() {
                             ...s,
                             openMockup: s.lastMockup,
                             openFile: null,
-                            openBrowser: null,
+                            activeBrowserName: null,
                             openTerminalId: null,
                             diffView: null,
                             editorDirty: false,
@@ -3419,35 +3462,60 @@ export function ChatApp() {
                     </button>
                   )}
 
-                  {active.lastBrowser && (
-                    <button
-                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
-                        active.openBrowser
-                          ? 'bg-sky-500/15 text-sky-300 border-sky-500/30 hover:bg-sky-500/25'
-                          : 'bg-surface-light text-zinc-400 border-border hover:text-sky-300 hover:border-sky-500/30'
-                      }`}
-                      onClick={() => {
-                        if (!activeId) return;
-                        updateLocalState(activeId, s => {
-                          if (s.openBrowser) return { ...s, openBrowser: null, editorFullWidth: false };
-                          if (!s.lastBrowser) return s;
-                          return {
-                            ...s,
-                            openBrowser: { ...s.lastBrowser, openSeq: Date.now() },
-                            openFile: null,
-                            openMockup: null,
-                            openTerminalId: null,
-                            diffView: null,
-                            editorDirty: false,
-                          };
-                        });
-                      }}
-                      title={active.openBrowser ? `Hide browser preview (${active.lastBrowser.url})` : `Reopen browser preview (${active.lastBrowser.url})`}
-                    >
-                      <span className="text-[10px]">◐</span>
-                      <span className="truncate max-w-[12rem]">{active.lastBrowser.title || active.lastBrowser.url}</span>
-                    </button>
-                  )}
+                  {Object.entries(active.lastBrowsers).map(([name, last]) => {
+                    const isOpenAndActive = active.activeBrowserName === name && !!active.browsers[name];
+                    return (
+                      <button
+                        key={`hdr-browser-${name}`}
+                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
+                          isOpenAndActive
+                            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30 hover:bg-sky-500/25'
+                            : 'bg-surface-light text-zinc-400 border-border hover:text-sky-300 hover:border-sky-500/30'
+                        }`}
+                        onClick={() => {
+                          if (!activeId) return;
+                          updateLocalState(activeId, s => {
+                            // Already active → hide the panel (keep state).
+                            if (s.activeBrowserName === name && s.browsers[name]) {
+                              return { ...s, activeBrowserName: null, editorFullWidth: false };
+                            }
+                            // Browser still alive but inactive → just switch.
+                            if (s.browsers[name]) {
+                              return {
+                                ...s,
+                                activeBrowserName: name,
+                                openFile: null,
+                                openMockup: null,
+                                openTerminalId: null,
+                                diffView: null,
+                                editorDirty: false,
+                              };
+                            }
+                            // Browser previously closed → reopen from lastBrowsers.
+                            const remembered = s.lastBrowsers[name];
+                            if (!remembered) return s;
+                            return {
+                              ...s,
+                              browsers: {
+                                ...s.browsers,
+                                [name]: { url: remembered.url, title: remembered.title, openSeq: Date.now() },
+                              },
+                              activeBrowserName: name,
+                              openFile: null,
+                              openMockup: null,
+                              openTerminalId: null,
+                              diffView: null,
+                              editorDirty: false,
+                            };
+                          });
+                        }}
+                        title={isOpenAndActive ? `Hide "${name}" (${last.url})` : `Show "${name}" (${last.url})`}
+                      >
+                        <span className="text-[10px]">◐</span>
+                        <span className="truncate max-w-[12rem]">{name}</span>
+                      </button>
+                    );
+                  })}
 
                   <span className="flex-1" />
                   {active.initInfo?.cwd && (
@@ -3694,7 +3762,7 @@ export function ChatApp() {
                                     ...s,
                                     openPlan: { content: planContent, allowedPrompts },
                                     lastPlan: { content: planContent, allowedPrompts },
-                                    openFile: null, openMockup: null, openBrowser: null, openTerminalId: null, diffView: null,
+                                    openFile: null, openMockup: null, activeBrowserName: null, openTerminalId: null, diffView: null,
                                   }))}
                                   title="Reopen plan in the side panel"
                                 >
@@ -4407,69 +4475,136 @@ export function ChatApp() {
                     onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
                   />
                 )}
-                {!openFile && !openMockup && openBrowser && activeId && (
-                  <BrowserPanel
-                    label={`browser-${activeId}`}
-                    url={openBrowser.url}
-                    title={openBrowser.title}
-                    openSeq={openBrowser.openSeq}
-                    obscured={showPalette}
-                    inspect={active.browserInspect}
-                    comments={active.browserComments[openBrowser.url] ?? NO_BROWSER_COMMENTS}
-                    onSetInspect={(next) => updateLocalState(activeId, s => ({ ...s, browserInspect: next }))}
-                    onSetComments={(next) => updateLocalState(activeId, s => ({
-                      ...s,
-                      browserComments: { ...s.browserComments, [openBrowser.url]: next },
-                    }))}
-                    onSendToChat={(md) => {
-                      if (!clientRef.current) return;
-                      const browserUrl = openBrowser.url;
-                      const streamingNow = active.isStreaming;
-                      if (streamingNow) {
-                        const pendingId = crypto.randomUUID();
-                        const pendingMsg = {
-                          id: pendingId,
-                          role: 'user' as const,
-                          content: md,
-                          timestamp: Date.now(),
-                          isPending: true,
+                {!openFile && !openMockup && browserOpen && activeId && activeBrowser && active.activeBrowserName && (() => {
+                  const activeName = active.activeBrowserName;
+                  const label = browserLabelFor(activeId, activeName);
+                  // Build the tab strip data once per render so the
+                  // BrowserPanel just paints what's given.
+                  const tabs = Object.entries(active.browsers).map(([n, b]) => ({
+                    name: n,
+                    label: b.title || n,
+                    active: n === activeName,
+                  }));
+                  const commentsForActive = (active.browserComments[activeName]?.[activeBrowser.url]) ?? NO_BROWSER_COMMENTS;
+                  return (
+                    <BrowserPanel
+                      label={label}
+                      url={activeBrowser.url}
+                      title={activeBrowser.title}
+                      openSeq={activeBrowser.openSeq}
+                      obscured={showPalette}
+                      inspect={!!active.browserInspect[activeName]}
+                      comments={commentsForActive}
+                      tabs={tabs}
+                      onSelectTab={(nextName) => updateLocalState(activeId, s => (
+                        s.browsers[nextName] ? { ...s, activeBrowserName: nextName } : s
+                      ))}
+                      onCloseTab={(closeName) => {
+                        const tauri = (window as any).__TAURI_INTERNALS__;
+                        tauri?.invoke?.('close_browser_preview', { label: browserLabelFor(activeId, closeName) })?.catch?.(() => {});
+                        updateLocalState(activeId, s => {
+                          if (!s.browsers[closeName]) return s;
+                          const { [closeName]: _gone, ...rest } = s.browsers;
+                          const { [closeName]: _gi, ...nextInspect } = s.browserInspect;
+                          const remaining = Object.keys(rest);
+                          const nextActive = s.activeBrowserName === closeName
+                            ? (remaining[0] ?? null)
+                            : s.activeBrowserName;
+                          return { ...s, browsers: rest, activeBrowserName: nextActive, browserInspect: nextInspect };
+                        });
+                      }}
+                      onSetInspect={(next) => updateLocalState(activeId, s => ({
+                        ...s,
+                        browserInspect: { ...s.browserInspect, [activeName]: next },
+                      }))}
+                      onSetComments={(next) => updateLocalState(activeId, s => ({
+                        ...s,
+                        browserComments: {
+                          ...s.browserComments,
+                          [activeName]: {
+                            ...(s.browserComments[activeName] ?? {}),
+                            [activeBrowser.url]: next,
+                          },
+                        },
+                      }))}
+                      onSendToChat={(md) => {
+                        if (!clientRef.current) return;
+                        const browserUrl = activeBrowser.url;
+                        const clearedCommentsForName = {
+                          ...(active.browserComments[activeName] ?? {}),
+                          [browserUrl]: [],
                         };
+                        const streamingNow = active.isStreaming;
+                        if (streamingNow) {
+                          const pendingId = crypto.randomUUID();
+                          const pendingMsg = {
+                            id: pendingId,
+                            role: 'user' as const,
+                            content: md,
+                            timestamp: Date.now(),
+                            isPending: true,
+                          };
+                          updateLocalState(activeId, s => ({
+                            ...s,
+                            messages: [...s.messages, pendingMsg],
+                            pendingMessages: [...s.pendingMessages, { id: pendingId, text: md }],
+                            browserInspect: { ...s.browserInspect, [activeName]: false },
+                            browserComments: { ...s.browserComments, [activeName]: clearedCommentsForName },
+                          }));
+                        } else {
+                          const userMsg = {
+                            id: crypto.randomUUID(),
+                            role: 'user' as const,
+                            content: md,
+                            timestamp: Date.now(),
+                          };
+                          updateLocalState(activeId, s => ({
+                            ...s,
+                            messages: [...s.messages, userMsg],
+                            isStreaming: true,
+                            wasInterrupted: false,
+                            partialText: '',
+                            partialThinking: '',
+                            browserInspect: { ...s.browserInspect, [activeName]: false },
+                            browserComments: { ...s.browserComments, [activeName]: clearedCommentsForName },
+                          }));
+                          clientRef.current.sendMessage(activeId, md);
+                        }
+                      }}
+                      onWriteToChat={(md) => {
+                        setInput(prev => prev ? prev + (prev.endsWith('\n') ? '' : '\n\n') + md : md);
                         updateLocalState(activeId, s => ({
                           ...s,
-                          messages: [...s.messages, pendingMsg],
-                          pendingMessages: [...s.pendingMessages, { id: pendingId, text: md }],
-                          browserInspect: false,
-                          browserComments: { ...s.browserComments, [browserUrl]: [] },
+                          browserInspect: { ...s.browserInspect, [activeName]: false },
                         }));
-                      } else {
-                        const userMsg = {
-                          id: crypto.randomUUID(),
-                          role: 'user' as const,
-                          content: md,
-                          timestamp: Date.now(),
-                        };
-                        updateLocalState(activeId, s => ({
-                          ...s,
-                          messages: [...s.messages, userMsg],
-                          isStreaming: true,
-                          wasInterrupted: false,
-                          partialText: '',
-                          partialThinking: '',
-                          browserInspect: false,
-                          browserComments: { ...s.browserComments, [browserUrl]: [] },
-                        }));
-                        clientRef.current.sendMessage(activeId, md);
-                      }
-                    }}
-                    onWriteToChat={(md) => {
-                      setInput(prev => prev ? prev + (prev.endsWith('\n') ? '' : '\n\n') + md : md);
-                      updateLocalState(activeId, s => ({ ...s, browserInspect: false }));
-                      inputRef.current?.focus();
-                    }}
-                    onClose={() => updateLocalState(activeId, s => ({ ...s, openBrowser: null, editorFullWidth: false, browserInspect: false }))}
-                  />
-                )}
-                {!openFile && !openMockup && !openBrowser && openPlan && activeId && (
+                        inputRef.current?.focus();
+                      }}
+                      onClose={() => {
+                        // Explicit close from the × button: destroy the
+                        // underlying BrowserView for the active tab. The
+                        // BrowserPanel unmount path only hides — without
+                        // this an orphan view would leak until app shutdown.
+                        const tauri = (window as any).__TAURI_INTERNALS__;
+                        tauri?.invoke?.('close_browser_preview', { label })?.catch?.(() => {});
+                        updateLocalState(activeId, s => {
+                          if (!s.browsers[activeName]) return s;
+                          const { [activeName]: _gone, ...rest } = s.browsers;
+                          const { [activeName]: _gi, ...nextInspect } = s.browserInspect;
+                          const remaining = Object.keys(rest);
+                          const nextActive = remaining[0] ?? null;
+                          return {
+                            ...s,
+                            browsers: rest,
+                            activeBrowserName: nextActive,
+                            browserInspect: nextInspect,
+                            editorFullWidth: nextActive == null ? false : s.editorFullWidth,
+                          };
+                        });
+                      }}
+                    />
+                  );
+                })()}
+                {!openFile && !openMockup && !browserOpen &&openPlan && activeId && (
                   <PlanPanel
                     content={openPlan.content}
                     allowedPrompts={openPlan.allowedPrompts}
@@ -4535,13 +4670,13 @@ export function ChatApp() {
                     onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
                   />
                 )}
-                {!openFile && !openMockup && !openBrowser && !openPlan && pluginDetailOpen && (
+                {!openFile && !openMockup && !browserOpen &&!openPlan && pluginDetailOpen && (
                   <PluginDetailView />
                 )}
-                {!openFile && !openMockup && !openBrowser && !openPlan && !pluginDetailOpen && openPR && (
+                {!openFile && !openMockup && !browserOpen &&!openPlan && !pluginDetailOpen && openPR && (
                   <PRDetail pr={openPR} cwd={active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
                 )}
-                {!openFile && !openMockup && !openBrowser && !openPlan && !pluginDetailOpen && !openPR && openTerminal && (
+                {!openFile && !openMockup && !browserOpen &&!openPlan && !pluginDetailOpen && !openPR && openTerminal && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
@@ -4564,7 +4699,7 @@ export function ChatApp() {
                     </pre>
                   </div>
                 )}
-                {!openFile && !openMockup && !openBrowser && !openPlan && !openTerminal && diffView && (
+                {!openFile && !openMockup && !browserOpen &&!openPlan && !openTerminal && diffView && (
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     {/* Review status bar */}
                     {reviewMode && (
@@ -4825,13 +4960,16 @@ export function ChatApp() {
         <BrowserUrlModal
           open={browserUrlModalOpen}
           onCancel={() => setBrowserUrlModalOpen(false)}
-          onConfirm={(raw) => {
+          onConfirm={(rawName, rawUrl) => {
             setBrowserUrlModalOpen(false);
             if (!activeId) return;
-            const trimmed = raw.trim();
+            const trimmedName = rawName.trim();
+            if (!trimmedName || !BROWSER_NAME_RE.test(trimmedName)) return;
+            const trimmed = rawUrl.trim();
             if (!trimmed) return;
-            // localhost / loopback / private IPv4 / *.local default to http; everything
-            // else gets https. Kept in lockstep with BrowserPanel.coerceUrlScheme.
+            // localhost / loopback / private IPv4 / *.local default to http;
+            // everything else gets https. Kept in lockstep with
+            // BrowserPanel.coerceUrlScheme.
             let next: string;
             if (/^https?:\/\//i.test(trimmed)) {
               next = trimmed;
@@ -4853,11 +4991,15 @@ export function ChatApp() {
               next = `${isLoopbackOrPrivate ? 'http' : 'https'}://${bare}`;
             }
             try { new URL(next); } catch { return; }
-            const preview = { url: next, title: next };
+            const preview = { url: next, title: trimmedName };
             updateLocalState(activeId, s => ({
               ...s,
-              openBrowser: { ...preview, openSeq: Date.now() },
-              lastBrowser: preview,
+              browsers: {
+                ...s.browsers,
+                [trimmedName]: { url: next, title: trimmedName, openSeq: Date.now() },
+              },
+              lastBrowsers: { ...s.lastBrowsers, [trimmedName]: preview },
+              activeBrowserName: trimmedName,
               openFile: null,
               openMockup: null,
               openTerminalId: null,

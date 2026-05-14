@@ -26,6 +26,9 @@ function getInvoke(): InvokeFn | null {
 
 export type BrowserRequest = {
   sessionId: string;
+  /** Identifies which preview within the session this request targets.
+   *  Combined with `sessionId` to build the OS-level webview label. */
+  name: string;
   requestId: string;
   action: string;
   args: unknown;
@@ -52,7 +55,6 @@ const ALLOWED_ACTIONS = new Set([
  *  `ClientCallbacks.onBrowserRequest`. */
 export function buildBrowserRequestHandler(
   respond: (sessionId: string, requestId: string, payload: { result?: unknown; error?: string }) => void,
-  getLabelForSession: (sessionId: string) => string,
 ) {
   return async (req: BrowserRequest): Promise<void> => {
     const invoke = getInvoke();
@@ -66,7 +68,11 @@ export function buildBrowserRequestHandler(
       respond(req.sessionId, req.requestId, { error: `Unknown action "${req.action}".` });
       return;
     }
-    const label = getLabelForSession(req.sessionId);
+    if (!req.name) {
+      respond(req.sessionId, req.requestId, { error: 'browser_request missing `name` — the bridge must specify which preview to act on.' });
+      return;
+    }
+    const label = browserLabelFor(req.sessionId, req.name);
     const args = {
       ...(req.args as Record<string, unknown> | undefined),
       label,
@@ -81,8 +87,10 @@ export function buildBrowserRequestHandler(
   };
 }
 
-/** The label convention matches the open_browser flow: one preview per
- *  session, labelled `browser-<sessionId>`. */
-export function browserLabelFor(sessionId: string): string {
-  return `browser-${sessionId}`;
+/** OS-level webview label convention: `browser-<sessionId>-<name>`. Both
+ *  parts pass the Electron-side `[a-zA-Z0-9_-]+` validator (sessionIds are
+ *  UUIDs with dashes, names are validated kebab/snake-case at the bridge),
+ *  so the concatenated string is always valid. */
+export function browserLabelFor(sessionId: string, name: string): string {
+  return `browser-${sessionId}-${name}`;
 }

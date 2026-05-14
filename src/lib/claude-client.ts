@@ -213,8 +213,12 @@ type ClientCallbacks = {
   onSupportedModels: (sessionId: string, models: SupportedModel[]) => void;
   onOpenFile: (sessionId: string, path: string, line: number | null) => void;
   onOpenMockup: (sessionId: string, name: string, html: string) => void;
-  onOpenBrowser: (sessionId: string, url: string, title: string) => void;
-  onCloseBrowser: (sessionId: string) => void;
+  /** A named browser preview was opened or re-navigated. `name` identifies
+   *  which preview within the session (multiple can co-exist). Same name +
+   *  same URL reuses the existing OS-level webview; different URL navigates
+   *  it; new name opens a fresh preview. */
+  onOpenBrowser: (sessionId: string, name: string, url: string, title: string) => void;
+  onCloseBrowser: (sessionId: string, name: string) => void;
   /**
    * Bridge → frontend CDP request channel. The bridge issues `browser_request`
    * over the WS when an SDK tool (browser_snapshot / browser_click / etc.)
@@ -223,7 +227,7 @@ type ClientCallbacks = {
    * `respondBrowserRequest`. Optional — non-Electron viewers can leave it
    * unimplemented; the bridge times out and the tool reports failure.
    */
-  onBrowserRequest?: (req: { sessionId: string; requestId: string; action: string; args: unknown }) => void;
+  onBrowserRequest?: (req: { sessionId: string; name: string; requestId: string; action: string; args: unknown }) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
   onFocusSession: (sessionId: string) => void;
   onWelcome: (info: { spawnMode: SpawnMode }) => void;
@@ -427,14 +431,18 @@ export class ClaudeClient {
         this.callbacks.onOpenMockup(sessionId, msg.name as string, msg.html as string);
         break;
       case 'open_browser':
-        this.callbacks.onOpenBrowser(sessionId, msg.url as string, (msg.title as string) || '');
+        this.callbacks.onOpenBrowser(sessionId, msg.name as string, msg.url as string, (msg.title as string) || '');
         break;
       case 'close_browser':
-        this.callbacks.onCloseBrowser(sessionId);
+        this.callbacks.onCloseBrowser(sessionId, msg.name as string);
         break;
       case 'browser_request':
         this.callbacks.onBrowserRequest?.({
           sessionId,
+          // `name` selects which preview within the session this request
+          // targets; the desktop side uses it to build the OS-level
+          // webview label (`browser-<sessionId>-<name>`).
+          name: msg.name as string,
           requestId: msg.requestId as string,
           action: msg.action as string,
           args: msg.args,

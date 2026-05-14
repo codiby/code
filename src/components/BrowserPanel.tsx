@@ -51,6 +51,15 @@ declare global {
   }
 }
 
+export type BrowserPanelTab = {
+  /** Stable per-session browser name (what was passed to browser_open). */
+  name: string;
+  /** Display label shown in the strip. Falls back to `name`. */
+  label: string;
+  /** True for the tab that's currently visible in the panel body. */
+  active: boolean;
+};
+
 export type BrowserPanelProps = {
   label: string;
   url: string;
@@ -62,6 +71,15 @@ export type BrowserPanelProps = {
    *  the Cmd+K palette) is visible. The webview sits on top of all React
    *  content otherwise. */
   obscured: boolean;
+  /** All browser previews currently open in this session. Renders the tab
+   *  strip when length > 1; with a single tab the strip is hidden. The
+   *  parent passes one entry per `browser_open` name. */
+  tabs?: BrowserPanelTab[];
+  /** Switch which named tab is active (without closing the others). */
+  onSelectTab?: (name: string) => void;
+  /** Close one specific tab (other tabs survive). Different from `onClose`
+   *  which closes the currently-active one. */
+  onCloseTab?: (name: string) => void;
   onSetInspect: (next: boolean) => void;
   onSetComments: (next: MockupComment[]) => void;
   onSendToChat: (markdown: string) => void;
@@ -140,6 +158,7 @@ function sameBounds(a: Bounds | null, b: Bounds | null): boolean {
 
 export function BrowserPanel({
   label, url, title, openSeq, inspect, comments, obscured,
+  tabs, onSelectTab, onCloseTab,
   onSetInspect, onSetComments, onSendToChat, onWriteToChat, onClose,
 }: BrowserPanelProps) {
   const [windowOpen, setWindowOpen] = useState(false);
@@ -181,8 +200,13 @@ export function BrowserPanel({
     });
   }, [label]);
 
-  // Open: measure body, then ask Rust to attach a child webview to that
-  // rect. Close on unmount.
+  // Open: measure body, then ask the shell to attach (or re-attach) a
+  // BrowserView at that rect. On unmount we *hide* the view rather than
+  // destroying it — the React panel re-mounts on every tab switch and a
+  // destroy/recreate here would reload the page from scratch, losing
+  // scroll, form input, and any authenticated state. The shell is the
+  // one tracking the view by label; the explicit × button in the chat
+  // header is responsible for the destroy path (see ChatApp.tsx).
   useEffect(() => {
     if (!isTauri()) {
       setOpenError('Browser preview requires the desktop app (Tauri).');
@@ -215,7 +239,8 @@ export function BrowserPanel({
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      invoke('close_browser_preview', { label }).catch(() => {});
+      // Hide, not destroy — see comment above the effect.
+      invoke('browser_preview_set_visible', { label, visible: false }).catch(() => {});
     };
   }, [label, url, title, openSeq]);
 
@@ -393,6 +418,11 @@ export function BrowserPanel({
     if (md) onWriteToChat(md);
   }, [currentUrl, url, title, comments, onWriteToChat]);
 
+  // Show the tab strip only when more than one browser is open in this
+  // session. With a single tab the title row already carries the same
+  // label so a strip would be redundant.
+  const showTabs = (tabs?.length ?? 0) > 1;
+
   return (
     <div className="flex-1 flex flex-col min-w-0 relative">
       <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface gap-2">
@@ -437,6 +467,44 @@ export function BrowserPanel({
           </Button>
         </div>
       </div>
+      {/* Tab strip — one chip per open browser in the session. Hidden when
+          there's only a single browser since the title row already labels
+          it. Mirrors a Chrome-style tab bar: click to switch, × to close
+          that specific browser without touching the others. */}
+      {showTabs && tabs && (
+        <div className="flex items-stretch gap-1 px-2 py-1 border-b border-border shrink-0 bg-surface overflow-x-auto" role="tablist" aria-label="Browser previews">
+          {tabs.map((t) => (
+            <div
+              key={`browser-tab-${t.name}`}
+              role="tab"
+              aria-selected={t.active}
+              className={`group flex items-center gap-1 pl-2 pr-1 py-0.5 rounded text-[11px] border transition-colors shrink-0 ${
+                t.active
+                  ? 'bg-sky-500/15 text-sky-200 border-sky-500/30'
+                  : 'bg-surface-light text-zinc-400 border-border hover:text-sky-200 hover:border-sky-500/30'
+              }`}
+            >
+              <button
+                type="button"
+                className="font-mono truncate max-w-[14rem] outline-none"
+                onClick={() => onSelectTab?.(t.name)}
+                title={t.name}
+              >
+                {t.label || t.name}
+              </button>
+              {onCloseTab && (
+                <button
+                  type="button"
+                  className="opacity-40 hover:opacity-100 text-zinc-400 hover:text-red-300 px-1 rounded leading-none"
+                  onClick={(e) => { e.stopPropagation(); onCloseTab(t.name); }}
+                  aria-label={`Close ${t.name}`}
+                  title={`Close ${t.name}`}
+                >×</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {/* Navigation row: back / forward / reload / address input. Submit
           coerces bare hosts to https:// and routes through the Rust
           navigate command (which validates the URL before eval'ing into

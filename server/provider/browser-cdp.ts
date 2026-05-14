@@ -45,6 +45,7 @@ export type CdpAction =
 
 export async function cdpRequest(
   sessionId: string,
+  name: string,
   action: CdpAction,
   args: Record<string, unknown>,
   broadcastToSession: (sessionId: string, msg: object) => void,
@@ -54,12 +55,16 @@ export async function cdpRequest(
   return await new Promise<unknown>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(requestId);
-      reject(new Error(`browser_${action} timed out after ${timeoutMs}ms — is a browser preview open in the desktop app?`));
+      reject(new Error(`browser_${action}(${name}) timed out after ${timeoutMs}ms — is the "${name}" browser preview open in the desktop app?`));
     }, timeoutMs);
     pending.set(requestId, { resolve, reject, timer });
     broadcastToSession(sessionId, {
       type: 'browser_request',
       sessionId,
+      // `name` identifies which preview within the session this targets.
+      // The desktop frontend uses it to build the correct OS-level webview
+      // label (`browser-<sessionId>-<name>`).
+      name,
       requestId,
       action,
       args,

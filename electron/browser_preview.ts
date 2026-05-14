@@ -125,11 +125,35 @@ export async function openBrowserPreview(args: {
 }): Promise<void> {
   validateLabel(args.label);
   const parsed = validateUrl(args.url);
+  const targetUrl = parsed.toString();
 
   const main = requireMainWindow();
+  const bounds = clampBounds({ x: args.x, y: args.y, width: args.width, height: args.height });
 
-  // Close any existing preview with the same label first.
-  closeBrowserPreview(args.label);
+  // Reuse an existing preview for this label rather than destroying and
+  // recreating. The React panel re-mounts on every tab switch, and a
+  // destroy/recreate here would reload the page from scratch every time
+  // — losing scroll state, form input, authenticated sessions, etc.
+  //
+  //   - Same URL as the live view → just re-show it and push fresh bounds.
+  //   - Different URL → navigate the existing view (loadURL) instead of
+  //     spinning up a new one. Cheaper than destroy+create, and preserves
+  //     the BrowserView's cookie/cache scope.
+  //   - No existing view → create.
+  const existing = previews.get(args.label);
+  if (existing) {
+    if (!existing.attached) {
+      main.addBrowserView(existing.view);
+      existing.attached = true;
+    }
+    existing.bounds = bounds;
+    existing.view.setBounds(bounds);
+    const currentUrl = existing.view.webContents.getURL();
+    if (currentUrl !== targetUrl) {
+      await existing.view.webContents.loadURL(targetUrl);
+    }
+    return;
+  }
 
   const view = new BrowserView({
     webPreferences: {
@@ -141,7 +165,6 @@ export async function openBrowserPreview(args: {
   });
 
   const wcId = view.webContents.id;
-  const bounds = clampBounds({ x: args.x, y: args.y, width: args.width, height: args.height });
   const state: PreviewState = {
     label: args.label,
     view,
@@ -159,7 +182,7 @@ export async function openBrowserPreview(args: {
   wireWebContents(args.label, view.webContents);
   attachCdp(args.label, view.webContents);
 
-  await view.webContents.loadURL(parsed.toString());
+  await view.webContents.loadURL(targetUrl);
 }
 
 export function closeBrowserPreview(label: string): boolean {

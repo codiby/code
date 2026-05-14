@@ -126,19 +126,49 @@ export async function listPersistedMockups(sessionId: string): Promise<string[]>
   }
 }
 
-// Live browser previews — keyed by session, mirrors the mockup pattern but
-// without disk persistence. URLs are cheap to re-broadcast on reconnect and
-// the user can always re-issue `browser_open`. The store exists so the HTTP
-// `ui_browser_open` and SDK `browser_open` tools share the same in-memory
-// snapshot.
+// Live browser previews — keyed by session and per-session by a model-supplied
+// `name` (e.g. "qa-admin-workflow"). Multiple browsers can co-exist in a
+// single session so the agent can drive, say, the admin tab and the public
+// landing page in parallel. No disk persistence — URLs are cheap to re-issue.
+//
+// The store exists so the HTTP `ui_browser_*` and SDK `browser_*` tools
+// share the same in-memory snapshot. Action tools (snapshot / click / fill /
+// scroll / etc.) look up `(sessionId, name)` to confirm the target preview
+// is open before round-tripping a CDP request through the desktop frontend.
 export type BrowserPreview = { url: string; title?: string };
-const browserStore = new Map<string, BrowserPreview>();
-export function getBrowserPreview(sessionId: string): BrowserPreview | null {
-  return browserStore.get(sessionId) ?? null;
+const browserStore = new Map<string, Map<string, BrowserPreview>>();
+
+export function getBrowserPreview(sessionId: string, name: string): BrowserPreview | null {
+  return browserStore.get(sessionId)?.get(name) ?? null;
 }
-export function setBrowserPreview(sessionId: string, preview: BrowserPreview | null): void {
-  if (preview) browserStore.set(sessionId, preview);
-  else browserStore.delete(sessionId);
+export function setBrowserPreview(sessionId: string, name: string, preview: BrowserPreview | null): void {
+  if (preview) {
+    let m = browserStore.get(sessionId);
+    if (!m) { m = new Map(); browserStore.set(sessionId, m); }
+    m.set(name, preview);
+    return;
+  }
+  const m = browserStore.get(sessionId);
+  if (!m) return;
+  m.delete(name);
+  if (m.size === 0) browserStore.delete(sessionId);
+}
+export function listBrowserPreviews(sessionId: string): Array<{ name: string; preview: BrowserPreview }> {
+  const m = browserStore.get(sessionId);
+  if (!m) return [];
+  return [...m.entries()].map(([name, preview]) => ({ name, preview }));
+}
+
+/** Validate a model-supplied browser name. Kebab/snake-case, 1–40 chars,
+ *  must start with letter/digit (so leading dash/underscore can't pollute
+ *  the OS-level webview label). No spaces, no slashes — matches what the
+ *  Electron `validateLabel` accepts since the underlying label becomes
+ *  `browser-<sessionId>-<name>`. */
+export function sanitizeBrowserName(raw: string): string | null {
+  const name = (raw || '').trim();
+  if (!name) return null;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(name)) return null;
+  return name;
 }
 
 /** Validate a model-supplied URL: must parse, must be http/https. */
@@ -152,6 +182,27 @@ export function sanitizeBrowserUrl(raw: string): URL | null {
   } catch {
     return null;
   }
+}
+
+// Shared Zod schema + error-response helpers for the browser_* action tools.
+// Every action tool takes a `name` identifying which preview within the
+// session to act on; the same validate-then-check preamble repeats 14 times.
+const NAME_SCHEMA = z
+  .string()
+  .min(1)
+  .max(40)
+  .describe('The same `name` you passed to browser_open for the preview you want to act on (e.g. "qa-admin-workflow"). Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit.');
+function invalidName(raw: string) {
+  return {
+    content: [{ type: 'text' as const, text: `Invalid browser name "${raw}". Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit.` }],
+    isError: true,
+  };
+}
+function notOpen(name: string) {
+  return {
+    content: [{ type: 'text' as const, text: `No browser preview named "${name}" is open in this session. Call browser_open with name="${name}" first.` }],
+    isError: true,
+  };
 }
 
 export type SdkToolDeps = {
@@ -387,44 +438,53 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       tool(
         'browser_open',
         [
-          'Open an http(s) URL in the live browser preview side-panel of Codiby Code. The bridge fetches the page server-side, strips frame-busting headers, and serves it back to a sandboxed iframe with an inspector overlay so the user can click elements to comment on them — same flow as `mockup_write` but for live pages.',
+          'Open an http(s) URL in a named browser preview tab inside Codiby Code. Each session can host many simultaneously-open previews — choose a stable `name` (kebab/snake-case, e.g. "qa-admin-workflow", "checkout-flow", "docs") and reuse the same `name` for every follow-up tool call against that preview.',
           '',
-          'Use when the user is iterating on a real running app: previewing their local dev server, reviewing how a deployed page looks, or pointing at a public reference URL. Replaces any URL previously opened with this tool for the session.',
+          'If a preview with this `name` is already open in the session, it just navigates that one to the new URL (state, cookies, scroll position, and authenticated cookies are preserved — only the page changes). Otherwise a new preview is opened.',
           '',
-          'Caveats:',
-          '- Pages gated by cookies/Authorization on the target domain are not authenticated through the proxy — the logged-out view is what renders.',
-          '- Heavy SPAs that fire absolute fetch/XHR calls may break on CORS; static pages and simple SSR work fine.',
-          '- localhost dev servers reachable from the bridge process work best.',
+          'Use when the user is iterating on a real running app: previewing their local dev server, reviewing how a deployed page looks, or driving multiple flows in parallel.',
         ].join('\n'),
         {
+          name: z.string().min(1).max(40).describe('Stable identifier for this browser preview within the session. Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Examples: "qa-admin-workflow", "checkout-flow", "docs". Reuse the same name across browser_* tools to drive the same preview.'),
           url: z.string().min(1).describe('Absolute http:// or https:// URL. localhost URLs are reachable as long as the bridge process can connect to them.'),
-          title: z.string().max(120).optional().describe('Short label shown in the panel header. Defaults to the URL host.'),
+          title: z.string().max(120).optional().describe('Short label shown in the panel tab. Defaults to the `name`.'),
         },
         async (args) => {
+          const name = sanitizeBrowserName(args.name);
+          if (!name) {
+            return { content: [{ type: 'text', text: `Invalid browser name "${args.name}". Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Example: "qa-admin-workflow".` }], isError: true };
+          }
           const target = sanitizeBrowserUrl(args.url);
           if (!target) {
             return { content: [{ type: 'text', text: `Invalid URL "${args.url}". Must be an absolute http:// or https:// URL.` }], isError: true };
           }
-          const title = (args.title || '').trim() || target.host;
-          setBrowserPreview(sessionId, { url: target.toString(), title });
+          const title = (args.title || '').trim() || name;
+          setBrowserPreview(sessionId, name, { url: target.toString(), title });
           deps.broadcastToSession(sessionId, {
             type: 'open_browser',
             sessionId,
+            name,
             url: target.toString(),
             title,
           });
-          return { content: [{ type: 'text', text: `Opened browser preview for ${target.toString()}.` }] };
+          return { content: [{ type: 'text', text: `Opened browser preview "${name}" → ${target.toString()}.` }] };
         },
       ),
       tool(
         'browser_close',
-        'Close the live browser preview side-panel for the current session. No-op if no preview is open.',
-        {},
-        async () => {
-          const had = !!getBrowserPreview(sessionId);
-          setBrowserPreview(sessionId, null);
-          deps.broadcastToSession(sessionId, { type: 'close_browser', sessionId });
-          return { content: [{ type: 'text', text: had ? 'Closed browser preview.' : 'No browser preview was open.' }] };
+        'Close a named browser preview tab for the current session. The other previews stay open. No-op if the named preview wasn\'t open.',
+        {
+          name: z.string().min(1).max(40).describe('The `name` you passed to browser_open. The preview must still be open.'),
+        },
+        async (args) => {
+          const name = sanitizeBrowserName(args.name);
+          if (!name) {
+            return { content: [{ type: 'text', text: `Invalid browser name "${args.name}".` }], isError: true };
+          }
+          const had = !!getBrowserPreview(sessionId, name);
+          setBrowserPreview(sessionId, name, null);
+          deps.broadcastToSession(sessionId, { type: 'close_browser', sessionId, name });
+          return { content: [{ type: 'text', text: had ? `Closed browser preview "${name}".` : `No browser preview named "${name}" was open.` }] };
         },
       ),
       // ---------------------------------------------------------------------
@@ -434,29 +494,38 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       //   → Electron main: webContents.debugger / CDP commands
       //   → frontend respondBrowserRequest → bridge resolves the promise.
       //
-      // `ref` parameters are the `eN` handles returned by the most recent
-      // `browser_snapshot`. Refs stale on the next snapshot or navigation;
-      // call snapshot again to refresh. Non-desktop viewers (browser, mobile
-      // PWA) don't service these — the call times out with a clear error.
+      // Every tool takes a `name` identifying which preview within the session
+      // to act on (must match what was passed to `browser_open`). `ref`
+      // parameters are the `eN` handles returned by the most recent
+      // `browser_snapshot(name=…)` against the SAME `name`. Refs stale on the
+      // next snapshot or navigation; call snapshot again to refresh.
+      // Non-desktop viewers (browser, mobile PWA) don't service these — the
+      // call times out with a clear error.
       // ---------------------------------------------------------------------
+      // Shared schema fragment + error helpers — every action tool has the
+      // same preamble: validate the name, confirm a preview is open under it.
+      // Pulled out so descriptions stay terse instead of repeating the same
+      // paragraph across 14 tools.
       tool(
         'browser_snapshot',
         [
-          'Capture an accessibility snapshot of the current browser preview as an indented YAML tree. Each meaningful element gets a `[ref=eN]` handle that subsequent action tools (browser_click, browser_type, browser_hover, …) use to address it.',
+          'Capture an accessibility snapshot of the named browser preview as an indented YAML tree. Each meaningful element gets a `[ref=eN]` handle that subsequent action tools (browser_click, browser_type, browser_hover, …) use to address it.',
           '',
           'Example output line: `- button "Submit" [ref=e23]`',
           '',
           'Refs are only valid until the next snapshot or page navigation — refresh by calling browser_snapshot again. Always snapshot before clicking/typing/hovering; never assume a ref from a stale read.',
           '',
-          'Requires an open browser preview (open one with `browser_open` first).',
+          'Requires that browser_open(name=…) has already opened a preview with this `name` in the session.',
         ].join('\n'),
-        {},
-        async () => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+        {
+          name: NAME_SCHEMA,
+        },
+        async (args) => {
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = (await cdpRequest(sessionId, 'snapshot', {}, deps.broadcastToSession)) as { url: string; title: string; yaml: string };
+            const r = (await cdpRequest(sessionId, name, 'snapshot', {}, deps.broadcastToSession)) as { url: string; title: string; yaml: string };
             const head = `URL: ${r.url}\nTitle: ${r.title}\n\n`;
             return { content: [{ type: 'text', text: head + (r.yaml || '(empty accessibility tree)') }] };
           } catch (e) {
@@ -466,17 +535,19 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_take_screenshot',
-        'Capture a PNG screenshot of the current browser preview viewport. Returns base64-encoded image data.',
-        {},
-        async () => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+        'Capture a PNG screenshot of a named browser preview\'s viewport. Returns base64-encoded image data.',
+        {
+          name: NAME_SCHEMA,
+        },
+        async (args) => {
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = (await cdpRequest(sessionId, 'take_screenshot', {}, deps.broadcastToSession)) as { format: string; data: string };
+            const r = (await cdpRequest(sessionId, name, 'take_screenshot', {}, deps.broadcastToSession)) as { format: string; data: string };
             return {
               content: [
-                { type: 'text', text: `Captured ${r.format} screenshot (${Math.round(r.data.length / 1024)} KB base64).` },
+                { type: 'text', text: `Captured ${r.format} screenshot of "${name}" (${Math.round(r.data.length / 1024)} KB base64).` },
                 { type: 'image', data: r.data, mimeType: `image/${r.format}` },
               ],
             };
@@ -487,22 +558,21 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_click',
-        [
-          'Click an element identified by a `ref` from `browser_snapshot`. Scrolls into view first, then calls `.click()` for plain left-clicks (works reliably even when the element is covered by an overlay). For right/middle/double clicks, dispatches synthetic mouse events at the element\'s centre.',
-        ].join('\n'),
+        'Click an element in a named browser preview, identified by a `ref` from the most recent browser_snapshot(name=…). Scrolls into view first, then calls `.click()` for plain left-clicks (works reliably even when the element is covered by an overlay). For right/middle/double clicks, dispatches synthetic mouse events at the element\'s centre.',
         {
-          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot.'),
+          name: NAME_SCHEMA,
+          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot on the same `name`.'),
           button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button to use. Defaults to left.'),
           doubleClick: z.boolean().optional().describe('When true, dispatches a double-click instead of a single click.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'click', { ref: args.ref, button: args.button, doubleClick: args.doubleClick }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'click', { ref: args.ref, button: args.button, doubleClick: args.doubleClick }, deps.broadcastToSession);
             const tag = (args.doubleClick ? 'double-' : '') + `${args.button ?? 'left'}-clicked`;
-            return { content: [{ type: 'text', text: `${tag} ${args.ref}.` }] };
+            return { content: [{ type: 'text', text: `${tag} ${args.ref} in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -510,17 +580,18 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_hover',
-        'Move the mouse over the element identified by `ref`. Use for menus, tooltips, and any UI that reveals state on hover.',
+        'Move the mouse over an element in a named browser preview. Use for menus, tooltips, and any UI that reveals state on hover.',
         {
-          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot.'),
+          name: NAME_SCHEMA,
+          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot on the same `name`.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'hover', { ref: args.ref }, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: `Hovered ${args.ref}.` }] };
+            await cdpRequest(sessionId, name, 'hover', { ref: args.ref }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Hovered ${args.ref} in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -529,23 +600,24 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       tool(
         'browser_type',
         [
-          'Set the value of an input/textarea/contenteditable identified by `ref` (replaces existing content). Uses the prototype setter so React/Vue controlled inputs see the new value; fires `input` + `change` events.',
+          'Set the value of an input/textarea/contenteditable in a named browser preview (replaces existing content). Uses the prototype setter so React/Vue controlled inputs see the new value; fires `input` + `change` events.',
           '',
           'Pass `submit: true` to dispatch a synthetic Enter key after typing — useful for search boxes and chat inputs that submit on Enter.',
         ].join('\n'),
         {
-          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot.'),
+          name: NAME_SCHEMA,
+          ref: z.string().min(1).describe('Element ref (`eN`) from the most recent browser_snapshot on the same `name`.'),
           text: z.string().describe('Text to type. Empty string clears the field.'),
           submit: z.boolean().optional().describe('When true, press Enter after typing.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'type', { ref: args.ref, text: args.text, submit: args.submit }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'type', { ref: args.ref, text: args.text, submit: args.submit }, deps.broadcastToSession);
             const tail = args.submit ? ' and pressed Enter' : '';
-            return { content: [{ type: 'text', text: `Typed ${JSON.stringify(args.text).slice(0, 80)} into ${args.ref}${tail}.` }] };
+            return { content: [{ type: 'text', text: `Typed ${JSON.stringify(args.text).slice(0, 80)} into ${args.ref} in "${name}"${tail}.` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -553,19 +625,18 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_press_key',
-        [
-          'Dispatch a key press to the page. Accepts named keys (Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space) or single characters. Combine modifiers with `+`, e.g. `Control+a`, `Meta+k`, `Shift+Tab`.',
-        ].join('\n'),
+        'Dispatch a key press to the page in a named browser preview. Accepts named keys (Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space) or single characters. Combine modifiers with `+`, e.g. `Control+a`, `Meta+k`, `Shift+Tab`.',
         {
+          name: NAME_SCHEMA,
           key: z.string().min(1).describe('Key name or single character. Examples: "Enter", "Escape", "ArrowDown", "Control+a", "a".'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'press_key', { key: args.key }, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: `Pressed ${args.key}.` }] };
+            await cdpRequest(sessionId, name, 'press_key', { key: args.key }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Pressed ${args.key} in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -573,18 +644,19 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_select_option',
-        'Select option(s) on a <select> element identified by `ref`. Matches each entry in `values` against option.value, label, or text. For non-multiple selects, only the first match is selected.',
+        'Select option(s) on a <select> element in a named browser preview. Matches each entry in `values` against option.value, label, or text. For non-multiple selects, only the first match is selected.',
         {
-          ref: z.string().min(1).describe('Element ref (`eN`) of a <select> from the most recent browser_snapshot.'),
+          name: NAME_SCHEMA,
+          ref: z.string().min(1).describe('Element ref (`eN`) of a <select> from the most recent browser_snapshot on the same `name`.'),
           values: z.array(z.string()).min(1).describe('Option values, labels, or visible text to select. Order matters only for multi-selects.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'select_option', { ref: args.ref, values: args.values }, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: `Selected ${JSON.stringify(args.values)} on ${args.ref}.` }] };
+            await cdpRequest(sessionId, name, 'select_option', { ref: args.ref, values: args.values }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: `Selected ${JSON.stringify(args.values)} on ${args.ref} in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -592,20 +664,21 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_scroll',
-        'Scroll the browser preview. With `ref`: scroll that element into view (centred). With `x` / `y`: scroll the viewport to those absolute coordinates. Pass exactly one form.',
+        'Scroll a named browser preview. With `ref`: scroll that element into view (centred). With `x` / `y`: scroll the viewport to those absolute coordinates. Pass exactly one form.',
         {
-          ref: z.string().optional().describe('Element ref (`eN`) from the most recent browser_snapshot — scrolls it into view.'),
+          name: NAME_SCHEMA,
+          ref: z.string().optional().describe('Element ref (`eN`) from the most recent browser_snapshot on the same `name` — scrolls it into view.'),
           x: z.number().optional().describe('Absolute viewport X to scroll to (used when `ref` is omitted).'),
           y: z.number().optional().describe('Absolute viewport Y to scroll to (used when `ref` is omitted).'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'scroll', { ref: args.ref, x: args.x, y: args.y }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'scroll', { ref: args.ref, x: args.x, y: args.y }, deps.broadcastToSession);
             const where = args.ref ? `ref=${args.ref}` : `(${args.x ?? 0}, ${args.y ?? 0})`;
-            return { content: [{ type: 'text', text: `Scrolled to ${where}.` }] };
+            return { content: [{ type: 'text', text: `Scrolled "${name}" to ${where}.` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -613,18 +686,19 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_navigate',
-        'Navigate the browser preview. With `action: "goto"` and a `url`, loads that URL. With `back` / `forward` / `reload`, drives the history. Same surface as the address-bar controls.',
+        'Navigate a named browser preview. With `action: "goto"` and a `url`, loads that URL. With `back` / `forward` / `reload`, drives the history. Same surface as the address-bar controls.',
         {
+          name: NAME_SCHEMA,
           action: z.enum(['goto', 'back', 'forward', 'reload']).describe('Navigation action.'),
           url: z.string().optional().describe('Required for action="goto". Must be http:// or https://.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'navigate', { action: args.action, url: args.url }, deps.broadcastToSession);
-            return { content: [{ type: 'text', text: args.action === 'goto' ? `Navigating to ${args.url}.` : `Navigation: ${args.action}.` }] };
+            await cdpRequest(sessionId, name, 'navigate', { action: args.action, url: args.url }, deps.broadcastToSession);
+            return { content: [{ type: 'text', text: args.action === 'goto' ? `"${name}" navigating to ${args.url}.` : `"${name}" navigation: ${args.action}.` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -633,7 +707,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       tool(
         'browser_evaluate',
         [
-          'Run a JavaScript function in the page and return its result.',
+          'Run a JavaScript function in the page of a named browser preview and return its result.',
           '',
           'Without `ref`: the function runs in global scope. Example function: `() => document.title`.',
           'With `ref`: the function runs with the resolved element as `this` (and as the first argument). Example function: `(el) => el.getBoundingClientRect()`.',
@@ -641,15 +715,16 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           'The function string must be a complete arrow function or `function` expression. Async functions are awaited.',
         ].join('\n'),
         {
+          name: NAME_SCHEMA,
           function: z.string().min(1).describe('A JavaScript function expression. Examples: `() => document.title`, `(el) => el.textContent`.'),
           ref: z.string().optional().describe('Optional element ref (`eN`) — the function receives the element as `this` and arg[0].'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = (await cdpRequest(sessionId, 'evaluate', { function: args.function, ref: args.ref }, deps.broadcastToSession)) as { value: unknown };
+            const r = (await cdpRequest(sessionId, name, 'evaluate', { function: args.function, ref: args.ref }, deps.broadcastToSession)) as { value: unknown };
             return { content: [{ type: 'text', text: JSON.stringify(r.value, null, 2) ?? 'undefined' }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -659,7 +734,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       tool(
         'browser_wait_for',
         [
-          'Wait until a condition is met. Provide one of:',
+          'Wait until a condition is met in a named browser preview. Provide one of:',
           '  • `text` — wait for this string to appear in the visible page text.',
           '  • `textGone` — wait for this string to disappear.',
           '  • `time` — wait this many seconds.',
@@ -667,18 +742,19 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           'Polls every 100ms (for text conditions). Times out after `timeoutMs` (default 5000).',
         ].join('\n'),
         {
+          name: NAME_SCHEMA,
           text: z.string().optional().describe('Wait until this text appears in document.body.innerText.'),
           textGone: z.string().optional().describe('Wait until this text is no longer in document.body.innerText.'),
           time: z.number().positive().optional().describe('Wait this many seconds, then return.'),
           timeoutMs: z.number().int().positive().max(60_000).optional().describe('Hard timeout for text waits. Default 5000ms.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, 'wait_for', { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs }, deps.broadcastToSession, (args.timeoutMs ?? 5000) + 2000);
-            return { content: [{ type: 'text', text: 'Wait condition met.' }] };
+            await cdpRequest(sessionId, name, 'wait_for', { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs }, deps.broadcastToSession, (args.timeoutMs ?? 5000) + 2000);
+            return { content: [{ type: 'text', text: `Wait condition met in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
           }
@@ -686,16 +762,17 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_console_messages',
-        'Return the last N console messages (log/info/warn/error/debug + uncaught exceptions) captured by the browser preview. Buffer holds up to 200; defaults to the last 50.',
+        'Return the last N console messages (log/info/warn/error/debug + uncaught exceptions) captured by a named browser preview. Buffer holds up to 200; defaults to the last 50.',
         {
+          name: NAME_SCHEMA,
           tail: z.number().int().positive().max(200).optional().describe('Number of most-recent entries to return. Defaults to 50.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = await cdpRequest(sessionId, 'console_messages', { tail: args.tail ?? 50 }, deps.broadcastToSession);
+            const r = await cdpRequest(sessionId, name, 'console_messages', { tail: args.tail ?? 50 }, deps.broadcastToSession);
             return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -704,16 +781,17 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_network_requests',
-        'Return the last N HTTP requests observed by the browser preview (method, URL, status, mime type, timing, error). Buffer holds up to 200; defaults to the last 50.',
+        'Return the last N HTTP requests observed by a named browser preview (method, URL, status, mime type, timing, error). Buffer holds up to 200; defaults to the last 50.',
         {
+          name: NAME_SCHEMA,
           tail: z.number().int().positive().max(200).optional().describe('Number of most-recent entries to return. Defaults to 50.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = await cdpRequest(sessionId, 'network_requests', { tail: args.tail ?? 50 }, deps.broadcastToSession);
+            const r = await cdpRequest(sessionId, name, 'network_requests', { tail: args.tail ?? 50 }, deps.broadcastToSession);
             return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -723,22 +801,23 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       tool(
         'browser_handle_dialog',
         [
-          'Accept or dismiss a JavaScript dialog (alert/confirm/prompt/beforeunload). Call this after an action that triggered a dialog — Electron pauses the page until the dialog is handled.',
+          'Accept or dismiss a JavaScript dialog (alert/confirm/prompt/beforeunload) in a named browser preview. Call this after an action that triggered a dialog — Electron pauses the page until the dialog is handled.',
           '',
           'Pass `accept: true` to click OK; `accept: false` to click Cancel. For prompts, `promptText` becomes the value.',
         ].join('\n'),
         {
+          name: NAME_SCHEMA,
           accept: z.boolean().describe('true → click OK / accept the dialog. false → click Cancel.'),
           promptText: z.string().optional().describe('Text for prompt() dialogs. Ignored for alert / confirm.'),
         },
         async (args) => {
-          if (!getBrowserPreview(sessionId)) {
-            return { content: [{ type: 'text', text: 'No browser preview is open. Call browser_open first.' }], isError: true };
-          }
+          const name = sanitizeBrowserName(args.name);
+          if (!name) return invalidName(args.name);
+          if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = (await cdpRequest(sessionId, 'handle_dialog', { accept: args.accept, promptText: args.promptText }, deps.broadcastToSession)) as { ok: true; handled: { type: string; message: string } | null };
+            const r = (await cdpRequest(sessionId, name, 'handle_dialog', { accept: args.accept, promptText: args.promptText }, deps.broadcastToSession)) as { ok: true; handled: { type: string; message: string } | null };
             const text = r.handled
-              ? `${args.accept ? 'Accepted' : 'Dismissed'} ${r.handled.type}: ${r.handled.message}`
+              ? `${args.accept ? 'Accepted' : 'Dismissed'} ${r.handled.type} in "${name}": ${r.handled.message}`
               : 'No dialog was pending.';
             return { content: [{ type: 'text', text }] };
           } catch (e) {
