@@ -18,7 +18,21 @@ SIDECAR_DIR="$PROJECT_DIR/src-tauri/sidecar"
 
 mkdir -p "$SIDECAR_DIR"
 
-BUN_PATH=$(which bun 2>/dev/null || echo "$HOME/.bun/bin/bun")
+BUN_PATH=""
+for candidate in \
+    "$(command -v bun 2>/dev/null || true)" \
+    "$(command -v bun.exe 2>/dev/null || true)" \
+    "$HOME/.bun/bin/bun" \
+    "$HOME/.bun/bin/bun.exe" \
+    "/c/Users/${USER:-}/.bun/bin/bun" \
+    "/c/Users/${USER:-}/.bun/bin/bun.exe"
+do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        BUN_PATH="$candidate"
+        break
+    fi
+done
+
 if [ ! -x "$BUN_PATH" ]; then
     echo "Error: bun not found at $BUN_PATH" >&2
     echo "Install with: curl -fsSL https://bun.sh/install | bash" >&2

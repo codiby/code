@@ -1,3 +1,5 @@
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -16,6 +18,70 @@ struct BridgeServerState {
     /// it on app exit. `None` when we're piggy-backing on an externally-
     /// installed server (LaunchAgent / SCM service).
     child: Mutex<Option<CommandChild>>,
+}
+
+static DEV_ENV: Lazy<HashMap<String, String>> = Lazy::new(load_dev_env);
+
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn parse_env_file(path: PathBuf, vars: &mut HashMap<String, String>) {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return;
+    };
+
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+
+        let mut value = value.trim().trim_end_matches('\r').trim().to_string();
+        if value.len() >= 2 {
+            let quoted = (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''));
+            if quoted {
+                value = value[1..value.len() - 1].to_string();
+            }
+        }
+
+        vars.insert(key.to_string(), value);
+    }
+}
+
+fn load_dev_env() -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    let root = project_root();
+    parse_env_file(root.join(".env"), &mut vars);
+    parse_env_file(root.join(".env.local"), &mut vars);
+    vars
+}
+
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name).ok().or_else(|| DEV_ENV.get(name).cloned())
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(env_value(name).as_deref(), Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"))
+}
+
+fn configured_bridge_port() -> u16 {
+    env_value("CLAUDE_UI_PORT")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(3111)
 }
 
 /// Absolute path of the bridge-server port file. Matches the path written by
@@ -102,7 +168,7 @@ async fn spawn_sidecar(app: &AppHandle) -> Result<u16, String> {
             "--spawned-by=app".to_string(),
         ])
         .env("CODIBY_CODE_PORT_FILE", port_file.to_string_lossy().into_owned())
-        .env("CLAUDE_UI_PORT", "3111")
+        .env("CLAUDE_UI_PORT", configured_bridge_port().to_string())
         .env("CLAUDE_UI_HOST", "127.0.0.1");
 
     let (mut rx, child) = cmd
@@ -192,6 +258,18 @@ async fn get_bridge_port(
             *state.port.lock().unwrap() = Some(p);
             return Ok(p);
         }
+    }
+
+    if env_flag("SKIP_DEV_SERVER_START") {
+        let port = configured_bridge_port();
+        if health_check(port) {
+            *state.port.lock().unwrap() = Some(port);
+            return Ok(port);
+        }
+
+        return Err(format!(
+            "SKIP_DEV_SERVER_START is enabled, but no bridge server is healthy on http://localhost:{port}"
+        ));
     }
 
     // 3. Spawn one.
