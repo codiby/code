@@ -261,12 +261,28 @@ async function buildOnce() {
 if (WATCH) {
   await buildOnce();
 
+  // Serialize rebuilds: only one buildOnce() in flight at a time. A change
+  // arriving mid-build sets the `queued` flag so we re-run exactly once
+  // after the current build settles, instead of stacking concurrent rebuilds
+  // that race on `rm -r dist` and leave the output half-written.
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight = false;
+  let queued = false;
+  const runBuild = async () => {
+    if (inFlight) { queued = true; return; }
+    inFlight = true;
+    try {
+      await buildOnce();
+    } catch (e) {
+      console.error('[build] failed:', e);
+    } finally {
+      inFlight = false;
+      if (queued) { queued = false; runBuild(); }
+    }
+  };
   const rebuild = () => {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      buildOnce().catch((e) => console.error('[build] failed:', e));
-    }, 100);
+    timer = setTimeout(() => { runBuild(); }, 100);
   };
 
   watch(join(ROOT, 'src'), { recursive: true }, rebuild);
