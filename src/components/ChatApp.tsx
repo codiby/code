@@ -4052,7 +4052,7 @@ export function ChatApp() {
                           ? !cmdText.trim() || activeStatus !== 'connected'
                           : !input.trim() || activeStatus !== 'connected';
                         const triggerCls =
-                          'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors';
+                          'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
                         return (
                           <div className="relative">
                             {/* Ambient color spots — four point-lights bouncing in pairs.
@@ -4229,8 +4229,8 @@ export function ChatApp() {
                                 isDisabled={ocLoading}
                               >
                                 <SelectTrigger className={triggerCls}>
-                                  <SelectValue />
-                                  <SelectIndicator className="size-3.5" />
+                                  <SelectValue className="min-w-0 flex-1 truncate" />
+                                  <SelectIndicator className="size-3.5 shrink-0" />
                                 </SelectTrigger>
                                 <SelectPopover>
                                   <ListBox>
@@ -4271,8 +4271,8 @@ export function ChatApp() {
                                 className="w-36"
                               >
                                 <SelectTrigger className={triggerCls}>
-                                  <SelectValue />
-                                  <SelectIndicator className="size-3.5" />
+                                  <SelectValue className="min-w-0 flex-1 truncate" />
+                                  <SelectIndicator className="size-3.5 shrink-0" />
                                 </SelectTrigger>
                                 <SelectPopover>
                                   <ListBox>
