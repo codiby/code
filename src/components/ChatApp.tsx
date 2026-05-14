@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { ArrowDown, Send as SendIcon, Sparkles } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, LayoutGrid } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -59,6 +59,16 @@ import { type MockupComment } from '../lib/mockup-inspector';
 import { MockupPanel } from './MockupPanel';
 import { BrowserPanel } from './BrowserPanel';
 import { PlanPanel, type PlanComment } from './PlanPanel';
+import {
+  ChatFocusLayout,
+  loadInitialWorkspaces,
+  persistWorkspaces,
+  reconcileWorkspaceLayout,
+  sameLayout,
+  type Workspace,
+} from './ChatFocusLayout';
+import { BookmarkPlus, MessageSquarePlus } from 'lucide-react';
+import { ChatComposer } from './ChatComposer';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
  *  Using `… || []` at the JSX site allocates a fresh array on every render
@@ -109,6 +119,9 @@ type LocalSessionState = SessionState & {
   browserComments: Record<string, Record<string, MockupComment[]>>;
   /** Per-name inspect-mode toggle. Switching tabs preserves per-tab state. */
   browserInspect: Record<string, boolean>;
+  /** Images pasted into the composer, awaiting the next send. Per-session so
+   *  the focus-mode layout can show separate paste buffers in each pane. */
+  pastedImages: { media_type: string; data: string; preview: string }[];
   // ExitPlanMode plan rendered in the side panel. UI-only — same merge
   // caveat as `openMockup`. `planRequestId` tracks the most recent perm
   // request id we auto-opened for so we don't reopen the panel after the
@@ -799,7 +812,8 @@ export function ChatApp() {
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
   const subscribedRef = useRef(new Set<string>());
-  const [pastedImages, setPastedImages] = useState<{ media_type: string; data: string; preview: string }[]>([]);
+  // pastedImages now lives in LocalSessionState.pastedImages, so each
+  // focus-mode pane can buffer its own pending images independently.
   // Pulled once from the bridge on mount via /providers/opencode/info.
   // `null` = probe in flight, `{available: false}` = opencode binary is
   // missing or its first boot failed (in which case the New Session
@@ -864,6 +878,73 @@ export function ChatApp() {
       return next;
     });
   }, []);
+  // Top-level layout mode — controls the shape of the main UI. "standard" keeps
+  // the current IDE-style layout (sidebar + editor + chat); "focus" hides the
+  // IDE chrome and tiles multiple chats. Wiring of the actual mode-switching
+  // comes in follow-up steps — for now this just drives the title bar pill.
+  const [layoutMode, setLayoutMode] = useState<'standard' | 'focus'>(() => {
+    try {
+      const v = localStorage.getItem('claude-ui-layout-mode');
+      return v === 'focus' ? 'focus' : 'standard';
+    } catch { return 'standard'; }
+  });
+  const changeLayoutMode = useCallback((mode: 'standard' | 'focus') => {
+    setLayoutMode(mode);
+    try { localStorage.setItem('claude-ui-layout-mode', mode); } catch {}
+  }, []);
+
+  // Workspace state for focus mode. Lifted here (rather than living inside
+  // ChatFocusLayout) so the title bar can surface workspace-level actions
+  // ("add active chat to workspace", "new chat in workspace") next to the
+  // layout-mode pill.
+  const [focusWorkspaces, setFocusWorkspaces] = useState<Workspace[]>(() => {
+    return loadInitialWorkspaces([]).workspaces;
+  });
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => {
+    return loadInitialWorkspaces([]).activeId;
+  });
+  const activeWorkspace = useMemo(
+    () => focusWorkspaces.find(w => w.id === activeWorkspaceId) ?? focusWorkspaces[0]!,
+    [focusWorkspaces, activeWorkspaceId],
+  );
+  // Picker popover for "add a chat to this workspace". Click-outside and
+  // Escape close it; mounting is conditional in the JSX below.
+  const [addChatPickerOpen, setAddChatPickerOpen] = useState(false);
+  const addChatBtnRef = useRef<HTMLButtonElement>(null);
+  const addChatPickerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!addChatPickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (addChatPickerRef.current?.contains(t)) return;
+      if (addChatBtnRef.current?.contains(t)) return;
+      setAddChatPickerOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setAddChatPickerOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [addChatPickerOpen]);
+  /** Move the given session into the currently-active workspace. Move
+   *  semantics (not copy) — the session is removed from any other workspace
+   *  that owned it so a chat is always in exactly one workspace. */
+  const addSessionToActiveWorkspace = useCallback((sid: string) => {
+    setFocusWorkspaces(prev => prev.map(w => {
+      if (w.id === activeWorkspaceId) {
+        if (w.sessionIds.includes(sid)) return w;
+        const sessionIds = [...w.sessionIds, sid];
+        return { ...w, sessionIds, layout: reconcileWorkspaceLayout(w.layout, sessionIds) };
+      }
+      if (w.sessionIds.includes(sid)) {
+        const sessionIds = w.sessionIds.filter(id => id !== sid);
+        return { ...w, sessionIds, layout: reconcileWorkspaceLayout(w.layout, sessionIds) };
+      }
+      return w;
+    }));
+  }, [activeWorkspaceId]);
   const chatDragging = useRef(false);
   // Mirrored as React state so we can render a transparent overlay over the
   // content area during a drag — without it, the cursor entering the
@@ -895,6 +976,7 @@ export function ChatApp() {
     browsers: {}, activeBrowserName: null, lastBrowsers: {},
     browserComments: {}, browserInspect: {},
     openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
+    pastedImages: [],
   });
 
   const getState = (id: string | null): LocalSessionState => {
@@ -904,14 +986,34 @@ export function ChatApp() {
 
   // setInput: update local state immediately and sync to server
   const setInput = (val: string | ((prev: string) => string)) => {
-    if (!activeId || !clientRef.current) return;
-    const current = getState(activeId).input;
+    if (!activeId) return;
+    setInputForSession(activeId, val);
+  };
+
+  // Per-session variant — used by each focus-mode pane's composer so typing
+  // into pane B edits session B's draft without forcing it active first.
+  const setInputForSession = (sid: string, val: string | ((prev: string) => string)) => {
+    if (!clientRef.current) return;
+    const current = getState(sid).input;
     const newVal = typeof val === 'function' ? val(current) : val;
     setSessionStates(prev => ({
       ...prev,
-      [activeId]: { ...(prev[activeId] || emptyLocalState()), input: newVal },
+      [sid]: { ...(prev[sid] || emptyLocalState()), input: newVal },
     }));
-    clientRef.current.updateUIState(activeId, { input: newVal });
+    clientRef.current.updateUIState(sid, { input: newVal });
+  };
+
+  // Per-session paste buffer setter — symmetric with setInputForSession.
+  const setPastedImagesForSession = (
+    sid: string,
+    val: { media_type: string; data: string; preview: string }[] |
+         ((prev: { media_type: string; data: string; preview: string }[]) => { media_type: string; data: string; preview: string }[]),
+  ) => {
+    setSessionStates(prev => {
+      const s = prev[sid] || emptyLocalState();
+      const next = typeof val === 'function' ? val(s.pastedImages) : val;
+      return { ...prev, [sid]: { ...s, pastedImages: next } };
+    });
   };
 
   // Panel state setters (local-only UI state that doesn't need server sync)
@@ -2092,19 +2194,26 @@ export function ChatApp() {
     } catch {}
   };
 
-  const handleSend = () => {
-    const text = input.trim();
-    if (!text && pastedImages.length === 0) return;
-    if (!activeId || !clientRef.current) return;
+  const handleSend = (sid: string | null = activeId) => {
+    if (!sid || !clientRef.current) return;
+    const state = getState(sid);
+    const text = state.input.trim();
+    const sessionPastedImages = state.pastedImages;
+    if (!text && sessionPastedImages.length === 0) return;
+
+    const session = sessions.find(s => s.id === sid);
 
     // Push to per-session input history
     if (text) {
       setSessionStates(prev => {
-        const s = prev[activeId] || emptyLocalState();
+        const s = prev[sid] || emptyLocalState();
         const hist = [...s.inputHistory, text];
         if (hist.length > 100) hist.shift();
-        return { ...prev, [activeId]: { ...s, inputHistory: hist } };
+        return { ...prev, [sid]: { ...s, inputHistory: hist } };
       });
+      // History refs are shared — they track navigation for whichever pane's
+      // textarea last submitted, which is fine because nav is keyboard-driven
+      // and only one textarea can be focused at a time.
       historyIdxRef.current = -1;
       historyDraftRef.current = '';
     }
@@ -2114,8 +2223,8 @@ export function ChatApp() {
     // sent to Claude. Lives above /terminal so a future SDK-side `/clear`
     // can't override it.
     if (text === '/clear') {
-      setInput('');
-      clearSession(activeId);
+      setInputForSession(sid, '');
+      clearSession(sid);
       return;
     }
 
@@ -2126,8 +2235,8 @@ export function ChatApp() {
     if (slashTermMatch) {
       const initialCmd = slashTermMatch[2]?.trim() || '';
       const procId = crypto.randomUUID();
-      const cwd = active.initInfo?.cwd || activeSession?.cwd || '/';
-      updateLocalState(activeId, s => ({
+      const cwd = state.initInfo?.cwd || session?.cwd || '/';
+      updateLocalState(sid, s => ({
         ...s,
         messages: [...s.messages, {
           id: procId,
@@ -2141,9 +2250,9 @@ export function ChatApp() {
         }],
       }));
       // Auto-activate + ensure expanded in the sticky panel.
-      setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
+      setActiveShellBySession(prev => ({ ...prev, [sid]: procId }));
       setMinimizedShells(prev => { const n = new Set(prev); n.delete(procId); return n; });
-      setInput('');
+      setInputForSession(sid, '');
       // The InteractiveTerminalBubble (mounted next render) calls execShell itself
       // once its xterm instance has sized — we don't call it from here to avoid
       // a cols/rows mismatch with the rendered terminal.
@@ -2151,16 +2260,13 @@ export function ChatApp() {
     }
 
     // Terminal command: > command
-    // Opens an interactive PTY bubble and runs the command as its first input,
-    // so the user can Ctrl+C out of long-running commands or keep typing more
-    // commands in the same shell after the first one exits.
     if (text.startsWith('>')) {
       const command = text.slice(1).trim();
       if (!command) return;
       const procId = crypto.randomUUID();
-      const cwd = active.initInfo?.cwd || activeSession?.cwd || '/';
+      const cwd = state.initInfo?.cwd || session?.cwd || '/';
 
-      updateLocalState(activeId, s => ({
+      updateLocalState(sid, s => ({
         ...s,
         messages: [...s.messages, {
           id: procId,
@@ -2173,37 +2279,25 @@ export function ChatApp() {
           timestamp: Date.now(),
         }],
       }));
-      // Auto-activate this new shell + force it expanded in the sticky panel.
-      setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
+      setActiveShellBySession(prev => ({ ...prev, [sid]: procId }));
       setMinimizedShells(prev => { const n = new Set(prev); n.delete(procId); return n; });
-      setInput('');
-      // InteractiveTerminalBubble will call execShell on mount and auto-send
-      // `command + \r` once the PTY produces its first output.
+      setInputForSession(sid, '');
       return;
     }
 
-    const images = pastedImages.length > 0 ? pastedImages.map(({ media_type, data }) => ({ media_type, data })) : undefined;
+    const images = sessionPastedImages.length > 0 ? sessionPastedImages.map(({ media_type, data }) => ({ media_type, data })) : undefined;
 
     // If a permission/AskUserQuestion is pending, sending a new message means
     // the user wants to redirect — auto-deny the pending tool so the agent
     // unblocks and consumes the new message instead of staying parked.
-    if (active.permRequest) {
-      clientRef.current.respondToPermission(activeId, active.permRequest.requestId, false);
-      updateLocalState(activeId, s => ({ ...s, permRequest: null }));
+    if (state.permRequest) {
+      clientRef.current.respondToPermission(sid, state.permRequest.requestId, false);
+      updateLocalState(sid, s => ({ ...s, permRequest: null }));
     }
 
-    // Use the same effective text for the optimistic bubble and the server
-    // payload — otherwise the content-based optimistic-upgrade match in
-    // onMessage fails (local "" vs server " ") and both bubbles stick, with
-    // the seqless optimistic one pinned to the tail by the seq-sort.
     const effectiveText = text || ' ';
 
-    // Queue mode: if a turn is still in flight, push the bubble into the
-    // message list as `isPending` and buffer the (id, text, images) tuple
-    // for the drain effect. Lets the user line up follow-ups without
-    // waiting for Claude — the bubble flips to a normal user message and
-    // ships when the in-flight turn completes.
-    const streamingNow = active.isStreaming;
+    const streamingNow = state.isStreaming;
     if (streamingNow) {
       const pendingId = crypto.randomUUID();
       const pendingMsg = {
@@ -2214,7 +2308,7 @@ export function ChatApp() {
         images: images?.map(img => ({ media_type: img.media_type, data: img.data })),
         isPending: true,
       };
-      updateLocalState(activeId, s => ({
+      updateLocalState(sid, s => ({
         ...s,
         messages: [...s.messages, pendingMsg],
         pendingMessages: [
@@ -2222,8 +2316,8 @@ export function ChatApp() {
           { id: pendingId, text: effectiveText, images },
         ],
       }));
-      setInput('');
-      setPastedImages([]);
+      setInputForSession(sid, '');
+      setPastedImagesForSession(sid, []);
       return;
     }
 
@@ -2234,7 +2328,7 @@ export function ChatApp() {
       timestamp: Date.now(),
       images: images?.map(img => ({ media_type: img.media_type, data: img.data })),
     };
-    updateLocalState(activeId, s => ({
+    updateLocalState(sid, s => ({
       ...s,
       messages: [...s.messages, userMsg],
       isStreaming: true,
@@ -2242,9 +2336,9 @@ export function ChatApp() {
       partialText: '',
       partialThinking: '',
     }));
-    setInput('');
-    setPastedImages([]);
-    clientRef.current.sendMessage(activeId, effectiveText, images);
+    setInputForSession(sid, '');
+    setPastedImagesForSession(sid, []);
+    clientRef.current.sendMessage(sid, effectiveText, images);
   };
 
   const handlePermission = (requestId: string, allow: boolean, updatedInput?: Record<string, unknown>) => {
@@ -2253,10 +2347,10 @@ export function ChatApp() {
     updateLocalState(activeId, s => ({ ...s, permRequest: null }));
   };
 
-  const handleInterrupt = () => {
-    if (!activeId || !clientRef.current) return;
-    clientRef.current.interrupt(activeId);
-    updateLocalState(activeId, s => ({
+  const handleInterrupt = (sid: string | null = activeId) => {
+    if (!sid || !clientRef.current) return;
+    clientRef.current.interrupt(sid);
+    updateLocalState(sid, s => ({
       ...s,
       isStreaming: false,
       pendingMessages: [],
@@ -3153,16 +3247,240 @@ export function ChatApp() {
     };
   }, []);
 
+  // Reconcile focus-mode workspaces with the host's open-sessions list:
+  //   - drop sessions from workspaces that closed externally;
+  //   - assign newly-opened sessions to the active workspace.
+  useEffect(() => {
+    const hostIds = new Set(orderedOpenSessions.map(s => s.id));
+    setFocusWorkspaces(prev => {
+      const cleaned = prev.map(w => {
+        const validIds = w.sessionIds.filter(id => hostIds.has(id));
+        const newLayout = reconcileWorkspaceLayout(w.layout, validIds);
+        if (
+          validIds.length === w.sessionIds.length &&
+          sameLayout(newLayout, w.layout)
+        ) return w;
+        return { ...w, sessionIds: validIds, layout: newLayout };
+      });
+      const assigned = new Set(cleaned.flatMap(w => w.sessionIds));
+      const orphans = orderedOpenSessions.map(s => s.id).filter(id => !assigned.has(id));
+      if (orphans.length === 0) return cleaned;
+      return cleaned.map(w => {
+        if (w.id !== activeWorkspaceId) return w;
+        const sessionIds = [...w.sessionIds, ...orphans];
+        const newLayout = reconcileWorkspaceLayout(w.layout, sessionIds);
+        return { ...w, sessionIds, layout: newLayout };
+      });
+    });
+  }, [orderedOpenSessions, activeWorkspaceId]);
+
+  useEffect(() => {
+    persistWorkspaces(focusWorkspaces, activeWorkspaceId);
+  }, [focusWorkspaces, activeWorkspaceId]);
+
+  // Render a composer for any given session. Used by both layouts: the
+  // standard chat tree renders the active session's composer inline; the
+  // focus-mode grid renders one per pane so the streaming/loader animation
+  // is visible everywhere an agent is working.
+  const renderComposer = (sid: string) => {
+    const s = sessionStates[sid];
+    if (!s) return null;
+    const sess = sessions.find(x => x.id === sid);
+    const status: ConnectionStatus = statuses[sid] || 'disconnected';
+    const BUILTINS = ['terminal', 't'];
+    const sdkCommands = s.initInfo?.slashCommands || [];
+    const sessionSlashCommands = [
+      ...BUILTINS,
+      ...sdkCommands.filter((c: string) => !BUILTINS.includes(c)),
+    ];
+    return (
+      <ChatComposer
+        key={sid}
+        sessionId={sid}
+        autoFocus={sid === activeId}
+        input={s.input}
+        onChangeInput={(val) => setInputForSession(sid, val)}
+        pastedImages={s.pastedImages}
+        onChangePastedImages={(val) => setPastedImagesForSession(sid, val)}
+        active={s}
+        activeSession={sess ?? undefined}
+        connectionStatus={status}
+        opencodeInfo={opencodeInfo}
+        slashCommands={sessionSlashCommands}
+        client={client}
+        cwd={s.initInfo?.cwd || sess?.cwd || null}
+        onSend={() => handleSend(sid)}
+        onInterrupt={() => handleInterrupt(sid)}
+        onSelectModel={(modelId) => {
+          if (!clientRef.current) return;
+          if (modelId) clientRef.current.setModel(sid, modelId);
+          setSessions(prev => prev.map(x => x.id === sid ? { ...x, model: modelId || null } : x));
+        }}
+        onSelectPermissionMode={(mode) => {
+          if (!clientRef.current) return;
+          requestPermissionMode(sid, mode);
+        }}
+        onFocus={() => { if (sid !== activeId) handleSelectSession(sid); }}
+      />
+    );
+  };
+
+  const composerNode = activeId ? renderComposer(activeId) : null;
+
   return (
     <Providers>
       <div className="h-screen bg-base flex flex-col overflow-hidden">
-        {/* Titlebar drag region */}
+        {/* Custom title bar — system chrome is hidden via Electron's
+         *  `titleBarStyle: 'hiddenInset'`, which keeps the macOS traffic lights
+         *  on the left and frees up the rest of the bar for our own content.
+         *  The whole strip is a drag region, except for interactive controls
+         *  (layout-mode pill) which opt out with `app-region: no-drag`. */}
         <div
           data-tauri-drag-region
-          className="fixed top-0 left-0 right-0 h-[28px] z-[9999]"
+          className="fixed top-0 left-0 right-0 h-9 z-[9999] flex items-center bg-base border-b border-border select-none"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-        />
-        <div className="flex-1 flex min-h-0 min-w-0 pt-[28px]">
+        >
+          {/* Reserve room for macOS traffic lights (close/min/max) */}
+          <div className="w-20 shrink-0" />
+
+          {/* Center: drag area, intentionally empty for now */}
+          <div className="flex-1" />
+
+          {/* Right cluster: workspace actions (only in focus mode) + layout
+              switcher. Both groups opt out of the drag region so clicks
+              register as button presses instead of starting a window drag. */}
+          {layoutMode === 'focus' && (
+            <div
+              className="mr-1.5 flex items-center gap-0.5 relative"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            >
+              <button
+                ref={addChatBtnRef}
+                onClick={() => setAddChatPickerOpen(v => !v)}
+                title="Add a chat to this workspace"
+                className="w-7 h-6 flex items-center justify-center rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface-light transition-colors"
+              >
+                <BookmarkPlus className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={handleNewSession}
+                title="New chat in this workspace"
+                className="w-7 h-6 flex items-center justify-center rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface-light transition-colors"
+              >
+                <MessageSquarePlus className="w-3.5 h-3.5" />
+              </button>
+              {addChatPickerOpen && (() => {
+                // Group sessions by their tab-group id (using `tabGroupMap`),
+                // collecting ungrouped sessions into a synthetic "Ungrouped"
+                // bucket so every session shows up even if it isn't grouped.
+                const buckets = new Map<string, { id: string; name: string; sessions: SessionInfo[] }>();
+                const UNGROUPED = '__ungrouped__';
+                for (const s of orderedOpenSessions) {
+                  const gid = tabGroupMap[s.id] ?? UNGROUPED;
+                  if (!buckets.has(gid)) {
+                    const meta = gid === UNGROUPED
+                      ? { id: UNGROUPED, name: 'Ungrouped' }
+                      : { id: gid, name: tabGroups[gid]?.name ?? 'Group' };
+                    buckets.set(gid, { ...meta, sessions: [] });
+                  }
+                  buckets.get(gid)!.sessions.push(s);
+                }
+                const sections = Array.from(buckets.values());
+                return (
+                  <div
+                    ref={addChatPickerRef}
+                    className="absolute right-0 top-7 z-[10000] w-72 max-h-[420px] overflow-y-auto bg-surface border border-border-light rounded-lg shadow-xl py-1"
+                  >
+                    {orderedOpenSessions.length === 0 ? (
+                      <div className="px-3 py-4 text-xs text-zinc-500 text-center">No open chats.</div>
+                    ) : (
+                      sections.map(section => (
+                        <div key={section.id}>
+                          <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">
+                            {section.name}
+                          </div>
+                          {section.sessions.map(s => {
+                            const inWs = activeWorkspace?.sessionIds.includes(s.id) ?? false;
+                            const status = statuses[s.id] || 'disconnected';
+                            const dot =
+                              status === 'connected' ? 'bg-green-400' :
+                              status === 'connecting' ? 'bg-amber-400' :
+                              'bg-zinc-600';
+                            return (
+                              <button
+                                key={s.id}
+                                disabled={inWs}
+                                onClick={() => {
+                                  addSessionToActiveWorkspace(s.id);
+                                  setAddChatPickerOpen(false);
+                                }}
+                                className="w-full px-3 py-1.5 flex items-center gap-2 text-left hover:bg-surface-light disabled:opacity-40 disabled:hover:bg-transparent"
+                              >
+                                <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[12.5px] text-zinc-200 truncate">{s.name}</div>
+                                  <div className="text-[10.5px] text-zinc-500 font-mono truncate">{s.cwd}</div>
+                                </div>
+                                {inWs && (
+                                  <span className="text-[10px] text-zinc-500 shrink-0">In workspace</span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* Right: layout-mode pill (clickable — opt out of drag) */}
+          <div
+            className="mr-3 flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            <button
+              onClick={() => changeLayoutMode('standard')}
+              className={`flex items-center justify-center w-7 h-6 rounded-md transition-colors ${
+                layoutMode === 'standard'
+                  ? 'bg-surface-lighter text-zinc-100 ring-1 ring-border-light'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+              title="Standard layout"
+            >
+              <PanelsTopLeft className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => changeLayoutMode('focus')}
+              className={`flex items-center justify-center w-7 h-6 rounded-md transition-colors ${
+                layoutMode === 'focus'
+                  ? 'bg-surface-lighter text-zinc-100 ring-1 ring-border-light'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+              title="Chat Focus layout"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+        {layoutMode === 'focus' ? (
+          <div className="flex-1 flex min-h-0 min-w-0 pt-9">
+            <ChatFocusLayout
+              sessions={orderedOpenSessions}
+              activeSessionId={activeId}
+              onSelectSession={handleSelectSession}
+              onCloseSession={handleCloseTab}
+              renderComposer={renderComposer}
+              workspaces={focusWorkspaces}
+              setWorkspaces={setFocusWorkspaces}
+              activeWorkspaceId={activeWorkspaceId}
+              setActiveWorkspaceId={setActiveWorkspaceId}
+            />
+          </div>
+        ) : (
+        <div className="flex-1 flex min-h-0 min-w-0 pt-9">
           <TabBar
             sessions={orderedOpenSessions}
             closedSessions={closedSessions}
@@ -4018,305 +4336,7 @@ export function ChatApp() {
                   )}
 
                   {/* Input */}
-                  <div className="p-3 shrink-0 relative">
-                    <div className="max-w-4xl mx-auto relative">
-                      {slash.isActive && (
-                        <SlashCommandList
-                          filtered={slash.filtered}
-                          selectedIndex={slash.selectedIndex}
-                          onSelect={handleSlashSelect}
-                          onHover={() => {}}
-                        />
-                      )}
-                      {fileMention.isActive && (
-                        <FileMentionList
-                          results={fileMention.results}
-                          selectedIndex={fileMention.selectedIndex}
-                          onSelect={handleFileMentionSelect}
-                        />
-                      )}
-                      {(() => {
-                        const isTerminalMode = input.startsWith('>');
-                        const cmdText = isTerminalMode ? input.slice(1).replace(/^ /, '') : input;
-                        const streaming = active.isStreaming;
-                        const refs = input.match(/@[\w.\/\-:]+/g);
-                        const isOpenCode = activeSession?.provider === 'opencode';
-                        const ocModels = isOpenCode ? (opencodeInfo?.models ?? null) : undefined;
-                        const ocLoading = isOpenCode && opencodeInfo === null;
-                        // Live list pushed by the bridge once the Claude SDK
-                        // returns from `runtime.supportedModels()`. Empty
-                        // until the probe lands; the picker falls back to
-                        // its hardcoded entries below to avoid a flash of
-                        // "Default-only" while the session warms up.
-                        const claudeModels = !isOpenCode ? (active.supportedModels ?? []) : [];
-                        const sendDisabled = isTerminalMode
-                          ? !cmdText.trim() || activeStatus !== 'connected'
-                          : !input.trim() || activeStatus !== 'connected';
-                        const triggerCls =
-                          'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
-                        return (
-                          <div className="relative">
-                            {/* Ambient color spots — four point-lights bouncing in pairs.
-                                Clipped to the composer's rounded bounds. Fades in while
-                                the session is streaming. */}
-                            <div
-                              aria-hidden
-                              className="absolute inset-0 overflow-hidden pointer-events-none transition-opacity duration-300 ease-out"
-                              style={{
-                                opacity: active.isStreaming && !active.permRequest ? 1 : 0,
-                                borderRadius: isTerminalMode ? '1rem' : '18px',
-                              }}
-                            >
-                              <span className="composer-spot composer-spot--b1" />
-                              <span className="composer-spot composer-spot--b3" />
-                              <span className="composer-spot composer-spot--b4" />
-                              <span className="composer-spot composer-spot--b5" />
-                            </div>
-                          <div
-                            className={`relative transition-colors ${
-                              isTerminalMode
-                                ? 'rounded-2xl border shadow-lg shadow-black/30 bg-[#141414] border-green-900/50 focus-within:border-green-700/60'
-                                : 'composer-glass-frame bg-[rgba(28,28,33,0.6)]'
-                            }`}
-                            style={isTerminalMode ? undefined : {
-                              backdropFilter: 'blur(28px) saturate(180%)',
-                              WebkitBackdropFilter: 'blur(28px) saturate(180%)',
-                            }}
-                          >
-                            {refs && refs.length > 0 && (
-                              <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
-                                {refs.map((ref, i) => (
-                                  <span
-                                    key={i}
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-light text-[11px] font-mono text-amber-400/80 border border-border-light"
-                                  >
-                                    {ref}
-                                    <button
-                                      className="text-zinc-500 hover:text-zinc-300 ml-0.5"
-                                      onClick={() => setInput(prev => prev.replace(ref, '').replace(/  +/g, ' ').trim())}
-                                    >
-                                      &times;
-                                    </button>
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-
-                            {pastedImages.length > 0 && (
-                              <div className="flex gap-2 px-3 pt-2.5 flex-wrap">
-                                {pastedImages.map((img, i) => (
-                                  <div key={i} className="relative group">
-                                    <img src={img.preview} alt="" className="h-16 rounded border border-border object-cover" />
-                                    <button
-                                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-zinc-700 text-zinc-300 text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                                      onClick={() => setPastedImages(prev => prev.filter((_, j) => j !== i))}
-                                    >
-                                      &times;
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-
-                            <div className="flex items-start px-4 pt-3.5 pb-1">
-                              {isTerminalMode && (
-                                <span className="text-green-500 text-sm font-mono pr-1 py-0.5 select-none shrink-0">&gt;</span>
-                              )}
-                              <textarea
-                                ref={inputRef}
-                                value={isTerminalMode ? cmdText : input}
-                                onChange={(e) => {
-                                  if (isTerminalMode) {
-                                    const v = e.target.value;
-                                    setInput(v ? `> ${v}` : '> ');
-                                  } else {
-                                    setInput(e.target.value);
-                                  }
-                                }}
-                                disabled={activeStatus !== 'connected'}
-                                placeholder={isTerminalMode ? 'command...' : (streaming ? 'Queue a follow-up message…' : 'Send a message...')}
-                                onKeyDown={(e) => {
-                                  if (isTerminalMode && e.key === 'Backspace' && !cmdText) {
-                                    e.preventDefault();
-                                    setInput('');
-                                    return;
-                                  }
-                                  if (e.key === 'ArrowUp' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
-                                    const el = e.currentTarget;
-                                    if (el.selectionStart === 0 && el.selectionEnd === 0) {
-                                      e.preventDefault();
-                                      const hist = active.inputHistory;
-                                      if (hist.length === 0) return;
-                                      if (historyIdxRef.current === -1) historyDraftRef.current = input;
-                                      const newIdx = historyIdxRef.current === -1 ? hist.length - 1 : Math.max(0, historyIdxRef.current - 1);
-                                      historyIdxRef.current = newIdx;
-                                      setInput(hist[newIdx]!);
-                                      return;
-                                    }
-                                  }
-                                  if (e.key === 'ArrowDown' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
-                                    const el = e.currentTarget;
-                                    if (el.selectionStart === el.value.length) {
-                                      e.preventDefault();
-                                      const hist = active.inputHistory;
-                                      if (historyIdxRef.current === -1) return;
-                                      const newIdx = historyIdxRef.current + 1;
-                                      if (newIdx >= hist.length) {
-                                        historyIdxRef.current = -1;
-                                        setInput(historyDraftRef.current);
-                                      } else {
-                                        historyIdxRef.current = newIdx;
-                                        setInput(hist[newIdx]!);
-                                      }
-                                      return;
-                                    }
-                                  }
-                                  if (fileMention.isActive) {
-                                    fileMention.onKeyDown(e, handleFileMentionSelect);
-                                  } else {
-                                    slash.onKeyDown(e, handleSlashSelect);
-                                  }
-                                  if (e.key === 'Enter' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {
-                                    e.preventDefault();
-                                    handleSend();
-                                  }
-                                }}
-                                autoFocus
-                                rows={1}
-                                className={`flex-1 bg-transparent border-0 outline-none resize-none text-[14px] leading-6 placeholder:text-zinc-500 disabled:opacity-50 ${
-                                  isTerminalMode ? 'font-mono text-green-300' : 'text-zinc-200'
-                                }`}
-                                style={{ minHeight: 24, maxHeight: 200 }}
-                                onPaste={(e) => {
-                                  const items = e.clipboardData?.items;
-                                  if (!items) return;
-                                  for (const item of items) {
-                                    if (item.type.startsWith('image/')) {
-                                      e.preventDefault();
-                                      const file = item.getAsFile();
-                                      if (!file) continue;
-                                      const reader = new FileReader();
-                                      reader.onload = () => {
-                                        const dataUrl = reader.result as string;
-                                        const [header, data] = dataUrl.split(',');
-                                        const media_type = header!.match(/:(.*?);/)?.[1] || 'image/png';
-                                        setPastedImages(prev => [...prev, { media_type, data: data!, preview: dataUrl }]);
-                                      };
-                                      reader.readAsDataURL(file);
-                                    }
-                                  }
-                                }}
-                                onInput={(e) => {
-                                  const el = e.currentTarget;
-                                  el.style.height = 'auto';
-                                  el.style.height = Math.min(el.scrollHeight, 200) + 'px';
-                                }}
-                              />
-                            </div>
-
-                            <div className="flex items-center gap-1 px-2 pb-2 pt-1.5">
-                              <Select
-                                aria-label="Model"
-                                selectedKey={activeSession?.model || 'default'}
-                                onSelectionChange={(key) => {
-                                  if (!activeId || !clientRef.current) return;
-                                  const modelId = key === 'default' ? '' : String(key);
-                                  if (modelId) {
-                                    clientRef.current.setModel(activeId, modelId);
-                                  }
-                                  setSessions(prev => prev.map(s => s.id === activeId ? { ...s, model: modelId || null } : s));
-                                }}
-                                className={isOpenCode ? 'w-56' : 'w-32'}
-                                isDisabled={ocLoading}
-                              >
-                                <SelectTrigger className={triggerCls}>
-                                  <SelectValue className="min-w-0 flex-1 truncate" />
-                                  <SelectIndicator className="size-3.5 shrink-0" />
-                                </SelectTrigger>
-                                <SelectPopover>
-                                  <ListBox>
-                                    <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
-                                    {isOpenCode ? (
-                                      (ocModels ?? []).map(m => (
-                                        <ListBoxItem key={m.id} id={m.id} textValue={`${m.providerName} ${m.label}`}>
-                                          <span className="text-xs">
-                                            <span className="text-zinc-500">{m.providerName}</span>{' '}
-                                            {m.label}
-                                          </span>
-                                        </ListBoxItem>
-                                      ))
-                                    ) : claudeModels.length > 0 ? (
-                                      claudeModels.map(m => (
-                                        <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
-                                          <span className="text-xs">{m.label}</span>
-                                        </ListBoxItem>
-                                      ))
-                                    ) : (
-                                      <>
-                                        <ListBoxItem key="claude-sonnet-4-6" id="claude-sonnet-4-6" textValue="Sonnet 4.6"><span className="text-xs">Sonnet 4.6</span></ListBoxItem>
-                                        <ListBoxItem key="claude-opus-4-6" id="claude-opus-4-6" textValue="Opus 4.6"><span className="text-xs">Opus 4.6</span></ListBoxItem>
-                                        <ListBoxItem key="claude-haiku-4-5-20251001" id="claude-haiku-4-5-20251001" textValue="Haiku 4.5"><span className="text-xs">Haiku 4.5</span></ListBoxItem>
-                                      </>
-                                    )}
-                                  </ListBox>
-                                </SelectPopover>
-                              </Select>
-
-                              <Select
-                                aria-label="Permission mode"
-                                selectedKey={activeSession?.permission_mode || 'default'}
-                                onSelectionChange={(key) => {
-                                  if (!activeId || !clientRef.current) return;
-                                  requestPermissionMode(activeId, String(key));
-                                }}
-                                className="w-36"
-                              >
-                                <SelectTrigger className={triggerCls}>
-                                  <SelectValue className="min-w-0 flex-1 truncate" />
-                                  <SelectIndicator className="size-3.5 shrink-0" />
-                                </SelectTrigger>
-                                <SelectPopover>
-                                  <ListBox>
-                                    <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
-                                    <ListBoxItem key="acceptEdits" id="acceptEdits" textValue="Accept Edits"><span className="text-xs">Accept Edits</span></ListBoxItem>
-                                    <ListBoxItem key="plan" id="plan" textValue="Plan"><span className="text-xs">Plan</span></ListBoxItem>
-                                    <ListBoxItem key="bypassPermissions" id="bypassPermissions" textValue="Bypass"><span className="text-xs">Bypass All</span></ListBoxItem>
-                                  </ListBox>
-                                </SelectPopover>
-                              </Select>
-
-                              <div className="flex-1" />
-
-                              {streaming && (
-                                <button
-                                  type="button"
-                                  onClick={handleInterrupt}
-                                  className="text-amber-400 hover:text-amber-300 text-[12px] h-[26px] px-2.5 rounded-full hover:bg-white/5 transition-colors"
-                                >
-                                  Stop
-                                </button>
-                              )}
-
-                              <Button
-                                isIconOnly
-                                onPress={handleSend}
-                                isDisabled={sendDisabled}
-                                aria-label={isTerminalMode ? 'Run' : (streaming ? 'Queue message' : 'Send message')}
-                                className={`rounded-full w-[30px] h-[30px] min-w-[30px] min-h-0 p-0 flex items-center justify-center transition-colors disabled:bg-surface-light disabled:text-zinc-600 ${
-                                  isTerminalMode
-                                    ? 'bg-green-600 hover:bg-green-500 text-white'
-                                    : 'bg-[#ececef] text-[#07070a] hover:bg-white'
-                                }`}
-                              >
-                                <SendIcon className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
+                  {composerNode}
                 </div>
 
                 {/* Resize handle between chat and right panel */}
@@ -4800,6 +4820,7 @@ export function ChatApp() {
             )}
           </div>
         </div>
+        )}
 
         {/* Status bar */}
         <div className="flex items-center justify-between px-3 h-[22px] bg-[#181818] border-t border-border text-[11px] shrink-0 select-none">
