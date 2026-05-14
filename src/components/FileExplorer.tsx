@@ -41,6 +41,7 @@ interface ExplorerCtxValue {
   client: ClaudeClient | null;
   onFileOpen: (path: string) => void;
   gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> };
+  activeFilePath: string | null;
   openMenu: (e: React.MouseEvent, entry: FileEntry, parentPath: string) => void;
   editingPath: string | null;
   beginRename: (path: string) => void;
@@ -67,6 +68,7 @@ interface Props {
   onFileDiff?: (path: string) => void;
   onFileDiffFullView?: (path: string) => void;
   gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> };
+  activeFilePath?: string | null;
   activeSessionId: string | null;
   onOpenTerminal?: (command: string) => void;
   onStartReview?: () => void;
@@ -267,16 +269,20 @@ function DirNode({ entry, depth, parentPath: _parentPath }: { entry: FileEntry; 
 }
 
 function FileNode({ entry, depth, parentPath }: { entry: FileEntry; depth: number; parentPath: string }) {
-  const { onFileOpen, gitModified, openMenu, editingPath, cancelRename, commitRename } = useExplorer();
+  const { onFileOpen, gitModified, activeFilePath, openMenu, editingPath, cancelRename, commitRename } = useExplorer();
   const isStaged = gitModified.staged.has(entry.path);
   const isUnstaged = gitModified.unstaged.has(entry.path);
   const isUntracked = gitModified.untracked.has(entry.path);
   const isModified = isStaged || isUnstaged;
   const color = isModified ? (isStaged ? 'text-green-400' : isUntracked ? 'text-green-400' : 'text-amber-400') : getExtColor(entry.name);
   const isEditing = editingPath === entry.path;
+  const isActive = activeFilePath === entry.path;
+  const toneCls = isActive
+    ? (isModified ? (isStaged ? 'text-green-300' : isUntracked ? 'text-green-300' : 'text-amber-300') : 'text-zinc-100')
+    : (isModified ? (isStaged ? 'text-green-400/80' : isUntracked ? 'text-green-400/80' : 'text-amber-400/80') : 'text-zinc-500 hover:text-zinc-300');
   return (
     <div
-      className={`flex items-center gap-1 py-[2px] hover:bg-surface-light/50 cursor-pointer transition-colors ${isModified ? (isStaged ? 'text-green-400/80' : isUntracked ? 'text-green-400/80' : 'text-amber-400/80') : 'text-zinc-500 hover:text-zinc-300'}`}
+      className={`flex items-center gap-1 py-[2px] cursor-pointer transition-colors ${isActive ? 'bg-blue-500/15 hover:bg-blue-500/20' : 'hover:bg-surface-light/50'} ${toneCls}`}
       style={{ paddingLeft: depth * 12 + 8 }}
       onClick={isEditing ? undefined : () => onFileOpen(entry.path)}
       onContextMenu={e => { e.preventDefault(); openMenu(e, entry, parentPath); }}
@@ -734,7 +740,7 @@ function useSidebarWidth() {
   return [width, setAndPersist] as const;
 }
 
-export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
+export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>(() => (rootPath ? filesCache.get(rootPath) : null) || []);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const dragging = useRef(false);
@@ -858,6 +864,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
 
   const ctxValue: ExplorerCtxValue = {
     client, onFileOpen, gitModified,
+    activeFilePath: activeFilePath ?? null,
     openMenu,
     editingPath, beginRename, cancelRename, commitRename,
     creatingIn, cancelCreate, commitCreate,

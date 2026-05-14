@@ -3253,6 +3253,7 @@ export function ChatApp() {
             onFileDiff={handleFileDiff}
             onFileDiffFullView={handleFileDiffFullView}
             gitModified={gitModified}
+            activeFilePath={openFile?.path ?? null}
             activeSessionId={activeId}
             onOpenTerminal={(command) => {
               const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
