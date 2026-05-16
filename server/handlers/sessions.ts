@@ -10,7 +10,7 @@ import { trackedProcesses, killProcessTree, saveProcessRegistry } from './proces
 import { killSessionLsp } from './lsp';
 import { DEFAULT_PROVIDER } from '../provider/registry';
 import { clearPendingDecisionsForSession } from '../provider/bridge';
-import { deleteSessionData } from '../storage';
+import { deleteSessionData, clearMessages } from '../storage';
 import type { Session } from '../types';
 
 /** True when `cwd` matches the worktree convention `<repo-parent>/.wt/<branch>`
@@ -183,6 +183,38 @@ export async function handleStopSession(sessionId: string): Promise<Response> {
   log(`[${sessionId.slice(0, 8)}] Session stopped (tab closed)`);
 
   return Response.json({ ok: true }, { headers: corsHeaders });
+}
+
+/** In-place clear: keep the session id and name, drop the chat history, and
+ *  reset the provider session id so the next user message starts a fresh
+ *  Claude conversation. Used by `/clear` on tabs that can't be archived
+ *  (notably the Telegram bot's main-session, whose id is referenced
+ *  externally by the bridge). */
+export async function handleClearSession(sessionId: string): Promise<Response> {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
+  }
+
+  // Stop the running provider (if any) so the next message creates a fresh one.
+  if (session.providerSession) {
+    try { await session.providerSession.close(); } catch {}
+    session.providerSession = null;
+  }
+  clearPendingDecisionsForSession(sessionId, 'Session cleared');
+
+  // Wipe the on-disk message log and reset the provider session id. The
+  // session record itself, its id, name, cwd, model, etc. stay put.
+  clearMessages(sessionId);
+  session.claudeSessionId = null;
+  session.ready = false;
+  session.replayDone = true;
+  session.runtimeStatus = 'stopped';
+  session.updatedAt = Date.now();
+  saveSessions();
+  log(`[${sessionId.slice(0, 8)}] Session cleared (history dropped, provider id reset)`);
+
+  return Response.json({ ok: true, id: sessionId }, { headers: corsHeaders });
 }
 
 export async function handleDeleteSession(

@@ -243,6 +243,11 @@ type ClientCallbacks = {
   onBrowserRequest?: (req: { sessionId: string; name: string; requestId: string; action: string; args: unknown }) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
   onFocusSession: (sessionId: string) => void;
+  /** Server broadcasts this when a session was cleared in place
+   *  (`/clear` on a tab that can't be archived). The UI should drop the
+   *  in-memory chat history for the session so the next replay/render
+   *  starts from an empty log. */
+  onSessionCleared?: (sessionId: string) => void;
   onWelcome: (info: { spawnMode: SpawnMode }) => void;
   onConnectionChange: (status: ConnectionStatus) => void;
 };
@@ -466,6 +471,9 @@ export class ClaudeClient {
         break;
       case 'focus_session':
         this.callbacks.onFocusSession(msg.sessionId as string);
+        break;
+      case 'session_cleared':
+        this.callbacks.onSessionCleared?.(msg.sessionId as string);
         break;
       case 'welcome':
         this.callbacks.onWelcome({ spawnMode: (msg.spawnMode as SpawnMode) || 'service' });
@@ -706,6 +714,18 @@ export class ClaudeClient {
    *  focuses the tab or sends a message. */
   unarchiveSession(sessionId: string) {
     return this.updateSession(sessionId, { status: 'open' });
+  }
+
+  /** In-place `/clear`: drops the chat history and resets the provider
+   *  session id without renaming or replacing the session. Used for tabs
+   *  that can't be archived (e.g. the Telegram bot's main-session), since
+   *  external bridges hold a reference to the session id. The next user
+   *  message starts a fresh Claude conversation. */
+  async clearSessionMessages(sessionId: string): Promise<void> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/clear`, {
+      method: 'POST',
+    });
+    if (!resp.ok) throw new Error(`Failed to clear: ${resp.status}`);
   }
 
   async listDirs(prefix: string): Promise<string[]> {

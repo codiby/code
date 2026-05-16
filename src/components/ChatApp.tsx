@@ -17,7 +17,8 @@ import { BrowserUrlModal } from './BrowserUrlModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
-import { SettingsPanel } from './SettingsPanel';
+import { ProjectSettingsModal } from './ProjectSettingsModal';
+import type { TabGroupInfo } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
@@ -359,7 +360,7 @@ export function ChatApp() {
   useEffect(() => { archivedIdsRef.current = archivedSessionIds; }, [archivedSessionIds]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tabOrder, setTabOrder] = useState<string[]>([]);
-  const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string; cwd?: string; icon?: string }>>({});
+  const [tabGroups, setTabGroups] = useState<Record<string, TabGroupInfo>>({});
   const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
@@ -368,6 +369,10 @@ export function ChatApp() {
    *  session's chat body. Cleared as soon as a session is selected. */
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [autoGroupSessions, setAutoGroupSessions] = useState(false);
+  // Hides the Telegram bot's "main-session" pseudo-tab from the sidebar /
+  // tab bar. The tab itself is non-closable from the regular UI; this
+  // settings-only toggle is the user's escape hatch.
+  const [showTelegramSession, setShowTelegramSession] = useState(true);
 
   // Preferences are loaded inside the client connection effect below (before WS connect)
 
@@ -752,7 +757,8 @@ export function ChatApp() {
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
-  const [sidebarView, setSidebarView] = useState<'explorer' | 'search' | 'plugins' | 'settings'>('explorer');
+  const [sidebarView, setSidebarView] = useState<'explorer' | 'search' | 'plugins'>('explorer');
+  const [projectSettings, setProjectSettings] = useState<{ open: boolean; sectionId?: string }>({ open: false });
   // Tracks whether a plugin's <PluginDetailView /> is currently visible. Updated
   // from the codiby-code:linked-item-changed event so the right panel can claim space.
   const [pluginDetailOpen, setPluginDetailOpen] = useState(false);
@@ -1356,6 +1362,9 @@ export function ChatApp() {
           if (typeof prefs.autoGroupSessions === 'boolean') {
             setAutoGroupSessions(prefs.autoGroupSessions);
           }
+          if (typeof prefs.showTelegramSession === 'boolean') {
+            setShowTelegramSession(prefs.showTelegramSession);
+          }
         },
 
         // External trigger (e.g. the `codiby` CLI) wants the UI to switch
@@ -1368,6 +1377,17 @@ export function ChatApp() {
             clientRef.current?.unarchiveSession(sid).catch(() => {});
           }
           setActiveId(sid);
+        },
+
+        // Server broadcasts this after an in-place /clear (no archive, no
+        // rename). Reset local message state so the chat renders empty.
+        onSessionCleared: (sid) => {
+          setSessionStates(prev => {
+            if (!prev[sid]) return prev;
+            const next = { ...prev };
+            next[sid] = { ...emptyLocalState(), input: prev[sid]!.input };
+            return next;
+          });
         },
 
         onWelcome: () => {},
@@ -1884,12 +1904,29 @@ export function ChatApp() {
    *  (same tabOrder slot, same group). The fresh session inherits cwd, name,
    *  model, permissionMode, provider so the user sees no visible disruption
    *  beyond an empty conversation. The new session has its own claudeSessionId
-   *  because handleCreateSession spawns a provider session with no resume id. */
+   *  because handleCreateSession spawns a provider session with no resume id.
+   *
+   *  Special case: `main-session` (the Telegram bot's pseudo-tab) cannot be
+   *  archived or replaced because the Telegram bridge holds the session id
+   *  externally. Instead we ask the server to clear the chat history and
+   *  reset the provider session id in place — the next inbound message
+   *  starts a fresh Claude conversation under the same UI tab. */
   const clearSession = async (targetId: string) => {
     const c = clientRef.current;
     if (!c) return;
     const old = sessions.find(s => s.id === targetId);
     if (!old) return;
+
+    if (targetId === 'main-session') {
+      try {
+        await c.clearSessionMessages(targetId);
+        // Server broadcasts `session_cleared`; the onSessionCleared handler
+        // empties the local state. Nothing else to do here.
+      } catch (err) {
+        console.error('[ChatApp] /clear main-session failed:', err);
+      }
+      return;
+    }
 
     const cwd = getState(targetId).initInfo?.cwd || old.cwd || '/';
     const originalName = old.name;
@@ -2699,14 +2736,19 @@ export function ChatApp() {
     return () => window.removeEventListener('keydown', handler);
   }, [activeId, activeSession?.permission_mode, requestPermissionMode]);
 
-  // Ordered sessions for tab bar — anything with status === 'open'
+  // Ordered sessions for tab bar — anything with status === 'open'. The
+  // Telegram bot's "main-session" pseudo-tab is pinned to the front when
+  // visible, and hidden entirely when toggled off in Settings → Telegram
+  // (it can't be closed from the regular UI, this is the only escape hatch).
   const orderedOpenSessions = useMemo(() => sessions
-    .filter(s => s.status === 'open')
+    .filter(s => s.status === 'open' && (showTelegramSession || s.id !== 'main-session'))
     .sort((a, b) => {
+      if (a.id === 'main-session') return -1;
+      if (b.id === 'main-session') return 1;
       const ai = tabOrder.indexOf(a.id);
       const bi = tabOrder.indexOf(b.id);
       return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
-    }), [sessions, tabOrder]);
+    }), [sessions, tabOrder, showTelegramSession]);
 
   // Sessions surfaced in the "+" dropdown's CLOSED section. Now backed by
   // the archived status — the legacy three-state model collapsed into
@@ -3968,8 +4010,8 @@ export function ChatApp() {
             )}
             <div className="flex-1" />
             <button
-              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'settings' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
-              onClick={() => { if (sidebarView === 'settings' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('settings'); setExplorerCollapsed(false); } }}
+              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${projectSettings.open ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
+              onClick={() => setProjectSettings(prev => ({ open: !prev.open }))}
               title="Settings"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
@@ -4018,17 +4060,6 @@ export function ChatApp() {
             </div>
           )}
 
-          {/* Settings Panel */}
-          {sidebarView === 'settings' && !explorerCollapsed && (
-            <SettingsPanel
-              onClose={() => setExplorerCollapsed(true)}
-              tabGroups={tabGroups}
-              tabGroupMap={tabGroupMap}
-              onDeleteGroup={handleDeleteGroup}
-              autoGroupSessions={autoGroupSessions}
-              onToggleAutoGroup={handleToggleAutoGroup}
-            />
-          )}
 
           <div className="flex-1 flex flex-col min-w-0">
             {!activeId ? (
@@ -5061,6 +5092,32 @@ export function ChatApp() {
           opencodeAvailable={opencodeInfo?.available ?? false}
           onClose={() => setShowNewSession(false)}
           onCreate={handleCreateSession}
+        />
+        <ProjectSettingsModal
+          open={projectSettings.open}
+          onClose={() => setProjectSettings({ open: false })}
+          tabGroups={tabGroups}
+          tabGroupMap={tabGroupMap}
+          autoGroupSessions={autoGroupSessions}
+          onToggleAutoGroup={handleToggleAutoGroup}
+          showTelegramSession={showTelegramSession}
+          onToggleShowTelegramSession={(next) => {
+            setShowTelegramSession(next);
+            persistPrefs({ showTelegramSession: next });
+          }}
+          onDeleteGroup={handleDeleteGroup}
+          onPatchGroup={(groupId, patch) => {
+            const current = tabGroups[groupId];
+            if (!current) return;
+            const next: TabGroupInfo = { ...current, ...patch };
+            // Clean up undefined / empty-string keys so absence = "inherit from global".
+            for (const k of Object.keys(patch) as (keyof TabGroupInfo)[]) {
+              if (patch[k] === undefined || patch[k] === '') delete (next as unknown as Record<string, unknown>)[k as string];
+            }
+            const newGroups = { ...tabGroups, [groupId]: next };
+            setTabGroups(newGroups);
+            persistPrefs({ tabGroups: newGroups });
+          }}
         />
         <BypassWarningModal
           open={pendingBypassSessionId !== null}

@@ -43,7 +43,7 @@ import {
   relayWsMessage,
   closeWsProxy,
 } from './gateway';
-import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession } from './handlers/sessions';
+import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
 import { CodexAdapter } from './provider/adapters/CodexAdapter';
@@ -1290,6 +1290,20 @@ const server = Bun.serve({
       const remoteId = resolveSessionRemote(sid);
       if (remoteId) return proxyHttpToRemote(req, remoteId);
       const resp = handleStopSession(sid);
+      broadcastSessionList();
+      return resp;
+    }
+
+    const clearMatch = url.pathname.match(/^\/sessions\/(.+)\/clear$/);
+    if (clearMatch && req.method === 'POST') {
+      const sid = clearMatch[1]!;
+      const remoteId = resolveSessionRemote(sid);
+      if (remoteId) return proxyHttpToRemote(req, remoteId);
+      const resp = await handleClearSession(sid);
+      // Tell every connected UI to drop its in-memory chat for this session
+      // before pushing the updated session list.
+      const clearedMsg = JSON.stringify({ type: 'session_cleared', sessionId: sid });
+      for (const ws of frontendClients) { try { ws.send(clearedMsg); } catch {} }
       broadcastSessionList();
       return resp;
     }
