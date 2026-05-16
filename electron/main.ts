@@ -98,7 +98,7 @@ function createMainWindow(): BrowserWindow {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     ...(process.platform === 'win32' && {
       titleBarOverlay: {
-        color: '#0f1012',
+        color: '#131418',
         symbolColor: '#ffffff',
         height: 34,
       },
