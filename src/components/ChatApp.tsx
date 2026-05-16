@@ -3654,8 +3654,8 @@ export function ChatApp() {
           }`}
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
-          {/* Reserve room for macOS traffic lights (close/min/max) */}
-          <div className="w-20 shrink-0" />
+          {/* Reserve room for macOS traffic lights / Windows left padding */}
+          {IS_MAC ? <div className="w-20 shrink-0" /> : <div className="w-3 shrink-0" />}
 
           {/* Session controls — collapse toggle (standard only) + new +
               history. Live in the titlebar so the activity bar stays focused
@@ -3818,7 +3818,7 @@ export function ChatApp() {
 
           {/* Right: layout-mode pill (clickable — opt out of drag) */}
           <div
-            className="mr-3 flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5"
+            className={`${IS_MAC ? 'mr-3' : 'mr-36'} flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5`}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <button

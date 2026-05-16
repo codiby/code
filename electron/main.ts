@@ -95,7 +95,14 @@ function createMainWindow(): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     title: '',
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    ...(process.platform === 'win32' && {
+      titleBarOverlay: {
+        color: '#131418',
+        symbolColor: '#ffffff',
+        height: 36,
+      },
+    }),
     backgroundColor: '#0a0a0a',
     // Defer the visual surface until the renderer commits its first paint.
     // Eliminates the white flash and improves perceived startup latency
