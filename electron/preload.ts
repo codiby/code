@@ -1,35 +1,29 @@
 /**
  * Renderer preload for the main BrowserWindow.
  *
- * Exposes a Tauri-compatible shim so the React code can keep calling
- * `import('@tauri-apps/api/core').invoke(...)` unchanged. Tauri 2's
- * `invoke()` reads `window.__TAURI_INTERNALS__.invoke` — if that exists, the
- * call routes through it.
- *
- * For the browser-preview event subsystem (Tauri's `listen(...)`), we expose
- * a separate `window.codiby` namespace. Tauri 2's event listener internals
- * (transformCallback / world-isolated eval) are not worth porting; React
- * already gates this to a single component (`BrowserPanel.tsx`).
+ * Exposes a single `window.codiby` bridge that the renderer uses to talk to
+ * the main process. `codiby.invoke(cmd, args)` proxies to `ipcMain.handle`
+ * channels registered under `app:<cmd>`. Event subscriptions are exposed as
+ * `onBrowserPreviewEvent(...)` and `onCdpRequest(...)` — the React code
+ * mounts those callbacks in `BrowserPanel.tsx` and the CDP bridge.
  */
 import { contextBridge, ipcRenderer } from 'electron';
 
 type RelayPayload = { label: string; payload: string | null };
 
-contextBridge.exposeInMainWorld('__TAURI_INTERNALS__', {
-  invoke: (cmd: string, args?: unknown) =>
-    ipcRenderer.invoke(`tauri:${cmd}`, args ?? {}),
-  // Tauri internals sometimes also touch these — expose harmless no-ops so
-  // any future code paths that lazily probe them don't crash.
-  metadata: { plugins: {} },
-  transformCallback: () => 0,
-});
-
 contextBridge.exposeInMainWorld('codiby', {
+  /**
+   * Invoke a typed command on the main process. Returns whatever the
+   * `ipcMain.handle('app:<cmd>', …)` handler resolved with, or rejects with
+   * its error.
+   */
+  invoke: (cmd: string, args?: unknown) =>
+    ipcRenderer.invoke(`app:${cmd}`, args ?? {}),
+
   /**
    * Subscribe to a browser-preview relay event. Returns an unlisten fn.
    * The renderer filters by `label` itself; we deliver every relay and let
-   * `BrowserPanel.tsx` drop ones from other previews (same shape as the
-   * Tauri broadcast it replaces).
+   * `BrowserPanel.tsx` drop ones from other previews.
    */
   onBrowserPreviewEvent(
     eventName:
@@ -52,8 +46,7 @@ contextBridge.exposeInMainWorld('codiby', {
    * broadcasts `browser_request` over its WS; the renderer hands the
    * request off to main via this callback. Returns an unlisten fn.
    *
-   * Wired by `src/lib/browser-cdp-bridge.ts` once it's added in the SDK
-   * MCP commit.
+   * Wired by `src/lib/browser-cdp-bridge.ts`.
    */
   onCdpRequest(cb: (req: { requestId: string; action: string; args: unknown }) => void): () => void {
     const handler = (_e: unknown, req: { requestId: string; action: string; args: unknown }) => {

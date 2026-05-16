@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Bridge server serves the API, WebSockets, *and* the bundled frontend from
 # `dist/`. `bun build --watch` regenerates `dist/` as source files change.
-# Browser gets a full page reload on rebuild (Tauri / LAN / Tailscale-Funnel).
+# Browser gets a full page reload on rebuild.
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -60,27 +60,12 @@ export PATH="$(dirname "$BUN_BIN"):$PATH"
 
 if [ "${SKIP_DEV_SERVER_START:-0}" = "1" ]; then
   echo "Skipping dev server startup because SKIP_DEV_SERVER_START=1."
-  echo "Tauri will attach to the existing server at http://localhost:$PORT."
+  echo "Electron will attach to the existing server at http://localhost:$PORT."
   exit 0
 fi
 
-# Tauri's `externalBin` declaration requires `src-tauri/sidecar/bun-<triple>`
-# to exist at compile time (cargo build copies it next to the binary). Build
-# it on first run so a fresh clone can `tauri dev` without an explicit step.
-if command -v rustc >/dev/null 2>&1; then
-  TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
-  EXT=""
-  case "$TRIPLE" in
-    *windows*) EXT=".exe" ;;
-  esac
-
-  if [ -n "$TRIPLE" ] && [ ! -x "$DIR/src-tauri/sidecar/bun-$TRIPLE$EXT" ]; then
-    bash "$DIR/scripts/bundle-bun.sh"
-  fi
-fi
-
-# If something is already listening on $PORT, reuse it and exit so Tauri's
-# devUrl poll attaches to the existing server instead of double-starting.
+# If something is already listening on $PORT, reuse it and exit so the
+# Electron renderer attaches to the existing server instead of double-starting.
 if lsof -iTCP:"$PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
   echo "Detected existing server on port $PORT — reusing it."
   exit 0
@@ -99,8 +84,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Wait for the first build to produce dist/index.html so Tauri's devUrl poll
-# (or a browser hitting `/`) doesn't race against an empty dist.
+# Wait for the first build to produce dist/index.html so a browser hitting
+# `/` doesn't race against an empty dist.
 echo "Waiting for first build..."
 for _ in $(seq 1 300); do
   [ -f "$DIR/dist/index.html" ] && break
@@ -114,6 +99,6 @@ echo "  Bridge Server:   http://localhost:$PORT"
 echo "==========================================="
 echo ""
 
-# Replace the shell with the bridge server so Tauri's `beforeDevCommand`
-# sees a single, stable PID serving `devUrl`.
+# Replace the shell with the bridge server so callers see a single, stable
+# PID serving the frontend + API.
 exec env CLAUDE_UI_PORT="$PORT" "$BUN_BIN" server/index.ts

@@ -1,6 +1,5 @@
 /**
- * OAuth-via-webview flow for sideloaded plugins. Port of
- * `src-tauri/src/lib.rs::plugin_oauth_login`.
+ * OAuth-via-webview flow for sideloaded plugins.
  *
  * The plugin supplies a spec sourced from its `plugin.json` `permissions.oauth`
  * section. We open a child BrowserWindow, watch URL navigation, and on the

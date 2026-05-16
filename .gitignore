@@ -24,12 +24,6 @@ server.log
 # jetbrains setting folder
 .idea/
 
-# Tauri
-src-tauri/target/
-src-tauri/gen/
-src-tauri/sidecar/bun
-src-tauri/sidecar/bun-*
-
 # Electron
 electron-dist/
 electron-out/

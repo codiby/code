@@ -1,8 +1,6 @@
 /**
- * Bridge-server port discovery + sidecar spawn.
- *
- * Port of `src-tauri/src/lib.rs::{bridge_port_file, app_spawn_port_file,
- * spawn_sidecar, get_bridge_port}`. Three resolution steps, in order:
+ * Bridge-server port discovery + sidecar spawn. Three resolution steps,
+ * in order:
  *
  *   1. LaunchAgent / SCM-service port file (~/.codiby/server.port etc.)
  *   2. Previous app-spawned sidecar port file (app-server.port sibling)

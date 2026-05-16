@@ -2,8 +2,8 @@
 # Install or update the Codiby Code bridge server as a macOS launchd service.
 # All runtime data lives under $HOME/.codiby/ — bundled server.js, pinned bun
 # binary, built frontend, logs, and the port-discovery file consumed by the
-# Tauri app. Interactive PTYs use Bun.Terminal (Bun >= 1.3.5) directly — no
-# Node helper, no node-pty.
+# desktop app. Interactive PTYs use Bun.Terminal (Bun >= 1.3.5) directly —
+# no Node helper, no node-pty.
 #
 # Safe to re-run: if the service is already bootstrapped under the same label,
 # this script overwrites files in place and reloads the LaunchAgent so the new

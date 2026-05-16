@@ -22,14 +22,13 @@ import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from '
 import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
+import { tryInvokeNative } from '../lib/native';
 // Browser names are validated by the bridge before any open_browser broadcast,
 // but the palette action constructs a label client-side, so keep the same
 // kebab/snake-case pattern in sync here.
 const BROWSER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/;
 // Notifications use the standard Web Notification API. Electron's Chromium
-// surface implements it natively; Tauri-on-WKWebView used to need the
-// `@tauri-apps/plugin-notification` polyfill, but the Electron rewrite no
-// longer ships it.
+// surface implements it natively.
 async function isPermissionGranted(): Promise<boolean> {
   if (typeof Notification === 'undefined') return false;
   return Notification.permission === 'granted';
@@ -1327,7 +1326,7 @@ export function ChatApp() {
         // Bridge → Electron CDP request forwarding (browser_snapshot,
         // browser_click, etc.). The handler routes to `cdp_*` IPC and
         // replies via `client.respondBrowserRequest`. Non-Electron viewers
-        // (browser, mobile PWA) have no `__TAURI_INTERNALS__.invoke` and
+        // (browser, mobile PWA) have no `window.codiby` bridge and
         // return an explicit error so the bridge surfaces it to the model.
         // The handler reads `name` off the request payload and builds the
         // correct OS-level webview label internally.
@@ -1491,8 +1490,7 @@ export function ChatApp() {
   // initiated close), which keep the chip around so the user can re-open
   // the same URL with one click.
   const closeBrowserFully = useCallback((sid: string, name: string) => {
-    const tauri = (window as never as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
-    tauri?.invoke?.('close_browser_preview', { label: browserLabelFor(sid, name) })?.catch?.(() => {});
+    tryInvokeNative('close_browser_preview', { label: browserLabelFor(sid, name) });
     updateLocalState(sid, s => {
       const { [name]: _alive, ...restBrowsers } = s.browsers;
       const { [name]: _last, ...restLast } = s.lastBrowsers;
@@ -2916,9 +2914,8 @@ export function ChatApp() {
     { id: 'open-browser', label: 'Open Browser…', section: 'Browser', onRun: () => {
       if (!activeId) return;
       // Defer the actual URL prompt to a React modal — `window.prompt` is
-      // disabled by Chromium in Electron and is also a no-op under Tauri 2's
-      // WKWebView host (no `runJavaScriptTextInputPanelWithPrompt` wiring),
-      // so the historical inline `prompt()` was a silent dead end.
+      // disabled by Chromium in Electron, so the historical inline `prompt()`
+      // call was a silent dead end.
       setBrowserUrlModalOpen(true);
     } },
     ...(activeId && active.isStreaming ? [{ id: 'stop', label: 'Stop Generation', keys: ['escape'] as string[], section: 'Session', onRun: handleInterrupt }] : []),
@@ -3646,7 +3643,6 @@ export function ChatApp() {
          *  The whole strip is a drag region, except for interactive controls
          *  (layout-mode pill) which opt out with `app-region: no-drag`. */}
         <div
-          data-tauri-drag-region
           className={`fixed top-0 left-0 right-0 z-[9999] flex items-center select-none border-b ${
             layoutMode === 'horizontal'
               ? 'h-10 bg-[#131418] border-[#2a2b30]'
@@ -4618,8 +4614,7 @@ export function ChatApp() {
                         s.browsers[nextName] ? { ...s, activeBrowserName: nextName } : s
                       ))}
                       onCloseTab={(closeName) => {
-                        const tauri = (window as any).__TAURI_INTERNALS__;
-                        tauri?.invoke?.('close_browser_preview', { label: browserLabelFor(activeId, closeName) })?.catch?.(() => {});
+                        tryInvokeNative('close_browser_preview', { label: browserLabelFor(activeId, closeName) });
                         updateLocalState(activeId, s => {
                           if (!s.browsers[closeName]) return s;
                           const { [closeName]: _gone, ...rest } = s.browsers;
@@ -4702,8 +4697,7 @@ export function ChatApp() {
                         // underlying BrowserView for the active tab. The
                         // BrowserPanel unmount path only hides — without
                         // this an orphan view would leak until app shutdown.
-                        const tauri = (window as any).__TAURI_INTERNALS__;
-                        tauri?.invoke?.('close_browser_preview', { label })?.catch?.(() => {});
+                        tryInvokeNative('close_browser_preview', { label });
                         updateLocalState(activeId, s => {
                           if (!s.browsers[activeName]) return s;
                           const { [activeName]: _gone, ...rest } = s.browsers;

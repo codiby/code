@@ -1,55 +1,37 @@
 /**
- * Browser preview side-panel — embedded Tauri child webview.
+ * Browser preview side-panel — embedded Electron child BrowserView.
  *
  * The panel renders a React control header at the top (Inspect, Send, Reload,
  * Close). The body is a sized-but-empty `<div ref={bodyRef}>`; its bounding
- * rect is what the Rust `browser_preview` module positions the native child
- * webview to. The page itself lives on that overlaid webview surface — same
- * Codiby window, no separate OS window.
+ * rect is what the Electron `browser_preview` module positions the native
+ * child BrowserView to. The page itself lives on that overlaid surface —
+ * same Codiby window, no separate OS window.
  *
  * Layout sync: a ResizeObserver on the body div re-pushes `set_bounds` on
  * every measurable change. A window-resize listener catches the parent
- * window resizing past what the observer sees. Updates are coalesced into
- * a requestAnimationFrame so a splitter drag doesn't IPC-spam Rust.
+ * window resizing past what the observer sees. Updates are coalesced into a
+ * requestAnimationFrame so a splitter drag doesn't IPC-spam main.
  *
  * Wire:
  *
- *   panel → window:    Tauri invokes
+ *   panel → window:    `window.codiby.invoke(...)`
  *                       - open_browser_preview(label, url, title, x, y, w, h)
  *                       - browser_preview_set_bounds(label, x, y, w, h)
  *                       - browser_preview_set_inspect(label, enabled)
  *                       - browser_preview_set_comments(label, comments)
  *                       - close_browser_preview(label)
  *
- *   window → panel:    Tauri events (relayed by Rust from the injected
- *                      inspector script).
+ *   window → panel:    `window.codiby.onBrowserPreviewEvent(...)`
  *                       - browser-preview://ready
  *                       - browser-preview://comments-changed
  *                       - browser-preview://inspect-auto-off
+ *                       - browser-preview://url-changed
  */
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@heroui/react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MockupComment } from '../lib/mockup-inspector';
-
-type CodibyBridge = {
-  onBrowserPreviewEvent(
-    eventName:
-      | 'browser-preview://ready'
-      | 'browser-preview://comments-changed'
-      | 'browser-preview://inspect-auto-off'
-      | 'browser-preview://url-changed',
-    cb: (payload: { label: string; payload: string | null }) => void,
-  ): () => void;
-};
-
-declare global {
-  interface Window {
-    codiby?: CodibyBridge;
-  }
-}
+import { getNative, isNative, tryInvokeNative } from '../lib/native';
 
 export type BrowserPanelTab = {
   /** Stable per-session browser name (what was passed to browser_open). */
@@ -87,8 +69,6 @@ export type BrowserPanelProps = {
   onClose: () => void;
 };
 
-type RelayPayload = { label: string; payload: string | null };
-
 function buildChatMessage(url: string, title: string, comments: MockupComment[]): string {
   const label = title || url;
   if (!comments.length) {
@@ -105,9 +85,6 @@ function buildChatMessage(url: string, title: string, comments: MockupComment[])
   return lines.join('\n').trimEnd();
 }
 
-function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
 
 /** Pick the right scheme for a bare host the user typed in the address bar.
  *  Localhost / loopback / private IPv4 ranges / mDNS `*.local` don't usually
@@ -193,13 +170,14 @@ export function useBrowserPreviewBounds(args: {
       if (!next) return;
       if (sameBounds(next, lastBoundsRef.current)) return;
       lastBoundsRef.current = next;
-      invoke('browser_preview_set_bounds', { label, ...next }).catch(() => {});
+      tryInvokeNative('browser_preview_set_bounds', { label, ...next });
     });
   }, [label, hostRef]);
 
   useEffect(() => {
-    if (!isTauri()) {
-      setOpenError('Browser preview requires the desktop app (Tauri).');
+    const native = getNative();
+    if (!native) {
+      setOpenError('Browser preview requires the desktop app.');
       return;
     }
     let cancelled = false;
@@ -210,9 +188,9 @@ export function useBrowserPreviewBounds(args: {
     const start = requestAnimationFrame(() => {
       const rect = readBounds(hostRef.current) || { x: 0, y: 0, width: 800, height: 600 };
       lastBoundsRef.current = rect;
-      invoke<void>('open_browser_preview', { label, url, title, ...rect })
+      native.invoke<void>('open_browser_preview', { label, url, title, ...rect })
         .then(() => { if (!cancelled) setWindowOpen(true); })
-        .catch((e) => { if (!cancelled) setOpenError(String(e)); });
+        .catch((e: unknown) => { if (!cancelled) setOpenError(String(e)); });
     });
 
     return () => {
@@ -222,7 +200,7 @@ export function useBrowserPreviewBounds(args: {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      invoke('browser_preview_set_visible', { label, visible: false }).catch(() => {});
+      tryInvokeNative('browser_preview_set_visible', { label, visible: false });
     };
   }, [label, url, title, openSeq, hostRef]);
 
@@ -256,7 +234,7 @@ export function useBrowserPreviewBounds(args: {
 
   useEffect(() => {
     if (!windowOpen) return;
-    invoke('browser_preview_set_visible', { label, visible }).catch(() => {});
+    tryInvokeNative('browser_preview_set_visible', { label, visible });
   }, [visible, windowOpen, label]);
 
   return { windowOpen, openError };
@@ -293,7 +271,7 @@ export function BrowserPanel({
 
   useEffect(() => {
     if (!windowOpen) return;
-    invoke('browser_preview_set_inspect', { label, enabled: inspect }).catch(() => {});
+    tryInvokeNative('browser_preview_set_inspect', { label, enabled: inspect });
   }, [inspect, windowOpen, label]);
 
   // Content-keyed diff — the parent recomputes `comments` as `… || []` so the
@@ -307,90 +285,72 @@ export function BrowserPanel({
     const sig = JSON.stringify(comments);
     if (sig === lastCommentsSigRef.current) return;
     lastCommentsSigRef.current = sig;
-    invoke('browser_preview_set_comments', { label, comments }).catch(() => {});
+    tryInvokeNative('browser_preview_set_comments', { label, comments });
   }, [comments, windowOpen, label]);
 
   // Listen for the relay events. Filter by label so two open browser
   // sessions in different tabs don't cross-talk.
-  //
-  // Under Electron we listen via `window.codiby.onBrowserPreviewEvent` —
-  // the Tauri-compat invoke shim covers `invoke(...)` calls but the event
-  // subsystem internals (`@tauri-apps/api/event`) require Tauri's
-  // transformCallback registry to actually deliver. Under legacy Tauri the
-  // old listen() path stays in use.
   useEffect(() => {
-    let unlistens: UnlistenFn[] = [];
-    let cancelled = false;
-    const codiby = (typeof window !== 'undefined' ? window.codiby : null) || null;
+    const native = getNative();
+    if (!native) return;
+    const unlistens: Array<() => void> = [];
 
-    (async () => {
-      const handle = async (
-        eventName:
-          | 'browser-preview://ready'
-          | 'browser-preview://comments-changed'
-          | 'browser-preview://inspect-auto-off'
-          | 'browser-preview://url-changed',
-        cb: (parsed: unknown) => void,
-      ) => {
-        const wrap = (p: { label: string; payload: string | null }) => {
-          if (p.label !== label) return;
-          let parsed: unknown = null;
-          if (p.payload != null) {
-            try { parsed = JSON.parse(p.payload); } catch { parsed = null; }
-          }
-          cb(parsed);
-        };
-        if (codiby) {
-          const u = codiby.onBrowserPreviewEvent(eventName, wrap);
-          if (cancelled) u();
-          else unlistens.push(u);
-          return;
+    const handle = (
+      eventName:
+        | 'browser-preview://ready'
+        | 'browser-preview://comments-changed'
+        | 'browser-preview://inspect-auto-off'
+        | 'browser-preview://url-changed',
+      cb: (parsed: unknown) => void,
+    ) => {
+      const wrap = (p: { label: string; payload: string | null }) => {
+        if (p.label !== label) return;
+        let parsed: unknown = null;
+        if (p.payload != null) {
+          try { parsed = JSON.parse(p.payload); } catch { parsed = null; }
         }
-        const u = await listen<RelayPayload>(eventName, (e) => wrap(e.payload));
-        if (cancelled) u();
-        else unlistens.push(u);
+        cb(parsed);
       };
+      unlistens.push(native.onBrowserPreviewEvent(eventName, wrap));
+    };
 
-      await handle('browser-preview://ready', () => {
-        invoke('browser_preview_set_inspect', { label, enabled: inspect }).catch(() => {});
-        invoke('browser_preview_set_comments', { label, comments: commentsRef.current }).catch(() => {});
-      });
+    handle('browser-preview://ready', () => {
+      tryInvokeNative('browser_preview_set_inspect', { label, enabled: inspect });
+      tryInvokeNative('browser_preview_set_comments', { label, comments: commentsRef.current });
+    });
 
-      await handle('browser-preview://comments-changed', (parsed) => {
-        if (!Array.isArray(parsed)) return;
-        const next: MockupComment[] = parsed
-          .filter((c): c is { id: string; selector: string; summary?: string; text?: string } =>
-            !!c && typeof c === 'object' && typeof (c as any).id === 'string' && typeof (c as any).selector === 'string')
-          .map((c) => ({
-            id: c.id,
-            selector: c.selector,
-            summary: c.summary || c.selector,
-            text: c.text || '',
-          }));
-        onSetCommentsRef.current(next);
-      });
+    handle('browser-preview://comments-changed', (parsed) => {
+      if (!Array.isArray(parsed)) return;
+      const next: MockupComment[] = parsed
+        .filter((c): c is { id: string; selector: string; summary?: string; text?: string } =>
+          !!c && typeof c === 'object' && typeof (c as any).id === 'string' && typeof (c as any).selector === 'string')
+        .map((c) => ({
+          id: c.id,
+          selector: c.selector,
+          summary: c.summary || c.selector,
+          text: c.text || '',
+        }));
+      onSetCommentsRef.current(next);
+    });
 
-      await handle('browser-preview://inspect-auto-off', () => {
-        onSetInspectRef.current(false);
-      });
+    handle('browser-preview://inspect-auto-off', () => {
+      onSetInspectRef.current(false);
+    });
 
-      await handle('browser-preview://url-changed', (parsed) => {
-        const next = parsed && typeof parsed === 'object' && typeof (parsed as any).url === 'string'
-          ? (parsed as any).url as string
-          : null;
-        if (!next) return;
-        setCurrentUrl(next);
-        // Only snap the address-bar input to the new URL when the user
-        // isn't mid-edit — clobbering an in-progress URL on every popstate
-        // would be infuriating.
-        if (!addressEditingRef.current) setAddressInput(next);
-      });
-    })().catch(() => {});
+    handle('browser-preview://url-changed', (parsed) => {
+      const next = parsed && typeof parsed === 'object' && typeof (parsed as any).url === 'string'
+        ? (parsed as any).url as string
+        : null;
+      if (!next) return;
+      setCurrentUrl(next);
+      // Only snap the address-bar input to the new URL when the user
+      // isn't mid-edit — clobbering an in-progress URL on every popstate
+      // would be infuriating.
+      if (!addressEditingRef.current) setAddressInput(next);
+    });
 
     return () => {
-      cancelled = true;
       for (const u of unlistens) { try { u(); } catch {} }
-      unlistens = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [label]);
@@ -405,16 +365,16 @@ export function BrowserPanel({
   }, [url, openSeq]);
 
   const reload = useCallback(() => {
-    if (!isTauri()) return;
-    invoke('browser_preview_navigate', { label, action: 'reload', url: null }).catch(() => {});
+    if (!isNative()) return;
+    tryInvokeNative('browser_preview_navigate', { label, action: 'reload', url: null });
   }, [label]);
 
   const goBack = useCallback(() => {
-    invoke('browser_preview_navigate', { label, action: 'back', url: null }).catch(() => {});
+    tryInvokeNative('browser_preview_navigate', { label, action: 'back', url: null });
   }, [label]);
 
   const goForward = useCallback(() => {
-    invoke('browser_preview_navigate', { label, action: 'forward', url: null }).catch(() => {});
+    tryInvokeNative('browser_preview_navigate', { label, action: 'forward', url: null });
   }, [label]);
 
   const submitAddress = useCallback(() => {
@@ -422,7 +382,7 @@ export function BrowserPanel({
     if (!next) return;
     setAddressInput(next);
     addressEditingRef.current = false;
-    invoke('browser_preview_navigate', { label, action: 'goto', url: next }).catch(() => {});
+    tryInvokeNative('browser_preview_navigate', { label, action: 'goto', url: next });
   }, [label, addressInput]);
 
   const openExternal = useCallback(() => {

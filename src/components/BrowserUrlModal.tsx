@@ -14,9 +14,7 @@ interface Props {
  * Name + URL entry modal for the "Open Browser…" command-palette action.
  *
  * Replaces a `window.prompt(...)` call — Chromium disabled `prompt()` in
- * Electron in 2021, and Tauri's WKWebView host doesn't wire up
- * `runJavaScriptTextInputPanelWithPrompt` either. Either way `prompt()`
- * returned `null` immediately and the action silently no-op'd.
+ * Electron in 2021, so a native modal is required.
  *
  * The `name` field exists because every browser preview is keyed by a
  * stable kebab/snake-case identifier (e.g. "qa-admin-workflow") so a

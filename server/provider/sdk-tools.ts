@@ -490,7 +490,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       // ---------------------------------------------------------------------
       // Playwright-cli-equivalent browser automation tools. Each round-trips:
       //   bridge SDK tool → broadcastToSession('browser_request')
-      //   → desktop frontend WS → __TAURI_INTERNALS__.invoke('cdp_<action>')
+      //   → desktop frontend WS → window.codiby.invoke('cdp_<action>')
       //   → Electron main: webContents.debugger / CDP commands
       //   → frontend respondBrowserRequest → bridge resolves the promise.
       //

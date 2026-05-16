@@ -11,7 +11,7 @@
  * CDP is attached on creation so the `electron/cdp.ts` tools can issue
  * DevTools commands against the same view.
  *
- * Wire protocol (mirrors the Tauri version):
+ * Wire protocol:
  *
  *   host → preview:   webContents.executeJavaScript into
  *                      window.__codibyInspector.{setInspecting,setComments}

@@ -1,9 +1,9 @@
 node_modules
 dist
 .astro
-src-tauri/target
-src-tauri/gen
-src-tauri/sidecar
+electron-dist
+electron-out
+electron/resources
 .playwright-cli
 *.log
 .DS_Store

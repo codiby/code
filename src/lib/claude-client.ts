@@ -4,17 +4,18 @@
  */
 
 export async function resolveServerUrl(): Promise<string> {
-  if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+  const native = (typeof window !== 'undefined') ? window.codiby : null;
+  if (native) {
     try {
-      const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
-      const port = await invoke<number>('get_bridge_port');
+      const port = await native.invoke<number>('get_bridge_port');
       return `http://localhost:${port}`;
     } catch (e) {
       console.error('Bridge server not found:', e);
     }
   }
   // Mobile / browser case — use the same origin we were loaded from when
-  // running outside Tauri. Falls back to PUBLIC_CLAUDE_SERVER_URL or :3111.
+  // running outside the desktop app. Falls back to PUBLIC_CLAUDE_SERVER_URL
+  // or :3111.
   if (typeof window !== 'undefined' && window.location?.origin && window.location.protocol.startsWith('http')) {
     return window.location.origin;
   }
@@ -235,7 +236,7 @@ type ClientCallbacks = {
    * Bridge → frontend CDP request channel. The bridge issues `browser_request`
    * over the WS when an SDK tool (browser_snapshot / browser_click / etc.)
    * runs; the desktop frontend forwards to Electron main via the
-   * `__TAURI_INTERNALS__.invoke('cdp_<action>', args)` shim and replies with
+   * `window.codiby.invoke('cdp_<action>', args)` and replies with
    * `respondBrowserRequest`. Optional — non-Electron viewers can leave it
    * unimplemented; the bridge times out and the tool reports failure.
    */

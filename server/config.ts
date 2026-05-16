@@ -7,7 +7,7 @@ import { execSync } from 'child_process';
 // Enrich `process.env.PATH` so anything we spawn downstream — the Claude SDK's
 // `claude` binary, the Bash tool's child processes, `git`, `sudo`, `bun`, etc.
 // — can resolve user-installed binaries. When the bridge is launched from the
-// Tauri app (Finder/Dock) or a LaunchAgent it inherits launchd's PATH, which
+// desktop app (Finder/Dock) or a LaunchAgent it inherits launchd's PATH, which
 // reads `/etc/paths(.d)/*` but never sources `~/.zshrc` / `~/.zprofile`. So
 // per-user bin dirs added by shell rc files (`~/.opencode/bin`, `~/.local/bin`,
 // `~/.cargo/bin`, …) are missing. The PTY shell handles its own login-mode
@@ -15,8 +15,8 @@ import { execSync } from 'child_process';
 // the bridge inherit `process.env.PATH` directly — so we enrich it here once
 // at module load.
 //
-// When launched by the Tauri app or a service (any `--spawned-by=…` flag, or
-// CODIBY_SPAWN_MODE set) we always enrich: the launchd-inherited PATH can
+// When launched by the desktop app or a service (any `--spawned-by=…` flag,
+// or CODIBY_SPAWN_MODE set) we always enrich: the launchd-inherited PATH can
 // look superficially "rich" (e.g. it already has /opt/homebrew/bin from
 // /etc/paths) yet still miss user-rc dirs. Spending ~100ms on a login-shell
 // PATH probe at boot is cheap insurance. From a real terminal (`bun run` with

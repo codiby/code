@@ -2,12 +2,11 @@
  * Bridge → Electron CDP request router.
  *
  * The desktop frontend is the only thing wired to both the bun bridge
- * (via WebSocket) and the Electron main process (via the
- * `__TAURI_INTERNALS__.invoke` shim exposed by the preload). The bridge
- * issues `browser_request` over the WS when an SDK tool (`browser_snapshot`,
- * `browser_click`, etc.) runs; this module forwards each request to main
- * via `invoke('cdp_<action>', args)` and replies with the result through
- * `client.respondBrowserRequest`.
+ * (via WebSocket) and the Electron main process (via `window.codiby.invoke`
+ * exposed by the preload). The bridge issues `browser_request` over the WS
+ * when an SDK tool (`browser_snapshot`, `browser_click`, etc.) runs; this
+ * module forwards each request to main via `invoke('cdp_<action>', args)`
+ * and replies with the result through `client.respondBrowserRequest`.
  *
  * Wire once at app boot — `Providers.tsx` or `ChatApp.tsx`'s client setup
  * passes `onBrowserRequest: handleBrowserRequest(client)`.
@@ -16,13 +15,7 @@
  * the bridge times out the request and the SDK tool reports failure.
  */
 
-type InvokeFn = <T = unknown>(cmd: string, args?: unknown) => Promise<T>;
-
-function getInvoke(): InvokeFn | null {
-  if (typeof window === 'undefined') return null;
-  const internals = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: InvokeFn } }).__TAURI_INTERNALS__;
-  return internals?.invoke ?? null;
-}
+import { getNative } from './native';
 
 export type BrowserRequest = {
   sessionId: string;
@@ -57,8 +50,8 @@ export function buildBrowserRequestHandler(
   respond: (sessionId: string, requestId: string, payload: { result?: unknown; error?: string }) => void,
 ) {
   return async (req: BrowserRequest): Promise<void> => {
-    const invoke = getInvoke();
-    if (!invoke) {
+    const native = getNative();
+    if (!native) {
       respond(req.sessionId, req.requestId, {
         error: 'No browser preview available — this viewer is not running inside the desktop app.',
       });
@@ -78,7 +71,7 @@ export function buildBrowserRequestHandler(
       label,
     };
     try {
-      const result = await invoke(`cdp_${req.action}`, args);
+      const result = await native.invoke(`cdp_${req.action}`, args);
       respond(req.sessionId, req.requestId, { result });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

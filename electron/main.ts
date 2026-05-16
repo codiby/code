@@ -1,11 +1,11 @@
 /**
- * Electron entry point. Mirrors `src-tauri/src/lib.rs::run()`:
+ * Electron entry point.
  *
  *   - install the codiby CLI to ~/.local/bin (best-effort).
  *   - create the main BrowserWindow.
  *   - spawn / discover the bun bridge sidecar (lazy, on first invoke).
- *   - register every `tauri:*` IPC channel the React code's `invoke()` shim
- *     reaches for, plus browser-preview / CDP / plugin OAuth handlers.
+ *   - register every `app:*` IPC channel the React code's `invoke()` calls
+ *     reach for, plus browser-preview / CDP / plugin OAuth handlers.
  *   - on shutdown, kill the sidecar and tear down all preview surfaces.
  */
 import { app, BrowserWindow, ipcMain, shell, Notification } from 'electron';
@@ -147,8 +147,8 @@ function createMainWindow(): BrowserWindow {
 
 async function loadInitialUrl(win: BrowserWindow): Promise<void> {
   if (DEV) {
-    // Tauri's `devUrl` equivalent — the bridge serves the frontend dist over
-    // :3111. `run.sh` (started independently) keeps the bundler and bridge alive.
+    // Dev: the bridge serves the frontend dist over :3111. `run.sh`
+    // (started independently) keeps the bundler and bridge alive.
     await win.loadURL(DEV_URL);
     return;
   }
@@ -165,35 +165,35 @@ function relayBrowserPreviewEvent(label: string, event: string, payload: string 
 
 function registerIpcHandlers(): void {
   // --- bridge port ----------------------------------------------------------
-  ipcMain.handle('tauri:get_bridge_port', async () => {
+  ipcMain.handle('app:get_bridge_port', async () => {
     return await getBridgePort();
   });
 
   // --- browser preview ------------------------------------------------------
-  ipcMain.handle('tauri:open_browser_preview', async (_e, args: {
+  ipcMain.handle('app:open_browser_preview', async (_e, args: {
     label: string; url: string; title?: string;
     x: number; y: number; width: number; height: number;
   }) => {
     await openBrowserPreview(args);
   });
-  ipcMain.handle('tauri:close_browser_preview', async (_e, args: { label: string }) => {
+  ipcMain.handle('app:close_browser_preview', async (_e, args: { label: string }) => {
     return closeBrowserPreview(args.label);
   });
-  ipcMain.handle('tauri:browser_preview_set_bounds', async (_e, args: {
+  ipcMain.handle('app:browser_preview_set_bounds', async (_e, args: {
     label: string; x: number; y: number; width: number; height: number;
   }) => {
     return setBounds(args.label, { x: args.x, y: args.y, width: args.width, height: args.height });
   });
-  ipcMain.handle('tauri:browser_preview_set_visible', async (_e, args: { label: string; visible: boolean }) => {
+  ipcMain.handle('app:browser_preview_set_visible', async (_e, args: { label: string; visible: boolean }) => {
     return setVisible(args.label, args.visible);
   });
-  ipcMain.handle('tauri:browser_preview_set_inspect', async (_e, args: { label: string; enabled: boolean }) => {
+  ipcMain.handle('app:browser_preview_set_inspect', async (_e, args: { label: string; enabled: boolean }) => {
     return setInspect(args.label, args.enabled);
   });
-  ipcMain.handle('tauri:browser_preview_set_comments', async (_e, args: { label: string; comments: BrowserComment[] }) => {
+  ipcMain.handle('app:browser_preview_set_comments', async (_e, args: { label: string; comments: BrowserComment[] }) => {
     return setComments(args.label, args.comments);
   });
-  ipcMain.handle('tauri:browser_preview_navigate', async (_e, args: {
+  ipcMain.handle('app:browser_preview_navigate', async (_e, args: {
     label: string; action: 'back' | 'forward' | 'reload' | 'goto'; url: string | null;
   }) => {
     return await navigate(args.label, args.action, args.url);
@@ -206,51 +206,51 @@ function registerIpcHandlers(): void {
   });
 
   // --- CDP actions (called from the renderer's browser-cdp-bridge) ----------
-  ipcMain.handle('tauri:cdp_snapshot', async (_e, args: { label: string }) => {
+  ipcMain.handle('app:cdp_snapshot', async (_e, args: { label: string }) => {
     return await cdpSnapshot(args.label);
   });
-  ipcMain.handle('tauri:cdp_take_screenshot', async (_e, args: { label: string }) => {
+  ipcMain.handle('app:cdp_take_screenshot', async (_e, args: { label: string }) => {
     return await cdpScreenshot(args.label);
   });
-  ipcMain.handle('tauri:cdp_click', async (_e, args: { label: string; ref: string; button?: 'left' | 'right' | 'middle'; doubleClick?: boolean }) => {
+  ipcMain.handle('app:cdp_click', async (_e, args: { label: string; ref: string; button?: 'left' | 'right' | 'middle'; doubleClick?: boolean }) => {
     return await cdpClick(args.label, args.ref, { button: args.button, doubleClick: args.doubleClick });
   });
-  ipcMain.handle('tauri:cdp_hover', async (_e, args: { label: string; ref: string }) => {
+  ipcMain.handle('app:cdp_hover', async (_e, args: { label: string; ref: string }) => {
     return await cdpHover(args.label, args.ref);
   });
-  ipcMain.handle('tauri:cdp_type', async (_e, args: { label: string; ref: string; text: string; submit?: boolean }) => {
+  ipcMain.handle('app:cdp_type', async (_e, args: { label: string; ref: string; text: string; submit?: boolean }) => {
     return await cdpType(args.label, args.ref, args.text, { submit: args.submit });
   });
-  ipcMain.handle('tauri:cdp_press_key', async (_e, args: { label: string; key: string }) => {
+  ipcMain.handle('app:cdp_press_key', async (_e, args: { label: string; key: string }) => {
     return await cdpPressKey(args.label, args.key);
   });
-  ipcMain.handle('tauri:cdp_select_option', async (_e, args: { label: string; ref: string; values: string[] }) => {
+  ipcMain.handle('app:cdp_select_option', async (_e, args: { label: string; ref: string; values: string[] }) => {
     return await cdpSelectOption(args.label, args.ref, args.values);
   });
-  ipcMain.handle('tauri:cdp_scroll', async (_e, args: { label: string; ref?: string; x?: number; y?: number }) => {
+  ipcMain.handle('app:cdp_scroll', async (_e, args: { label: string; ref?: string; x?: number; y?: number }) => {
     return await cdpScroll(args.label, { ref: args.ref, x: args.x, y: args.y });
   });
-  ipcMain.handle('tauri:cdp_navigate', async (_e, args: { label: string; action: 'goto' | 'back' | 'forward' | 'reload'; url?: string }) => {
+  ipcMain.handle('app:cdp_navigate', async (_e, args: { label: string; action: 'goto' | 'back' | 'forward' | 'reload'; url?: string }) => {
     return await cdpNavigate(args.label, args.action, args.url);
   });
-  ipcMain.handle('tauri:cdp_evaluate', async (_e, args: { label: string; function: string; ref?: string }) => {
+  ipcMain.handle('app:cdp_evaluate', async (_e, args: { label: string; function: string; ref?: string }) => {
     return await cdpEvaluate(args.label, args.function, { ref: args.ref });
   });
-  ipcMain.handle('tauri:cdp_wait_for', async (_e, args: { label: string; text?: string; textGone?: string; time?: number; timeoutMs?: number }) => {
+  ipcMain.handle('app:cdp_wait_for', async (_e, args: { label: string; text?: string; textGone?: string; time?: number; timeoutMs?: number }) => {
     return await cdpWaitFor(args.label, { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs });
   });
-  ipcMain.handle('tauri:cdp_console_messages', async (_e, args: { label: string; tail?: number }) => {
+  ipcMain.handle('app:cdp_console_messages', async (_e, args: { label: string; tail?: number }) => {
     return cdpConsoleMessages(args.label, { tail: args.tail });
   });
-  ipcMain.handle('tauri:cdp_network_requests', async (_e, args: { label: string; tail?: number }) => {
+  ipcMain.handle('app:cdp_network_requests', async (_e, args: { label: string; tail?: number }) => {
     return cdpNetwork(args.label, { tail: args.tail });
   });
-  ipcMain.handle('tauri:cdp_handle_dialog', async (_e, args: { label: string; accept: boolean; promptText?: string }) => {
+  ipcMain.handle('app:cdp_handle_dialog', async (_e, args: { label: string; accept: boolean; promptText?: string }) => {
     return await cdpHandleDialog(args.label, { accept: args.accept, promptText: args.promptText });
   });
 
   // --- plugin OAuth ---------------------------------------------------------
-  ipcMain.handle('tauri:plugin_oauth_login', async (_e, args: { spec: OAuthSpec }) => {
+  ipcMain.handle('app:plugin_oauth_login', async (_e, args: { spec: OAuthSpec }) => {
     await pluginOauthLogin(args.spec, getBridgePort);
   });
 

@@ -16,8 +16,9 @@
 import type {
   PluginHostAPI,
   PluginListEntry,
-  AllowedPluginTauriCommand,
+  AllowedPluginNativeCommand,
 } from './plugin-types';
+import { invokeNative } from './native';
 
 export type PluginComponent = React.ComponentType<PluginContributionProps>;
 
@@ -156,7 +157,7 @@ function expectedComponentNames(entry: PluginListEntry): string[] {
 // Host API factory — one per plugin id
 // ---------------------------------------------------------------------------
 
-const TAURI_ALLOWED: ReadonlySet<AllowedPluginTauriCommand> = new Set([
+const NATIVE_ALLOWED: ReadonlySet<AllowedPluginNativeCommand> = new Set([
   'plugin_oauth_login',
   'plugin_open_url',
 ]);
@@ -173,14 +174,11 @@ function createHostAPI(pluginId: string): PluginHostAPI {
       return fetch(`/plugins/${encodeURIComponent(pluginId)}${cleaned}`, init);
     },
 
-    async invokeTauri<T = unknown>(cmd: AllowedPluginTauriCommand, args?: unknown): Promise<T> {
-      if (!TAURI_ALLOWED.has(cmd)) {
+    async invokeNative<T = unknown>(cmd: AllowedPluginNativeCommand, args?: unknown): Promise<T> {
+      if (!NATIVE_ALLOWED.has(cmd)) {
         throw new Error(`plugin host: command "${cmd}" not whitelisted`);
       }
-      // Dynamic-import @tauri-apps/api/core so the browser dev server (no
-      // Tauri context) doesn't crash at module-eval time.
-      const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<T>(cmd, args as Record<string, unknown> | undefined);
+      return invokeNative<T>(cmd, args);
     },
 
     storage: {

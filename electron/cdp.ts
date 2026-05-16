@@ -3,9 +3,8 @@
  *
  * Per-preview state attaches once on `attachCdp(label, webContents)` and is
  * teared down on `detachCdp(label)`. The exported functions are called from
- * `electron/main.ts`'s `ipcMain.handle('tauri:cdp_*')` handlers, which the
- * bridge reaches via the renderer → preload `__TAURI_INTERNALS__.invoke`
- * shim.
+ * `electron/main.ts`'s `ipcMain.handle('app:cdp_*')` handlers, which the
+ * bridge reaches via the renderer → preload `window.codiby.invoke` shim.
  *
  * Snapshot uses the full accessibility tree (CDP `Accessibility.getFullAXTree`)
  * rendered as indented YAML with `[ref=eN]` handles, exactly the shape

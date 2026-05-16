@@ -1,11 +1,8 @@
 /**
  * Inspector overlay injected into every browser-preview page.
  *
- * Functionally identical to the script previously embedded in
- * `src-tauri/src/browser_preview.rs::INSPECTOR_SCRIPT_TEMPLATE`. The only
- * difference is the parent-bridge call: Tauri used
- * `__TAURI_INTERNALS__.invoke('browser_preview_emit', ...)`, Electron uses
- * `window.__codiby_relay(event, payload)` exposed by `preview_preload.ts`.
+ * Calls `window.__codiby_relay(event, payload)` (exposed by
+ * `preview_preload.ts`) to push events to the host renderer.
  *
  * `__LABEL__` is replaced per preview before injection.
  */

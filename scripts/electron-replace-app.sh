@@ -4,10 +4,9 @@
 #   2. swaps in the freshly built bundle from electron-out/...,
 #   3. relaunches.
 #
-# Mirrors `replace-app.sh` (the Tauri variant) but points at the
-# electron-builder output. Designed to be spawned with `nohup ... & disown`
-# so it stays orphaned to PID 1 — it has to outlive the very app whose
-# embedded bun sidecar invoked it.
+# Designed to be spawned with `nohup ... & disown` so it stays orphaned to
+# PID 1 — it has to outlive the very app whose embedded bun sidecar invoked
+# it.
 #
 # Live progress is appended to /tmp/codiby-electron-replace.log; tail it
 # from a real Terminal.app window if the relaunch never comes back.

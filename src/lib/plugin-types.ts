@@ -131,11 +131,11 @@ export interface PluginHostAPI {
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
 
   /**
-   * Invoke a whitelisted Tauri command. Currently allowed:
+   * Invoke a whitelisted native command on the desktop app. Currently allowed:
    *   - "plugin_oauth_login" — opens the OAuth webview using the manifest's spec
    *   - "plugin_open_url"    — open URL in the user's default browser
    */
-  invokeTauri<T = unknown>(cmd: AllowedPluginTauriCommand, args?: unknown): Promise<T>;
+  invokeNative<T = unknown>(cmd: AllowedPluginNativeCommand, args?: unknown): Promise<T>;
 
   /** Per-plugin client-side key/value store (persisted by the bridge). */
   storage: {
@@ -154,7 +154,7 @@ export interface PluginHostAPI {
   ws: { subscribe<T = unknown>(topic: string, cb: (msg: T) => void): () => void };
 }
 
-export type AllowedPluginTauriCommand = 'plugin_oauth_login' | 'plugin_open_url';
+export type AllowedPluginNativeCommand = 'plugin_oauth_login' | 'plugin_open_url';
 
 // ---------------------------------------------------------------------------
 // Wire types — what the bridge returns to the frontend at GET /plugins

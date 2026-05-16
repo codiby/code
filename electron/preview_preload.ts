@@ -5,9 +5,6 @@
  * its main world — `__codiby_relay(event, payload)` — used by the injected
  * inspector overlay to send DOM events back to the host. Anything else
  * (Node APIs, ipcRenderer, contextBridge surface) stays hidden.
- *
- * Replaces the Tauri-side `INTERNALS.invoke('browser_preview_emit', ...)`
- * path used by the original inspector script.
  */
 import { contextBridge, ipcRenderer } from 'electron';
 

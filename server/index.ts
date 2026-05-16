@@ -838,7 +838,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 loadOrCreateMobileToken();
 
 /**
- * Treat the request as "trusted" if it comes from localhost. The Tauri
+ * Treat the request as "trusted" if it comes from localhost. The Electron
  * desktop app always uses localhost, so this preserves zero-config desktop
  * usage while requiring the bearer token from any LAN client.
  */
@@ -2010,8 +2010,8 @@ const server = Bun.serve({
 // Startup log
 // ---------------------------------------------------------------------------
 
-// Write port file for service discovery. Must match the path the Tauri
-// frontend reads in `src-tauri/src/lib.rs::bridge_port_file`:
+// Write port file for service discovery. Must match the path the desktop
+// frontend reads via `electron/bridge_server.ts`:
 //   - Explicit override: $CODIBY_CODE_PORT_FILE (used by the macOS LaunchAgent
 //     and the Windows SCM wrapper).
 //   - macOS:   ~/.codiby/server.port         (launchd)

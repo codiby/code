@@ -2,9 +2,8 @@
  * Drop the bundled `codiby` CLI into `~/.local/bin/` so users can spawn a
  * new session from a terminal with `codiby [path]`.
  *
- * Port of `src-tauri/src/lib.rs::install_cli_script`. Best-effort: any
- * failure is swallowed (no $HOME, read-only fs, etc.) since the desktop
- * app itself works without the CLI. No-op on Windows.
+ * Best-effort: any failure is swallowed (no $HOME, read-only fs, etc.)
+ * since the desktop app itself works without the CLI. No-op on Windows.
  */
 import { app } from 'electron';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';

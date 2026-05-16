@@ -1,10 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Bump the app version across every file that hard-codes it:
- *   - package.json
- *   - src-tauri/Cargo.toml
- *   - src-tauri/tauri.conf.json
- *   - src-tauri/Cargo.lock        (only the `codiby-code` package entry)
+ * Bump the app version in `package.json`. The Electron build reads its
+ * version from here directly — no other files need to stay in sync.
  *
  * Usage:
  *   bun run scripts/bump-version.ts patch       # 0.0.1 -> 0.0.2
@@ -17,9 +14,6 @@ import { resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PACKAGE_JSON = resolve(ROOT, "package.json");
-const CARGO_TOML = resolve(ROOT, "src-tauri/Cargo.toml");
-const TAURI_CONF = resolve(ROOT, "src-tauri/tauri.conf.json");
-const CARGO_LOCK = resolve(ROOT, "src-tauri/Cargo.lock");
 
 type Bump = "major" | "minor" | "patch";
 
@@ -47,31 +41,6 @@ function updatePackageJson(next: string) {
   writeFileSync(PACKAGE_JSON, updated);
 }
 
-function updateTauriConf(next: string) {
-  const text = readFileSync(TAURI_CONF, "utf8");
-  const updated = text.replace(/("version"\s*:\s*")[^"]+(")/, `$1${next}$2`);
-  writeFileSync(TAURI_CONF, updated);
-}
-
-function updateCargoToml(next: string) {
-  const text = readFileSync(CARGO_TOML, "utf8");
-  // Only the first `version = "..."` line, which sits inside [package].
-  const updated = text.replace(/^version\s*=\s*"[^"]+"/m, `version = "${next}"`);
-  writeFileSync(CARGO_TOML, updated);
-}
-
-function updateCargoLock(next: string) {
-  const text = readFileSync(CARGO_LOCK, "utf8");
-  const updated = text.replace(
-    /(name = "codiby-code"\nversion = ")[^"]+(")/,
-    `$1${next}$2`,
-  );
-  if (updated === text) {
-    throw new Error("Could not locate codiby-code entry in Cargo.lock");
-  }
-  writeFileSync(CARGO_LOCK, updated);
-}
-
 const arg = process.argv[2];
 if (!arg) {
   console.error("Usage: bun run scripts/bump-version.ts <patch|minor|major|x.y.z>");
@@ -84,13 +53,7 @@ const next = ["patch", "minor", "major"].includes(arg)
   : (parseSemver(arg), arg);
 
 updatePackageJson(next);
-updateCargoToml(next);
-updateTauriConf(next);
-updateCargoLock(next);
 
 console.log(`Bumped version: ${current} -> ${next}`);
 console.log("Updated:");
 console.log("  package.json");
-console.log("  src-tauri/Cargo.toml");
-console.log("  src-tauri/tauri.conf.json");
-console.log("  src-tauri/Cargo.lock");
