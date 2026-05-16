@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, LayoutGrid, Search } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
 import { Providers } from './Providers';
-import { TabBar } from './TabBar';
 import { FileExplorer } from './FileExplorer';
+import { SessionTabStrip } from './SessionTabStrip';
+import { TabBar } from './TabBar';
+import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
 import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
@@ -57,7 +59,7 @@ import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
 import { type MockupComment } from '../lib/mockup-inspector';
 import { MockupPanel } from './MockupPanel';
-import { BrowserPanel } from './BrowserPanel';
+import { BrowserPanel, useBrowserPreviewBounds } from './BrowserPanel';
 import { PlanPanel, type PlanComment } from './PlanPanel';
 import {
   ChatFocusLayout,
@@ -69,6 +71,7 @@ import {
 } from './ChatFocusLayout';
 import { BookmarkPlus, MessageSquarePlus } from 'lucide-react';
 import { ChatComposer } from './ChatComposer';
+import { GroupComposer } from './GroupComposer';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
  *  Using `… || []` at the JSX site allocates a fresh array on every render
@@ -281,171 +284,6 @@ function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 const MOD_KEY = IS_MAC ? '⌘' : 'Ctrl';
 
-function formatRelativeTime(ts: number): string {
-  if (!ts) return '';
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return 'just now';
-  const m = Math.floor(diff / 60_000);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  const w = Math.floor(d / 7);
-  if (w < 4) return `${w}w ago`;
-  return new Date(ts).toLocaleDateString();
-}
-
-function WelcomeScreen({
-  sessions,
-  closedSessionIds,
-  archivedSessionIds,
-  sessionLastMessageAt,
-  onNewSession,
-  onReopenSession,
-  onOpenCommandPalette,
-  onOpenSettings,
-  onOpenSearch,
-  onToggleExplorer,
-}: {
-  sessions: SessionInfo[];
-  closedSessionIds: Set<string>;
-  archivedSessionIds: Set<string>;
-  sessionLastMessageAt: Record<string, number>;
-  onNewSession: () => void;
-  onReopenSession: (id: string) => void;
-  onOpenCommandPalette: () => void;
-  onOpenSettings: () => void;
-  onOpenSearch: () => void;
-  onToggleExplorer: () => void;
-}) {
-  const recents = useMemo(() => {
-    return sessions
-      .filter(s => closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id))
-      .map(s => ({ session: s, ts: sessionLastMessageAt[s.id] || 0 }))
-      .sort((a, b) => b.ts - a.ts);
-  }, [sessions, closedSessionIds, archivedSessionIds, sessionLastMessageAt]);
-
-  const startActions: { icon: ReactNode; label: string; hint: string; shortcut?: string; onClick: () => void }[] = [
-    {
-      icon: (
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M12 18v-6" strokeLinecap="round" /><path d="M9 15h6" strokeLinecap="round" /></svg>
-      ),
-      label: 'New Session',
-      hint: 'Start a fresh Claude session',
-      onClick: onNewSession,
-    },
-    {
-      icon: (
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9h10M7 13h6" strokeLinecap="round" /></svg>
-      ),
-      label: 'Command Palette',
-      hint: 'Run a command, jump to a file',
-      shortcut: `${MOD_KEY} K`,
-      onClick: onOpenCommandPalette,
-    },
-    {
-      icon: (
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="11" cy="11" r="7" /><path d="M16 16L21 21" strokeLinecap="round" /></svg>
-      ),
-      label: 'Search Across Files',
-      hint: 'Search the current workspace',
-      shortcut: `${MOD_KEY} ⇧ F`,
-      onClick: onOpenSearch,
-    },
-    {
-      icon: (
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" /></svg>
-      ),
-      label: 'Toggle File Explorer',
-      hint: 'Show or hide the side panel',
-      shortcut: `${MOD_KEY} B`,
-      onClick: onToggleExplorer,
-    },
-    {
-      icon: (
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
-      ),
-      label: 'Settings',
-      hint: 'Open settings panel',
-      onClick: onOpenSettings,
-    },
-  ];
-
-  return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-4xl px-10 py-14">
-        {/* Header */}
-        <div className="mb-10">
-          <img src="/brand/codiby-logo.svg" alt="Codiby" className="h-12 w-auto mb-2 select-none" draggable={false} />
-          <p className="text-sm text-zinc-500">Editing evolved with Claude.</p>
-        </div>
-
-        {/* Two-column: Start | Recent */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 mb-12">
-          {/* Start */}
-          <div>
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3">Start</h2>
-            <div className="space-y-1">
-              {startActions.map(action => (
-                <button
-                  key={action.label}
-                  onClick={action.onClick}
-                  className="w-full group flex items-center gap-3 px-2 py-1.5 rounded text-left text-[13px] text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors"
-                >
-                  <span className="text-zinc-500 group-hover:text-violet-400 transition-colors">{action.icon}</span>
-                  <span className="flex-1 truncate">{action.label}</span>
-                  {action.shortcut && (
-                    <span className="text-[11px] text-zinc-600 font-mono shrink-0">{action.shortcut}</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Recent */}
-          <div>
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3">Recent</h2>
-            {recents.length === 0 ? (
-              <p className="text-[13px] text-zinc-600">No recent sessions yet.</p>
-            ) : (
-              <div className="space-y-1">
-                {recents.slice(0, 8).map(({ session, ts }) => (
-                  <button
-                    key={session.id}
-                    onClick={() => onReopenSession(session.id)}
-                    className="w-full group flex items-center gap-3 px-2 py-1.5 rounded text-left text-[13px] hover:bg-surface-light transition-colors"
-                    title={session.cwd}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-zinc-300 group-hover:text-zinc-100 truncate">{session.name}</div>
-                      <div className="text-[11px] text-zinc-600 font-mono truncate">{session.cwd}</div>
-                    </div>
-                    {ts > 0 && (
-                      <span className="text-[11px] text-zinc-600 shrink-0">{formatRelativeTime(ts)}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Tips footer */}
-        <div className="border-t border-border pt-6">
-          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-3">Tips</h2>
-          <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1.5 text-[12px] text-zinc-500">
-            <li>Press <span className="text-zinc-300 font-mono bg-surface px-1.5 py-0.5 rounded border border-border">{MOD_KEY} K</span> to open the command palette.</li>
-            <li>Press <span className="text-zinc-300 font-mono bg-surface px-1.5 py-0.5 rounded border border-border">{MOD_KEY} B</span> to toggle the file explorer.</li>
-            <li>Press <span className="text-zinc-300 font-mono bg-surface px-1.5 py-0.5 rounded border border-border">{MOD_KEY} L</span> to focus the chat input.</li>
-            <li>Press <span className="text-zinc-300 font-mono bg-surface px-1.5 py-0.5 rounded border border-border">⇧ Tab</span> in chat to cycle permission modes.</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: ClaudeClient | null; rootPath: string | null; onFileOpen: (path: string, line?: number) => void; onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<{ file: string; line: number; text: string }[]>([]);
@@ -465,7 +303,7 @@ function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: Claude
   };
 
   return (
-    <aside className="w-60 border-r border-border bg-[#161616] flex flex-col shrink-0">
+    <aside className="w-60 border-r border-border bg-[#131418] flex flex-col shrink-0">
       <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
         <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Search</span>
         <button className="text-zinc-600 hover:text-zinc-300 text-sm" onClick={onClose}>&#x2715;</button>
@@ -510,32 +348,26 @@ import { playChime } from '../lib/chime';
 
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  // Sessions have three lifecycle states stored in two parallel sets:
-  //   open     — id is in NEITHER set (rendered in the tab bar)
-  //   closed   — id is in `closedSessionIds` only (rendered under the
-  //              "+" dropdown's CLOSED section, can be reopened)
-  //   archived — id is in `archivedSessionIds` (hidden from tabs AND
-  //              from the "+" dropdown; reachable from the future
-  //              archived-sessions management page only)
-  // When a session moves closed → archived we remove it from
-  // `closedSessionIds` and add it to `archivedSessionIds` so the two
-  // sets stay disjoint.
-  const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(new Set());
-  const closedIdsRef = useRef(closedSessionIds);
-  const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(new Set());
+  // Session lifecycle is per-session and persisted server-side (status:
+  // 'open' | 'archived'). The set below is derived from the sessions list
+  // so callers that need O(1) membership lookups keep working without us
+  // tracking duplicate state.
+  const archivedSessionIds = useMemo(
+    () => new Set(sessions.filter(s => s.status === 'archived').map(s => s.id)),
+    [sessions],
+  );
   const archivedIdsRef = useRef(archivedSessionIds);
+  useEffect(() => { archivedIdsRef.current = archivedSessionIds; }, [archivedSessionIds]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  // Bridge spawn mode (`service` = server auto-booted every active session at
-  // startup; `app` = sessions are only spawned when the user activates a tab,
-  // via `notifyActiveTab`). Tracked in a ref because `onSessions` reads it
-  // synchronously on the very first delivery and we want to skip the legacy
-  // bulk auto-resume when the server is already handling spawn-on-demand.
-  const spawnModeRef = useRef<'app' | 'service'>('service');
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string; cwd?: string; icon?: string }>>({});
   const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  /** Group focused in the sidebar. When set, the main pane renders the
+   *  inline new-session composer (GroupComposer) instead of the active
+   *  session's chat body. Cleared as soon as a session is selected. */
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [autoGroupSessions, setAutoGroupSessions] = useState(false);
 
   // Preferences are loaded inside the client connection effect below (before WS connect)
@@ -667,6 +499,68 @@ export function ChatApp() {
     }
   };
 
+  /** Spawn a session from the inline GroupComposer. The composer supplies
+   *  the final cwd (which may be a freshly-created worktree path), the
+   *  provider, and an optional first prompt to send right after the
+   *  session boots. Mirrors handleNewSessionInGroup's group-binding +
+   *  legacy cwd backfill, plus a primer message. */
+  const handleSpawnInGroup = async (
+    groupId: string,
+    cwd: string,
+    provider: string,
+    prompt: string,
+    model?: string,
+    permissionMode?: string,
+  ) => {
+    const c = clientRef.current;
+    if (!c) return;
+    const group = tabGroups[groupId];
+    if (!group || !cwd) return;
+    try {
+      const session = await c.createSession(cwd, { provider, model, permissionMode });
+      const newMap = { ...tabGroupMap, [session.id]: groupId };
+      setTabGroupMap(newMap);
+      let nextGroups = tabGroups;
+      if (!group.cwd) {
+        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd } };
+        setTabGroups(nextGroups);
+      }
+      setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
+      c.subscribe(session.id);
+      subscribedRef.current.add(session.id);
+      setSelectedGroupId(null);
+      setActiveId(session.id);
+      persistPrefs({ tabGroupMap: newMap, ...(group.cwd ? {} : { tabGroups: nextGroups }) });
+      if (prompt) c.sendMessage(session.id, prompt);
+    } catch (err) {
+      console.error('[ChatApp] Failed to spawn session in group:', err);
+    }
+  };
+
+  /** Spawn a session from the home GroupComposer (no group binding). The
+   *  composer supplies the final cwd, provider, and an optional first prompt
+   *  to send right after the session boots. Mirrors handleSpawnInGroup but
+   *  skips the group wiring. */
+  const handleSpawnHome = async (
+    cwd: string,
+    provider: string,
+    prompt: string,
+    model?: string,
+    permissionMode?: string,
+  ) => {
+    const c = clientRef.current;
+    if (!c || !cwd) return;
+    try {
+      const session = await c.createSession(cwd, { provider, model, permissionMode });
+      c.subscribe(session.id);
+      subscribedRef.current.add(session.id);
+      setActiveId(session.id);
+      if (prompt) c.sendMessage(session.id, prompt);
+    } catch (err) {
+      console.error('[ChatApp] Failed to spawn session from home:', err);
+    }
+  };
+
   const handleGroupTabs = (tabIdA: string, tabIdB: string) => {
     handleCreateGroup([tabIdA, tabIdB]);
   };
@@ -736,20 +630,32 @@ export function ChatApp() {
     persistPrefs({ tabGroups: nextGroups });
   }, [tabGroupMap, tabGroups]);
 
+  /** Click on a group header in the sidebar. Always focuses the group
+   *  (renders GroupComposer in the main pane). Expansion still toggles —
+   *  the user can collapse/expand the tab list without losing focus.
+   *  Previously this auto-selected a member, which created the
+   *  "Waiting for connection…" gap when no member was a fit and left
+   *  a stale active session on the second (collapsing) click. */
   const handleToggleGroup = (groupId: string) => {
+    setSelectedGroupId(groupId);
     setExpandedGroupIds(prev => {
-      // Collapse if already expanded
-      if (prev.has(groupId)) {
-        const next = new Set(prev); next.delete(groupId); return next;
-      }
-      // Multiple groups stay expanded (Arc/Zen-style sidebar).
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  /** Focus a group without toggling its expansion state. Invoked by the
+   *  hover "+" icon on a group header — swaps GroupComposer into the main
+   *  pane and ensures the group is expanded so the user sees existing
+   *  members underneath the composer. */
+  const handleSelectGroup = (groupId: string) => {
+    setSelectedGroupId(groupId);
+    setExpandedGroupIds(prev => {
+      if (prev.has(groupId)) return prev;
       const next = new Set(prev);
       next.add(groupId);
-      // Select last focused session in the just-expanded group
-      const lastId = lastActivePerGroup.current[groupId];
-      const members = sessions.filter(s => tabGroupMap[s.id] === groupId);
-      const target = lastId && members.some(m => m.id === lastId) ? lastId : members[0]?.id;
-      if (target) setActiveId(target);
       return next;
     });
   };
@@ -882,13 +788,14 @@ export function ChatApp() {
   // the current IDE-style layout (sidebar + editor + chat); "focus" hides the
   // IDE chrome and tiles multiple chats. Wiring of the actual mode-switching
   // comes in follow-up steps — for now this just drives the title bar pill.
-  const [layoutMode, setLayoutMode] = useState<'standard' | 'focus'>(() => {
+  const [layoutMode, setLayoutMode] = useState<'standard' | 'horizontal' | 'focus'>(() => {
     try {
       const v = localStorage.getItem('claude-ui-layout-mode');
-      return v === 'focus' ? 'focus' : 'standard';
+      if (v === 'focus' || v === 'horizontal' || v === 'standard') return v;
+      return 'standard';
     } catch { return 'standard'; }
   });
-  const changeLayoutMode = useCallback((mode: 'standard' | 'focus') => {
+  const changeLayoutMode = useCallback((mode: 'standard' | 'horizontal' | 'focus') => {
     setLayoutMode(mode);
     try { localStorage.setItem('claude-ui-layout-mode', mode); } catch {}
   }, []);
@@ -1067,19 +974,15 @@ export function ChatApp() {
           // Subscribe to open sessions that aren't already subscribed
           const toSubscribe: string[] = [];
           for (const s of list) {
-            if (closedIdsRef.current.has(s.id)) continue;
-            if (archivedIdsRef.current.has(s.id)) continue;
+            if (s.status === 'archived') continue;
             if (subscribedRef.current.has(s.id)) continue;
             subscribedRef.current.add(s.id);
             toSubscribe.push(s.id);
             c.subscribe(s.id);
-            // Auto-resume stopped sessions only when the bridge runs in
-            // `service` spawn mode — in `app` mode the bridge spawns the
-            // active tab on demand (see `notifyActiveTab` below) so we don't
-            // light up every Claude process at once.
-            if (s.status === 'stopped' && spawnModeRef.current === 'service') {
-              c.resumeSession(s.id).catch(() => {});
-            }
+            // No auto-resume here: persisted sessions are shown immediately
+            // but their Claude process is only booted when the user focuses
+            // the tab (`notifyActiveTab` below) or sends a message. The
+            // server handles the dedupe + lazy spawn.
           }
           if (toSubscribe.length) {
             setStatuses(prev => {
@@ -1096,7 +999,7 @@ export function ChatApp() {
             if (prev) return prev;
             const hashId = window.location.hash.slice(1);
             if (!hashId) return null;
-            const openList = list.filter(s => !closedIdsRef.current.has(s.id));
+            const openList = list.filter(s => s.status === 'open');
             return openList.some(s => s.id === hashId) ? hashId : null;
           });
         },
@@ -1433,21 +1336,12 @@ export function ChatApp() {
         ),
 
         // Initial-load + server-pushed preferences. Sent as the first WS
-        // message on connect (so closed/archived/tabOrder are populated
-        // before the sessions list arrives) and again whenever a server-side
-        // mutation broadcasts an update (e.g. MCP tools creating a group or
-        // moving sessions between groups).
+        // message on connect (so tabOrder/groups are populated before the
+        // sessions list arrives) and again whenever a server-side mutation
+        // broadcasts an update (e.g. MCP tools creating a group or moving
+        // sessions between groups). Session visibility (open/archived)
+        // lives on each session, not in preferences.
         onPreferences: (prefs) => {
-          if (Array.isArray(prefs.closedSessionIds)) {
-            const s = new Set<string>(prefs.closedSessionIds as string[]);
-            closedIdsRef.current = s;
-            setClosedSessionIds(s);
-          }
-          if (Array.isArray(prefs.archivedSessionIds)) {
-            const s = new Set<string>(prefs.archivedSessionIds as string[]);
-            archivedIdsRef.current = s;
-            setArchivedSessionIds(s);
-          }
           if (Array.isArray(prefs.tabOrder)) {
             setTabOrder(prefs.tabOrder as string[]);
           }
@@ -1466,29 +1360,18 @@ export function ChatApp() {
         },
 
         // External trigger (e.g. the `codiby` CLI) wants the UI to switch
-        // to a specific session. Reopen it if it was closed/archived so the
-        // tab is actually visible before we activate it.
+        // to a specific session. Reopen it if it was archived so the tab
+        // is actually visible before we activate it. The server
+        // broadcasts the updated session list, which flips our derived
+        // archived/open sets.
         onFocusSession: (sid) => {
-          if (closedIdsRef.current.has(sid)) {
-            const next = new Set(closedIdsRef.current);
-            next.delete(sid);
-            closedIdsRef.current = next;
-            setClosedSessionIds(next);
-            persistPrefs({ closedSessionIds: [...next] });
-          }
           if (archivedIdsRef.current.has(sid)) {
-            const next = new Set(archivedIdsRef.current);
-            next.delete(sid);
-            archivedIdsRef.current = next;
-            setArchivedSessionIds(next);
-            persistPrefs({ archivedSessionIds: [...next] });
+            clientRef.current?.unarchiveSession(sid).catch(() => {});
           }
           setActiveId(sid);
         },
 
-        onWelcome: ({ spawnMode }) => {
-          spawnModeRef.current = spawnMode;
-        },
+        onWelcome: () => {},
 
         onConnectionChange: (status) => {
           if (status === 'connected') {
@@ -1567,11 +1450,9 @@ export function ChatApp() {
     if (sid) updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: id, diffView: null, editorDirty: false }));
   }, [activeId, updateLocalState]);
 
-  // App spawn mode: tell the bridge which tab is active so it can boot that
-  // session's Claude process on demand. No-op when the bridge runs in
-  // `service` mode (server already brought every active session online at
-  // startup) — the server gates this by spawnMode anyway, so it's safe to
-  // call unconditionally.
+  // Tell the bridge which tab is active so it can lazily boot that session's
+  // Claude process if it hasn't been resumed yet. Idempotent — the server
+  // ignores the message when the provider is already running.
   useEffect(() => {
     if (!activeId) return;
     clientRef.current?.notifyActiveTab(activeId);
@@ -1603,6 +1484,109 @@ export function ChatApp() {
   const browserOpen = !!active.activeBrowserName && !!active.browsers[active.activeBrowserName];
   const activeBrowser = browserOpen ? active.browsers[active.activeBrowserName as string] : null;
   const hasRightPanel = !!openFile || !!openMockup || browserOpen || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+
+  // Tear down a browser preview completely: destroy the BrowserView and
+  // forget it ever existed (no `lastBrowsers` entry means no chip survives
+  // either). Differs from `onCloseTab` / `onCloseBrowser` (panel × / agent-
+  // initiated close), which keep the chip around so the user can re-open
+  // the same URL with one click.
+  const closeBrowserFully = useCallback((sid: string, name: string) => {
+    const tauri = (window as never as { __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
+    tauri?.invoke?.('close_browser_preview', { label: browserLabelFor(sid, name) })?.catch?.(() => {});
+    updateLocalState(sid, s => {
+      const { [name]: _alive, ...restBrowsers } = s.browsers;
+      const { [name]: _last, ...restLast } = s.lastBrowsers;
+      const { [name]: _ins, ...restInspect } = s.browserInspect;
+      const { [name]: _cmt, ...restComments } = s.browserComments;
+      const remaining = Object.keys(restBrowsers);
+      const nextActive = s.activeBrowserName === name
+        ? (remaining[0] ?? null)
+        : s.activeBrowserName;
+      return {
+        ...s,
+        browsers: restBrowsers,
+        lastBrowsers: restLast,
+        browserInspect: restInspect,
+        browserComments: restComments,
+        activeBrowserName: nextActive,
+        editorFullWidth: nextActive == null ? false : s.editorFullWidth,
+      };
+    });
+  }, [updateLocalState]);
+
+  // Render a single header chip for `lastBrowsers[name]`. Clicking the body
+  // toggles visibility (or re-opens from the remembered URL); the × tears
+  // the preview down for good. The chip is scoped to a specific session so
+  // the focus-mode per-pane headers can render each pane's own browsers,
+  // independent of which pane currently has focus.
+  const renderBrowserChip = (sid: string, name: string, last: { url: string; title?: string }) => {
+    const sState = getState(sid);
+    const isOpenAndActive = sState.activeBrowserName === name && !!sState.browsers[name];
+    return (
+      <div
+        key={`hdr-browser-${name}`}
+        className={`group flex items-stretch rounded text-[11px] border transition-colors overflow-hidden ${
+          isOpenAndActive
+            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30 hover:bg-sky-500/25'
+            : 'bg-surface-light text-zinc-400 border-border hover:text-sky-300 hover:border-sky-500/30'
+        }`}
+      >
+        <button
+          type="button"
+          className="flex items-center gap-1.5 pl-2 pr-1 py-0.5"
+          onClick={() => {
+            updateLocalState(sid, s => {
+              if (s.activeBrowserName === name && s.browsers[name]) {
+                return { ...s, activeBrowserName: null, editorFullWidth: false };
+              }
+              if (s.browsers[name]) {
+                return {
+                  ...s,
+                  activeBrowserName: name,
+                  openFile: null,
+                  openMockup: null,
+                  openTerminalId: null,
+                  diffView: null,
+                  editorDirty: false,
+                };
+              }
+              const remembered = s.lastBrowsers[name];
+              if (!remembered) return s;
+              return {
+                ...s,
+                browsers: {
+                  ...s.browsers,
+                  [name]: { url: remembered.url, title: remembered.title, openSeq: Date.now() },
+                },
+                activeBrowserName: name,
+                openFile: null,
+                openMockup: null,
+                openTerminalId: null,
+                diffView: null,
+                editorDirty: false,
+              };
+            });
+          }}
+          title={isOpenAndActive ? `Hide "${name}" (${last.url})` : `Show "${name}" (${last.url})`}
+        >
+          <span className="text-[10px]">◐</span>
+          <span className="truncate max-w-[12rem]">{name}</span>
+        </button>
+        <button
+          type="button"
+          className="px-1.5 text-zinc-500 hover:text-red-300 leading-none opacity-60 hover:opacity-100 transition-opacity"
+          onClick={(e) => {
+            e.stopPropagation();
+            closeBrowserFully(sid, name);
+          }}
+          aria-label={`Close ${name}`}
+          title={`Close ${name}`}
+        >
+          ×
+        </button>
+      </div>
+    );
+  };
 
   // Snap back to the bottom whenever the active session changes — each tab
   // should open on its latest message, regardless of where the previous tab
@@ -1729,6 +1713,7 @@ export function ChatApp() {
   }, [active.messages.length]);
 
   const handleNewSession = () => {
+    setSelectedGroupId(null);
     setShowNewSession(true);
   };
 
@@ -1737,11 +1722,11 @@ export function ChatApp() {
     persistPrefs({ autoGroupSessions: next });
   };
 
-  const handleCreateSession = async (cwd: string, provider?: string) => {
+  const handleCreateSession = async (cwd: string, provider?: string, remoteId?: string | null) => {
     const c = clientRef.current;
     if (!c) return;
     try {
-      const session = await c.createSession(cwd, { provider });
+      const session = await c.createSession(cwd, { provider, remoteId });
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
@@ -1753,6 +1738,8 @@ export function ChatApp() {
   const handleSelectSession = async (id: string) => {
     const prevId = activeId;
     setActiveId(id);
+    // Clicking a session tab takes focus away from any group composer.
+    setSelectedGroupId(null);
     setVisibleMessageCount(200);
     historyIdxRef.current = -1;
     historyDraftRef.current = '';
@@ -1767,7 +1754,7 @@ export function ChatApp() {
     }
 
     const status = statuses[id];
-    if (session.status === 'stopped' && (!status || status === 'disconnected')) {
+    if (session.runtime_status === 'stopped' && (!status || status === 'disconnected')) {
       try {
         const updated = await c.resumeSession(id);
         setSessions(prev => prev.map(s => s.id === id ? updated : s));
@@ -1787,42 +1774,22 @@ export function ChatApp() {
     }
   };
 
-  const updateClosedIds = (fn: (prev: Set<string>) => Set<string>) => {
-    setClosedSessionIds(prev => {
-      const next = fn(prev);
-      closedIdsRef.current = next;
-      persistPrefs({ closedSessionIds: [...next] });
-      return next;
-    });
+  /** Locally flip a session's status in the in-memory list — used to give
+   *  the UI an immediate response while the PATCH request to the server
+   *  is in flight. The authoritative update arrives via the broadcast
+   *  session list right after. We also bump updated_at so the just-
+   *  archived session jumps to the top of the restore dropdown right
+   *  away instead of waiting for the server roundtrip. */
+  const setSessionStatusLocal = (id: string, status: 'open' | 'archived') => {
+    const now = Date.now();
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, status, updated_at: now } : s));
   };
 
-  const updateArchivedIds = (fn: (prev: Set<string>) => Set<string>) => {
-    setArchivedSessionIds(prev => {
-      const next = fn(prev);
-      archivedIdsRef.current = next;
-      persistPrefs({ archivedSessionIds: [...next] });
-      return next;
-    });
-  };
-
-  /** Move a closed session into the archived bucket. Triggered by the
-   *  archive icon next to each row in the "+" dropdown. The session
-   *  disappears from the dropdown but its history is kept and it can
-   *  still be permanently deleted from the future archived-sessions
-   *  management page. */
+  /** Hide a session from the tab bar (status=archived). Server persists
+   *  it; the broadcast session list flips our derived archived set. */
   const handleArchiveSession = (id: string) => {
-    updateClosedIds(prev => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-    updateArchivedIds(prev => {
-      if (prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
+    setSessionStatusLocal(id, 'archived');
+    clientRef.current?.archiveSession(id).catch(() => {});
   };
 
   const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
@@ -1833,9 +1800,10 @@ export function ChatApp() {
     subscribedRef.current.delete(id);
     clientRef.current?.stopSession(id).catch(() => {});
     setSessionStates(prev => { const next = { ...prev }; delete next[id]; return next; });
-    updateClosedIds(prev => new Set(prev).add(id));
+    setSessionStatusLocal(id, 'archived');
+    clientRef.current?.archiveSession(id).catch(() => {});
     if (activeId === id) {
-      const openSessions = sessions.filter(s => s.id !== id && !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id));
+      const openSessions = sessions.filter(s => s.id !== id && s.status === 'open');
       setActiveId(openSessions.length > 0 ? openSessions[0]!.id : null);
     }
   };
@@ -1862,13 +1830,11 @@ export function ChatApp() {
   const [restoreCommands, setRestoreCommands] = useState<string[]>([]);
 
   const handleReopenSession = (id: string) => {
-    updateClosedIds(prev => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
+    setSessionStatusLocal(id, 'open');
+    clientRef.current?.unarchiveSession(id).catch(() => {});
     setActiveId(id);
-    // Reconnect
+    // Reconnect — note: this does NOT auto-spawn the provider; the server
+    // boots it lazily when notifyActiveTab fires from the active-tab effect.
     const session = sessions.find(s => s.id === id);
     if (session && clientRef.current) {
       clientRef.current.subscribe(session.id);
@@ -1898,14 +1864,11 @@ export function ChatApp() {
     // Local cleanup so the active tab moves elsewhere if the deleted session
     // was the focused one. Mirrors closeTab() but for the destructive path.
     if (activeId === id) {
-      const remaining = sessions.filter(s => s.id !== id && !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id));
+      const remaining = sessions.filter(s => s.id !== id && s.status === 'open');
       setActiveId(remaining.length > 0 ? remaining[0]!.id : null);
     }
     setSessionStates(prev => { const next = { ...prev }; delete next[id]; return next; });
     subscribedRef.current.delete(id);
-    // Drop from local prefs maps
-    updateClosedIds(prev => { const n = new Set(prev); n.delete(id); return n; });
-    updateArchivedIds(prev => { const n = new Set(prev); n.delete(id); return n; });
     setTabOrder(prev => prev.filter(x => x !== id));
     setTabGroupMap(prev => {
       if (!prev[id]) return prev;
@@ -1959,14 +1922,9 @@ export function ChatApp() {
     subscribedRef.current.delete(targetId);
     setSessionStates(prev => { const next = { ...prev }; delete next[targetId]; return next; });
 
-    updateArchivedIds(prev => {
-      if (prev.has(targetId)) return prev;
-      const next = new Set(prev); next.add(targetId); return next;
-    });
-    updateClosedIds(prev => {
-      if (!prev.has(targetId)) return prev;
-      const next = new Set(prev); next.delete(targetId); return next;
-    });
+    // Archive the previous session server-side (history kept, hidden from tabs).
+    setSessionStatusLocal(targetId, 'archived');
+    c.archiveSession(targetId).catch(() => {});
 
     setTabOrder(prev => {
       const next = [...prev];
@@ -2743,21 +2701,23 @@ export function ChatApp() {
     return () => window.removeEventListener('keydown', handler);
   }, [activeId, activeSession?.permission_mode, requestPermissionMode]);
 
-  // Ordered sessions for tab bar — open = neither closed nor archived
+  // Ordered sessions for tab bar — anything with status === 'open'
   const orderedOpenSessions = useMemo(() => sessions
-    .filter(s => !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id))
+    .filter(s => s.status === 'open')
     .sort((a, b) => {
       const ai = tabOrder.indexOf(a.id);
       const bi = tabOrder.indexOf(b.id);
       return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
-    }), [sessions, closedSessionIds, archivedSessionIds, tabOrder]);
+    }), [sessions, tabOrder]);
 
-  // Sessions surfaced in the "+" dropdown's CLOSED section. Archived
-  // sessions are intentionally excluded — they live on the (future)
-  // archived-sessions management page and never appear here.
-  const closedSessions = useMemo(
-    () => sessions.filter(s => closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id)),
-    [sessions, closedSessionIds, archivedSessionIds],
+  // Sessions surfaced in the "+" dropdown's CLOSED section. Now backed by
+  // the archived status — the legacy three-state model collapsed into
+  // two, so "recently closed" and "archived" are the same list. The
+  // most-recent-first sort lives further down (depends on
+  // sessionLastMessageAt, which itself depends on sessionStates).
+  const archivedSessions = useMemo(
+    () => sessions.filter(s => s.status === 'archived'),
+    [sessions],
   );
   const sessionStreaming = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => {
     // "Busy" covers the agent generating a response AND any Bash tool call
@@ -2801,10 +2761,21 @@ export function ChatApp() {
     return out;
   }, [sessions, sessionStates]);
 
+  // Archived list shown in the TabBar's restore dropdown — sorted
+  // most-recent first. We trust the server-stamped `updated_at` (bumped
+  // on message/archive/rename) so a session you just closed jumps to
+  // the top even though its in-memory state was cleared.
+  const closedSessions = useMemo(
+    () => archivedSessions
+      .slice()
+      .sort((a, b) => (b.updated_at ?? b.created_at ?? 0) - (a.updated_at ?? a.created_at ?? 0)),
+    [archivedSessions],
+  );
+
   const handleReorder = (fromId: string, toId: string) => {
     setTabOrder(prev => {
       // Ensure all open session IDs are in the order
-      const openIds = sessions.filter(s => !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id)).map(s => s.id);
+      const openIds = sessions.filter(s => s.status === 'open').map(s => s.id);
       const order = prev.filter(id => openIds.includes(id));
       for (const id of openIds) { if (!order.includes(id)) order.push(id); }
       // Move fromId to toId's position
@@ -2892,7 +2863,7 @@ export function ChatApp() {
     { id: 'organize-tabs', label: 'Organize Tabs by Folder', section: 'Sessions', onRun: async () => {
       const c = clientRef.current;
       if (!c) return;
-      const openSessions = sessions.filter(s => !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id));
+      const openSessions = sessions.filter(s => s.status === 'open');
       // Resolve the main repo path for each session's cwd via git info
       const cwds = openSessions.map(s => getState(s.id).initInfo?.cwd || s.cwd || '/');
       const uniqueCwds = [...new Set(cwds)];
@@ -3676,30 +3647,84 @@ export function ChatApp() {
          *  (layout-mode pill) which opt out with `app-region: no-drag`. */}
         <div
           data-tauri-drag-region
-          className="fixed top-0 left-0 right-0 h-9 z-[9999] flex items-center bg-base border-b border-border select-none"
+          className={`fixed top-0 left-0 right-0 z-[9999] flex items-center select-none border-b ${
+            layoutMode === 'horizontal'
+              ? 'h-10 bg-[#131418] border-[#2a2b30]'
+              : 'h-9 bg-base border-border'
+          }`}
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
           {/* Reserve room for macOS traffic lights (close/min/max) */}
           <div className="w-20 shrink-0" />
 
-          {/* Center: drag area + absolutely-centered search bar */}
-          <div className="flex-1" />
-
-          <button
-            onClick={() => setShowPalette(true)}
-            title="Search sessions, files, commands (⌘P)"
-            className="group absolute left-1/2 -translate-x-1/2 h-6 w-[420px] max-w-[40vw] px-2.5 flex items-center gap-2 bg-surface hover:bg-surface-light border border-border hover:border-border-light rounded-md transition-colors"
+          {/* Session controls — collapse toggle (standard only) + new +
+              history. Live in the titlebar so the activity bar stays focused
+              on view switching, and so they're reachable in every mode. */}
+          <div
+            className="flex items-center gap-0.5 mr-2 shrink-0"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            <Search className="w-3.5 h-3.5 shrink-0 text-zinc-500 group-hover:text-zinc-400" />
-            <span className="flex-1 min-w-0 text-center text-[12px] font-medium text-zinc-200 truncate">
-              {activeSession?.name ?? 'No active session'}
-            </span>
-            <span className="flex items-center gap-0.5 shrink-0 text-[10px] text-zinc-500 group-hover:text-zinc-400 font-mono">
-              <kbd className="px-1 py-px bg-surface-lighter border border-border rounded">⌘</kbd>
-              <kbd className="px-1 py-px bg-surface-lighter border border-border rounded">P</kbd>
-            </span>
-          </button>
+            {layoutMode === 'standard' && (
+              <button
+                className={`w-7 h-6 flex items-center justify-center rounded-md transition-colors ${
+                  tabsCollapsed ? 'text-zinc-500 hover:text-zinc-200 hover:bg-surface-light' : 'text-zinc-200 bg-surface-light'
+                }`}
+                onClick={toggleTabsCollapsed}
+                title={tabsCollapsed ? 'Show sessions' : 'Hide sessions'}
+                aria-label={tabsCollapsed ? 'Show sessions sidebar' : 'Hide sessions sidebar'}
+              >
+                <PanelLeft className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <ActivityBarSessionActions
+              closedSessions={closedSessions}
+              onNew={handleNewSession}
+              onReopen={handleReopenSession}
+              onArchive={handleArchiveSession}
+            />
+          </div>
+
+          {/* Horizontal mode: session tab strip takes the middle.
+              Standard/Focus mode: centered "current session" pill opens
+              the command palette. */}
+          {layoutMode === 'horizontal' ? (
+            <SessionTabStrip
+              sessions={orderedOpenSessions}
+              activeSessionId={activeId}
+              sessionStatuses={statuses}
+              sessionStreaming={sessionStreaming}
+              sessionInterrupted={sessionInterrupted}
+              sessionTurnComplete={turnCompleteIds}
+              sessionHasPermission={sessionHasPermission}
+              tabGroups={tabGroups}
+              tabGroupMap={tabGroupMap}
+              expandedGroupIds={expandedGroupIds}
+              onSelect={handleSelectSession}
+              onClose={handleCloseTab}
+              onNew={handleNewSession}
+              onToggleGroup={handleToggleGroup}
+              onCloseGroup={handleRequestDeleteGroup}
+            />
+          ) : (
+            <>
+              <div className="flex-1" />
+              <button
+                onClick={() => setShowPalette(true)}
+                title="Search sessions, files, commands (⌘P)"
+                className="group absolute left-1/2 -translate-x-1/2 h-6 w-[420px] max-w-[40vw] px-2.5 flex items-center gap-2 bg-surface hover:bg-surface-light border border-border hover:border-border-light rounded-md transition-colors"
+                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              >
+                <Search className="w-3.5 h-3.5 shrink-0 text-zinc-500 group-hover:text-zinc-400" />
+                <span className="flex-1 min-w-0 text-center text-[12px] font-medium text-zinc-200 truncate">
+                  {activeSession?.name ?? 'No active session'}
+                </span>
+                <span className="flex items-center gap-0.5 shrink-0 text-[10px] text-zinc-500 group-hover:text-zinc-400 font-mono">
+                  <kbd className="px-1 py-px bg-surface-lighter border border-border rounded">⌘</kbd>
+                  <kbd className="px-1 py-px bg-surface-lighter border border-border rounded">P</kbd>
+                </span>
+              </button>
+            </>
+          )}
 
           {/* Right cluster: workspace actions (only in focus mode) + layout
               switcher. Both groups opt out of the drag region so clicks
@@ -3803,9 +3828,20 @@ export function ChatApp() {
                   ? 'bg-surface-lighter text-zinc-100 ring-1 ring-border-light'
                   : 'text-zinc-500 hover:text-zinc-300'
               }`}
-              title="Standard layout"
+              title="Standard layout (vertical tabs)"
             >
               <PanelsTopLeft className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => changeLayoutMode('horizontal')}
+              className={`flex items-center justify-center w-7 h-6 rounded-md transition-colors ${
+                layoutMode === 'horizontal'
+                  ? 'bg-surface-lighter text-zinc-100 ring-1 ring-border-light'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+              title="Horizontal tabs"
+            >
+              <PanelTop className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={() => changeLayoutMode('focus')}
@@ -3821,7 +3857,7 @@ export function ChatApp() {
           </div>
         </div>
         {layoutMode === 'focus' ? (
-          <div className="flex-1 flex min-h-0 min-w-0 pt-9">
+          <div className="flex-1 flex min-h-0 min-w-0 pt-9 relative">
             <ChatFocusLayout
               sessions={orderedOpenSessions}
               activeSessionId={activeId}
@@ -3829,6 +3865,12 @@ export function ChatApp() {
               onCloseSession={handleRemoveFromActiveWorkspace}
               renderComposer={renderComposer}
               renderBody={renderChatBody}
+              renderPaneHeaderExtras={(sid) => {
+                const s = getState(sid);
+                const entries = Object.entries(s.lastBrowsers);
+                if (entries.length === 0) return null;
+                return entries.map(([name, last]) => renderBrowserChip(sid, name, last));
+              }}
               workspaces={focusWorkspaces}
               setWorkspaces={setFocusWorkspaces}
               activeWorkspaceId={activeWorkspaceId}
@@ -3837,48 +3879,67 @@ export function ChatApp() {
               onRenameWorkspace={handleRenameWorkspace}
               onReorderWorkspaces={handleReorderWorkspaces}
             />
+            {/* Off-screen-but-measurable anchor that keeps the embedded
+                BrowserView attached (and its bounds fresh) while the panel
+                chrome is unmounted. Without it the webview's bounds would
+                go stale on layout switches and the page would jump on the
+                way back to standard layout. */}
+            {browserOpen && activeId && activeBrowser && active.activeBrowserName && (
+              <FocusBrowserAnchor
+                label={browserLabelFor(activeId, active.activeBrowserName)}
+                url={activeBrowser.url}
+                title={activeBrowser.title}
+                openSeq={activeBrowser.openSeq}
+              />
+            )}
           </div>
         ) : (
-        <div className="flex-1 flex min-h-0 min-w-0 pt-9">
-          <TabBar
-            sessions={orderedOpenSessions}
-            closedSessions={closedSessions}
-            activeSessionId={activeId}
-            sessionStatuses={statuses}
-            sessionStreaming={sessionStreaming}
-            sessionInterrupted={sessionInterrupted}
-            sessionTurnComplete={turnCompleteIds}
-            sessionHasPermission={sessionHasPermission}
-            sessionLastMessageAt={sessionLastMessageAt}
-            pinnedSessionIds={pinnedSessionIds}
-            onTogglePin={handleTogglePin}
-            onSelect={handleSelectSession}
-            onNew={handleNewSession}
-            onClose={handleCloseTab}
-            onReopen={handleReopenSession}
-            onRename={handleRenameSession}
-            onReorder={handleReorder}
-            tabGroups={tabGroups}
-            tabGroupMap={tabGroupMap}
-            expandedGroupIds={expandedGroupIds}
-            onCreateGroup={handleCreateGroup}
-            onGroupTabs={handleGroupTabs}
-            onAddToGroup={handleAddToGroup}
-            onUngroupTab={handleUngroupTab}
-            onToggleGroup={handleToggleGroup}
-            onRenameGroup={handleRenameGroup}
-            onChangeGroupColor={handleChangeGroupColor}
-            onChangeGroupIcon={handleChangeGroupIcon}
-            onArchiveSession={handleArchiveSession}
-            onRequestDelete={handleRequestDeleteSession}
-            onRequestDeleteGroup={handleRequestDeleteGroup}
-            onNewSessionInGroup={handleNewSessionInGroup}
-            onNewSessionInWorktreeForGroup={handleNewSessionInWorktreeForGroup}
-            collapsed={tabsCollapsed}
-            onToggleCollapsed={toggleTabsCollapsed}
-          />
+        <div className={`flex-1 flex min-h-0 min-w-0 ${layoutMode === 'horizontal' ? 'pt-10' : 'pt-9'}`}>
+          {/* Standard layout keeps the vertical TabBar sidebar; horizontal
+              layout drops it because the SessionTabStrip in the titlebar
+              handles session navigation. */}
+          {layoutMode === 'standard' && (
+            <TabBar
+              sessions={orderedOpenSessions}
+              closedSessions={closedSessions}
+              activeSessionId={activeId}
+              sessionStatuses={statuses}
+              sessionStreaming={sessionStreaming}
+              sessionInterrupted={sessionInterrupted}
+              sessionTurnComplete={turnCompleteIds}
+              sessionHasPermission={sessionHasPermission}
+              sessionLastMessageAt={sessionLastMessageAt}
+              pinnedSessionIds={pinnedSessionIds}
+              onTogglePin={handleTogglePin}
+              onSelect={handleSelectSession}
+              onNew={handleNewSession}
+              onClose={handleCloseTab}
+              onReopen={handleReopenSession}
+              onRename={handleRenameSession}
+              onReorder={handleReorder}
+              tabGroups={tabGroups}
+              tabGroupMap={tabGroupMap}
+              expandedGroupIds={expandedGroupIds}
+              onCreateGroup={handleCreateGroup}
+              onGroupTabs={handleGroupTabs}
+              onAddToGroup={handleAddToGroup}
+              onUngroupTab={handleUngroupTab}
+              onToggleGroup={handleToggleGroup}
+              onSelectGroup={handleSelectGroup}
+              onRenameGroup={handleRenameGroup}
+              onChangeGroupColor={handleChangeGroupColor}
+              onChangeGroupIcon={handleChangeGroupIcon}
+              onArchiveSession={handleArchiveSession}
+              onRequestDelete={handleRequestDeleteSession}
+              onRequestDeleteGroup={handleRequestDeleteGroup}
+              onNewSessionInGroup={handleNewSessionInGroup}
+              onNewSessionInWorktreeForGroup={handleNewSessionInWorktreeForGroup}
+              collapsed={tabsCollapsed}
+              onToggleCollapsed={toggleTabsCollapsed}
+            />
+          )}
           {/* Activity Bar */}
-          <div className="w-10 bg-[#161616] border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
+          <div className="w-10 bg-[#131418] border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
             <button
               className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'explorer' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
               onClick={() => { if (sidebarView === 'explorer' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('explorer'); setExplorerCollapsed(false); } }}
@@ -3975,17 +4036,19 @@ export function ChatApp() {
 
           <div className="flex-1 flex flex-col min-w-0">
             {!activeId ? (
-              <WelcomeScreen
-                sessions={sessions}
-                closedSessionIds={closedSessionIds}
-                archivedSessionIds={archivedSessionIds}
-                sessionLastMessageAt={sessionLastMessageAt}
-                onNewSession={handleNewSession}
-                onReopenSession={handleReopenSession}
-                onOpenCommandPalette={() => setShowPalette(true)}
-                onOpenSettings={() => { setSidebarView('settings'); setExplorerCollapsed(false); }}
-                onOpenSearch={() => { setSidebarView('search'); setExplorerCollapsed(false); }}
-                onToggleExplorer={() => setExplorerCollapsed(c => !c)}
+              <GroupComposer
+                groupName=""
+                groupCwd={
+                  // Most recent session's cwd is a sensible default; the
+                  // composer's folder picker still surfaces all recent dirs.
+                  [...sessions]
+                    .sort((a, b) => (sessionLastMessageAt[b.id] || 0) - (sessionLastMessageAt[a.id] || 0))
+                    .find(s => s.cwd)?.cwd || ''
+                }
+                client={client}
+                opencodeInfo={opencodeInfo}
+                onSpawn={handleSpawnHome}
+                onBrowseFolder={() => setShowNewSession(true)}
               />
             ) : (
               <>
@@ -4140,60 +4203,7 @@ export function ChatApp() {
                     </button>
                   )}
 
-                  {Object.entries(active.lastBrowsers).map(([name, last]) => {
-                    const isOpenAndActive = active.activeBrowserName === name && !!active.browsers[name];
-                    return (
-                      <button
-                        key={`hdr-browser-${name}`}
-                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
-                          isOpenAndActive
-                            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30 hover:bg-sky-500/25'
-                            : 'bg-surface-light text-zinc-400 border-border hover:text-sky-300 hover:border-sky-500/30'
-                        }`}
-                        onClick={() => {
-                          if (!activeId) return;
-                          updateLocalState(activeId, s => {
-                            // Already active → hide the panel (keep state).
-                            if (s.activeBrowserName === name && s.browsers[name]) {
-                              return { ...s, activeBrowserName: null, editorFullWidth: false };
-                            }
-                            // Browser still alive but inactive → just switch.
-                            if (s.browsers[name]) {
-                              return {
-                                ...s,
-                                activeBrowserName: name,
-                                openFile: null,
-                                openMockup: null,
-                                openTerminalId: null,
-                                diffView: null,
-                                editorDirty: false,
-                              };
-                            }
-                            // Browser previously closed → reopen from lastBrowsers.
-                            const remembered = s.lastBrowsers[name];
-                            if (!remembered) return s;
-                            return {
-                              ...s,
-                              browsers: {
-                                ...s.browsers,
-                                [name]: { url: remembered.url, title: remembered.title, openSeq: Date.now() },
-                              },
-                              activeBrowserName: name,
-                              openFile: null,
-                              openMockup: null,
-                              openTerminalId: null,
-                              diffView: null,
-                              editorDirty: false,
-                            };
-                          });
-                        }}
-                        title={isOpenAndActive ? `Hide "${name}" (${last.url})` : `Show "${name}" (${last.url})`}
-                      >
-                        <span className="text-[10px]">◐</span>
-                        <span className="truncate max-w-[12rem]">{name}</span>
-                      </button>
-                    );
-                  })}
+                  {activeId && Object.entries(active.lastBrowsers).map(([name, last]) => renderBrowserChip(activeId, name, last))}
 
                   <span className="flex-1" />
                   {active.initInfo?.cwd && (
@@ -4210,9 +4220,28 @@ export function ChatApp() {
                   style={hasRightPanel && !editorFullWidth ? { width: `${chatSplitPct}%` } : undefined}
                 >
                   <div className="flex flex-1 min-h-0">
-                  {/* Messages — rendered by renderChatBody so the same view
-                      mounts per pane in chat-focus mode. */}
-                  {activeId && renderChatBody(activeId)}
+                  {/* When a group is focused (sidebar click) but no session
+                      inside it is selected, render the inline new-session
+                      composer instead of the chat body. Otherwise mount the
+                      active session's chat (same path used by focus mode). */}
+                  {selectedGroupId && tabGroups[selectedGroupId] ? (
+                    <GroupComposer
+                      groupName={tabGroups[selectedGroupId]!.name}
+                      groupCwd={
+                        tabGroups[selectedGroupId]!.cwd
+                          || sessions.find(s => tabGroupMap[s.id] === selectedGroupId)?.cwd
+                          || ''
+                      }
+                      client={client}
+                      opencodeInfo={opencodeInfo}
+                      onSpawn={(cwd, provider, prompt, model, permissionMode) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode)
+                      }
+                      onBrowseFolder={() => setShowNewSession(true)}
+                    />
+                  ) : (
+                    activeId && renderChatBody(activeId)
+                  )}
 
                   {/* Task panel */}
                   {todos.length > 0 && (
@@ -4402,8 +4431,9 @@ export function ChatApp() {
                     </button>
                   )}
 
-                  {/* Input */}
-                  {composerNode}
+                  {/* Input — hidden while the inline GroupComposer is mounted,
+                      since the composer renders its own send affordance. */}
+                  {!selectedGroupId && composerNode}
                 </div>
 
                 {/* Resize handle between chat and right panel */}
@@ -4890,7 +4920,7 @@ export function ChatApp() {
         )}
 
         {/* Status bar */}
-        <div className="flex items-center justify-between px-3 h-[22px] bg-[#181818] border-t border-border text-[11px] shrink-0 select-none">
+        <div className="flex items-center justify-between px-3 h-[22px] bg-[#131418] border-t border-border text-[11px] shrink-0 select-none">
           <div className="flex items-center gap-3">
             {gitBranch && (
               <button ref={branchBtnRef} className="flex items-center gap-1 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer z-10" onClick={(e) => { e.stopPropagation(); openBranchMenu(); }}>
@@ -5333,5 +5363,36 @@ export function ChatApp() {
         )}
       </div>
     </Providers>
+  );
+}
+
+/** Keeps the embedded BrowserView alive (and bounds-pinned) while the
+ *  chat-focus layout is active and there's no `BrowserPanel` chrome to host
+ *  it. The anchor div fills the focus content area so when the user flips
+ *  back to standard layout — at which point the panel chrome mounts and
+ *  takes over — the webview snaps cleanly into the right pane instead of
+ *  being stuck at stale or zero bounds. The webview itself is hidden here
+ *  (`visible: false`) so it doesn't render over the focus grid. */
+function FocusBrowserAnchor(props: {
+  label: string;
+  url: string;
+  title: string;
+  openSeq: number;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  useBrowserPreviewBounds({
+    hostRef,
+    label: props.label,
+    url: props.url,
+    title: props.title,
+    openSeq: props.openSeq,
+    visible: false,
+  });
+  return (
+    <div
+      ref={hostRef}
+      aria-hidden
+      className="absolute inset-0 pointer-events-none invisible"
+    />
   );
 }

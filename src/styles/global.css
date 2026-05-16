@@ -8,16 +8,36 @@
 @import "@xterm/xterm/css/xterm.css";
 
 @theme {
-  --color-base: #1b1b1b;
-  --color-surface: #222222;
-  --color-surface-light: #2a2a2a;
-  --color-surface-lighter: #333333;
-  --color-border: #2e2e2e;
-  --color-border-light: #3a3a3a;
+  /* Palette aligned with the SessionTabStrip / titlebar mockup the design
+   *  was approved against. Tailwind's `bg-base`, `bg-surface*`, `border-*`
+   *  classes throughout the app pick these up automatically. */
+  --color-base: #0f1012;
+  --color-surface: #17181b;
+  --color-surface-light: #1c1d21;
+  --color-surface-lighter: #25262d;
+  --color-border: #2a2b30;
+  --color-border-light: #3a3b40;
 }
 
 html {
   color-scheme: dark;
+}
+
+@keyframes tabDotPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* Hide the scrollbar on the session tab strip — overflow is communicated
+ * via the chevron buttons that flank the strip. */
+.session-tab-strip-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.session-tab-strip-scroll::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
 }
 
 body {

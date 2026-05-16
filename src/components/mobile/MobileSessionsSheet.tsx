@@ -40,12 +40,6 @@ interface Props {
   tabOrder: string[];
   /** Sessions pinned to the top of their group (shared with desktop). */
   pinnedSessionIds?: Set<string>;
-  /** Sessions hidden from the open list (still in registry). */
-  closedSessionIds: Set<string>;
-  /** Sessions hidden from BOTH the open list and the closed-sessions
-   *  section. They live in the (future) archived-sessions management
-   *  page only. */
-  archivedSessionIds: Set<string>;
   /** Whether the opencode binary is available on this host (cached at
    *  app boot). Forwarded to MobileNewSessionModal so the OpenCode
    *  provider option only appears when usable. */
@@ -85,7 +79,7 @@ function getDotClass(connStatus: string, isStreaming: boolean, turnComplete: boo
 export function MobileSessionsSheet({
   open, onClose, client, sessions, activeId, onSelect, onCloseSession, onReopenSession, onArchiveSession,
   statuses, streaming, interrupted, hasPermission, turnComplete,
-  tabGroups, tabGroupMap, tabOrder, pinnedSessionIds, closedSessionIds, archivedSessionIds,
+  tabGroups, tabGroupMap, tabOrder, pinnedSessionIds,
   opencodeAvailable,
   pendingNewSessionProvider, onConsumeNewSessionRequest,
 }: Props) {
@@ -152,7 +146,7 @@ export function MobileSessionsSheet({
   // Same ordering rules as the desktop ChatApp: filter out closed sessions
   // and sort by persisted tabOrder (sessions not in the order go to the end).
   const openSessions = useMemo(() => {
-    const filtered = sessions.filter((s) => !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id));
+    const filtered = sessions.filter((s) => s.status === 'open');
     return [...filtered].sort((a, b) => {
       const ai = tabOrder.indexOf(a.id);
       const bi = tabOrder.indexOf(b.id);
@@ -161,11 +155,11 @@ export function MobileSessionsSheet({
       if (bi === -1) return -1;
       return ai - bi;
     });
-  }, [sessions, closedSessionIds, archivedSessionIds, tabOrder]);
+  }, [sessions, tabOrder]);
 
   const closedSessions = useMemo(
-    () => sessions.filter((s) => closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id)),
-    [sessions, closedSessionIds, archivedSessionIds],
+    () => sessions.filter((s) => s.status === 'archived'),
+    [sessions],
   );
 
   // Build the same render structure as TabBar: walk the ordered list, emit a
@@ -211,7 +205,7 @@ export function MobileSessionsSheet({
   const renderTab = (s: SessionInfo, opts?: { indented?: boolean }) => {
     const isActive = s.id === activeId;
     const status = (statuses && statuses[s.id]) ||
-      (s.ready ? 'connected' : s.status === 'starting' ? 'starting' : 'disconnected');
+      (s.ready ? 'connected' : s.runtime_status === 'starting' ? 'starting' : 'disconnected');
     const isStreaming = !!streaming?.[s.id];
     const tc = !!turnComplete?.has(s.id);
     const wasInterrupted = !!interrupted?.[s.id];

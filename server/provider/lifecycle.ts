@@ -56,7 +56,7 @@ export function startProviderSession(session: Session, port: number, resumeSessi
     mcpServers,
   };
 
-  session.status = 'starting';
+  session.runtimeStatus = 'starting';
   session.ready = false;
   session.providerSession = adapter.spawn(opts, createBridgeEvents(session, bridgeDeps));
 
@@ -66,7 +66,7 @@ export function startProviderSession(session: Session, port: number, resumeSessi
   // The process is up and able to accept writes the moment spawn() returns, so
   // flip to connected immediately. `onInit` will still populate initInfo when
   // the first real turn starts.
-  session.status = 'running';
+  session.runtimeStatus = 'running';
   session.ready = true;
   bridgeDeps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'connected' });
   bridgeDeps.broadcastSessionList();

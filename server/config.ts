@@ -68,7 +68,12 @@ const findClaude = (): string => {
 };
 export const CLAUDE_BIN = findClaude();
 export const CWD = process.env.CLAUDE_CWD || process.cwd();
-export const SESSIONS_FILE = join(homedir(), '.claude', 'ui-sessions.json');
+/** Root directory for all Codiby app data. We keep `~/.claude` reserved
+ *  for the Claude CLI's own binary + settings (which our adapter still
+ *  reads/writes — see ensure-mcp-config and mcp-config) and migrate
+ *  everything we own to `~/.codiby/` on startup. */
+export const CODIBY_DIR = join(homedir(), '.codiby');
+export const SESSIONS_FILE = join(CODIBY_DIR, 'ui-sessions.json');
 
 export const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'Read', 'Glob', 'Grep', 'NotebookEdit']);
 export const PLAN_READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep']);
@@ -101,15 +106,15 @@ export const corsHeaders = {
  * File holding the bearer token used to authenticate mobile clients.
  * Generated on first server start; persisted with mode 0600.
  */
-export const MOBILE_TOKEN_FILE = join(homedir(), '.claude', 'ui-mobile-token');
+export const MOBILE_TOKEN_FILE = join(CODIBY_DIR, 'ui-mobile-token');
 
 // ---------------------------------------------------------------------------
-// TLS — auto-enabled when cert + key files exist under ~/.claude/tls/.
+// TLS — auto-enabled when cert + key files exist under ~/.codiby/tls/.
 // The recommended way to generate them is mkcert (https://mkcert.dev):
 //
 //   brew install mkcert nss
 //   mkcert -install                               # installs local root CA
-//   mkdir -p ~/.claude/tls && cd ~/.claude/tls
+//   mkdir -p ~/.codiby/tls && cd ~/.codiby/tls
 //   mkcert <lan-ip> localhost 127.0.0.1 <mac>.local
 //   mv <lan-ip>+3.pem cert.pem && mv <lan-ip>+3-key.pem key.pem
 //
@@ -118,8 +123,8 @@ export const MOBILE_TOKEN_FILE = join(homedir(), '.claude', 'ui-mobile-token');
 // AirDrop the rootCA.pem to your iPhone or copy to Android, install as
 // a profile, and mark it as trusted.
 // ---------------------------------------------------------------------------
-export const TLS_CERT_FILE = process.env.CLAUDE_UI_TLS_CERT || join(homedir(), '.claude', 'tls', 'cert.pem');
-export const TLS_KEY_FILE  = process.env.CLAUDE_UI_TLS_KEY  || join(homedir(), '.claude', 'tls', 'key.pem');
+export const TLS_CERT_FILE = process.env.CLAUDE_UI_TLS_CERT || join(CODIBY_DIR, 'tls', 'cert.pem');
+export const TLS_KEY_FILE  = process.env.CLAUDE_UI_TLS_KEY  || join(CODIBY_DIR, 'tls', 'key.pem');
 
 /** Returns `{ cert, key }` when both TLS files are readable, or null. */
 export function resolveTls(): { cert: string; key: string } | null {
@@ -154,7 +159,7 @@ export function loadOrCreateMobileToken(): string {
   // Generate + write
   const fresh = randomBytes(32).toString('hex');
   try {
-    mkdirSync(join(homedir(), '.claude'), { recursive: true });
+    mkdirSync(CODIBY_DIR, { recursive: true });
     writeFileSync(MOBILE_TOKEN_FILE, fresh, { encoding: 'utf-8', mode: 0o600 });
     try { chmodSync(MOBILE_TOKEN_FILE, 0o600); } catch {}
   } catch {}

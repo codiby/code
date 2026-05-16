@@ -1,23 +1,31 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Button,
-  TextField, Input,
-  Checkbox, CheckboxControl, CheckboxIndicator, CheckboxContent,
   Select, SelectTrigger, SelectValue, SelectPopover,
-  Autocomplete, AutocompleteTrigger, AutocompleteValue, AutocompleteIndicator,
-  AutocompletePopover, AutocompleteFilter,
-  SearchField, SearchFieldInput,
-  ToggleButtonGroup, ToggleButton,
   ListBox, ListBoxItem,
 } from '@heroui/react';
 import type { ClaudeClient } from '../lib/claude-client';
+import { resolveServerUrl } from '../lib/claude-client';
+import { WorktreeCreateForm } from './WorktreeCreateForm';
+
+interface RemoteInfo {
+  id: string;
+  name: string;
+  alias: string;
+  color: string;
+  status?: 'idle' | 'connecting' | 'online' | 'reconnecting' | 'offline';
+}
+
+const REMOTE_DOT: Record<string, string> = {
+  blue: 'bg-blue-400', green: 'bg-green-400', amber: 'bg-amber-400',
+  violet: 'bg-violet-400', red: 'bg-red-400', pink: 'bg-pink-400',
+};
+
+const TARGET_KEY = 'claude-ui-last-target';
 
 const RECENT_KEY = 'claude-ui-recent-dirs';
 const PROVIDER_KEY = 'claude-ui-last-provider';
 const MAX_RECENT = 10;
-const PM_OPTIONS = ['bun', 'npm', 'yarn', 'pnpm'] as const;
-type PackageManager = typeof PM_OPTIONS[number];
-
 const PROVIDER_OPTIONS = [
   { key: 'claudeAgent', label: 'Claude' },
   { key: 'codex', label: 'Codex' },
@@ -55,10 +63,54 @@ interface Props {
   client: ClaudeClient | null;
   opencodeAvailable?: boolean;
   onClose: () => void;
-  onCreate: (cwd: string, provider: string) => void;
+  onCreate: (cwd: string, provider: string, remoteId?: string | null) => void;
 }
 
 export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, onCreate }: Props) {
+  // -------------------------------------------------------------------------
+  // Target (local vs one of the configured remotes). The header shows discrete
+  // tabs; default is whichever target was used last (per machine, localStorage)
+  // falling back to 'local'.
+  // -------------------------------------------------------------------------
+  const [remotesList, setRemotesList] = useState<RemoteInfo[]>([]);
+  const [target, setTarget] = useState<string>(() => localStorage.getItem(TARGET_KEY) || 'local');
+  const [serverUrl, setServerUrl] = useState<string | null>(null);
+
+  // Resolve the server URL once and load remotes whenever the modal opens.
+  useEffect(() => {
+    let cancelled = false;
+    resolveServerUrl().then(u => { if (!cancelled) setServerUrl(u); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || !serverUrl) return;
+    (async () => {
+      try {
+        const res = await fetch(`${serverUrl}/remotes`);
+        if (res.ok) setRemotesList(await res.json());
+      } catch {}
+    })();
+  }, [isOpen, serverUrl]);
+
+  // If the saved target points to a remote that no longer exists, fall back
+  // to 'local' on open.
+  useEffect(() => {
+    if (target === 'local') return;
+    if (remotesList.length === 0) return;
+    if (!remotesList.some(r => r.id === target)) setTarget('local');
+  }, [remotesList, target]);
+
+  const isRemote = target !== 'local';
+
+  // Wraps `?remoteId=…` onto any local server URL when the target is a remote.
+  const withTarget = useCallback((path: string): string => {
+    if (!serverUrl) return path;
+    if (target === 'local') return `${serverUrl}${path}`;
+    const sep = path.includes('?') ? '&' : '?';
+    return `${serverUrl}${path}${sep}remoteId=${encodeURIComponent(target)}`;
+  }, [serverUrl, target]);
+
   const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
   const [cwd, setCwd] = useState('/');
   const [folders, setFolders] = useState<string[]>([]);
@@ -68,113 +120,73 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
 
   const [showWorktree, setShowWorktree] = useState(false);
-  const [worktreeBranch, setWorktreeBranch] = useState('');
-  const [creatingWt, setCreatingWt] = useState(false);
-  const [copyEnv, setCopyEnv] = useState(true);
-  const [depsMode, setDepsMode] = useState<'install' | 'copy' | 'link' | 'none'>('link');
-  const [packageManager, setPackageManager] = useState<PackageManager>('npm');
-  const [sourceBranch, setSourceBranch] = useState('');
-  const [pullSource, setPullSource] = useState(true);
-  const [branchesInfo, setBranchesInfo] = useState<{ current: string; local: string[]; remote: string[] } | null>(null);
-
-  const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
-  const [consoleStatus, setConsoleStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
-  const consoleRef = useRef<HTMLDivElement>(null);
 
   const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider(availableProviders));
 
   const loadDir = useCallback(async (path: string) => {
-    if (!client) return;
     setLoading(true);
-    const dirs = await client.listDirs(path.endsWith('/') ? path : path + '/');
-    setFolders(dirs);
-    setLoading(false);
-  }, [client]);
+    try {
+      if (!isRemote && client) {
+        const dirs = await client.listDirs(path.endsWith('/') ? path : path + '/');
+        setFolders(dirs);
+      } else {
+        const p = path.endsWith('/') ? path : path + '/';
+        const res = await fetch(withTarget(`/ls?prefix=${encodeURIComponent(p)}`));
+        if (res.ok) {
+          const data = await res.json();
+          setFolders(Array.isArray(data) ? data : (data.dirs || []));
+        } else {
+          setFolders([]);
+        }
+      }
+    } catch {
+      setFolders([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [client, isRemote, withTarget]);
 
   const checkGit = useCallback(async (path: string) => {
-    if (!client || !path) { setGitInfo(null); return; }
+    if (!path) { setGitInfo(null); return; }
     try {
-      const info = await client.getGitInfo(path);
-      setGitInfo(info);
-      if (info.package_manager && PM_OPTIONS.includes(info.package_manager as PackageManager)) {
-        setPackageManager(info.package_manager as PackageManager);
+      let info: GitInfo;
+      if (!isRemote && client) {
+        info = await client.getGitInfo(path);
+      } else {
+        const res = await fetch(withTarget(`/git/info?cwd=${encodeURIComponent(path)}`));
+        if (!res.ok) { setGitInfo(null); return; }
+        info = await res.json();
       }
-      if (info.has_env !== undefined) setCopyEnv(info.has_env);
+      setGitInfo(info);
     } catch { setGitInfo(null); }
-  }, [client]);
+  }, [client, isRemote, withTarget]);
+
+  const fetchUserHome = useCallback(async (): Promise<string> => {
+    try {
+      if (!isRemote && client) return await client.getUserHome();
+      const res = await fetch(withTarget('/user-home'));
+      if (res.ok) {
+        const data = await res.json();
+        return data.home || '/';
+      }
+    } catch {}
+    return '/';
+  }, [client, isRemote, withTarget]);
 
   useEffect(() => {
     if (!isOpen) return;
     setRecentDirs(getRecentDirs());
     setShowWorktree(false);
-    setWorktreeBranch('');
-    setCopyEnv(true);
-    setDepsMode('link');
-    setPullSource(true);
-    setSourceBranch('');
-    setBranchesInfo(null);
-    setConsoleLogs([]);
-    setConsoleStatus('idle');
     let cancelled = false;
     (async () => {
-      const home = client ? await client.getUserHome() : '/';
+      const home = await fetchUserHome();
       if (cancelled) return;
       setCwd(home);
       loadDir(home);
       checkGit(home);
     })();
     return () => { cancelled = true; };
-  }, [isOpen, loadDir, checkGit, client]);
-
-  // Load source-branch options whenever the active git repo changes, and
-  // default to the current branch so the common case ("branch off whatever
-  // I'm on") is zero-click.
-  useEffect(() => {
-    const top = gitInfo?.top_level;
-    if (!isOpen || !client || !gitInfo?.is_git || !top) {
-      setBranchesInfo(null);
-      setSourceBranch('');
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const info = await client.listBranches(top);
-        if (cancelled) return;
-        setBranchesInfo(info);
-        setSourceBranch(info.current || info.local[0] || '');
-      } catch {
-        if (!cancelled) setBranchesInfo({ current: '', local: [], remote: [] });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [isOpen, client, gitInfo?.is_git, gitInfo?.top_level]);
-
-  // Branches the source-picker offers: union of local + remote-only,
-  // deduped, with current / main / develop pinned to the top.
-  const availableBranches = useMemo(() => {
-    if (!branchesInfo) return [] as string[];
-    const seen = new Set<string>();
-    const all: string[] = [];
-    for (const b of [...branchesInfo.local, ...branchesInfo.remote]) {
-      if (!seen.has(b)) { seen.add(b); all.push(b); }
-    }
-    const priority = (b: string) => {
-      if (b === branchesInfo.current) return 0;
-      if (b === 'main' || b === 'master') return 1;
-      if (b === 'develop' || b === 'dev') return 2;
-      return 3;
-    };
-    all.sort((a, b) => {
-      const d = priority(a) - priority(b);
-      return d !== 0 ? d : a.localeCompare(b);
-    });
-    return all;
-  }, [branchesInfo]);
-
-  useEffect(() => {
-    if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
-  }, [consoleLogs]);
+  }, [isOpen, target, fetchUserHome, loadDir, checkGit]);
 
   const navigate = (path: string) => {
     setCwd(path);
@@ -187,68 +199,67 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
   const handleCreate = () => {
     addRecentDir(cwd);
     localStorage.setItem(PROVIDER_KEY, provider);
-    onCreate(cwd, provider);
+    localStorage.setItem(TARGET_KEY, target);
+    onCreate(cwd, provider, isRemote ? target : null);
     onClose();
   };
 
-  const handleCreateWorktree = () => {
-    if (!client || !gitInfo?.top_level || !worktreeBranch.trim()) return;
-    setCreatingWt(true);
-    setConsoleLogs([]);
-    setConsoleStatus('running');
-
-    client.createWorktree(
-      gitInfo.top_level,
-      worktreeBranch.trim(),
-      {
-        copy_env: copyEnv,
-        install_deps: depsMode === 'install',
-        copy_node_modules: depsMode === 'copy',
-        link_node_modules: depsMode === 'link',
-        package_manager: packageManager,
-        source_branch: sourceBranch.trim() || undefined,
-        pull_source: !!sourceBranch.trim() && pullSource,
-      },
-      {
-        onLog: (line) => setConsoleLogs(prev => [...prev, line]),
-        onDone: (result) => {
-          setConsoleLogs(prev => [...prev, '', `Done. Worktree ready at ${result.path}`]);
-          setConsoleStatus('done');
-          setCreatingWt(false);
-          setCwd(result.path);
-          addRecentDir(result.path);
-          loadDir(result.path);
-          checkGit(result.path);
-        },
-        onError: (err) => {
-          setConsoleLogs(prev => [...prev, `ERROR: ${err}`]);
-          setConsoleStatus('error');
-          setCreatingWt(false);
-        },
-      },
-    );
+  /** Bubble the freshly-created worktree path back into the folder browser
+   *  so the user lands on it and "Open here" creates a session there. */
+  const handleWorktreeCreated = (path: string) => {
+    setCwd(path);
+    addRecentDir(path);
+    loadDir(path);
+    checkGit(path);
   };
 
   if (!isOpen) return null;
 
-  const showConsole = showWorktree && consoleStatus !== 'idle';
   const hasWorktrees = gitInfo?.is_git && gitInfo.worktrees && gitInfo.worktrees.length > 0;
-  const showRightPanel = hasWorktrees || showConsole;
+  const showRightPanel = hasWorktrees || showWorktree;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={(e) => { if (e.target === e.currentTarget && !creatingWt) onClose(); }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
         className="bg-surface border border-border-light rounded-xl shadow-2xl flex flex-col overflow-hidden"
         style={{ width: 960, height: '80vh' }}
       >
         {/* Header */}
-        <div className="px-5 py-3 border-b border-border flex items-center justify-between shrink-0">
-          <h2 className="text-sm font-semibold text-zinc-100">New Session</h2>
-          {!creatingWt && (
-            <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close">
-              <span className="text-lg leading-none">&times;</span>
-            </Button>
-          )}
+        <div className="px-5 py-3 border-b border-border flex items-center gap-3 shrink-0">
+          <h2 className="text-sm font-semibold text-zinc-100 shrink-0">New Session</h2>
+          {/* Target tabs — choose where this session will run */}
+          <div className="flex items-center gap-1 overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setTarget('local')}
+              className={`text-[11px] uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
+                target === 'local'
+                  ? 'text-zinc-100 bg-zinc-700'
+                  : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
+              }`}
+            >
+              Local
+            </button>
+            {remotesList.map(r => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => setTarget(r.id)}
+                className={`text-[11px] uppercase tracking-wider px-2 py-1 rounded-md transition-colors flex items-center gap-1.5 ${
+                  target === r.id
+                    ? 'text-zinc-100 bg-zinc-700'
+                    : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
+                }`}
+                title={`${r.alias} · ${r.status ?? 'idle'}`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${REMOTE_DOT[r.color] || 'bg-zinc-500'}`} />
+                {r.name}
+              </button>
+            ))}
+          </div>
+          <Button isIconOnly size="sm" variant="ghost" onPress={onClose} aria-label="Close" className="ml-auto">
+            <span className="text-lg leading-none">&times;</span>
+          </Button>
         </div>
 
         {/* Body */}
@@ -362,152 +373,34 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                 </div>
               )}
 
-              {/* Create worktree form */}
-              {gitInfo?.is_git && showWorktree && (
-                <div className="px-3 py-2 border-b border-border space-y-2 shrink-0">
-                  <div className="flex gap-2">
-                    <TextField value={worktreeBranch} onChange={setWorktreeBranch} className="flex-1">
-                      <Input placeholder="new-branch-name" />
-                    </TextField>
-                    <Button size="sm" isDisabled={!worktreeBranch.trim() || creatingWt} onPress={handleCreateWorktree}>
-                      {creatingWt ? '...' : 'Create'}
-                    </Button>
-                  </div>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <span className="text-xs text-zinc-600">Source:</span>
-                    {branchesInfo && availableBranches.length > 0 ? (
-                      <Autocomplete aria-label="Source branch" selectedKey={sourceBranch}
-                        onSelectionChange={(key) => setSourceBranch(key as string)}
-                        isDisabled={creatingWt}>
-                        <AutocompleteTrigger className="h-6 text-xs w-44">
-                          <AutocompleteValue className="font-mono truncate" />
-                          <AutocompleteIndicator />
-                        </AutocompleteTrigger>
-                        <AutocompletePopover>
-                          <AutocompleteFilter filter={(textValue, inputValue) => textValue.toLowerCase().includes(inputValue.toLowerCase())}>
-                            <SearchField aria-label="Filter branches" autoFocus>
-                              <SearchFieldInput placeholder="Search branches…" className="font-mono text-xs text-zinc-100" />
-                            </SearchField>
-                            <ListBox>
-                              {availableBranches.map(b => (
-                                <ListBoxItem key={b} id={b} textValue={b}>
-                                  <span className="text-sm font-mono">{b}</span>
-                                  {b === branchesInfo.current && <span className="text-xs text-zinc-500 ml-1">(current)</span>}
-                                </ListBoxItem>
-                              ))}
-                            </ListBox>
-                          </AutocompleteFilter>
-                        </AutocompletePopover>
-                      </Autocomplete>
-                    ) : (
-                      <span className="text-xs text-zinc-600 font-mono">{branchesInfo ? 'HEAD' : 'loading…'}</span>
-                    )}
-                    <Checkbox isSelected={pullSource} onChange={setPullSource} isDisabled={creatingWt || !sourceBranch}>
-                      <CheckboxControl><CheckboxIndicator /></CheckboxControl>
-                      <CheckboxContent>
-                        <span className="text-xs text-zinc-300">
-                          Pull <code className="font-mono text-zinc-400">origin/{sourceBranch || '…'}</code> first
-                        </span>
-                      </CheckboxContent>
-                    </Checkbox>
-                  </div>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <Checkbox isSelected={copyEnv} onChange={setCopyEnv} isDisabled={!gitInfo.has_env}>
-                      <CheckboxControl><CheckboxIndicator /></CheckboxControl>
-                      <CheckboxContent>
-                        <span className="text-xs text-zinc-300">.env{!gitInfo.has_env && <span className="text-zinc-600"> (none)</span>}</span>
-                      </CheckboxContent>
-                    </Checkbox>
-                    <span className="text-xs text-zinc-600">node_modules:</span>
-                    <ToggleButtonGroup
-                      aria-label="node_modules strategy"
-                      selectionMode="single"
-                      disallowEmptySelection
-                      selectedKeys={new Set([depsMode])}
-                      onSelectionChange={(keys) => {
-                        const k = Array.from(keys as Set<string>)[0];
-                        if (k) setDepsMode(k as typeof depsMode);
-                      }}
-                      size="sm"
-                    >
-                      <ToggleButton id="install">Install</ToggleButton>
-                      <ToggleButton id="copy">Copy</ToggleButton>
-                      <ToggleButton id="link">Link</ToggleButton>
-                      <ToggleButton id="none">Skip</ToggleButton>
-                    </ToggleButtonGroup>
-                    {depsMode === 'install' && (
-                      <Select aria-label="Package manager" selectedKey={packageManager}
-                        onSelectionChange={(key) => setPackageManager(key as PackageManager)}>
-                        <SelectTrigger className="h-6 text-xs w-24"><SelectValue /></SelectTrigger>
-                        <SelectPopover>
-                          <ListBox>
-                            {PM_OPTIONS.map(pm => (
-                              <ListBoxItem key={pm} id={pm} textValue={pm}>
-                                <span className="text-sm">{pm}</span>
-                                {pm === gitInfo.package_manager && <span className="text-xs text-zinc-500 ml-1">(detected)</span>}
-                              </ListBoxItem>
-                            ))}
-                          </ListBox>
-                        </SelectPopover>
-                      </Select>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* New worktree button (when form is hidden) */}
+              {/* "+ New worktree" affordance — toggles the shared form in. */}
               {gitInfo?.is_git && !showWorktree && (
                 <div className="px-3 py-2 border-b border-border shrink-0">
                   <Button
                     size="sm"
                     variant="secondary"
-                    onPress={() => { setShowWorktree(true); setConsoleLogs([]); setConsoleStatus('idle'); }}
+                    onPress={() => setShowWorktree(true)}
                   >+ New worktree</Button>
                 </div>
               )}
 
-              {/* Console output */}
-              {showConsole && (
-                <>
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
-                    <span className="text-xs text-zinc-400 font-medium">Console</span>
-                    <span className={`text-xs ${
-                      consoleStatus === 'running' ? 'text-amber-400' :
-                      consoleStatus === 'done' ? 'text-green-400' :
-                      consoleStatus === 'error' ? 'text-red-400' : 'text-zinc-600'
-                    }`}>
-                      {consoleStatus === 'running' && 'running...'}
-                      {consoleStatus === 'done' && 'complete'}
-                      {consoleStatus === 'error' && 'failed'}
-                    </span>
-                  </div>
-                  <div
-                    ref={consoleRef}
-                    className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-5 bg-base"
-                  >
-                    {consoleLogs.length === 0 && consoleStatus === 'running' && (
-                      <div className="text-zinc-600">Waiting for output...</div>
-                    )}
-                    {consoleLogs.map((line, i) => (
-                      <div key={i} className={
-                        line.startsWith('$') ? 'text-blue-400' :
-                        line.startsWith('ERROR') ? 'text-red-400' :
-                        line.startsWith('Done.') ? 'text-green-400 font-medium' :
-                        line.startsWith('Copied') || line.startsWith('Worktree created') ? 'text-amber-400' :
-                        'text-zinc-500'
-                      }>{line || '\u00A0'}</div>
-                    ))}
-                    {consoleStatus === 'running' && consoleLogs.length > 0 && (
-                      <span className="inline-block w-2 h-3 bg-amber-400/60 animate-pulse mt-1" />
-                    )}
-                  </div>
-                </>
+              {/* Worktree creation form — shared component, also used by
+               *  the standalone WorktreeCreateModal opened from a tab
+               *  group's "New session in worktree" dropdown item. */}
+              {gitInfo?.is_git && showWorktree && client && (
+                <div className="px-4 py-4 border-b border-border shrink-0 overflow-y-auto">
+                  <WorktreeCreateForm
+                    client={client}
+                    repoPath={gitInfo.top_level!}
+                    hasEnv={gitInfo.has_env}
+                    detectedPackageManager={gitInfo.package_manager}
+                    existingWorktrees={gitInfo.worktrees}
+                    onCreated={handleWorktreeCreated}
+                  />
+                </div>
               )}
 
-              {/* Empty state when no console */}
-              {!showConsole && (
-                <div className="flex-1" />
-              )}
+              <div className="flex-1" />
             </div>
           )}
         </div>
@@ -530,8 +423,8 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                 </ListBox>
               </SelectPopover>
             </Select>
-            <Button variant="secondary" onPress={onClose} isDisabled={creatingWt}>Cancel</Button>
-            <Button onPress={handleCreate} isDisabled={creatingWt}>Open here</Button>
+            <Button variant="secondary" onPress={onClose}>Cancel</Button>
+            <Button onPress={handleCreate}>Open here</Button>
           </div>
         </div>
       </div>

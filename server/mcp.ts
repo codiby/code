@@ -166,18 +166,65 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'ui_spawn_session',
-      description: 'Spawn a new Codiby Code session (a new chat tab) and start its provider. Useful when you need to delegate work to a fresh session while keeping the current one focused on something else. Returns the new session\'s id which you can pass to ui_send_message.\n\nIf `worktree_name` is set, a new git worktree is created at `<repo-parent>/.wt/<worktree_name>` on a new branch of the same name, and the session\'s cwd is set to that path. The repo is taken from `cwd` (if it points into a git repo) or from the configured default cwd.',
+      description:
+        'Spawn a new Codiby Code session (a new chat tab) and start its provider. ' +
+        'Use this to delegate work to a fresh session while the current one stays focused on something else. ' +
+        'Returns the new session id, which you pass to ui_send_message.\n\n' +
+        '`cwd` is REQUIRED — explicitly choose the directory the new session opens in.\n\n' +
+        'To run the session inside a fresh git worktree instead of `cwd` directly, set `worktree`. ' +
+        'The worktree is created at `<dirname(cwd)>/.wt/<branch>`. `cwd` is then treated as the SOURCE repo, ' +
+        'and the new session\'s actual cwd becomes the worktree path. Omit `worktree` to use `cwd` as-is.',
       inputSchema: {
         type: 'object' as const,
         properties: {
+          cwd: {
+            type: 'string',
+            description:
+              'REQUIRED. Absolute working directory for the new session. ' +
+              'When `worktree` is set, this is treated as the SOURCE git repo (must be inside a git repo) ' +
+              'and the session\'s actual cwd becomes the new worktree path.',
+          },
           name: { type: 'string', description: 'Optional session name shown in the tab bar.' },
-          cwd: { type: 'string', description: 'Optional absolute working directory for the new session. Defaults to the server\'s configured cwd. When `worktree_name` is set, this is treated as the SOURCE repo and the session\'s actual cwd becomes the new worktree path.' },
           model: { type: 'string', description: 'Optional model override (e.g. "opus", "sonnet", "haiku", or a full model id). Leave unset for the default.' },
           permissionMode: { type: 'string', enum: ['default', 'acceptEdits', 'plan', 'bypassPermissions'], description: 'Optional permission mode. Defaults to "default".' },
           provider: { type: 'string', description: 'Optional provider name. Defaults to the configured default (claudeAgent).' },
-          worktree_name: { type: 'string', description: 'Optional worktree/branch name. When set, creates a git worktree at `<repo-parent>/.wt/<worktree_name>` on a new branch `<worktree_name>` (or attaches to it if the branch already exists) and uses that path as the session cwd.' },
           group_id: { type: 'string', description: 'Optional tab-group id to add the new session to (from ui_list_tab_groups or ui_create_tab_group).' },
+          worktree: {
+            type: 'object',
+            description:
+              'Optional. When set, a git worktree is created before the session starts and used as its cwd. ' +
+              'Omit this field entirely to skip worktree creation and use `cwd` as-is.',
+            properties: {
+              branch: {
+                type: 'string',
+                description: 'Branch name for the worktree. Sanitized to [a-zA-Z0-9_\\-/.]; other chars become "-".',
+              },
+              new_branch: {
+                type: 'boolean',
+                description:
+                  'true  = create `branch` as a NEW branch in the worktree. Fails if the branch already exists. ' +
+                  'false = attach an EXISTING branch to a new worktree. Fails if the branch does not exist. ' +
+                  '`source_branch` and `pull_source` are ignored when new_branch is false.',
+              },
+              source_branch: {
+                type: 'string',
+                description:
+                  'Only used when `new_branch` is true. Branch to base the new branch on. ' +
+                  'Omit to branch from current HEAD of the source repo.',
+              },
+              pull_source: {
+                type: 'boolean',
+                description:
+                  'Only used when `new_branch` is true AND `source_branch` is set. ' +
+                  'true = run `git fetch origin "<source_branch>"` first and use `origin/<source_branch>` as the start-point ' +
+                  '(so the worktree picks up the latest remote commits without touching the local checkout). ' +
+                  'On fetch failure, falls back to the local `<source_branch>`. Defaults to false.',
+              },
+            },
+            required: ['branch', 'new_branch'],
+          },
         },
+        required: ['cwd'],
       },
     },
     {
@@ -437,26 +484,50 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const list = [...sessions.values()].map(s => sessionToJSON(s, _deps!.port));
         if (list.length === 0) return { content: [{ type: 'text', text: 'No sessions.' }] };
         const text = list.map(s => {
-          const status = s.ready ? 'ready' : s.status;
-          return `${s.id}  [${status}]  ${s.name}  (${s.cwd})`;
+          const runtime = s.ready ? 'ready' : s.runtime_status;
+          return `${s.id}  [${s.status}/${runtime}]  ${s.name}  (${s.cwd})`;
         }).join('\n');
         return { content: [{ type: 'text', text }] };
       }
       case 'ui_spawn_session': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
-        const body: Record<string, unknown> = {};
+
+        // `cwd` is required — explicitly chosen by the caller, no server-default fallback.
+        const cwd = typeof args!.cwd === 'string' ? args!.cwd.trim() : '';
+        if (!cwd) {
+          return { content: [{ type: 'text', text: '`cwd` is required (absolute working directory for the new session).' }], isError: true };
+        }
+
+        const body: Record<string, unknown> = { cwd };
         if (typeof args!.name === 'string') body.name = args!.name;
-        if (typeof args!.cwd === 'string') body.cwd = args!.cwd;
         if (typeof args!.model === 'string') body.model = args!.model;
         if (typeof args!.permissionMode === 'string') body.permissionMode = args!.permissionMode;
         if (typeof args!.provider === 'string') body.provider = args!.provider;
 
         // Optional worktree creation — overrides cwd with the new worktree path.
         let worktreeInfo: { path: string; branch: string } | null = null;
-        if (typeof args!.worktree_name === 'string' && args!.worktree_name.trim()) {
-          const repoPath = (typeof body.cwd === 'string' && body.cwd) || process.cwd();
+        if (args!.worktree !== undefined && args!.worktree !== null) {
+          if (typeof args!.worktree !== 'object' || Array.isArray(args!.worktree)) {
+            return { content: [{ type: 'text', text: '`worktree` must be an object with { branch, new_branch, source_branch?, pull_source? }.' }], isError: true };
+          }
+          const wt = args!.worktree as Record<string, unknown>;
+          const branch = typeof wt.branch === 'string' ? wt.branch.trim() : '';
+          if (!branch) {
+            return { content: [{ type: 'text', text: '`worktree.branch` is required when `worktree` is set.' }], isError: true };
+          }
+          if (typeof wt.new_branch !== 'boolean') {
+            return { content: [{ type: 'text', text: '`worktree.new_branch` (boolean) is required when `worktree` is set.' }], isError: true };
+          }
+          const sourceBranch = typeof wt.source_branch === 'string' ? wt.source_branch : undefined;
+          const pullSource = typeof wt.pull_source === 'boolean' ? wt.pull_source : false;
           try {
-            worktreeInfo = createWorktree({ repoPath, branch: args!.worktree_name as string });
+            worktreeInfo = createWorktree({
+              repoPath: cwd,
+              branch,
+              newBranch: wt.new_branch,
+              sourceBranch,
+              pullSource,
+            });
             body.cwd = worktreeInfo.path;
           } catch (err) {
             return { content: [{ type: 'text', text: `Failed to create worktree: ${err instanceof Error ? err.message : String(err)}` }], isError: true };

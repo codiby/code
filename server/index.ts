@@ -17,6 +17,32 @@ import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } 
 import { notifyPermissionResolved } from './notify';
 import { log } from './logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON } from './sessions';
+import { loadRemotes, getRemote } from './remotes';
+import { migrateToCodiby } from './migrate-to-codiby';
+import { cleanupStaleControlSockets, onTunnelStatus } from './ssh-tunnel';
+import {
+  handleListRemotes,
+  handleAddRemote,
+  handleUpdateRemote,
+  handleRemoveRemote,
+  handleTestRemote,
+} from './handlers/remotes';
+import {
+  handleListPortForwards,
+  handleAddPortForward,
+  handleRemovePortForward,
+} from './handlers/port-forwards';
+import {
+  hydrateRemoteSessionsIndex,
+  resolveSessionRemote,
+  registerRemoteSession,
+  unregisterRemoteSession,
+  listAllCachedRemoteSessions,
+  proxyHttpToRemote,
+  startWsProxy,
+  relayWsMessage,
+  closeWsProxy,
+} from './gateway';
 import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession } from './handlers/sessions';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
@@ -64,13 +90,10 @@ registerProvider(CodexAdapter);
 registerProvider(OpenCodeAdapter);
 
 // `--spawned-by=app|service` (or `CODIBY_SPAWN_MODE=app|service`) tells the
-// server who launched it. In `service` mode (default) we proactively spawn a
-// provider for every persisted active session at startup — the LaunchAgent
-// runs headless and other clients (mobile, Telegram) expect work to keep
-// progressing without an open Tauri window. In `app` mode the Tauri shell is
-// the only consumer, so we leave sessions idle and the frontend tells us
-// which one to spawn via the `active_tab_change` WS message — that way only
-// the tab the user is looking at boots Claude, not all 20 of them.
+// server who launched it. Used purely for telemetry and the PATH-enrichment
+// heuristic in config.ts — session spawn is always lazy now: persisted
+// sessions are surfaced to the UI immediately, but no Claude process is
+// resumed until the user focuses that tab (or a message arrives for it).
 type SpawnMode = 'app' | 'service';
 function parseSpawnMode(): SpawnMode {
   const argv = process.argv.slice(2);
@@ -87,7 +110,13 @@ function parseSpawnMode(): SpawnMode {
 }
 const SPAWN_MODE: SpawnMode = parseSpawnMode();
 
+// Move legacy `~/.claude/ui-*` data into `~/.codiby/` before any loader
+// touches disk. No-op once the move has happened.
+migrateToCodiby();
 loadSessions();
+loadRemotes();
+hydrateRemoteSessionsIndex();
+cleanupStaleControlSockets();
 restoreProcessRegistry();
 ensureMcpConfig();
 registerShutdownHandlers();
@@ -120,6 +149,34 @@ function broadcastSessionList() {
     try { ws.send(msg); } catch {}
   }
 }
+
+/** Broadcast the full remote list (with current tunnel status) to all clients. */
+function broadcastRemoteList() {
+  // Lazy require avoids circular import at module load.
+  const { listRemotes } = require('./remotes') as typeof import('./remotes');
+  const { getTunnelStatus } = require('./ssh-tunnel') as typeof import('./ssh-tunnel');
+  const list = listRemotes().map(r => {
+    const { status, lastError } = getTunnelStatus(r.id);
+    return { ...r, status, lastError };
+  });
+  const data = JSON.stringify({ type: 'remotes', remotes: list });
+  for (const ws of frontendClients) {
+    try { ws.send(data); } catch {}
+  }
+}
+
+/** Broadcast tunnel-status change for a single remote (lower-traffic than the full list). */
+function broadcastRemoteStatus(remoteId: string, status: string, lastError: string | null) {
+  const data = JSON.stringify({ type: 'remote.status', remoteId, status, lastError });
+  for (const ws of frontendClients) {
+    try { ws.send(data); } catch {}
+  }
+}
+
+// Subscribe once at module load — wire status events into the WS bus.
+onTunnelStatus((remoteId, status, lastError) => {
+  broadcastRemoteStatus(remoteId, status, lastError);
+});
 
 /** Broadcast the full preferences object so clients stay in sync after a
  *  server-side mutation (e.g. an MCP tool updating tab groups). */
@@ -295,7 +352,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     // Also send current connection status
     const session = sessions.get(sessionId);
     if (session) {
-      const status = session.ready ? 'connected' : session.status === 'starting' ? 'starting' : 'disconnected';
+      const status = session.ready ? 'connected' : session.runtimeStatus === 'starting' ? 'starting' : 'disconnected';
       ws.send(JSON.stringify({ type: 'status', sessionId, status }));
     }
     return;
@@ -310,23 +367,23 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   }
 
   // ---- active_tab_change ---------------------------------------------------
-  // Frontend tells us which tab is in focus (app spawn mode only). Boots the
-  // session's provider on demand so we don't spawn 20 Claude CLIs at once
-  // when the desktop app first connects. No-op in service mode — there the
-  // server already spawned everything at startup.
+  // Frontend tells us which tab is in focus. Boots the session's provider on
+  // demand so we don't resume 20 Claude processes at once when the app first
+  // connects — the persisted list is shown immediately, but each provider is
+  // only spawned (and a `claude --resume` is only issued) when the user
+  // actually opens that tab. Already-running providers are a no-op.
   if (type === 'active_tab_change') {
     const { sessionId } = msg as { sessionId: string };
     if (!sessionId) return;
-    if (SPAWN_MODE !== 'app') return;
     const session = sessions.get(sessionId);
     if (!session) return;
     if (session.providerSession) return;
-    log(`[spawn-mode=app] Active tab → spawning ${sessionId.slice(0, 8)} (${session.name})`);
+    log(`[lazy] Active tab → spawning ${sessionId.slice(0, 8)} (${session.name})`);
     try {
       startProviderSession(session, server.port, session.claudeSessionId ?? null);
       saveSessions();
     } catch (err) {
-      log(`[spawn-mode=app] Failed to spawn ${sessionId.slice(0, 8)}: ${err}`);
+      log(`[lazy] Failed to spawn ${sessionId.slice(0, 8)}: ${err}`);
     }
     return;
   }
@@ -335,6 +392,21 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   if (type === 'send_message') {
     const { sessionId, text: msgText, images } = msg as { sessionId: string; text: string; images?: { media_type: string; data: string }[] };
     if (!sessionId || !msgText) return;
+
+    // Remote session — forward via HTTP to the remote bridge.
+    const remoteId = resolveSessionRemote(sessionId);
+    if (remoteId) {
+      const fwd = new Request(`http://x/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: msgText, images }),
+      });
+      proxyHttpToRemote(fwd, remoteId).catch(e => {
+        log(`[gateway] send_message proxy failed: ${e?.message || e}`);
+      });
+      return;
+    }
+
     const session = sessions.get(sessionId);
     if (!session) return;
     // Auto-start the provider if the session is idle (e.g. after a stop, SDK
@@ -900,7 +972,7 @@ async function serveStaticFromDist(pathname: string): Promise<Response | null> {
 // HTTP + WebSocket server
 // ---------------------------------------------------------------------------
 
-// Auto-enable HTTPS when cert + key are present under ~/.claude/tls/
+// Auto-enable HTTPS when cert + key are present under ~/.codiby/tls/
 const TLS = resolveTls();
 
 const server = Bun.serve({
@@ -919,6 +991,35 @@ const server = Bun.serve({
     // Mobile bearer-token auth (no-op for localhost / public routes)
     if (!authCheck(req, url)) {
       return new Response('Unauthorized', { status: 401, headers: corsHeaders });
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-cutting remote routing: any HTTP request carrying `?remoteId=<id>`
+    // is forwarded to that remote's bun bridge, with the parameter stripped.
+    // Used by session-agnostic endpoints (file browse, git info, etc.) that
+    // the NewSessionModal calls when its target tab is a remote.
+    // Skips: WS upgrades (handled below), session/remote-bound endpoints that
+    // resolve `remoteId` from their own state, static assets, plugins.
+    // -----------------------------------------------------------------------
+    const remoteIdQuery = url.searchParams.get('remoteId');
+    if (
+      remoteIdQuery &&
+      remoteIdQuery !== 'local' &&
+      getRemote(remoteIdQuery) &&
+      !url.pathname.startsWith('/ws') &&
+      !url.pathname.startsWith('/browser/ws') &&
+      !url.pathname.startsWith('/terminal/ws') &&
+      !url.pathname.startsWith('/lsp/ws') &&
+      !url.pathname.startsWith('/debug/ws') &&
+      !url.pathname.startsWith('/sessions') &&     // sessions/* already remote-aware
+      !url.pathname.startsWith('/remotes') &&      // remotes management lives local
+      !url.pathname.startsWith('/plugins') &&
+      url.pathname !== '/' && url.pathname !== '/index.html'
+    ) {
+      const stripped = new URLSearchParams(url.searchParams);
+      stripped.delete('remoteId');
+      const newPath = url.pathname + (stripped.toString() ? '?' + stripped.toString() : '');
+      return proxyHttpToRemote(req, remoteIdQuery, newPath);
     }
 
     // Sideloaded plugins (`~/.codiby/plugins/<id>/`).
@@ -1017,9 +1118,17 @@ const server = Bun.serve({
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
-    // Legacy per-session browser WebSocket (kept for backwards compatibility)
+    // Legacy per-session browser WebSocket (kept for backwards compatibility).
+    // For remote sessions we still accept the upgrade, but instead of routing
+    // to the local browserWs set, we open a parallel WS to the remote bridge
+    // and shuttle frames in both directions.
     if (url.pathname.startsWith('/browser/ws/')) {
       const sessionId = url.pathname.split('/browser/ws/')[1];
+      const remoteId = resolveSessionRemote(sessionId!);
+      if (remoteId) {
+        const upgraded = server.upgrade(req, { data: { type: 'proxy-browser', sessionId, remoteId } });
+        return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
+      }
       const session = sessions.get(sessionId!);
       if (!session) {
         return new Response('Session not found', { status: 404 });
@@ -1059,11 +1168,83 @@ const server = Bun.serve({
     // -----------------------------------------------------------------------
 
     if (url.pathname === '/sessions' && req.method === 'GET') {
-      const list = [...sessions.values()].map(s => sessionToJSON(s, server.port));
-      return Response.json(list, { headers: corsHeaders });
+      const localList = [...sessions.values()].map(s => {
+        const j = sessionToJSON(s, server.port) as any;
+        j.remoteId = null;
+        j.remoteColor = null;
+        j.remoteName = null;
+        return j;
+      });
+      const remoteList = listAllCachedRemoteSessions().map(s => {
+        const r = getRemote(s.remoteId);
+        return {
+          id: s.id,
+          name: s.name,
+          cwd: s.cwd,
+          created_at: s.createdAt,
+          status: s.status,
+          runtime_status: s.runtimeStatus,
+          ready: false,
+          claude_session_id: s.claudeSessionId,
+          ws_url: `ws://localhost:${server.port}/browser/ws/${s.id}`,
+          saved_commands: [],
+          model: s.model,
+          permission_mode: s.permissionMode,
+          provider: s.provider,
+          remoteId: s.remoteId,
+          remoteColor: r?.color ?? null,
+          remoteName: r?.name ?? null,
+        };
+      });
+      return Response.json([...localList, ...remoteList], { headers: corsHeaders });
     }
 
     if (url.pathname === '/sessions' && req.method === 'POST') {
+      // Sniff the body so we can decide local vs remote without consuming the
+      // original request (handleCreateSession reads it again).
+      let body: { remoteId?: string | null; cwd?: string; name?: string; model?: string | null; provider?: string; permissionMode?: string } = {};
+      try { body = await req.clone().json() as typeof body; } catch {}
+
+      if (body?.remoteId) {
+        // Remote: ask the remote bridge to create the session, then mirror the
+        // metadata in our local cache so the sidebar shows it next time.
+        if (!getRemote(body.remoteId)) {
+          return Response.json({ error: `Remote ${body.remoteId} not found` }, { status: 404, headers: corsHeaders });
+        }
+        // Strip remoteId from the body that gets forwarded — the remote bridge
+        // doesn't know what to do with it.
+        const forwardBody = { ...body };
+        delete (forwardBody as any).remoteId;
+        const fwdReq = new Request(req.url, {
+          method: 'POST',
+          headers: req.headers,
+          body: JSON.stringify(forwardBody),
+        });
+        const resp = await proxyHttpToRemote(fwdReq, body.remoteId, '/sessions');
+        if (resp.ok) {
+          try {
+            const created = await resp.clone().json() as any;
+            registerRemoteSession(body.remoteId, {
+              id: created.id,
+              name: created.name,
+              cwd: created.cwd,
+              createdAt: created.created_at,
+              status: created.status ?? 'open',
+              runtimeStatus: created.runtime_status ?? 'starting',
+              model: created.model ?? null,
+              permissionMode: created.permission_mode ?? 'default',
+              provider: created.provider ?? 'claudeAgent',
+              claudeSessionId: created.claude_session_id ?? null,
+              portForwards: [],
+              cachedAt: Date.now(),
+            });
+            broadcastSessionList();
+            if (url.searchParams.get('focus') === '1') broadcastFocusSession(created.id);
+          } catch {}
+        }
+        return resp;
+      }
+
       const resp = await handleCreateSession(req, server.port);
       // Apply the `autoGroupSessions` preference server-side so every entry
       // point (frontend, mobile, CLI) honors it without each client needing
@@ -1071,10 +1252,10 @@ const server = Bun.serve({
       let createdId: string | null = null;
       if (resp.ok) {
         try {
-          const body = await resp.clone().json() as { id?: string; cwd?: string };
-          if (body?.id) {
-            createdId = body.id;
-            if (body.cwd) maybeAutoGroupSession(body.id, body.cwd);
+          const created = await resp.clone().json() as { id?: string; cwd?: string };
+          if (created?.id) {
+            createdId = created.id;
+            if (created.cwd) maybeAutoGroupSession(created.id, created.cwd);
           }
         } catch {}
       }
@@ -1090,7 +1271,10 @@ const server = Bun.serve({
 
     const resumeMatch = url.pathname.match(/^\/sessions\/(.+)\/resume$/);
     if (resumeMatch && req.method === 'POST') {
-      const resp = handleResumeSession(resumeMatch[1]!, server.port);
+      const sid = resumeMatch[1]!;
+      const remoteId = resolveSessionRemote(sid);
+      if (remoteId) return proxyHttpToRemote(req, remoteId);
+      const resp = handleResumeSession(sid, server.port);
       broadcastSessionList();
       return resp;
     }
@@ -1102,28 +1286,127 @@ const server = Bun.serve({
 
     const stopMatch = url.pathname.match(/^\/sessions\/(.+)\/stop$/);
     if (stopMatch && req.method === 'POST') {
-      const resp = handleStopSession(stopMatch[1]!);
+      const sid = stopMatch[1]!;
+      const remoteId = resolveSessionRemote(sid);
+      if (remoteId) return proxyHttpToRemote(req, remoteId);
+      const resp = handleStopSession(sid);
       broadcastSessionList();
       return resp;
     }
 
     const patchMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
     if (patchMatch && req.method === 'PATCH') {
-      const resp = await handleRenameSession(patchMatch[1]!, req);
+      const sid = patchMatch[1]!;
+      const remoteId = resolveSessionRemote(sid);
+      if (remoteId) {
+        const resp = await proxyHttpToRemote(req, remoteId);
+        // Refresh the cache entry name so the sidebar reflects the rename.
+        if (resp.ok) {
+          try {
+            const updated = await resp.clone().json() as any;
+            if (updated?.id) {
+              registerRemoteSession(remoteId, {
+                id: updated.id,
+                name: updated.name,
+                cwd: updated.cwd,
+                createdAt: updated.created_at,
+                status: updated.status ?? 'open',
+                runtimeStatus: updated.runtime_status ?? 'stopped',
+                model: updated.model ?? null,
+                permissionMode: updated.permission_mode ?? 'default',
+                provider: updated.provider ?? 'claudeAgent',
+                claudeSessionId: updated.claude_session_id ?? null,
+                portForwards: updated.port_forwards ?? [],
+                cachedAt: Date.now(),
+              });
+              broadcastSessionList();
+            }
+          } catch {}
+        }
+        return resp;
+      }
+      const resp = await handleRenameSession(sid, req);
       broadcastSessionList();
       return resp;
     }
 
+    // Per-session port forwards (only for remote sessions).
+    const pfListMatch = url.pathname.match(/^\/sessions\/([^/]+)\/port-forwards$/);
+    if (pfListMatch && req.method === 'GET') {
+      return handleListPortForwards(pfListMatch[1]!);
+    }
+    if (pfListMatch && req.method === 'POST') {
+      return handleAddPortForward(pfListMatch[1]!, req);
+    }
+    const pfDelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/port-forwards\/(\d+)\/(\d+)$/);
+    if (pfDelMatch && req.method === 'DELETE') {
+      return handleRemovePortForward(pfDelMatch[1]!, Number(pfDelMatch[2]), Number(pfDelMatch[3]));
+    }
+
+    // POST /sessions/:id/messages — HTTP path used by the gateway to forward
+    // user messages from local frontends into a remote bridge. Same payload
+    // shape as the `send_message` WS event.
+    const msgPostMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+    if (msgPostMatch && req.method === 'POST') {
+      const sid = msgPostMatch[1]!;
+      const remoteId = resolveSessionRemote(sid);
+      if (remoteId) return proxyHttpToRemote(req, remoteId);
+      let body: { text?: string; images?: { media_type: string; data: string }[] } = {};
+      try { body = await req.json() as typeof body; } catch {}
+      if (!body.text) return Response.json({ error: 'text required' }, { status: 400, headers: corsHeaders });
+      const result = await sendMessageToSession(sid, body.text, body.images);
+      return Response.json(result, { headers: corsHeaders });
+    }
+
     const deleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
     if (deleteMatch && req.method === 'DELETE') {
+      const sid = deleteMatch[1]!;
+      const remoteId = resolveSessionRemote(sid);
+      if (remoteId) {
+        const resp = await proxyHttpToRemote(req, remoteId);
+        if (resp.ok) {
+          unregisterRemoteSession(remoteId, sid);
+          broadcastSessionList();
+        }
+        return resp;
+      }
       // ?purge=1     → also delete the on-disk chat history + UI state
       // ?worktree=1  → also remove the git worktree (when cwd looks like one)
       // Plain DELETE is the legacy soft-remove (in-memory drop only).
       const purge = url.searchParams.get('purge') === '1';
       const removeWorktree = url.searchParams.get('worktree') === '1';
-      const resp = handleDeleteSession(deleteMatch[1]!, purge, removeWorktree);
+      const resp = handleDeleteSession(sid, purge, removeWorktree);
       broadcastSessionList();
       return resp;
+    }
+
+    // -----------------------------------------------------------------------
+    // Remotes (configured SSH workstations)
+    // -----------------------------------------------------------------------
+
+    if (url.pathname === '/remotes' && req.method === 'GET') {
+      return handleListRemotes();
+    }
+    if (url.pathname === '/remotes' && req.method === 'POST') {
+      const resp = await handleAddRemote(req);
+      broadcastRemoteList();
+      return resp;
+    }
+    const remotePatchMatch = url.pathname.match(/^\/remotes\/([^/]+)$/);
+    if (remotePatchMatch && req.method === 'PATCH') {
+      const resp = await handleUpdateRemote(remotePatchMatch[1]!, req);
+      broadcastRemoteList();
+      return resp;
+    }
+    if (remotePatchMatch && req.method === 'DELETE') {
+      const resp = await handleRemoveRemote(remotePatchMatch[1]!);
+      broadcastRemoteList();
+      broadcastSessionList();
+      return resp;
+    }
+    const remoteTestMatch = url.pathname.match(/^\/remotes\/([^/]+)\/test$/);
+    if (remoteTestMatch && req.method === 'POST') {
+      return handleTestRemote(remoteTestMatch[1]!);
     }
 
     // -----------------------------------------------------------------------
@@ -1540,6 +1823,7 @@ const server = Bun.serve({
       return Response.json({
         id: s.id,
         status: s.status,
+        runtimeStatus: s.runtimeStatus,
         ready: s.ready,
         provider: s.provider,
         hasProviderSession: !!s.providerSession,
@@ -1576,7 +1860,7 @@ const server = Bun.serve({
         // wait for `active_tab_change` to spawn lazily (app mode).
         ws.send(JSON.stringify({ type: 'welcome', spawnMode: SPAWN_MODE }));
         // Preferences must arrive before the sessions list — the client uses
-        // closedSessionIds/archivedSessionIds/tabOrder to decide which tabs to
+        // tabOrder/tabGroups/etc to decide which tabs to
         // show, so receiving the session list first would race the prefs and
         // briefly render every persisted session as an open tab.
         ws.send(JSON.stringify({ type: 'preferences', preferences: loadPreferences() }));
@@ -1595,6 +1879,16 @@ const server = Bun.serve({
         if (session.ready) {
           ws.send(JSON.stringify({ type: 'bridge', status: 'claude_connected' }) + '\n');
         }
+        return;
+      }
+
+      // Per-session WS for a REMOTE session — open a parallel WS to the remote
+      // bridge and pipe both directions. The gateway also bumps the tunnel
+      // refcount so the master stays alive while at least one pane is open.
+      if (type === 'proxy-browser') {
+        const { sessionId: sid, remoteId } = ws.data as any;
+        if (!sid || !remoteId) { ws.close(4004, 'Bad proxy data'); return; }
+        startWsProxy(ws, remoteId, `/browser/ws/${sid}`);
         return;
       }
 
@@ -1653,6 +1947,12 @@ const server = Bun.serve({
         return;
       }
 
+      // Proxied per-session WS for a remote session — relay all frames upstream.
+      if (type === 'proxy-browser') {
+        relayWsMessage(ws, message as string | ArrayBuffer | Buffer);
+        return;
+      }
+
       // Legacy per-session browser WebSocket — messages are ignored.
       // New clients use the multiplexed frontend socket; this endpoint remains
       // open only for older clients that expect a one-way event feed.
@@ -1663,6 +1963,11 @@ const server = Bun.serve({
 
       if (type === 'terminal') {
         if (procId) terminalWsClose(ws, procId);
+        return;
+      }
+
+      if (type === 'proxy-browser') {
+        closeWsProxy(ws);
         return;
       }
 
@@ -1762,43 +2067,9 @@ setMcpDeps({
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);
 
-// Service-mode bulk spawn: bring every persisted, non-closed/non-archived
-// session online so background work keeps flowing while no UI is open.
-// Throttled to 1s per spawn past the first 5 — Claude's auth backend flags
-// many simultaneous CLI handshakes from the same machine as suspicious and
-// can return 429s mid-handshake, leaving sessions wedged in `starting`.
-async function bulkSpawnActiveSessions(port: number) {
-  const prefs = loadPreferences();
-  const closedRaw = prefs.closedSessionIds;
-  const archivedRaw = prefs.archivedSessionIds;
-  const closed = new Set(Array.isArray(closedRaw) ? (closedRaw as string[]) : []);
-  const archived = new Set(Array.isArray(archivedRaw) ? (archivedRaw as string[]) : []);
-  const active = [...sessions.values()].filter(s =>
-    !s.providerSession && !closed.has(s.id) && !archived.has(s.id),
-  );
-  if (active.length === 0) {
-    log(`[spawn-mode=service] No active sessions to spawn`);
-    return;
-  }
-  const throttle = active.length > 5;
-  log(`[spawn-mode=service] Spawning ${active.length} active session(s)${throttle ? ' (throttled 1s each)' : ''}`);
-  for (let i = 0; i < active.length; i++) {
-    const s = active[i]!;
-    log(`[spawn-mode=service] (${i + 1}/${active.length}) ${s.id.slice(0, 8)} ${s.name}`);
-    try {
-      startProviderSession(s, port, s.claudeSessionId);
-    } catch (err) {
-      log(`[spawn-mode=service] Failed to spawn ${s.id.slice(0, 8)}: ${err}`);
-    }
-    if (throttle && i < active.length - 1) {
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
-  saveSessions();
-}
-
-if (SPAWN_MODE === 'service') {
-  bulkSpawnActiveSessions(server.port).catch(err =>
-    log(`[spawn-mode=service] bulk spawn error: ${err}`),
-  );
-}
+// Lazy spawn: sessions are persisted and shown in the UI immediately, but each
+// provider is only booted (and `claude --resume` is only issued) when the user
+// activates the tab via `active_tab_change`, or when a message arrives via
+// `send_message`/Telegram/MCP. No bulk boot at startup — keeps Claude's auth
+// backend from rate-limiting 20 simultaneous handshakes and avoids spawning
+// processes the user may never open.

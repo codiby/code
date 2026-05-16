@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'crypto';
 import { loadMessages, loadUIState, saveUIState, appendMessage } from './storage';
+import { touchSession } from './sessions';
 import type { ProviderModelInfo } from './provider/types';
 
 export interface ChatMessage {
@@ -254,6 +255,13 @@ export function addMessage(sessionId: string, msg: ChatMessage): boolean {
   msg.seq = nextSeq;
   state.messages.push(msg);
   appendMessage(sessionId, msg);
+  // Bump the session's last-activity timestamp so the archive dropdown
+  // shows recently active conversations first. Skip pure tool bookkeeping
+  // (tool_use notifications + tool_results) — those spam Date.now() on
+  // every Read/Bash/Edit and would otherwise drown out real exchanges.
+  if (!msg.toolName && !msg.isToolResult) {
+    touchSession(sessionId);
+  }
   return true;
 }
 

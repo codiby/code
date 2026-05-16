@@ -148,6 +148,7 @@ export function WorktreeModal({
         repoPath={repoPath}
         hasEnv={hasEnv}
         detectedPackageManager={detectedPackageManager}
+        existingWorktrees={worktrees}
         onCreated={(path) => {
           // Bubble up and dismiss both modals.
           setShowCreateModal(false);

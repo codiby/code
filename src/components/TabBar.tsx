@@ -3,7 +3,7 @@ import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type D
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  ChevronDown, ChevronRight, PanelLeft, Search, Archive, X, Pin, History,
+  ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -45,6 +45,10 @@ interface Props {
   onAddToGroup: (tabId: string, groupId: string) => void;
   onUngroupTab: (tabId: string) => void;
   onToggleGroup: (groupId: string) => void;
+  /** Focus a group without toggling its expansion state. Triggered by the
+   *  hover "+" icon on a group header — opens GroupComposer in the main
+   *  pane and ensures the group is expanded so members stay visible. */
+  onSelectGroup: (groupId: string) => void;
   onRenameGroup: (groupId: string, name: string) => void;
   onChangeGroupColor: (groupId: string, color: string) => void;
   onChangeGroupIcon?: (groupId: string, icon: string | null) => void;
@@ -129,14 +133,22 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: editingId === session.id });
   // Vertical sidebar: flat active background regardless of group color.
   const activeBg = isActive ? 'bg-surface-light' : '';
+  // Remote sessions get a left-edge tint in the remote's color (decided in
+  // REMOTES_TASKS.md, Phase 7.1 — borderless, no icon, just the strip).
+  const remoteColor = session.remoteColor || null;
+  const remoteEdgeClass = remoteColor ? (COLOR_MAP[remoteColor]?.border ?? '') : '';
+  const remoteTintClass = remoteColor ? (COLOR_MAP[remoteColor]?.bg ?? '') : '';
   return (
     <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 }}
       {...attributes} {...listeners}
       className={`tab-item group relative flex items-center gap-1.5 px-3 ${compact ? 'h-[26px]' : 'h-[30px]'} text-[12px] cursor-pointer w-full rounded-md transition-colors ${
+        remoteColor ? `border-l-2 ${remoteEdgeClass} ${remoteTintClass}` : ''
+      } ${
         isActive ? `${activeBg} text-zinc-200` : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface/50'
       }`}
       onClick={() => onSelect(session.id)}
       onContextMenu={onContextMenu}
+      title={session.remoteName ? `Remote: ${session.remoteName}` : undefined}
     >
       <span className={`w-2 h-2 rounded-full shrink-0 ${getDotClass(connStatus, isStreaming, !!turnComplete, wasInterrupted)}`} />
       {editingId === session.id ? (
@@ -189,23 +201,23 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
       {hasPermission && !isActive && (
         <span className="absolute -top-0.5 -right-0.5 flex h-3 w-3">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border border-[#161616]" />
+          <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border border-[#131418]" />
         </span>
       )}
     </div>
   );
 }
 
-function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivity, onToggle, onRename, onMenuOpen }: {
+function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivity, onToggle, onRename, onMenuOpen, onOpenComposer }: {
   group: TabGroup; memberCount: number; isExpanded: boolean; hasActive: boolean; hasActivity?: boolean;
   onToggle: () => void; onRename: (name: string) => void; onMenuOpen: (x: number, y: number) => void;
+  onOpenComposer: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isOver } = useSortable({ id: `group::${group.id}` });
   const colors = COLOR_MAP[group.color] || COLOR_MAP.blue!;
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(group.name);
   const inputRef = useRef<HTMLInputElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   // Vertical sidebar: drop the filled background and border — the colored dot
@@ -261,27 +273,24 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivi
         </span>
       )}
       <span className="text-[11px] text-zinc-600">{memberCount}</span>
-      {/* Dropdown arrow */}
+      {/* New session in group — opens GroupComposer for this group.
+       *  Right-click on the row still surfaces the full options menu
+       *  (color/icon/delete/etc.) via `onMenuOpen`. */}
       <span
         onClick={e => e.stopPropagation()}
         onPointerDown={e => e.stopPropagation()}
         className="shrink-0"
+        title="New session in group"
       >
         <Button
-          ref={btnRef}
           isIconOnly
           size="sm"
           variant="ghost"
-          aria-label="Group options"
+          aria-label="New session in group"
           className="w-4 h-4 min-w-0 p-0 flex items-center justify-center rounded-sm leading-none text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-opacity opacity-0 group-hover:opacity-100"
-          onPress={() => {
-            if (btnRef.current) {
-              const r = btnRef.current.getBoundingClientRect();
-              onMenuOpen(r.left, r.bottom + 4);
-            }
-          }}
+          onPress={onOpenComposer}
         >
-          <ChevronDown size={12} />
+          <Plus size={12} />
         </Button>
       </span>
     </div>
@@ -399,7 +408,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionLastMessageAt,
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
+    tabGroups, tabGroupMap, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onSelectGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
     collapsed, onToggleCollapsed } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
@@ -583,7 +592,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const renderRestorePopover = () => (
     <>
       <div className="px-2 pb-1 pt-0.5 shrink-0">
-        <div className="flex items-center gap-1.5 bg-[#161616] border border-border rounded-md px-2 h-7">
+        <div className="flex items-center gap-1.5 bg-[#131418] border border-border rounded-md px-2 h-7">
           <Search size={11} className="text-zinc-600 shrink-0" />
           <input
             ref={restoreSearchRef}
@@ -633,59 +642,18 @@ export const TabBar = memo(function TabBar(props: Props) {
     </>
   );
 
-  // The collapse toggle — same icon position as before, but now hides/shows
-  // the session bar instead of switching orientations. When collapsed the bar
-  // shrinks to a thin strip showing only this button so users can re-expand.
-  const toggleBtn = onToggleCollapsed ? (
-    <Button
-      isIconOnly
-      size="sm"
-      variant="ghost"
-      onPress={onToggleCollapsed}
-      aria-label={collapsed ? 'Expand session bar' : 'Collapse session bar'}
-      className="shrink-0 w-7 h-7 min-w-0 p-0 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface/60 transition-colors"
-    >
-      <PanelLeft size={14} />
-    </Button>
-  ) : null;
+  // The collapse toggle now lives in the host's activity bar (see ChatApp),
+  // not inside the TabBar — keeping all chrome-toggle affordances in one
+  // column avoids two places to click for the same thing.
 
-  // Collapsed: thin strip with toggle + new-session button. Tabs and resize
-  // handle are hidden, but `+` stays reachable so a new session can be opened
-  // without expanding the bar first.
-  if (collapsed) {
-    return (
-      <div
-        className="tab-bar relative flex flex-col bg-[#161616] shrink-0 select-none h-full border-r border-border"
-        style={{ width: 36 }}
-      >
-        <div className="px-1 pt-1">{toggleBtn}</div>
-        <div className="px-1 pt-1 shrink-0 flex flex-col gap-1" ref={menuRef}>
-          <Button variant="ghost" fullWidth className="flex items-center justify-center h-[26px] text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md text-lg leading-none transition-colors"
-            onPress={onNew} aria-label="New session">+</Button>
-          <Button variant="ghost" fullWidth className="flex items-center justify-center h-[26px] text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md transition-colors"
-            onPress={() => setShowMenu(m => !m)} aria-label="Restore closed session">
-            <History size={14} />
-          </Button>
-          {showMenu && (() => {
-            const rect = menuRef.current?.getBoundingClientRect();
-            return (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
-                <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl w-[260px] py-1 overflow-hidden max-h-80 flex flex-col"
-                  style={{ top: (rect?.bottom ?? 38) + 4, left: (rect?.right ?? 36) + 4 }}>
-                  {renderRestorePopover()}
-                </div>
-              </>
-            );
-          })()}
-        </div>
-      </div>
-    );
-  }
+  // Collapsed: render nothing. The host's activity bar carries the
+  // re-expand toggle plus the new-session / history affordances, so a
+  // collapsed TabBar would just duplicate that column.
+  if (collapsed) return null;
 
   return (
     <div
-      className="tab-bar relative flex flex-col bg-[#161616] shrink-0 select-none h-full border-r border-border"
+      className="tab-bar relative flex flex-col bg-[#131418] shrink-0 select-none h-full border-r border-border"
       style={{ width: vertWidth }}
     >
       {/* Right-edge drag handle for resizing the panel. Sits absolutely on the
@@ -700,29 +668,7 @@ export const TabBar = memo(function TabBar(props: Props) {
         }}
         title="Drag to resize"
       />
-      {/* Toolbar row: new-session + restore buttons on the left, collapse toggle on the right. */}
-      <div className="shrink-0 flex items-center gap-1 px-2 pt-1" ref={menuRef}>
-        <Button isIconOnly size="sm" variant="ghost" className="flex items-center justify-center w-7 h-7 min-w-0 p-0 text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md text-lg leading-none transition-colors"
-          onPress={onNew} aria-label="New session">+</Button>
-        <Button isIconOnly size="sm" variant="ghost" className="flex items-center justify-center w-7 h-7 min-w-0 p-0 text-zinc-500 hover:text-zinc-300 hover:bg-surface/50 rounded-md transition-colors"
-          onPress={() => setShowMenu(m => !m)} aria-label="Restore closed session">
-          <History size={14} />
-        </Button>
-        {toggleBtn && <div className="ml-auto">{toggleBtn}</div>}
-        {showMenu && (() => {
-          const rect = menuRef.current?.getBoundingClientRect();
-          return (
-          <>
-            <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
-            <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl w-[260px] py-1 overflow-hidden max-h-80 flex flex-col"
-              style={{ top: (rect?.bottom ?? 38) + 4, left: (rect?.left ?? 0) + 32 }}>
-              {renderRestorePopover()}
-            </div>
-          </>
-          );
-        })()}
-      </div>
-      <div className="flex flex-col gap-0.5 px-2 py-1 overflow-y-auto flex-1">
+      <div className="flex flex-col gap-0.5 px-2 py-2 overflow-y-auto flex-1">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>
             {renderList.map(item => {
@@ -741,6 +687,7 @@ export const TabBar = memo(function TabBar(props: Props) {
                     onToggle={() => onToggleGroup(item.groupId)}
                     onRename={name => onRenameGroup(item.groupId, name)}
                     onMenuOpen={(x, y) => setGroupMenu({ groupId: item.groupId, x, y })}
+                    onOpenComposer={() => onSelectGroup(item.groupId)}
                   />
                   {isExpanded && (
                     // Indent + colored left rail spans the full height of all
@@ -779,20 +726,6 @@ export const TabBar = memo(function TabBar(props: Props) {
                 onPress={() => { onToggleGroup(groupMenu.groupId); setGroupMenu(null); }}>
                 {expandedGroupIds.has(groupMenu.groupId) ? 'Collapse' : 'Expand'}
               </Button>
-              {onNewSessionInGroup && grpCwd && (
-                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-200 hover:bg-surface-light flex items-center gap-2 transition-colors"
-                  onPress={() => { onNewSessionInGroup(groupMenu.groupId); setGroupMenu(null); }}>
-                  <span className="text-zinc-500">+</span>
-                  New session in group
-                </Button>
-              )}
-              {onNewSessionInWorktreeForGroup && grpCwd && (
-                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-200 hover:bg-surface-light flex items-center gap-2 transition-colors"
-                  onPress={() => { onNewSessionInWorktreeForGroup(groupMenu.groupId); setGroupMenu(null); }}>
-                  <span className="text-zinc-500">⌥</span>
-                  New session in worktree…
-                </Button>
-              )}
               <div className="px-3 py-1.5">
                 <div className="text-[10px] text-zinc-600 mb-1">Color</div>
                 <div className="flex items-center gap-1">
@@ -889,6 +822,24 @@ export const TabBar = memo(function TabBar(props: Props) {
               })()}
 
               <div className="h-px bg-border mx-2 my-1" />
+
+              {/* New session in this group — preserves an entry-point for
+                  group-bound session creation now that the group dropdown
+                  no longer offers it. */}
+              {isGrouped && onNewSessionInGroup && tabGroupId && (
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                  onPress={() => { onNewSessionInGroup(tabGroupId); setTabMenu(null); }}>
+                  <span className="text-zinc-500">+</span>
+                  New session in group
+                </Button>
+              )}
+              {isGrouped && onNewSessionInWorktreeForGroup && tabGroupId && (
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                  onPress={() => { onNewSessionInWorktreeForGroup(tabGroupId); setTabMenu(null); }}>
+                  <span className="text-zinc-500">⌥</span>
+                  New session in worktree…
+                </Button>
+              )}
 
               {/* Ungroup (if in a group) */}
               {isGrouped && (

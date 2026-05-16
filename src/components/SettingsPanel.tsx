@@ -7,6 +7,7 @@ import {
 import { resolveServerUrl } from '../lib/claude-client';
 import { PairPhoneModal } from './PairPhoneModal';
 import { PluginSettingsSections } from './PluginExtensionPoints';
+import { RemotesSection } from './RemotesSection';
 import { ICON_MAP } from '../lib/group-icons';
 
 interface TabGroupInfo {
@@ -587,6 +588,9 @@ export function SettingsPanel({ onClose, tabGroups, tabGroupMap, onDeleteGroup, 
             Pair Phone
           </Button>
         </div>
+
+        {/* Remote workstations (SSH-tunneled bun servers) */}
+        <RemotesSection serverUrl={serverUrl} />
 
         {/* Plugin-contributed settings sections (sideloaded from ~/.codiby/plugins/) */}
         <div className="pt-4 border-t border-border space-y-4">

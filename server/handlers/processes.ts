@@ -1,14 +1,13 @@
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
-import { corsHeaders } from '../config';
+import { corsHeaders, CODIBY_DIR } from '../config';
 import { log } from '../logger';
 import type { TrackedProcess } from '../types';
 
 export const trackedProcesses = new Map<string, TrackedProcess>();
 
-const PROC_DIR = join(homedir(), '.claude', 'ui-processes');
+const PROC_DIR = join(CODIBY_DIR, 'ui-processes');
 const PROC_REGISTRY = join(PROC_DIR, 'registry.json');
 
 try { mkdirSync(PROC_DIR, { recursive: true }); } catch {}

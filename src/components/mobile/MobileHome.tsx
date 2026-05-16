@@ -10,8 +10,6 @@ interface Props {
   client: ClaudeClient;
   sessions: SessionInfo[];
   activeId: string | null;
-  closedSessionIds: Set<string>;
-  archivedSessionIds: Set<string>;
   onQuickStart: (provider: string) => void;
   opencodeAvailable: boolean;
   opencodeModels?: Array<{ id: string; label: string; providerName: string }>;
@@ -84,8 +82,6 @@ export function MobileHome({
   client,
   sessions,
   activeId,
-  closedSessionIds,
-  archivedSessionIds,
   onQuickStart,
   opencodeAvailable,
   opencodeModels = [],
@@ -121,7 +117,7 @@ export function MobileHome({
   const visibleQuickStart = QUICK_START_PROVIDERS.filter(p => p.key !== 'opencode' || opencodeAvailable);
 
   const openSessions = useMemo(() => {
-    const filtered = sessions.filter((s) => !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id));
+    const filtered = sessions.filter((s) => s.status === 'open');
     return [...filtered].sort((a, b) => {
       const ai = tabOrder.indexOf(a.id);
       const bi = tabOrder.indexOf(b.id);
@@ -130,11 +126,11 @@ export function MobileHome({
       if (bi === -1) return -1;
       return ai - bi;
     });
-  }, [sessions, closedSessionIds, archivedSessionIds, tabOrder]);
+  }, [sessions, tabOrder]);
 
   const closedSessions = useMemo(
-    () => sessions.filter((s) => closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id)),
-    [sessions, closedSessionIds, archivedSessionIds],
+    () => sessions.filter((s) => s.status === 'archived'),
+    [sessions],
   );
 
   type RenderItem =
@@ -184,7 +180,7 @@ export function MobileHome({
   const renderTab = (s: SessionInfo, opts?: { indented?: boolean }) => {
     const isActive = s.id === activeId;
     const status = (statuses && statuses[s.id]) ||
-      (s.ready ? 'connected' : s.status === 'starting' ? 'starting' : 'disconnected');
+      (s.ready ? 'connected' : s.runtime_status === 'starting' ? 'starting' : 'disconnected');
     const pending = !!hasPermission?.[s.id];
     const ageLabel = formatTabAge(sessionLastMessageAt?.[s.id], nowMs);
     return (

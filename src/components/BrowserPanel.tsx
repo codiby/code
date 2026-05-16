@@ -28,7 +28,7 @@
  *                       - browser-preview://inspect-auto-off
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@heroui/react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -156,57 +156,47 @@ function sameBounds(a: Bounds | null, b: Bounds | null): boolean {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
-export function BrowserPanel({
-  label, url, title, openSeq, inspect, comments, obscured,
-  tabs, onSelectTab, onCloseTab,
-  onSetInspect, onSetComments, onSendToChat, onWriteToChat, onClose,
-}: BrowserPanelProps) {
+/** Open a BrowserView at the host element's screen rect and keep it pinned
+ *  to that rect. Caller owns the host `<div>`; this hook never mutates it.
+ *
+ *  Used by `BrowserPanel` (standard layout) and by `ChatApp`'s focus-mode
+ *  anchor (so the webview stays positioned to a measurable rect even when
+ *  the panel chrome is not mounted). Two hook instances must not run for
+ *  the same `label` at the same time — the React tree guarantees this by
+ *  rendering exactly one host at a time per active browser.
+ *
+ *  On unmount the view is hidden (not destroyed); the explicit ×-close
+ *  paths in `ChatApp` are what call `close_browser_preview`. */
+export function useBrowserPreviewBounds(args: {
+  hostRef: RefObject<HTMLElement | null>;
+  label: string;
+  url: string;
+  title: string;
+  openSeq: number;
+  /** When false, the OS-level webview is hidden even though its bounds
+   *  keep tracking the host element. The focus-mode anchor passes `false`
+   *  here so the webview survives the layout switch without appearing
+   *  over the chat-focus grid. */
+  visible: boolean;
+}): { windowOpen: boolean; openError: string | null } {
+  const { hostRef, label, url, title, openSeq, visible } = args;
   const [windowOpen, setWindowOpen] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
-  // The page's *actual* current URL, fed by the `url-changed` relay event.
-  // Drifts away from the `url` prop when the user clicks links in the
-  // embedded webview or types into the address bar.
-  const [currentUrl, setCurrentUrl] = useState(url);
-  // What's in the address-bar input. Diverges from `currentUrl` while the
-  // user is typing; resets on submit / on a new page load.
-  const [addressInput, setAddressInput] = useState(url);
-  const addressEditingRef = useRef(false);
-
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  // Last bounds we pushed to Rust — used to skip redundant IPCs.
   const lastBoundsRef = useRef<Bounds | null>(null);
-  // Pending rAF id so we coalesce bursty observer notifications.
   const rafRef = useRef<number | null>(null);
 
-  const commentsRef = useRef<MockupComment[]>(comments);
-  commentsRef.current = comments;
-  const onSetCommentsRef = useRef(onSetComments);
-  onSetCommentsRef.current = onSetComments;
-  const onSetInspectRef = useRef(onSetInspect);
-  onSetInspectRef.current = onSetInspect;
-
-  // Push current body bounds to Rust. Idempotent — no-ops when the bounds
-  // haven't changed since the last push. Uses rAF to batch many synchronous
-  // observer fires (splitter drag, fullscreen toggle) into one IPC.
   const pushBoundsIfChanged = useCallback(() => {
     if (rafRef.current != null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
-      const next = readBounds(bodyRef.current);
+      const next = readBounds(hostRef.current);
       if (!next) return;
       if (sameBounds(next, lastBoundsRef.current)) return;
       lastBoundsRef.current = next;
       invoke('browser_preview_set_bounds', { label, ...next }).catch(() => {});
     });
-  }, [label]);
+  }, [label, hostRef]);
 
-  // Open: measure body, then ask the shell to attach (or re-attach) a
-  // BrowserView at that rect. On unmount we *hide* the view rather than
-  // destroying it — the React panel re-mounts on every tab switch and a
-  // destroy/recreate here would reload the page from scratch, losing
-  // scroll, form input, and any authenticated state. The shell is the
-  // one tracking the view by label; the explicit × button in the chat
-  // header is responsible for the destroy path (see ChatApp.tsx).
   useEffect(() => {
     if (!isTauri()) {
       setOpenError('Browser preview requires the desktop app (Tauri).');
@@ -217,17 +207,10 @@ export function BrowserPanel({
     setWindowOpen(false);
     lastBoundsRef.current = null;
 
-    // Wait one frame so the body div has a measurable rect even on the
-    // first mount (e.g. when the panel pops open from `lastBrowser`).
     const start = requestAnimationFrame(() => {
-      const rect = readBounds(bodyRef.current) || { x: 0, y: 0, width: 800, height: 600 };
+      const rect = readBounds(hostRef.current) || { x: 0, y: 0, width: 800, height: 600 };
       lastBoundsRef.current = rect;
-      invoke<void>('open_browser_preview', {
-        label,
-        url,
-        title,
-        ...rect,
-      })
+      invoke<void>('open_browser_preview', { label, url, title, ...rect })
         .then(() => { if (!cancelled) setWindowOpen(true); })
         .catch((e) => { if (!cancelled) setOpenError(String(e)); });
     });
@@ -239,28 +222,74 @@ export function BrowserPanel({
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      // Hide, not destroy — see comment above the effect.
       invoke('browser_preview_set_visible', { label, visible: false }).catch(() => {});
     };
-  }, [label, url, title, openSeq]);
+  }, [label, url, title, openSeq, hostRef]);
 
-  // Keep the child webview's bounds in sync with the body div.
   useEffect(() => {
     if (!windowOpen) return;
-    const el = bodyRef.current;
+    const el = hostRef.current;
     if (!el) return;
     const observer = new ResizeObserver(() => pushBoundsIfChanged());
     observer.observe(el);
     const onWindowResize = () => pushBoundsIfChanged();
     window.addEventListener('resize', onWindowResize);
-    // Also push once at startup so the rect we measured pre-add_child is
-    // corrected after the actual layout commits.
     pushBoundsIfChanged();
+    // ResizeObserver only fires on size changes; collapsing a sibling sidebar
+    // can shift the host's x/y while leaving its size untouched, which would
+    // strand the native BrowserView at stale coordinates. Poll the rect on
+    // every frame as a backstop — `pushBoundsIfChanged` coalesces via RAF and
+    // `sameBounds` filters out no-op updates, so the per-frame cost is just
+    // one `getBoundingClientRect()` read.
+    let pollRaf: number | null = null;
+    const tick = () => {
+      pushBoundsIfChanged();
+      pollRaf = requestAnimationFrame(tick);
+    };
+    pollRaf = requestAnimationFrame(tick);
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', onWindowResize);
+      if (pollRaf != null) cancelAnimationFrame(pollRaf);
     };
-  }, [windowOpen, pushBoundsIfChanged]);
+  }, [windowOpen, pushBoundsIfChanged, hostRef]);
+
+  useEffect(() => {
+    if (!windowOpen) return;
+    invoke('browser_preview_set_visible', { label, visible }).catch(() => {});
+  }, [visible, windowOpen, label]);
+
+  return { windowOpen, openError };
+}
+
+export function BrowserPanel({
+  label, url, title, openSeq, inspect, comments, obscured,
+  tabs, onSelectTab, onCloseTab,
+  onSetInspect, onSetComments, onSendToChat, onWriteToChat, onClose,
+}: BrowserPanelProps) {
+  // The page's *actual* current URL, fed by the `url-changed` relay event.
+  // Drifts away from the `url` prop when the user clicks links in the
+  // embedded webview or types into the address bar.
+  const [currentUrl, setCurrentUrl] = useState(url);
+  // What's in the address-bar input. Diverges from `currentUrl` while the
+  // user is typing; resets on submit / on a new page load.
+  const [addressInput, setAddressInput] = useState(url);
+  const addressEditingRef = useRef(false);
+
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  const commentsRef = useRef<MockupComment[]>(comments);
+  commentsRef.current = comments;
+  const onSetCommentsRef = useRef(onSetComments);
+  onSetCommentsRef.current = onSetComments;
+  const onSetInspectRef = useRef(onSetInspect);
+  onSetInspectRef.current = onSetInspect;
+
+  const { windowOpen, openError } = useBrowserPreviewBounds({
+    hostRef: bodyRef,
+    label, url, title, openSeq,
+    visible: !obscured,
+  });
 
   useEffect(() => {
     if (!windowOpen) return;
@@ -375,14 +404,6 @@ export function BrowserPanel({
     addressEditingRef.current = false;
   }, [url, openSeq]);
 
-  // Hide the OS-level webview while an overlay (palette, modal, etc.)
-  // is up so it doesn't sit on top of the React surface. Showing /
-  // hiding the webview is a no-op when the same state is pushed twice.
-  useEffect(() => {
-    if (!windowOpen) return;
-    invoke('browser_preview_set_visible', { label, visible: !obscured }).catch(() => {});
-  }, [obscured, windowOpen, label]);
-
   const reload = useCallback(() => {
     if (!isTauri()) return;
     invoke('browser_preview_navigate', { label, action: 'reload', url: null }).catch(() => {});
@@ -401,7 +422,7 @@ export function BrowserPanel({
     if (!next) return;
     setAddressInput(next);
     addressEditingRef.current = false;
-    invoke('browser_preview_navigate', { label, action: 'goto', url: next }).catch((e) => setOpenError(String(e)));
+    invoke('browser_preview_navigate', { label, action: 'goto', url: next }).catch(() => {});
   }, [label, addressInput]);
 
   const openExternal = useCallback(() => {

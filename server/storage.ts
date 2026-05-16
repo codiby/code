@@ -1,16 +1,16 @@
 /**
  * File-based storage for session data.
  *
- * ~/.claude/ui-sessions/{session-id}/
+ * ~/.codiby/ui-sessions/{session-id}/
  *   ├── messages.jsonl    # Append-only message log
  *   └── state.json        # UI state (input, panels, todos)
  */
 
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { CODIBY_DIR } from './config';
 
-const SESSIONS_DIR = join(homedir(), '.claude', 'ui-sessions');
+const SESSIONS_DIR = join(CODIBY_DIR, 'ui-sessions');
 
 function sessionDir(sessionId: string): string {
   return join(SESSIONS_DIR, sessionId);
@@ -125,7 +125,7 @@ export function listSessionDirs(): string[] {
 // PR ↔ Session links
 // ---------------------------------------------------------------------------
 
-const PR_LINKS_FILE = join(homedir(), '.claude', 'ui-pr-links.json');
+const PR_LINKS_FILE = join(CODIBY_DIR,'ui-pr-links.json');
 
 type PRLink = { prNumber: number; title: string; url: string; headRefName: string; state: string };
 
@@ -140,7 +140,7 @@ export function loadPRLinks(): Record<string, PRLink> {
 export function savePRLink(sessionId: string, link: PRLink) {
   const links = loadPRLinks();
   links[sessionId] = link;
-  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  mkdirSync(CODIBY_DIR, { recursive: true });
   writeFileSync(PR_LINKS_FILE, JSON.stringify(links, null, 2));
 }
 
@@ -158,7 +158,7 @@ export function getPRLink(sessionId: string): PRLink | null {
 // Telegram settings
 // ---------------------------------------------------------------------------
 
-const TELEGRAM_FILE = join(homedir(), '.claude', 'ui-telegram.json');
+const TELEGRAM_FILE = join(CODIBY_DIR,'ui-telegram.json');
 
 export type TelegramSettings = { botToken: string; chatId: string };
 
@@ -172,7 +172,7 @@ export function loadTelegramSettings(): TelegramSettings {
 }
 
 export function saveTelegramSettings(settings: TelegramSettings) {
-  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  mkdirSync(CODIBY_DIR, { recursive: true });
   writeFileSync(TELEGRAM_FILE, JSON.stringify(settings, null, 2));
 }
 
@@ -180,7 +180,7 @@ export function saveTelegramSettings(settings: TelegramSettings) {
 // Deepgram settings
 // ---------------------------------------------------------------------------
 
-const DEEPGRAM_FILE = join(homedir(), '.claude', 'ui-deepgram.json');
+const DEEPGRAM_FILE = join(CODIBY_DIR,'ui-deepgram.json');
 
 export type DeepgramSettings = {
   apiKey: string;
@@ -210,7 +210,7 @@ export function loadDeepgramSettings(): DeepgramSettings {
 }
 
 export function saveDeepgramSettings(settings: DeepgramSettings) {
-  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  mkdirSync(CODIBY_DIR, { recursive: true });
   writeFileSync(DEEPGRAM_FILE, JSON.stringify(settings, null, 2));
 }
 
@@ -218,7 +218,7 @@ export function saveDeepgramSettings(settings: DeepgramSettings) {
 // Tailscale settings
 // ---------------------------------------------------------------------------
 
-const TAILSCALE_FILE = join(homedir(), '.claude', 'ui-tailscale.json');
+const TAILSCALE_FILE = join(CODIBY_DIR,'ui-tailscale.json');
 
 export type TailscaleSettings = { funnelEnabled: boolean };
 
@@ -232,7 +232,7 @@ export function loadTailscaleSettings(): TailscaleSettings {
 }
 
 export function saveTailscaleSettings(settings: TailscaleSettings) {
-  mkdirSync(join(homedir(), '.claude'), { recursive: true });
+  mkdirSync(CODIBY_DIR, { recursive: true });
   writeFileSync(TAILSCALE_FILE, JSON.stringify(settings, null, 2));
 }
 
@@ -240,7 +240,7 @@ export function saveTailscaleSettings(settings: TailscaleSettings) {
 // Global preferences (tabs, groups, etc.)
 // ---------------------------------------------------------------------------
 
-const PREFS_FILE = join(homedir(), '.claude', 'ui-preferences.json');
+const PREFS_FILE = join(CODIBY_DIR,'ui-preferences.json');
 
 export function loadPreferences(): Record<string, unknown> {
   try {
@@ -252,7 +252,7 @@ export function loadPreferences(): Record<string, unknown> {
 
 export function savePreferences(prefs: Record<string, unknown>) {
   try {
-    mkdirSync(join(homedir(), '.claude'), { recursive: true });
+    mkdirSync(CODIBY_DIR, { recursive: true });
     writeFileSync(PREFS_FILE, JSON.stringify(prefs, null, 2));
   } catch {}
 }

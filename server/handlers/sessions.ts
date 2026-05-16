@@ -69,21 +69,26 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     if (body.provider && typeof body.provider === 'string') provider = body.provider;
   } catch {}
 
+  const now = Date.now();
   const session: Session = {
     id: randomUUID(),
     name: name || `Session ${sessions.size + 1}`,
     cwd,
-    createdAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
     claudeSessionId: null,
     browserWs: new Set(),
     providerSession: null,
     ready: false,
-    status: 'starting',
+    status: 'open',
+    runtimeStatus: 'starting',
     replayDone: true,
     savedCommands: [],
     model,
     permissionMode,
     provider,
+    remoteId: null,
+    portForwards: [],
   };
   sessions.set(session.id, session);
 
@@ -122,12 +127,20 @@ export async function handleRenameSession(sessionId: string, req: Request): Prom
   }
   try {
     const body = await req.json() as Record<string, unknown>;
+    let touched = false;
     if (body.name && typeof body.name === 'string') {
       session.name = body.name;
+      touched = true;
     }
     if (typeof body.permissionMode === 'string') {
       session.permissionMode = body.permissionMode;
+      touched = true;
     }
+    if (body.status === 'open' || body.status === 'archived') {
+      session.status = body.status;
+      touched = true;
+    }
+    if (touched) session.updatedAt = Date.now();
     saveSessions();
   } catch {}
   return Response.json(sessionToJSON(session, PORT), { headers: corsHeaders });
@@ -165,7 +178,7 @@ export async function handleStopSession(sessionId: string): Promise<Response> {
   killSessionLsp(sessionId);
 
   session.ready = false;
-  session.status = 'stopped';
+  session.runtimeStatus = 'stopped';
   saveSessions();
   log(`[${sessionId.slice(0, 8)}] Session stopped (tab closed)`);
 

@@ -106,21 +106,26 @@ function splitMessage(text: string, maxLen = 4096): string[] {
 function ensureMainSession(): Session {
   let session = sessions.get(MAIN_SESSION_ID);
   if (!session) {
+    const now = Date.now();
     session = {
       id: MAIN_SESSION_ID,
       name: 'Telegram Agent',
       cwd: CWD,
-      createdAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       claudeSessionId: null,
       browserWs: new Set(),
       providerSession: null,
       ready: false,
-      status: 'stopped',
+      status: 'open',
+      runtimeStatus: 'stopped',
       replayDone: true,
       savedCommands: [],
       model: null,
       permissionMode: 'bypassPermissions',
       provider: DEFAULT_PROVIDER,
+      remoteId: null,
+      portForwards: [],
     };
     sessions.set(MAIN_SESSION_ID, session);
     saveSessions();

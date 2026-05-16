@@ -63,6 +63,11 @@ interface Props {
    *  just hands each pane its session id. */
   renderBody?: (sessionId: string) => ReactNode;
 
+  /** Render extra controls inside a pane's title bar (e.g. browser-preview
+   *  chips for that session). Sits between the session name and the close
+   *  button. Returning `null` keeps the header minimal. */
+  renderPaneHeaderExtras?: (sessionId: string) => ReactNode;
+
   /** Workspace state is owned by the host so the title bar can surface
    *  workspace-level actions ("add active chat to workspace", "new chat in
    *  workspace") next to the layout-mode switcher. */
@@ -201,6 +206,7 @@ export function ChatFocusLayout({
   onCloseSession,
   renderComposer,
   renderBody,
+  renderPaneHeaderExtras,
   workspaces,
   setWorkspaces,
   activeWorkspaceId,
@@ -404,6 +410,7 @@ export function ChatFocusLayout({
             dragging={dragging}
             renderComposer={renderComposer}
             renderBody={renderBody}
+            renderPaneHeaderExtras={renderPaneHeaderExtras}
             onHeaderDragStart={onHeaderDragStart}
             onHeaderDragEnd={onHeaderDragEnd}
             onPaneDragOver={onPaneDragOver}
@@ -442,6 +449,7 @@ function RowView(props: {
   dragging: string | null;
   renderComposer?: (sessionId: string) => ReactNode;
   renderBody?: (sessionId: string) => ReactNode;
+  renderPaneHeaderExtras?: (sessionId: string) => ReactNode;
   onHeaderDragStart: (paneId: string) => (e: React.DragEvent) => void;
   onHeaderDragEnd: () => void;
   onPaneDragOver: (paneEl: HTMLElement) => (e: React.DragEvent) => void;
@@ -473,6 +481,7 @@ function RowView(props: {
               showRightHandle={cIdx < row.paneIds.length - 1}
               composer={props.renderComposer ? props.renderComposer(pid) : null}
               body={props.renderBody ? props.renderBody(pid) : null}
+              headerExtras={props.renderPaneHeaderExtras ? props.renderPaneHeaderExtras(pid) : null}
               onColResizeStart={props.onColResizeStart(rIdx, cIdx)}
               onHeaderDragStart={props.onHeaderDragStart(pid)}
               onHeaderDragEnd={props.onHeaderDragEnd}
@@ -509,6 +518,7 @@ function PaneShell(props: {
   showRightHandle: boolean;
   composer: ReactNode;
   body: ReactNode;
+  headerExtras?: ReactNode;
   onColResizeStart: (e: React.MouseEvent) => void;
   onHeaderDragStart: (e: React.DragEvent) => void;
   onHeaderDragEnd: () => void;
@@ -544,9 +554,23 @@ function PaneShell(props: {
           className="flex items-center gap-2 px-2 h-8 border-b border-border bg-base cursor-grab active:cursor-grabbing select-none shrink-0"
         >
           <GripVertical className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-          <span className="text-[12px] text-zinc-200 font-medium truncate flex-1 min-w-0">
+          <span className="text-[12px] text-zinc-200 font-medium truncate min-w-0">
             {session?.name ?? <span className="text-zinc-500">missing session</span>}
           </span>
+          {/* Host-supplied chips (e.g. browser previews) live between the
+              name and the cwd. Drag is suppressed so chip clicks don't
+              start a pane drag. */}
+          {props.headerExtras && (
+            <div
+              className="flex items-center gap-1 min-w-0 overflow-x-auto cursor-default"
+              draggable={false}
+              onDragStart={(e) => e.preventDefault()}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {props.headerExtras}
+            </div>
+          )}
+          <span className="flex-1 min-w-0" />
           {session && (
             <span className="text-[10.5px] text-zinc-500 font-mono truncate min-w-0 max-w-[40%]">
               {session.cwd}

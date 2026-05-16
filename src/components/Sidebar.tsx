@@ -50,7 +50,7 @@ export function Sidebar({ sessions, activeSessionId, sessionStatuses, onSelect, 
         {sessions.map(s => {
           const isActive = s.id === activeSessionId;
           const connStatus = sessionStatuses[s.id] || 'disconnected';
-          const isStopped = s.status === 'stopped' && connStatus === 'disconnected';
+          const isStopped = s.runtime_status === 'stopped' && connStatus === 'disconnected';
 
           if (editingId === s.id) {
             return (

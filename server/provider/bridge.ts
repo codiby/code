@@ -59,7 +59,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       };
       updateSessionState(session.id, s => ({ ...s, initInfo }));
       session.ready = true;
-      session.status = 'running';
+      session.runtimeStatus = 'running';
       deps.broadcastToSession(session.id, { type: 'init_info', sessionId: session.id, info: initInfo });
       deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'connected' });
       deps.broadcastSessionList();
@@ -322,7 +322,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     onExit(code) {
       log(`[${sid8}] Provider session exited with code ${code}`);
       session.ready = false;
-      session.status = 'stopped';
+      session.runtimeStatus = 'stopped';
       session.providerSession = null;
       const state = getSessionState(session.id);
       if (state.partialText?.trim()) {

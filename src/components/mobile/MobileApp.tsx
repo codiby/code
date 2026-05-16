@@ -187,16 +187,11 @@ export function MobileApp() {
   const [turnCompleteSet, setTurnCompleteSet] = useState<Set<string>>(new Set());
   const [supportedModelsBySession, setSupportedModelsBySession] = useState<Record<string, SupportedModel[]>>({});
   // Tab grouping / ordering / closed sessions — shared with the desktop UI
-  // via `~/.claude/ui-preferences.json` so both views agree.
+  // via `~/.codiby/ui-preferences.json` so both views agree.
   const [tabGroups, setTabGroups] = useState<Record<string, { id: string; name: string; color: string }>>({});
   const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
-  const [closedSessionIds, setClosedSessionIds] = useState<Set<string>>(new Set());
-  // See ChatApp.tsx for the open / closed / archived lifecycle. The mobile
-  // sessions sheet only renders the closed bucket; archived sessions are
-  // hidden until the future archived-sessions management page lands.
-  const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(new Set());
   // Cached opencode probe — see ChatApp.tsx for the desktop equivalent.
   const [opencodeInfo, setOpencodeInfo] = useState<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }> } | null>(null);
   // Mockups broadcast by the `mockup_write` / `mockup_edit` SDK tools, keyed
@@ -431,8 +426,8 @@ export function MobileApp() {
     const c = clientRef.current;
     if (!c || !activeId) return;
     c.subscribe(activeId);
-    // Boot the provider on demand if the bridge is in `app` spawn mode
-    // (server gates this by mode; harmless in `service` mode).
+    // Lazy spawn: ask the bridge to boot this session's provider if it
+    // isn't already running. The server dedupes already-running providers.
     c.notifyActiveTab(activeId);
     return () => { c.unsubscribe(activeId); };
   }, [activeId, sessions.length]);
@@ -483,68 +478,47 @@ export function MobileApp() {
       if (Array.isArray(prefs.pinnedSessionIds)) {
         setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
       }
-      if (Array.isArray(prefs.closedSessionIds)) {
-        setClosedSessionIds(new Set(prefs.closedSessionIds as string[]));
-      }
-      if (Array.isArray(prefs.archivedSessionIds)) {
-        setArchivedSessionIds(new Set(prefs.archivedSessionIds as string[]));
-      }
     }).catch(() => {});
   }, [serverUrl, token]);
 
-  /** Add a session to the "closed" set + persist + actually stop it on the
-   *  server. Mirrors the desktop closeTab behavior. */
+  /** Optimistically flip a session's status locally — the broadcast list
+   *  arrives a tick later and overwrites with the authoritative value.
+   *  Bumps updated_at so the just-archived session sorts to the top of
+   *  the restore list without waiting for the server roundtrip. */
+  const setSessionStatusLocal = (id: string, status: 'open' | 'archived') => {
+    const now = Date.now();
+    setSessions((prev) => prev.map((s) => s.id === id ? { ...s, status, updated_at: now } : s));
+  };
+
+  /** Hide a session (status=archived) and stop its provider. */
   const closeSession = (id: string) => {
     const c = clientRef.current;
     if (!c) return;
     c.unsubscribe(id);
     c.stopSession(id).catch(() => {});
-    setClosedSessionIds((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      c.updatePreferences({ closedSessionIds: [...next] }).catch(() => {});
-      return next;
-    });
+    setSessionStatusLocal(id, 'archived');
+    c.archiveSession(id).catch(() => {});
     setActiveId((prev) => {
       if (prev !== id) return prev;
-      const open = sessions.filter((s) => s.id !== id && !closedSessionIds.has(s.id) && !archivedSessionIds.has(s.id));
+      const open = sessions.filter((s) => s.id !== id && s.status === 'open');
       return open[0]?.id || null;
     });
   };
 
-  /** Move a closed session into the archived bucket. Mirrors the desktop
-   *  ChatApp's handleArchiveSession — disjoint sets, history is kept. */
+  /** Alias kept for parity with the desktop UI — closed and archived
+   *  collapsed into the same hidden state. */
   const archiveSession = (id: string) => {
-    const c = clientRef.current;
-    setClosedSessionIds((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      c?.updatePreferences({ closedSessionIds: [...next] }).catch(() => {});
-      return next;
-    });
-    setArchivedSessionIds((prev) => {
-      if (prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.add(id);
-      c?.updatePreferences({ archivedSessionIds: [...next] }).catch(() => {});
-      return next;
-    });
+    setSessionStatusLocal(id, 'archived');
+    clientRef.current?.archiveSession(id).catch(() => {});
   };
 
-  /** Resume a previously-closed session (remove from closedSessionIds + start
-   *  its provider on the server) and select it. */
+  /** Bring an archived session back into the tab bar and focus it. The
+   *  server boots its provider lazily when the active-tab effect fires. */
   const reopenSession = (id: string) => {
     const c = clientRef.current;
     if (!c) return;
-    c.resumeSession(id).catch(() => {/* server replies 409 if already running — fine */});
-    setClosedSessionIds((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      c.updatePreferences({ closedSessionIds: [...next] }).catch(() => {});
-      return next;
-    });
+    setSessionStatusLocal(id, 'open');
+    c.unarchiveSession(id).catch(() => {});
     setActiveId(id);
   };
 
@@ -584,20 +558,8 @@ export function MobileApp() {
 
     setRuntime((prev) => { const next = { ...prev }; delete next[oldId]; return next; });
 
-    setArchivedSessionIds((prev) => {
-      if (prev.has(oldId)) return prev;
-      const next = new Set(prev);
-      next.add(oldId);
-      c.updatePreferences({ archivedSessionIds: [...next] }).catch(() => {});
-      return next;
-    });
-    setClosedSessionIds((prev) => {
-      if (!prev.has(oldId)) return prev;
-      const next = new Set(prev);
-      next.delete(oldId);
-      c.updatePreferences({ closedSessionIds: [...next] }).catch(() => {});
-      return next;
-    });
+    setSessionStatusLocal(oldId, 'archived');
+    c.archiveSession(oldId).catch(() => {});
 
     setTabOrder((prev) => {
       const next = [...prev];
@@ -899,8 +861,6 @@ export function MobileApp() {
           client={client}
           sessions={sessions}
           activeId={activeId}
-          closedSessionIds={closedSessionIds}
-          archivedSessionIds={archivedSessionIds}
           onQuickStart={(provider) => {
             try { localStorage.setItem('claude-ui-last-provider', provider); } catch {}
           }}

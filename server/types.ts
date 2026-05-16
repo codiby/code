@@ -2,21 +2,61 @@ import type { ChildProcess } from 'child_process';
 import type { ProviderSession } from './provider/types';
 import type { PtyHandle } from './pty';
 
+/** A configured remote — points at an entry in the user's ~/.ssh/config. */
+export type Remote = {
+  id: string;          // rmt_<uuid>
+  name: string;        // unique display label
+  alias: string;       // Host alias as it appears in ~/.ssh/config
+  bunPort: number;     // port where the bun server listens on the remote (default 3111)
+  color: string;       // one of GROUP_COLORS; drives tab tint
+  createdAt: number;
+};
+
+/** Per-session port forward declaration. localPort=null → pick a free one at open time. */
+export type PortForward = {
+  localPort: number | null;
+  remotePort: number;
+  label?: string;
+};
+
+/** Lifecycle / visibility state of a session, persisted on disk.
+ *   - `open`     — visible in the UI as a tab.
+ *   - `archived` — hidden from the tab bar; reachable via the archived list. */
+export type SessionStatus = 'open' | 'archived';
+
+/** Runtime state of the underlying Claude/provider process. Lives in memory
+ *  only — never persisted (a session's process state is meaningless across
+ *  server restarts). Renamed from `status` to disambiguate from the persisted
+ *  UI lifecycle status above. */
+export type RuntimeStatus = 'starting' | 'running' | 'stopped';
+
 export type Session = {
   id: string;
   name: string;
   cwd: string;
   createdAt: number;
+  /** Wall-clock of the last meaningful activity (message added, archive
+   *  toggled, rename, etc). Drives the "most recent first" ordering in
+   *  the restore-archived dropdown so a session you just closed jumps
+   *  to the top. Persisted. */
+  updatedAt: number;
   claudeSessionId: string | null;
   browserWs: Set<any>;
   providerSession: ProviderSession | null;
   ready: boolean;
-  status: 'starting' | 'running' | 'stopped';
+  /** UI lifecycle / visibility — persisted. */
+  status: SessionStatus;
+  /** Live process state — in-memory only. */
+  runtimeStatus: RuntimeStatus;
   replayDone: boolean;
   savedCommands: string[];
   model: string | null;
   permissionMode: string;
   provider: string;
+  /** Null for local sessions; otherwise the Remote.id this session lives on. */
+  remoteId: string | null;
+  /** Port forwards opened while this session has at least one pane visible. */
+  portForwards: PortForward[];
 };
 
 export type PersistedSession = {
@@ -24,11 +64,17 @@ export type PersistedSession = {
   name: string;
   cwd: string;
   createdAt: number;
+  /** Last-touched timestamp. Defaults to createdAt when missing. */
+  updatedAt?: number;
   claudeSessionId: string | null;
+  /** Persisted UI status; defaults to 'open' when missing (legacy files). */
+  status?: SessionStatus;
   savedCommands?: string[];
   model?: string | null;
   permissionMode?: string;
   provider?: string;
+  remoteId?: string | null;
+  portForwards?: PortForward[];
 };
 
 export interface TrackedProcess {

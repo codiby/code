@@ -1,0 +1,254 @@
+/**
+ * Gateway — the local bun server acts as a hub that proxies HTTP + WS for
+ * sessions that live on a remote (Modelo D in REMOTES_TASKS.md).
+ *
+ * Resolution: each session is either local (in the `sessions` Map) or remote
+ * (in `remoteSessionsIndex`, hydrated from `~/.codiby/ui-remote-sessions/`).
+ * Once we know a `sessionId` is remote, we acquire the tunnel for its remote,
+ * pick the locally-bound proxy port, and forward.
+ *
+ * HTTP: rewrite host+port, replay method/headers/body, return the response.
+ * WS:   accept the upgrade locally, open a parallel WS to the remote bridge
+ *       through the tunnel, then shovel bytes in both directions.
+ */
+
+import type { ServerWebSocket } from 'bun';
+import { readdirSync } from 'fs';
+import { log, logError } from './logger';
+import { remotes } from './remotes';
+import {
+  REMOTE_SESSIONS_DIR,
+  loadRemoteSessions,
+  upsertRemoteSession,
+  removeCachedRemoteSession,
+  type CachedRemoteSession,
+} from './remote-sessions-cache';
+import { acquireTunnel, releaseTunnel, getTunnelLocalPort } from './ssh-tunnel';
+
+// ---------------------------------------------------------------------------
+// sessionId → remoteId index. Hydrated at startup from cache files.
+// ---------------------------------------------------------------------------
+
+const remoteSessionsIndex = new Map<string, string>();
+
+export function hydrateRemoteSessionsIndex() {
+  remoteSessionsIndex.clear();
+  let total = 0;
+  try {
+    const files = readdirSync(REMOTE_SESSIONS_DIR);
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue;
+      const remoteId = f.slice(0, -'.json'.length);
+      if (!remotes.has(remoteId)) continue; // stale cache for a removed remote
+      const list = loadRemoteSessions(remoteId);
+      for (const s of list) {
+        remoteSessionsIndex.set(s.id, remoteId);
+        total++;
+      }
+    }
+  } catch {
+    // Directory doesn't exist yet — fine.
+  }
+  log(`[gateway] hydrated index with ${total} remote sessions across ${remotes.size} remotes`);
+}
+
+export function resolveSessionRemote(sessionId: string): string | null {
+  return remoteSessionsIndex.get(sessionId) ?? null;
+}
+
+export function registerRemoteSession(remoteId: string, entry: CachedRemoteSession) {
+  remoteSessionsIndex.set(entry.id, remoteId);
+  upsertRemoteSession(remoteId, entry);
+}
+
+export function unregisterRemoteSession(remoteId: string, sessionId: string) {
+  remoteSessionsIndex.delete(sessionId);
+  removeCachedRemoteSession(remoteId, sessionId);
+}
+
+export function listAllCachedRemoteSessions(): Array<CachedRemoteSession & { remoteId: string }> {
+  const out: Array<CachedRemoteSession & { remoteId: string }> = [];
+  for (const remoteId of remotes.keys()) {
+    for (const s of loadRemoteSessions(remoteId)) {
+      out.push({ ...s, remoteId });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP proxy
+// ---------------------------------------------------------------------------
+
+/**
+ * Open the tunnel (without ref-counting — HTTP requests are short-lived) and
+ * forward the request to the remote bun bridge.
+ *
+ * The caller passes a path/search string that should land on the remote.
+ * Defaults to the incoming URL's pathname + search, which works for any
+ * 1:1 endpoint that exists on both local and remote bun.
+ */
+export async function proxyHttpToRemote(
+  req: Request,
+  remoteId: string,
+  pathOverride?: string,
+): Promise<Response> {
+  let localPort: number | null = getTunnelLocalPort(remoteId);
+  if (localPort == null) {
+    // Tunnel not up — bring it up transiently. We bump+drop the refcount so
+    // the tunnel won't be torn down mid-request by a stray grace timer.
+    const { localTunnelPort } = await acquireTunnel(remoteId);
+    localPort = localTunnelPort;
+    // We hand off the refcount asynchronously after the response settles.
+    try {
+      return await doProxyHttp(req, localPort, pathOverride);
+    } finally {
+      releaseTunnel(remoteId);
+    }
+  }
+  return doProxyHttp(req, localPort, pathOverride);
+}
+
+async function doProxyHttp(req: Request, localPort: number, pathOverride?: string): Promise<Response> {
+  const original = new URL(req.url);
+  const path = pathOverride ?? (original.pathname + original.search);
+  const target = `http://127.0.0.1:${localPort}${path}`;
+
+  // Drop hop-by-hop headers; replay everything else (Authorization,
+  // Content-Type, custom X-* headers like `x-codiby-remote`).
+  const headers = new Headers();
+  req.headers.forEach((v, k) => {
+    const lk = k.toLowerCase();
+    if (lk === 'host' || lk === 'connection' || lk === 'content-length') return;
+    headers.set(k, v);
+  });
+
+  const init: RequestInit & { duplex?: 'half' } = {
+    method: req.method,
+    headers,
+    body: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer(),
+  };
+
+  try {
+    const upstream = await fetch(target, init);
+    // Replay status + headers as-is.
+    const respHeaders = new Headers(upstream.headers);
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: respHeaders,
+    });
+  } catch (e: any) {
+    logError(`[gateway] proxy ${req.method} ${target} failed: ${e?.message || e}`);
+    return Response.json({ error: 'Gateway: remote unreachable', detail: String(e?.message || e) }, { status: 502 });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket proxy
+// ---------------------------------------------------------------------------
+
+/**
+ * Open an outbound WS connection to the remote bridge and wire it
+ * bidirectionally to the local client ws. Stored on `ws.data.remoteSocket`
+ * so the close handler can shut it down.
+ */
+export async function startWsProxy(
+  ws: ServerWebSocket<any>,
+  remoteId: string,
+  path: string,
+): Promise<void> {
+  const data = ws.data as {
+    remoteId: string;
+    remoteSocket?: WebSocket;
+    proxyClosed?: boolean;
+    refcountHeld?: boolean;
+  };
+  data.remoteId = remoteId;
+  data.proxyClosed = false;
+
+  let localPort: number;
+  try {
+    const acquired = await acquireTunnel(remoteId);
+    localPort = acquired.localTunnelPort;
+    data.refcountHeld = true;
+  } catch (e: any) {
+    try { ws.send(JSON.stringify({ type: 'gateway.error', error: e?.message || String(e) })); } catch {}
+    try { ws.close(4011, 'Tunnel unavailable'); } catch {}
+    return;
+  }
+
+  const remoteUrl = `ws://127.0.0.1:${localPort}${path}`;
+  let outbound: WebSocket;
+  try {
+    outbound = new WebSocket(remoteUrl);
+  } catch (e: any) {
+    if (data.refcountHeld) {
+      releaseTunnel(remoteId);
+      data.refcountHeld = false;
+    }
+    try { ws.close(4012, `Cannot open WS to remote (${e?.message || e})`); } catch {}
+    return;
+  }
+
+  data.remoteSocket = outbound;
+  outbound.binaryType = 'arraybuffer';
+
+  outbound.addEventListener('open', () => {
+    log(`[gateway] WS open ${remoteUrl}`);
+  });
+  outbound.addEventListener('message', (ev) => {
+    if (data.proxyClosed) return;
+    try {
+      ws.send(ev.data as any);
+    } catch {}
+  });
+  outbound.addEventListener('close', (ev) => {
+    if (data.proxyClosed) return;
+    data.proxyClosed = true;
+    try { ws.close(ev.code || 1000, ev.reason || 'Remote WS closed'); } catch {}
+    if (data.refcountHeld) {
+      releaseTunnel(remoteId);
+      data.refcountHeld = false;
+    }
+  });
+  outbound.addEventListener('error', (ev) => {
+    log(`[gateway] WS error → ${remoteUrl}: ${(ev as any)?.message || 'unknown'}`);
+  });
+}
+
+/** Forward a message from the local client to the remote WS. */
+export function relayWsMessage(ws: ServerWebSocket<any>, message: string | Buffer | ArrayBuffer) {
+  const data = ws.data as { remoteSocket?: WebSocket; proxyClosed?: boolean };
+  const out = data.remoteSocket;
+  if (!out || data.proxyClosed) return;
+  if (out.readyState !== WebSocket.OPEN) return;
+  try {
+    if (typeof message === 'string') out.send(message);
+    else if (message instanceof ArrayBuffer) out.send(message);
+    else out.send(new Uint8Array(message).buffer); // Buffer → ArrayBuffer
+  } catch {}
+}
+
+/** Tear down the outbound WS and drop the tunnel refcount. */
+export function closeWsProxy(ws: ServerWebSocket<any>) {
+  const data = ws.data as {
+    remoteId?: string;
+    remoteSocket?: WebSocket;
+    proxyClosed?: boolean;
+    refcountHeld?: boolean;
+  };
+  if (data.proxyClosed) {
+    if (data.refcountHeld && data.remoteId) {
+      releaseTunnel(data.remoteId);
+      data.refcountHeld = false;
+    }
+    return;
+  }
+  data.proxyClosed = true;
+  try { data.remoteSocket?.close(1000, 'Client disconnected'); } catch {}
+  if (data.refcountHeld && data.remoteId) {
+    releaseTunnel(data.remoteId);
+    data.refcountHeld = false;
+  }
+}

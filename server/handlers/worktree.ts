@@ -1,35 +1,91 @@
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
-import { basename, dirname, join } from 'path';
+import { dirname, join } from 'path';
 import { corsHeaders } from '../config';
+
+function refExists(cwd: string, ref: string): boolean {
+  try {
+    execSync(`git rev-parse --verify --quiet "${ref}"`, { cwd, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Minimal worktree creation — the `git worktree add` step only, no deps install
  * or env copy. Exposed so MCP tools (and anything else in-process) can create a
  * worktree without dealing with the SSE streaming protocol of the HTTP handler.
  *
- * Behaviour matches handleCreateWorktree's core:
  *  - branch name is sanitized to [a-zA-Z0-9_\-/.]
  *  - worktree is placed at `<dirname(repoPath)>/.wt/<safeBranch>`
- *  - if the branch already exists, the worktree is created from it (no -b)
+ *  - newBranch=true creates the branch (fails if it already exists)
+ *  - newBranch=false attaches an existing branch (fails if it doesn't exist)
+ *  - sourceBranch / pullSource only apply when newBranch=true
  */
-export function createWorktree(opts: { repoPath: string; branch: string }): { path: string; branch: string } {
+export function createWorktree(opts: {
+  repoPath: string;
+  branch: string;
+  newBranch: boolean;
+  sourceBranch?: string;
+  pullSource?: boolean;
+}): { path: string; branch: string } {
   const repoPath = opts.repoPath;
   const branchName = opts.branch;
   if (!repoPath) throw new Error('repoPath is required');
   if (!branchName) throw new Error('branch is required');
+  if (typeof opts.newBranch !== 'boolean') throw new Error('newBranch (boolean) is required');
   const safeBranch = branchName.replace(/[^a-zA-Z0-9_\-/.]/g, '-');
+  const sourceBranch = opts.sourceBranch?.trim()
+    ? opts.sourceBranch.trim().replace(/[^a-zA-Z0-9_\-/.]/g, '-')
+    : '';
   const wtDir = join(dirname(repoPath), '.wt');
   if (!existsSync(wtDir)) mkdirSync(wtDir, { recursive: true });
   const wtPath = join(wtDir, safeBranch);
 
-  try {
-    execSync(`git worktree add "${wtPath}" -b "${safeBranch}" 2>&1`, { cwd: repoPath });
-  } catch {
-    // Branch likely already exists — fall back to attaching without -b.
-    execSync(`git worktree add "${wtPath}" "${safeBranch}" 2>&1`, { cwd: repoPath });
+  if (opts.newBranch) {
+    // Optional: fetch origin/<sourceBranch> first so the new branch is based on
+    // the latest remote head. On fetch failure, fall back to the local branch.
+    let startPoint = sourceBranch;
+    if (sourceBranch && opts.pullSource) {
+      try {
+        execSync(`git fetch origin "${sourceBranch}" 2>&1`, { cwd: repoPath });
+        startPoint = `origin/${sourceBranch}`;
+      } catch {
+        // fall through with local sourceBranch as start-point
+      }
+    }
+
+    const addCmd = startPoint
+      ? `git worktree add "${wtPath}" -b "${safeBranch}" "${startPoint}" 2>&1`
+      : `git worktree add "${wtPath}" -b "${safeBranch}" 2>&1`;
+    try {
+      execSync(addCmd, { cwd: repoPath });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Surface a clearer error when the branch already exists instead of
+      // silently attaching it — that would hide the agent's intent.
+      if (/already exists|already used/i.test(msg)) {
+        throw new Error(`Branch "${safeBranch}" already exists. Use new_branch: false to attach it, or pick a different branch name.`);
+      }
+      throw err;
+    }
+  } else {
+    // Attach an existing branch. If it doesn't exist locally but does exist
+    // as a remote-tracking ref (e.g. user picked `feature` from the list and
+    // it's only present as `origin/feature`), create a local tracking branch
+    // explicitly — DWIM is unreliable across git versions / remotes.
+    const hasLocal = refExists(repoPath, `refs/heads/${safeBranch}`);
+    if (hasLocal) {
+      execSync(`git worktree add "${wtPath}" "${safeBranch}" 2>&1`, { cwd: repoPath });
+    } else if (refExists(repoPath, `refs/remotes/origin/${safeBranch}`)) {
+      execSync(`git worktree add --track -b "${safeBranch}" "${wtPath}" "origin/${safeBranch}" 2>&1`, { cwd: repoPath });
+    } else {
+      execSync(`git worktree add "${wtPath}" "${safeBranch}" 2>&1`, { cwd: repoPath });
+    }
   }
+
   const resolvedPath = execSync(`cd "${wtPath}" && pwd`, { stdio: 'pipe' }).toString().trim();
   return { path: resolvedPath, branch: safeBranch };
 }
@@ -53,11 +109,11 @@ export async function handleCreateWorktree(req: Request): Promise<Response> {
   const doCopyNodeModules = body.copy_node_modules === true;
   const doLinkNodeModules = body.link_node_modules === true;
   const pm = (body.package_manager as string) || 'npm';
-  // Optional: base the new branch on `source_branch` instead of the current
-  // HEAD. When `pull_source` is also true, we first fetch origin for that
-  // branch and use `origin/<source>` as the start-point — so the worktree
-  // picks up the latest remote commits without touching the user's local
-  // checkout.
+  // new_branch=true  → create a fresh branch (optionally based on
+  //                   `source_branch` / fetched from origin first).
+  // new_branch=false → attach an existing branch into the worktree.
+  // Defaults to true for backwards compat with old clients.
+  const newBranch = body.new_branch !== false;
   const sourceBranchRaw = (body.source_branch as string | undefined)?.trim();
   const doPullSource = body.pull_source === true;
 
@@ -82,12 +138,12 @@ export async function handleCreateWorktree(req: Request): Promise<Response> {
       const finish = () => { if (!closed) { closed = true; controller.close(); } };
 
       try {
-        // 1. Optional: fetch origin for the requested source branch so the
-        //    worktree can be based on the latest remote head without touching
-        //    the user's local checkout of that branch. We only fetch — no
-        //    merge/pull — and on failure we fall back to the local branch.
+        // 1. New branch path: optionally fetch origin for `source_branch` so
+        //    the new branch is based on the latest remote head (no merge,
+        //    just fetch — falls back to the local branch on failure). Skipped
+        //    entirely when attaching an existing branch.
         let startPoint = sourceBranch; // may be '' (meaning: branch from HEAD)
-        if (sourceBranch && doPullSource) {
+        if (newBranch && sourceBranch && doPullSource) {
           log(`$ git fetch origin "${sourceBranch}"`);
           try {
             const out = execSync(`git fetch origin "${sourceBranch}" 2>&1`, { cwd: repoPath }).toString();
@@ -99,19 +155,31 @@ export async function handleCreateWorktree(req: Request): Promise<Response> {
           }
         }
 
-        // 2. Create the worktree. If the target branch already exists we fall
-        //    back to attaching it (no -b, ignore the source) — matching the
-        //    previous behavior.
-        const addCmd = startPoint
-          ? `git worktree add "${wtPath}" -b "${safeBranch}" "${startPoint}"`
-          : `git worktree add "${wtPath}" -b "${safeBranch}"`;
-        log(`$ ${addCmd}`);
-        try {
+        // 2. Create the worktree.
+        //    - new_branch=true  → `git worktree add -b <branch> <path> [start]`
+        //    - new_branch=false → `git worktree add <path> <branch>`
+        //    When new_branch=true and the branch already exists, surface the
+        //    error to the user instead of silently attaching — the agent or
+        //    operator explicitly asked for a fresh branch.
+        if (newBranch) {
+          const addCmd = startPoint
+            ? `git worktree add "${wtPath}" -b "${safeBranch}" "${startPoint}"`
+            : `git worktree add "${wtPath}" -b "${safeBranch}"`;
+          log(`$ ${addCmd}`);
           const out = execSync(`${addCmd} 2>&1`, { cwd: repoPath }).toString();
           if (out.trim()) log(out.trim());
-        } catch {
-          log(`Branch exists, using existing: ${safeBranch}`);
-          const out = execSync(`git worktree add "${wtPath}" "${safeBranch}" 2>&1`, { cwd: repoPath }).toString();
+        } else {
+          // If the branch doesn't exist locally but does exist as a remote-
+          // tracking ref, explicitly create a tracking branch — DWIM is
+          // unreliable, and the "Existing branch" picker mixes local + remote
+          // names with no distinction.
+          const hasLocal = refExists(repoPath, `refs/heads/${safeBranch}`);
+          const hasRemote = !hasLocal && refExists(repoPath, `refs/remotes/origin/${safeBranch}`);
+          const addCmd = hasRemote
+            ? `git worktree add --track -b "${safeBranch}" "${wtPath}" "origin/${safeBranch}"`
+            : `git worktree add "${wtPath}" "${safeBranch}"`;
+          log(`$ ${addCmd}`);
+          const out = execSync(`${addCmd} 2>&1`, { cwd: repoPath }).toString();
           if (out.trim()) log(out.trim());
         }
         const resolvedPath = execSync(`cd "${wtPath}" && pwd`, { stdio: 'pipe' }).toString().trim();

@@ -126,7 +126,13 @@ export interface SessionInfo {
   name: string;
   cwd: string;
   created_at: number;
-  status: 'starting' | 'running' | 'stopped';
+  /** Last meaningful activity (message, archive toggle, rename). Used to
+   *  sort the archived list "most recent first". */
+  updated_at: number;
+  /** UI lifecycle: 'open' tabs are visible, 'archived' are hidden. */
+  status: 'open' | 'archived';
+  /** Live process state for the underlying provider (Claude/Codex/etc). */
+  runtime_status: 'starting' | 'running' | 'stopped';
   ready: boolean;
   claude_session_id: string | null;
   ws_url: string;
@@ -134,6 +140,12 @@ export interface SessionInfo {
   model: string | null;
   permission_mode: string;
   provider?: string;
+  /** Remote workstation this session lives on (null = local). */
+  remoteId?: string | null;
+  /** Display color of the remote (drives tab tint). */
+  remoteColor?: string | null;
+  /** Display name of the remote (shown in tooltips / labels). */
+  remoteName?: string | null;
 }
 
 export interface SessionInitInfo {
@@ -189,10 +201,10 @@ export interface SessionState {
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-/** Tells the client how the bridge server was launched, which decides whether
- *  the client should auto-resume every stopped session on connect (`service`
- *  — server already booted them) or wait until the user activates a tab
- *  (`app` — server spawns lazily via `notifyActiveTab`). */
+/** How the bridge server was launched. Informational only — session spawn is
+ *  always lazy now (the server boots a provider when the user focuses a tab
+ *  via `notifyActiveTab` or a message arrives for it). Kept on the welcome
+ *  message for telemetry / future use. */
 export type SpawnMode = 'app' | 'service';
 
 type ClientCallbacks = {
@@ -605,7 +617,7 @@ export class ClaudeClient {
 
   async createSession(
     cwd?: string,
-    opts: { name?: string; model?: string | null; permissionMode?: string; provider?: string } = {},
+    opts: { name?: string; model?: string | null; permissionMode?: string; provider?: string; remoteId?: string | null } = {},
   ): Promise<SessionInfo> {
     const resp = await authedFetch(`${this.serverUrl}/sessions`, {
       method: 'POST',
@@ -616,6 +628,7 @@ export class ClaudeClient {
         model: opts.model,
         permissionMode: opts.permissionMode,
         provider: opts.provider,
+        remoteId: opts.remoteId ?? null,
       }),
     });
     if (!resp.ok) throw new Error(`Failed to create session: ${resp.status}`);
@@ -667,7 +680,10 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async updateSession(sessionId: string, updates: { permissionMode?: string; name?: string }): Promise<SessionInfo> {
+  async updateSession(
+    sessionId: string,
+    updates: { permissionMode?: string; name?: string; status?: 'open' | 'archived' },
+  ): Promise<SessionInfo> {
     const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
@@ -675,6 +691,20 @@ export class ClaudeClient {
     });
     if (!resp.ok) throw new Error(`Failed to update: ${resp.status}`);
     return resp.json();
+  }
+
+  /** Hide a session from the tab bar (status=archived). Doesn't stop the
+   *  underlying provider — call stopSession separately if you also want to
+   *  kill the Claude process. */
+  archiveSession(sessionId: string) {
+    return this.updateSession(sessionId, { status: 'archived' });
+  }
+
+  /** Bring an archived session back into the tab bar (status=open). Does
+   *  NOT auto-resume the provider — that happens lazily when the user
+   *  focuses the tab or sends a message. */
+  unarchiveSession(sessionId: string) {
+    return this.updateSession(sessionId, { status: 'open' });
   }
 
   async listDirs(prefix: string): Promise<string[]> {
@@ -873,12 +903,16 @@ export class ClaudeClient {
     repoPath: string,
     branch: string,
     opts: {
+      /** When false, attach the existing `branch` into the worktree instead
+       *  of creating a fresh one. Defaults to true (create new). */
+      new_branch?: boolean;
       copy_env?: boolean;
       install_deps?: boolean;
       copy_node_modules?: boolean;
       link_node_modules?: boolean;
       package_manager?: string;
-      /** Base the new branch on this existing branch instead of HEAD. */
+      /** Base the new branch on this existing branch instead of HEAD. Only
+       *  used when `new_branch` is true. */
       source_branch?: string;
       /** When `source_branch` is set, fetch origin for it first and use
        *  `origin/<source_branch>` as the start-point. */
