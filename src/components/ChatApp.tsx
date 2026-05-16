@@ -18,7 +18,7 @@ import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
-import type { TabGroupInfo } from '../lib/tab-groups';
+import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
@@ -373,6 +373,10 @@ export function ChatApp() {
   // tab bar. The tab itself is non-closable from the regular UI; this
   // settings-only toggle is the user's escape hatch.
   const [showTelegramSession, setShowTelegramSession] = useState(true);
+  // Global env vars (apply to every Bash tool call + user terminal, on
+  // top of process.env, with per-project envVars layered last). Persisted
+  // alongside other prefs in ~/.codiby/ui-preferences.json.
+  const [globalEnvVars, setGlobalEnvVars] = useState<ProjectEnvVar[]>([]);
 
   // Preferences are loaded inside the client connection effect below (before WS connect)
 
@@ -1364,6 +1368,9 @@ export function ChatApp() {
           }
           if (typeof prefs.showTelegramSession === 'boolean') {
             setShowTelegramSession(prefs.showTelegramSession);
+          }
+          if (Array.isArray(prefs.globalEnvVars)) {
+            setGlobalEnvVars(prefs.globalEnvVars as ProjectEnvVar[]);
           }
         },
 
@@ -5105,6 +5112,12 @@ export function ChatApp() {
             setShowTelegramSession(next);
             persistPrefs({ showTelegramSession: next });
           }}
+          globalEnvVars={globalEnvVars}
+          onChangeGlobalEnvVars={(next) => {
+            setGlobalEnvVars(next);
+            persistPrefs({ globalEnvVars: next });
+          }}
+          client={client}
           onDeleteGroup={handleDeleteGroup}
           onPatchGroup={(groupId, patch) => {
             const current = tabGroups[groupId];

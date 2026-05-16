@@ -77,6 +77,7 @@ import {
 } from './state';
 import type { ChatMessage } from './state';
 import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
+import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
 import { transcribeAudioBuffer } from './deepgram';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './tailscale';
 
@@ -680,7 +681,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       return;
     }
 
-    const pty = spawnPty({ cwd: execCwd, cols: execCols, rows: execRows });
+    const pty = spawnPty({ cwd: execCwd, cols: execCols, rows: execRows, sessionId });
     if (!pty) {
       broadcastToSession(sessionId, {
         type: 'terminal_data', sessionId, procId,
@@ -1782,6 +1783,29 @@ const server = Bun.serve({
       const body = await req.json() as Record<string, unknown>;
       updatePreferences(body);
       return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    // ── Claude hooks (read/write ~/.claude/settings.json and project) ──
+
+    if (url.pathname === '/claude-hooks' && req.method === 'GET') {
+      const scope = (url.searchParams.get('scope') || 'global') as 'global' | 'project';
+      const cwd = url.searchParams.get('cwd') || undefined;
+      try {
+        const result = readClaudeHooks(scope, cwd);
+        return Response.json(result, { headers: corsHeaders });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 400, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname === '/claude-hooks' && req.method === 'PUT') {
+      const body = await req.json() as { scope?: 'global' | 'project'; cwd?: string; hooks?: ClaudeHooks };
+      try {
+        const result = writeClaudeHooks(body.scope || 'global', body.cwd, body.hooks || {});
+        return Response.json({ ok: true, ...result }, { headers: corsHeaders });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 400, headers: corsHeaders });
+      }
     }
 
     // ── LSP ─────────────────────────────────────────────────────────────

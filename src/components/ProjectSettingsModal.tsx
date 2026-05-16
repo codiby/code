@@ -2,10 +2,17 @@ import { useEffect, useMemo, useState, useRef, type ReactNode } from 'react';
 import {
   X, Settings as SettingsIcon, Folder, Send, Mic, Smartphone, Plug,
   ArrowRight, Pin, ExternalLink, Plus, Trash2, Check, Terminal,
-  ShieldCheck, Globe, Server, Sparkles,
+  ShieldCheck, Globe, Server, Zap, Variable,
 } from 'lucide-react';
 import { Button, TextField, Input, Switch, SwitchControl, SwitchThumb } from '@heroui/react';
-import { resolveServerUrl } from '../lib/claude-client';
+import {
+  resolveServerUrl,
+  type ClaudeClient,
+  type HookScope,
+  type HookEvent,
+  type HookEntry,
+  type ClaudeHooks,
+} from '../lib/claude-client';
 import { PairPhoneModal } from './PairPhoneModal';
 import { PluginSettingsSections } from './PluginExtensionPoints';
 import { RemotesSection } from './RemotesSection';
@@ -26,6 +33,10 @@ interface ProjectSettingsModalProps {
   onToggleAutoGroup: (next: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (next: boolean) => void;
+  globalEnvVars: ProjectEnvVar[];
+  onChangeGlobalEnvVars: (next: ProjectEnvVar[]) => void;
+  /** Needed for the hooks editor to call getClaudeHooks/setClaudeHooks. */
+  client: ClaudeClient | null;
   onDeleteGroup: (groupId: string) => void;
   onPatchGroup: (groupId: string, patch: Partial<TabGroupInfo>) => void;
 }
@@ -38,8 +49,73 @@ type GlobalSection =
   | 'mobile'
   | 'remotes'
   | 'plugins'
+  | 'hooks'
+  | 'environment'
   | 'tab-groups'
   | 'about';
+
+const HOOK_EVENTS: { id: HookEvent; label: string; supportsMatcher: boolean; hint: string }[] = [
+  { id: 'PreToolUse',       label: 'PreToolUse',       supportsMatcher: true,  hint: 'Runs before Claude invokes a tool. Match by tool name (e.g. Bash, Edit).' },
+  { id: 'PostToolUse',      label: 'PostToolUse',      supportsMatcher: true,  hint: 'Runs after a tool finishes. Match by tool name.' },
+  { id: 'UserPromptSubmit', label: 'UserPromptSubmit', supportsMatcher: false, hint: 'Runs each time you send a message.' },
+  { id: 'Notification',     label: 'Notification',     supportsMatcher: false, hint: 'Runs when Claude emits a UI notification (idle, awaiting input, etc.).' },
+  { id: 'Stop',             label: 'Stop',             supportsMatcher: false, hint: 'Runs when the main agent stops or returns control.' },
+  { id: 'SubagentStop',     label: 'SubagentStop',     supportsMatcher: false, hint: 'Runs when a Task() subagent finishes.' },
+  { id: 'PreCompact',       label: 'PreCompact',       supportsMatcher: false, hint: 'Runs before the conversation is auto-compacted.' },
+  { id: 'SessionStart',     label: 'SessionStart',     supportsMatcher: false, hint: 'Runs once when the session boots.' },
+  { id: 'SessionEnd',       label: 'SessionEnd',       supportsMatcher: false, hint: 'Runs when the session is closed cleanly.' },
+];
+
+/** Flat row used for editing — the on-disk shape nests commands under
+ *  matchers, which is awkward to render as a form. We flatten on load
+ *  and re-nest on save. */
+interface HookRow {
+  id: string;
+  event: HookEvent;
+  matcher: string;
+  command: string;
+  timeout?: number;
+}
+
+function flattenHooks(hooks: ClaudeHooks): HookRow[] {
+  const out: HookRow[] = [];
+  for (const event of HOOK_EVENTS.map(e => e.id)) {
+    const entries = hooks[event];
+    if (!entries) continue;
+    for (const entry of entries) {
+      for (const cmd of entry.hooks || []) {
+        out.push({
+          id: crypto.randomUUID(),
+          event,
+          matcher: entry.matcher || '',
+          command: cmd.command || '',
+          timeout: typeof cmd.timeout === 'number' ? cmd.timeout : undefined,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function nestHooks(rows: HookRow[]): ClaudeHooks {
+  const out: ClaudeHooks = {};
+  for (const row of rows) {
+    if (!row.command.trim()) continue;
+    const event = row.event;
+    const matcher = row.matcher.trim() || undefined;
+    const bucket = (out[event] ||= []);
+    let entry = bucket.find(e => (e.matcher || '') === (matcher || ''));
+    if (!entry) {
+      entry = { hooks: [] };
+      if (matcher) entry.matcher = matcher;
+      bucket.push(entry);
+    }
+    const cmd: HookEntry['hooks'][number] = { type: 'command', command: row.command.trim() };
+    if (typeof row.timeout === 'number' && row.timeout > 0) cmd.timeout = row.timeout;
+    entry.hooks.push(cmd);
+  }
+  return out;
+}
 
 type SelectedNav =
   | { kind: 'global'; id: GlobalSection }
@@ -971,17 +1047,265 @@ function ProjectMcpPane({ group, onPatch }: { group: TabGroupInfo; onPatch: (pat
   );
 }
 
-function ProjectHooksPane() {
+/** Editor for Claude Code's `hooks` block — works against the global
+ *  ~/.claude/settings.json or a per-project <cwd>/.claude/settings.json,
+ *  selected via the `scope` + `cwd` props. Loads on mount, autosaves on
+ *  Save click, surfaces the on-disk path so the user knows what file
+ *  they're touching. */
+function HooksEditor({ scope, cwd, client }: { scope: HookScope; cwd?: string; client: ClaudeClient | null }) {
+  const [loaded, setLoaded] = useState(false);
+  const [path, setPath] = useState<string>('');
+  const [exists, setExists] = useState(false);
+  const [rows, setRows] = useState<HookRow[]>([]);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(false); setError(null); setDirty(false); setSaved(false);
+    if (!client) return;
+    if (scope === 'project' && !cwd) { setLoaded(true); return; }
+    (async () => {
+      try {
+        const res = await client.getClaudeHooks(scope, cwd);
+        if (cancelled) return;
+        setPath(res.path);
+        setExists(res.exists);
+        setRows(flattenHooks(res.hooks));
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [scope, cwd, client]);
+
+  const addRow = (event: HookEvent) => {
+    setRows(prev => [...prev, { id: crypto.randomUUID(), event, matcher: '', command: '' }]);
+    setDirty(true); setSaved(false);
+  };
+  const updateRow = (id: string, patch: Partial<HookRow>) => {
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+    setDirty(true); setSaved(false);
+  };
+  const removeRow = (id: string) => {
+    setRows(prev => prev.filter(r => r.id !== id));
+    setDirty(true); setSaved(false);
+  };
+
+  const onSave = async () => {
+    if (!client) return;
+    setSaving(true); setError(null);
+    try {
+      const cleaned = rows.filter(r => r.command.trim());
+      const nested = nestHooks(cleaned);
+      const res = await client.setClaudeHooks(scope, cwd, nested);
+      setPath(res.path);
+      setExists(true);
+      setRows(cleaned);
+      setDirty(false);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (scope === 'project' && !cwd) {
+    return (
+      <div className="text-[12px] text-zinc-500 bg-surface-light border border-border rounded-md px-3 py-3">
+        Set a working directory on this project to enable per-project hooks.
+      </div>
+    );
+  }
+
+  if (!loaded) return <div className="text-[12px] text-zinc-600">Loading…</div>;
+
   return (
     <>
-      <SectionHeader title="Hooks" subtitle="Run shell commands before or after tool calls and session events. Configured per-project to keep automation scoped." />
-      <div className="border border-border rounded-lg bg-surface-light px-6 py-10 text-center">
-        <Sparkles className="w-5 h-5 text-zinc-500 mx-auto mb-2" />
-        <div className="text-[12.5px] text-zinc-300 mb-1">Per-project hooks are coming soon</div>
-        <div className="text-[11.5px] text-zinc-500 max-w-[40ch] mx-auto">
-          For now, hooks live in <code className="text-zinc-400">settings.json</code> and are global. Tell us what you'd want to wire here.
+      <div className="mb-4 flex items-end justify-between gap-4">
+        <div>
+          <p className="text-[11px] font-mono text-zinc-500 break-all">{path}</p>
+          {!exists && <p className="text-[11px] text-amber-400 mt-1">File doesn't exist yet — saving will create it.</p>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {dirty && <span className="text-[10.5px] uppercase tracking-wider text-amber-400">Unsaved</span>}
+          <button
+            onClick={onSave}
+            disabled={!dirty || saving}
+            className="text-[12px] px-3 py-1.5 rounded-md font-medium text-white bg-violet-600 hover:bg-violet-500 border border-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? 'Saving…' : saved ? 'Saved' : 'Save hooks'}
+          </button>
         </div>
       </div>
+
+      {error && (
+        <div className="text-[11.5px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2 mb-4 whitespace-pre-wrap">
+          {error}
+        </div>
+      )}
+
+      <div className="space-y-6">
+        {HOOK_EVENTS.map(evt => {
+          const eventRows = rows.filter(r => r.event === evt.id);
+          return (
+            <div key={evt.id}>
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="text-[12.5px] font-medium text-zinc-100">{evt.label}</div>
+                  <div className="text-[11px] text-zinc-500">{evt.hint}</div>
+                </div>
+                <button onClick={() => addRow(evt.id)} className="text-[11.5px] inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-300 hover:text-zinc-100 hover:bg-surface-lighter">
+                  <Plus className="w-3 h-3" />
+                  Add
+                </button>
+              </div>
+
+              {eventRows.length === 0 ? (
+                <div className="text-[11.5px] text-zinc-600 bg-surface-light/40 border border-dashed border-border rounded-md px-3 py-2">
+                  No {evt.label} hooks.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {eventRows.map(row => (
+                    <div key={row.id} className="bg-surface-light border border-border rounded-md p-2.5 space-y-2">
+                      {evt.supportsMatcher && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16">Matcher</span>
+                          <input
+                            value={row.matcher}
+                            onChange={e => updateRow(row.id, { matcher: e.target.value })}
+                            placeholder="Bash, Edit, *  — blank = any"
+                            className="flex-1 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
+                          />
+                        </div>
+                      )}
+                      <div className="flex items-start gap-2">
+                        <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16 pt-2">Command</span>
+                        <textarea
+                          value={row.command}
+                          onChange={e => updateRow(row.id, { command: e.target.value })}
+                          placeholder="e.g. echo hook fired for $TOOL_NAME"
+                          rows={Math.max(1, Math.min(4, row.command.split('\n').length))}
+                          className="flex-1 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500 resize-y leading-relaxed"
+                        />
+                        <button onClick={() => removeRow(row.id)} className="p-1.5 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 mt-1" aria-label="Remove">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16">Timeout</span>
+                        <input
+                          type="number"
+                          value={row.timeout ?? ''}
+                          onChange={e => updateRow(row.id, { timeout: e.target.value ? Number(e.target.value) : undefined })}
+                          placeholder="seconds (optional)"
+                          className="w-40 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function ProjectHooksPane({ group, client }: { group: TabGroupInfo; client: ClaudeClient | null }) {
+  return (
+    <>
+      <SectionHeader
+        title="Hooks"
+        subtitle={`Run shell commands before/after tool calls and session events. Edits go to ${group.cwd ? `${group.cwd}/.claude/settings.json` : 'this project’s .claude/settings.json'} — committable so the team uses the same hooks.`}
+      />
+      <HooksEditor scope="project" cwd={group.cwd} client={client} />
+    </>
+  );
+}
+
+function GlobalHooksSection({ client }: { client: ClaudeClient | null }) {
+  return (
+    <>
+      <SectionHeader
+        title="Hooks"
+        subtitle="User-level hooks that run for every Claude session on this machine. Stored in ~/.claude/settings.json — the same file the Claude CLI reads."
+      />
+      <HooksEditor scope="global" client={client} />
+    </>
+  );
+}
+
+function GlobalEnvironmentSection({ envVars, onChange }: { envVars: ProjectEnvVar[]; onChange: (next: ProjectEnvVar[]) => void }) {
+  const [rows, setRows] = useState<ProjectEnvVar[]>(envVars);
+  useEffect(() => { setRows(envVars); }, [envVars]);
+
+  const commit = (next: ProjectEnvVar[]) => {
+    setRows(next);
+    const cleaned = next.filter(r => r.key.trim());
+    onChange(cleaned);
+  };
+  const updateRow = (i: number, patch: Partial<ProjectEnvVar>) => setRows(rows.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+
+  return (
+    <>
+      <SectionHeader
+        title="Environment variables"
+        subtitle="Injected on top of process.env into every Bash tool call and terminal Claude or you open. Per-project envs are layered on top of these and win on conflict."
+      />
+
+      <div className="grid grid-cols-[1fr_1.4fr_auto] gap-2 text-[10.5px] uppercase tracking-wider text-zinc-500 mb-2 px-2.5">
+        <div>Key</div>
+        <div>Value</div>
+        <div />
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="text-[12px] text-zinc-500 bg-surface-light border border-border rounded-md px-3 py-4 text-center">
+          No global env vars set. Add API keys, NODE_OPTIONS, etc. that every shell should see.
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {rows.map((row, i) => (
+            <div key={i} className="grid grid-cols-[1fr_1.4fr_auto] gap-2 items-center">
+              <input
+                value={row.key}
+                onChange={e => updateRow(i, { key: e.target.value })}
+                onBlur={() => commit(rows)}
+                placeholder="VARIABLE_NAME"
+                className="bg-surface-light border border-border rounded px-2.5 py-2 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
+              />
+              <input
+                value={row.value}
+                onChange={e => updateRow(i, { value: e.target.value })}
+                onBlur={() => commit(rows)}
+                placeholder="value"
+                className="bg-surface-light border border-border rounded px-2.5 py-2 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
+              />
+              <button onClick={() => commit(rows.filter((_, idx) => idx !== i))} className="p-1.5 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10" aria-label="Remove">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button
+        onClick={() => commit([...rows, { key: '', value: '' }])}
+        className="mt-3 text-[12px] px-3 py-1.5 rounded-md text-zinc-200 bg-surface-light hover:bg-surface-lighter border border-border hover:border-border-light flex items-center gap-1.5"
+      >
+        <Plus className="w-3 h-3" />
+        Add variable
+      </button>
     </>
   );
 }
@@ -1074,6 +1398,8 @@ export function ProjectSettingsModal({
   open, onClose, tabGroups, tabGroupMap,
   autoGroupSessions, onToggleAutoGroup,
   showTelegramSession, onToggleShowTelegramSession,
+  globalEnvVars, onChangeGlobalEnvVars,
+  client,
   onDeleteGroup, onPatchGroup,
 }: ProjectSettingsModalProps) {
   const [selected, setSelected] = useState<SelectedNav>({ kind: 'global', id: 'general' });
@@ -1150,6 +1476,8 @@ export function ProjectSettingsModal({
             <NavItem icon={<Smartphone className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Mobile Pairing" active={selected.kind === 'global' && selected.id === 'mobile'} onClick={() => setSelected({ kind: 'global', id: 'mobile' })} />
             <NavItem icon={<ArrowRight className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Remote Workstations" active={selected.kind === 'global' && selected.id === 'remotes'} onClick={() => setSelected({ kind: 'global', id: 'remotes' })} />
             <NavItem icon={<Plug className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Plugins" active={selected.kind === 'global' && selected.id === 'plugins'} onClick={() => setSelected({ kind: 'global', id: 'plugins' })} />
+            <NavItem icon={<Zap className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Hooks" active={selected.kind === 'global' && selected.id === 'hooks'} onClick={() => setSelected({ kind: 'global', id: 'hooks' })} />
+            <NavItem icon={<Variable className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Environment" active={selected.kind === 'global' && selected.id === 'environment'} onClick={() => setSelected({ kind: 'global', id: 'environment' })} />
 
             <NavLabel>
               Projects
@@ -1187,6 +1515,7 @@ export function ProjectSettingsModal({
                   onDelete={() => { onDeleteGroup(activeProject.id); setSelected({ kind: 'global', id: 'tab-groups' }); }}
                   tabGroupMap={tabGroupMap}
                   memberCount={memberCount[activeProject.id] || 0}
+                  client={client}
                 />
               )
               : (
@@ -1199,6 +1528,9 @@ export function ProjectSettingsModal({
                   onToggleAutoGroup={onToggleAutoGroup}
                   showTelegramSession={showTelegramSession}
                   onToggleShowTelegramSession={onToggleShowTelegramSession}
+                  globalEnvVars={globalEnvVars}
+                  onChangeGlobalEnvVars={onChangeGlobalEnvVars}
+                  client={client}
                   onDeleteGroup={onDeleteGroup}
                   onSelectGroup={handleSelectProject}
                 />
@@ -1223,7 +1555,7 @@ export function ProjectSettingsModal({
 }
 
 /* Global content router (right pane when no project selected) */
-function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, showTelegramSession, onToggleShowTelegramSession, onDeleteGroup, onSelectGroup }: {
+function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, client, onDeleteGroup, onSelectGroup }: {
   section: GlobalSection;
   serverUrl: string | null;
   tabGroups: Record<string, TabGroupInfo>;
@@ -1232,20 +1564,25 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
   onToggleAutoGroup: (v: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (v: boolean) => void;
+  globalEnvVars: ProjectEnvVar[];
+  onChangeGlobalEnvVars: (next: ProjectEnvVar[]) => void;
+  client: ClaudeClient | null;
   onDeleteGroup: (id: string) => void;
   onSelectGroup: (id: string) => void;
 }) {
   return (
     <div className="px-8 pt-6 pb-8">
-      {section === 'general'    && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} />}
-      {section === 'telegram'   && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
-      {section === 'deepgram'   && <DeepgramSection serverUrl={serverUrl} />}
-      {section === 'tailscale'  && <TailscaleSection serverUrl={serverUrl} />}
-      {section === 'mobile'     && <MobileSection />}
-      {section === 'remotes'    && <RemotesSection serverUrl={serverUrl} />}
-      {section === 'plugins'    && <PluginsContent />}
-      {section === 'tab-groups' && <TabGroupsListSection tabGroups={tabGroups} tabGroupMap={tabGroupMap} onDeleteGroup={onDeleteGroup} onSelect={onSelectGroup} />}
-      {section === 'about'      && <AboutSection />}
+      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} />}
+      {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
+      {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
+      {section === 'tailscale'   && <TailscaleSection serverUrl={serverUrl} />}
+      {section === 'mobile'      && <MobileSection />}
+      {section === 'remotes'     && <RemotesSection serverUrl={serverUrl} />}
+      {section === 'plugins'     && <PluginsContent />}
+      {section === 'hooks'       && <GlobalHooksSection client={client} />}
+      {section === 'environment' && <GlobalEnvironmentSection envVars={globalEnvVars} onChange={onChangeGlobalEnvVars} />}
+      {section === 'tab-groups'  && <TabGroupsListSection tabGroups={tabGroups} tabGroupMap={tabGroupMap} onDeleteGroup={onDeleteGroup} onSelect={onSelectGroup} />}
+      {section === 'about'       && <AboutSection />}
     </div>
   );
 }
@@ -1262,7 +1599,7 @@ function PluginsContent() {
 }
 
 /* Project content (right pane when a project is selected) */
-function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount }: {
+function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount, client }: {
   group: TabGroupInfo;
   tab: ProjectTab;
   onTabChange: (t: ProjectTab) => void;
@@ -1270,6 +1607,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
   onDelete: () => void;
   tabGroupMap: Record<string, string>;
   memberCount: number;
+  client: ClaudeClient | null;
 }) {
   const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
   const Icon = group.icon ? ICON_MAP[group.icon] : Folder;
@@ -1332,7 +1670,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
       {tab === 'permissions' && <ProjectPermissionsPane group={group} onPatch={onPatch} />}
       {tab === 'environment' && <ProjectEnvironmentPane group={group} onPatch={onPatch} />}
       {tab === 'mcp'         && <ProjectMcpPane group={group} onPatch={onPatch} />}
-      {tab === 'hooks'       && <ProjectHooksPane />}
+      {tab === 'hooks'       && <ProjectHooksPane group={group} client={client} />}
       {tab === 'sessions'    && <ProjectSessionsPane group={group} tabGroupMap={tabGroupMap} />}
 
       {/* Danger zone (always present, at the bottom) */}

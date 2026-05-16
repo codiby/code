@@ -29,6 +29,9 @@ export interface SpawnPtyOptions {
   rows: number;
   shell?: string;
   env?: Record<string, string | undefined>;
+  /** When set, the PTY inherits the user's global + per-project env
+   *  overrides for this session (project API keys, NODE_ENV, etc). */
+  sessionId?: string;
 }
 
 export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
@@ -74,8 +77,14 @@ export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
     try { terminal.setRawMode(true); } catch {}
   }
 
+  // Lazy require avoids the import cost (and a small bun cycle risk) when
+  // a PTY is spawned without a session — e.g. legacy callers.
+  const sessionOverrides = opts.sessionId
+    ? (require('./session-env') as typeof import('./session-env')).getSessionEnvOverrides(opts.sessionId)
+    : {};
+
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries({ ...process.env, ...(opts.env || {}) })) {
+  for (const [k, v] of Object.entries({ ...process.env, ...(opts.env || {}), ...sessionOverrides })) {
     if (typeof v === 'string') env[k] = v;
   }
   env.TERM = env.TERM || 'xterm-256color';

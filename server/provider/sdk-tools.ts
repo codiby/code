@@ -874,7 +874,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const procId = randomUUID();
           const cols = 120;
           const rows = 30;
-          const pty = spawnPty({ cwd: args.cwd, cols, rows });
+          const pty = spawnPty({ cwd: args.cwd, cols, rows, sessionId });
           if (!pty) {
             return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
           }

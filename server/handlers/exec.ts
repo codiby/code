@@ -4,6 +4,7 @@ import { corsHeaders } from '../config';
 import { log } from '../logger';
 import type { TrackedProcess } from '../types';
 import { trackedProcesses, saveProcessRegistry, appendProcessOutput } from './processes';
+import { getSessionEnvOverrides } from '../session-env';
 
 export interface SpawnTrackedOptions {
   command: string;
@@ -55,6 +56,9 @@ export function spawnTrackedProcess(opts: SpawnTrackedOptions): SpawnTrackedResu
       FORCE_COLOR: '1',
       COLORTERM: 'truecolor',
       PATH: `/usr/local/sbin:/usr/sbin:/sbin:${process.env.PATH || ''}`,
+      // User-defined globals + per-project env overrides layered on top
+      // so the project's API keys / config are visible to commands.
+      ...getSessionEnvOverrides(opts.sessionId),
     },
     // stdin is piped (not ignored) so callers — including the
     // `send_terminal_input` SDK tool — can feed more input to a long-lived

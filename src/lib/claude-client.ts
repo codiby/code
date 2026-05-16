@@ -23,6 +23,37 @@ export async function resolveServerUrl(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Claude-hook shapes — re-declared here (instead of imported from server/)
+// so the frontend bundle doesn't drag server-side modules in. Must stay in
+// lock-step with server/claude-settings.ts.
+
+export type HookScope = 'global' | 'project';
+
+export type HookEvent =
+  | 'PreToolUse'
+  | 'PostToolUse'
+  | 'UserPromptSubmit'
+  | 'Notification'
+  | 'Stop'
+  | 'SubagentStop'
+  | 'PreCompact'
+  | 'SessionStart'
+  | 'SessionEnd';
+
+export interface HookCommand {
+  type: 'command';
+  command: string;
+  timeout?: number;
+}
+
+export interface HookEntry {
+  matcher?: string;
+  hooks: HookCommand[];
+}
+
+export type ClaudeHooks = Partial<Record<HookEvent, HookEntry[]>>;
+
+// ---------------------------------------------------------------------------
 // Mobile auth token (bearer token used by phones on the LAN)
 // ---------------------------------------------------------------------------
 
@@ -726,6 +757,30 @@ export class ClaudeClient {
       method: 'POST',
     });
     if (!resp.ok) throw new Error(`Failed to clear: ${resp.status}`);
+  }
+
+  /** Read the `hooks` block from Claude's settings.json — either the
+   *  global one at ~/.claude/settings.json, or the project one at
+   *  <cwd>/.claude/settings.json. Returns the on-disk path so the UI can
+   *  surface it, and a boolean for whether the file exists yet. */
+  async getClaudeHooks(scope: HookScope, cwd?: string): Promise<{ path: string; exists: boolean; hooks: ClaudeHooks }> {
+    const qs = new URLSearchParams({ scope });
+    if (cwd) qs.set('cwd', cwd);
+    const resp = await authedFetch(`${this.serverUrl}/claude-hooks?${qs.toString()}`);
+    if (!resp.ok) throw new Error(`Failed to read hooks: ${resp.status}`);
+    return resp.json();
+  }
+
+  /** Write the `hooks` block back to Claude's settings.json. Preserves
+   *  every other key in the file (mcpServers, permissions, model, etc.). */
+  async setClaudeHooks(scope: HookScope, cwd: string | undefined, hooks: ClaudeHooks): Promise<{ path: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/claude-hooks`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope, cwd, hooks }),
+    });
+    if (!resp.ok) throw new Error(`Failed to write hooks: ${resp.status}`);
+    return resp.json();
   }
 
   async listDirs(prefix: string): Promise<string[]> {
