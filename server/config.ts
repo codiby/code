@@ -88,6 +88,17 @@ export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   'mcp__codiby-code-sdk__rename_session',
 ]);
 
+/**
+ * Tools whose entire purpose is to hand control back to the user. Even in
+ * `bypassPermissions` mode we must prompt — auto-approving them would either
+ * silently swallow the question (AskUserQuestion) or skip the plan review
+ * step the user explicitly asked for (ExitPlanMode).
+ */
+export const USER_INTERACTION_TOOLS = new Set([
+  'AskUserQuestion',
+  'ExitPlanMode',
+]);
+
 export const MAIN_SESSION_ID = 'main-session';
 export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 export const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';

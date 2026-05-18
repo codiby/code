@@ -15,7 +15,7 @@
  *   - selection completion handlers for slash and file-mention (they only
  *     manipulate this pane's input via `onChangeInput`).
  */
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Send as SendIcon } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import { SlashCommandList, useSlashCommands } from './SlashCommandPicker';
@@ -96,6 +96,27 @@ export function ChatComposer(props: Props) {
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
 
+  // Double-ESC to interrupt. First ESC arms; second within the window calls
+  // onInterrupt. The armed state drives the visual hint below the composer.
+  const [escArmed, setEscArmed] = useState(false);
+  const escTimerRef = useRef<number | null>(null);
+  const ESC_WINDOW_MS = 1500;
+  const armEsc = () => {
+    setEscArmed(true);
+    if (escTimerRef.current !== null) window.clearTimeout(escTimerRef.current);
+    escTimerRef.current = window.setTimeout(() => {
+      setEscArmed(false);
+      escTimerRef.current = null;
+    }, ESC_WINDOW_MS);
+  };
+  const disarmEsc = () => {
+    if (escTimerRef.current !== null) {
+      window.clearTimeout(escTimerRef.current);
+      escTimerRef.current = null;
+    }
+    setEscArmed(false);
+  };
+
   const fileIndex: FileEntry[] = useFileIndex(client, cwd);
   const slash = useSlashCommands(input, slashCommands);
   const fileMention = useFileMention(input, fileIndex);
@@ -145,6 +166,18 @@ export function ChatComposer(props: Props) {
             onSelect={handleFileMentionSelect}
           />
         )}
+        {/* Double-ESC interrupt hint — fades in for ESC_WINDOW_MS after the
+            first ESC while streaming, instructing the user to press again. */}
+        <div
+          aria-live="polite"
+          className={`pointer-events-none absolute left-1/2 -top-2 -translate-x-1/2 -translate-y-full z-50 transition-opacity duration-150 ${
+            escArmed && streaming ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <div className="bg-zinc-900/95 border border-amber-500/40 text-amber-300 text-[11px] px-2.5 py-1 rounded-full shadow-lg whitespace-nowrap">
+            Press <kbd className="font-mono px-1 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-amber-200">Esc</kbd> again to stop
+          </div>
+        </div>
         <div className="relative">
           {/* Ambient color spots — four point-lights bouncing in pairs.
               Clipped to the composer's rounded bounds. Fades in while
@@ -230,6 +263,20 @@ export function ChatComposer(props: Props) {
                   if (isTerminalMode && e.key === 'Backspace' && !cmdText) {
                     e.preventDefault();
                     onChangeInput('');
+                    return;
+                  }
+                  // Double-ESC to interrupt while streaming. First press arms
+                  // the action and shows the hint; second press within
+                  // ESC_WINDOW_MS calls onInterrupt. Skip when a picker is open
+                  // so it can consume the key to close itself first.
+                  if (e.key === 'Escape' && streaming && !slash.isActive && !fileMention.isActive) {
+                    e.preventDefault();
+                    if (escArmed) {
+                      disarmEsc();
+                      onInterrupt();
+                    } else {
+                      armEsc();
+                    }
                     return;
                   }
                   if (e.key === 'ArrowUp' && !e.shiftKey && !slash.isActive && !fileMention.isActive) {

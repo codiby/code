@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { ACCEPT_EDITS_TOOLS, ALWAYS_AUTO_APPROVE_TOOLS, MAIN_SESSION_ID, PLAN_DENY_TOOLS, PLAN_READ_ONLY_TOOLS } from '../config';
+import { ACCEPT_EDITS_TOOLS, ALWAYS_AUTO_APPROVE_TOOLS, MAIN_SESSION_ID, PLAN_DENY_TOOLS, PLAN_READ_ONLY_TOOLS, USER_INTERACTION_TOOLS } from '../config';
 import { log, logError } from '../logger';
 import { saveSessions } from '../sessions';
 import { addMessage, getSessionState, updateSessionState, updateUIState } from '../state';
@@ -149,9 +149,11 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       const mode = session.permissionMode || 'default';
       const willAutoApprove =
         ALWAYS_AUTO_APPROVE_TOOLS.has(tool.name) ||
-        mode === 'bypassPermissions' ||
-        (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(tool.name)) ||
-        (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(tool.name));
+        (!USER_INTERACTION_TOOLS.has(tool.name) && (
+          mode === 'bypassPermissions' ||
+          (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(tool.name)) ||
+          (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(tool.name))
+        ));
       const chatMsg: ChatMessage = {
         id: tool.id || randomUUID(),
         role: 'assistant',
@@ -229,11 +231,16 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       }
 
       // Auto-allow by mode (or always-allow list for safe in-process tools).
+      // USER_INTERACTION_TOOLS (AskUserQuestion, ExitPlanMode) always prompt —
+      // even in bypassPermissions — because their whole job is to hand control
+      // back to the user.
       const shouldAutoAccept =
         ALWAYS_AUTO_APPROVE_TOOLS.has(req.toolName) ||
-        mode === 'bypassPermissions' ||
-        (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(req.toolName)) ||
-        (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(req.toolName));
+        (!USER_INTERACTION_TOOLS.has(req.toolName) && (
+          mode === 'bypassPermissions' ||
+          (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(req.toolName)) ||
+          (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(req.toolName))
+        ));
 
       if (shouldAutoAccept) {
         // The tool_use ChatMessage itself now carries `autoApproved: true`
