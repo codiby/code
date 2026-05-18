@@ -67,6 +67,11 @@ export type BrowserPanelProps = {
   onSendToChat: (markdown: string) => void;
   onWriteToChat: (markdown: string) => void;
   onClose: () => void;
+  /** Fired when the underlying webview navigates (link click, address-bar
+   *  submit, popstate, etc). The host should mirror this into session state
+   *  on the active browser so a remount (tab switch) doesn't snap the view
+   *  back to the original `url` prop via `open_browser_preview`. */
+  onUrlChanged?: (url: string) => void;
 };
 
 function buildChatMessage(url: string, title: string, comments: MockupComment[]): string {
@@ -157,6 +162,15 @@ export function useBrowserPreviewBounds(args: {
   visible: boolean;
 }): { windowOpen: boolean; openError: string | null } {
   const { hostRef, label, url, title, openSeq, visible } = args;
+  // The open-effect below is keyed on `openSeq` (the model-driven re-open
+  // bump), not `url` — otherwise propagating the user's in-page navigation
+  // back into session state would re-fire the effect on every URL change.
+  // We still need the latest URL/title inside the effect body when openSeq
+  // actually changes, so capture them in refs.
+  const urlRef = useRef(url);
+  urlRef.current = url;
+  const titleRef = useRef(title);
+  titleRef.current = title;
   const [windowOpen, setWindowOpen] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const lastBoundsRef = useRef<Bounds | null>(null);
@@ -188,7 +202,9 @@ export function useBrowserPreviewBounds(args: {
     const start = requestAnimationFrame(() => {
       const rect = readBounds(hostRef.current) || { x: 0, y: 0, width: 800, height: 600 };
       lastBoundsRef.current = rect;
-      native.invoke<void>('open_browser_preview', { label, url, title, ...rect })
+      native.invoke<void>('open_browser_preview', {
+        label, url: urlRef.current, title: titleRef.current, ...rect,
+      })
         .then(() => { if (!cancelled) setWindowOpen(true); })
         .catch((e: unknown) => { if (!cancelled) setOpenError(String(e)); });
     });
@@ -202,7 +218,8 @@ export function useBrowserPreviewBounds(args: {
       }
       tryInvokeNative('browser_preview_set_visible', { label, visible: false });
     };
-  }, [label, url, title, openSeq, hostRef]);
+    // url/title intentionally omitted — see urlRef/titleRef comment above.
+  }, [label, openSeq, hostRef]);
 
   useEffect(() => {
     if (!windowOpen) return;
@@ -244,6 +261,7 @@ export function BrowserPanel({
   label, url, title, openSeq, inspect, comments, obscured,
   tabs, onSelectTab, onCloseTab,
   onSetInspect, onSetComments, onSendToChat, onWriteToChat, onClose,
+  onUrlChanged,
 }: BrowserPanelProps) {
   // The page's *actual* current URL, fed by the `url-changed` relay event.
   // Drifts away from the `url` prop when the user clicks links in the
@@ -262,6 +280,13 @@ export function BrowserPanel({
   onSetCommentsRef.current = onSetComments;
   const onSetInspectRef = useRef(onSetInspect);
   onSetInspectRef.current = onSetInspect;
+  const onUrlChangedRef = useRef(onUrlChanged);
+  onUrlChangedRef.current = onUrlChanged;
+  // Capture latest `url` so the openSeq-only reset effect below can read the
+  // current value without listing `url` in its deps (which would fire it on
+  // every in-page navigation and clobber addressInput-while-typing).
+  const urlRef = useRef(url);
+  urlRef.current = url;
 
   const { windowOpen, openError } = useBrowserPreviewBounds({
     hostRef: bodyRef,
@@ -347,6 +372,10 @@ export function BrowserPanel({
       // isn't mid-edit — clobbering an in-progress URL on every popstate
       // would be infuriating.
       if (!addressEditingRef.current) setAddressInput(next);
+      // Propagate to the host so session state reflects the real URL —
+      // otherwise a tab-switch remount re-runs `open_browser_preview` with
+      // the stale initial url prop and the native side snaps the view back.
+      onUrlChangedRef.current?.(next);
     });
 
     return () => {
@@ -355,14 +384,18 @@ export function BrowserPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [label]);
 
-  // Reset URL-bar state when the model points us at a new page — we
-  // don't want stale `addressInput` from the previous page bleeding into
-  // a fresh open.
+  // Reset URL-bar state when the model points us at a new page (openSeq
+  // bumps on every `browser_open` from the SDK tool). Note: we deliberately
+  // *don't* depend on `url` here. The `url` prop also changes when the host
+  // mirrors user-driven in-page navigation back into session state — but in
+  // that case `currentUrl`/`addressInput` are already correct (the
+  // `url-changed` listener above already updated them), and re-running this
+  // would needlessly clobber a mid-edit addressInput.
   useEffect(() => {
-    setCurrentUrl(url);
-    setAddressInput(url);
+    setCurrentUrl(urlRef.current);
+    setAddressInput(urlRef.current);
     addressEditingRef.current = false;
-  }, [url, openSeq]);
+  }, [openSeq]);
 
   const reload = useCallback(() => {
     if (!isNative()) return;

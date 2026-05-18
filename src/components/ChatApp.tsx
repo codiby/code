@@ -4664,6 +4664,19 @@ export function ChatApp() {
                           return { ...s, browsers: rest, activeBrowserName: nextActive, browserInspect: nextInspect };
                         });
                       }}
+                      onUrlChanged={(nextUrl) => updateLocalState(activeId, s => {
+                        const cur = s.browsers[activeName];
+                        if (!cur || cur.url === nextUrl) return s;
+                        // Mirror in-page navigation into session state, but
+                        // do NOT bump `openSeq` — that signal is reserved for
+                        // model-driven `browser_open` calls. Bumping it here
+                        // would force the panel's open-effect / reset-effect
+                        // to re-fire on every link click.
+                        return {
+                          ...s,
+                          browsers: { ...s.browsers, [activeName]: { ...cur, url: nextUrl } },
+                        };
+                      })}
                       onSetInspect={(next) => updateLocalState(activeId, s => ({
                         ...s,
                         browserInspect: { ...s.browserInspect, [activeName]: next },
