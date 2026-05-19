@@ -72,6 +72,7 @@ import {
 } from './ChatFocusLayout';
 import { BookmarkPlus, MessageSquarePlus } from 'lucide-react';
 import { ChatComposer } from './ChatComposer';
+import { CtrlTabSwitcher } from './CtrlTabSwitcher';
 import { GroupComposer } from './GroupComposer';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
@@ -360,6 +361,17 @@ export function ChatApp() {
   const archivedIdsRef = useRef(archivedSessionIds);
   useEffect(() => { archivedIdsRef.current = archivedSessionIds; }, [archivedSessionIds]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // MRU stack of session IDs — most-recently-active first. Updated whenever
+  // `activeId` changes, so Ctrl+Tab can cycle in true MRU order (previously-
+  // active session lands at index 1, ready to be swapped to with one tap).
+  // Held in a ref so updates don't trigger re-renders of the whole app; the
+  // switcher snapshots it into local state when it opens.
+  const sessionMRURef = useRef<string[]>([]);
+  // Ctrl+Tab switcher — open flag + currently-highlighted index. `mruIds` is
+  // the frozen list the switcher renders for the lifetime of one open cycle.
+  const [switcher, setSwitcher] = useState<{ open: boolean; idx: number; mruIds: string[] }>({
+    open: false, idx: 0, mruIds: [],
+  });
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [tabGroups, setTabGroups] = useState<Record<string, TabGroupInfo>>({});
   const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
@@ -2681,9 +2693,64 @@ export function ChatApp() {
   const closePanelRef = useRef(handleCloseCurrentPanel);
   closePanelRef.current = handleCloseCurrentPanel;
 
+  // Maintain MRU of session ids. On every activeId change, move the new
+  // active session to the front. Ref-only — the switcher snapshots it on
+  // open, so updates here don't re-render anything.
+  useEffect(() => {
+    if (!activeId) return;
+    const prev = sessionMRURef.current;
+    if (prev[0] === activeId) return;
+    sessionMRURef.current = [activeId, ...prev.filter(id => id !== activeId)];
+  }, [activeId]);
+
+  // Garbage-collect MRU entries for sessions that no longer exist (closed,
+  // deleted) so we don't end up cycling through ghosts.
+  useEffect(() => {
+    const live = new Set(sessions.map(s => s.id));
+    sessionMRURef.current = sessionMRURef.current.filter(id => live.has(id));
+  }, [sessions]);
+
+  /** Build the MRU-ordered list of open session ids the switcher should
+   *  cycle through. Falls back to tab-bar order for any sessions that
+   *  haven't been touched since launch (so they're still reachable). */
+  const buildSwitcherIds = useCallback((): string[] => {
+    const liveOpen = sessions.filter(s => s.status !== 'archived').map(s => s.id);
+    const liveSet = new Set(liveOpen);
+    const mru = sessionMRURef.current.filter(id => liveSet.has(id));
+    const seen = new Set(mru);
+    const tail = liveOpen.filter(id => !seen.has(id));
+    return [...mru, ...tail];
+  }, [sessions]);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Ctrl+Tab session switcher. Hold Ctrl, tap Tab to advance, release
+      // to commit. We don't gate on `metaKey` here because Cmd+Tab is the
+      // macOS app switcher and out of reach for the browser anyway —
+      // Ctrl+Tab is the cross-platform shortcut for in-app tab cycling.
+      if (e.key === 'Tab' && e.ctrlKey) {
+        e.preventDefault();
+        setSwitcher(prev => {
+          // Opening for the first time: snapshot MRU. Pre-select the
+          // *second* entry so a single Ctrl+Tab + release swaps to the
+          // previously-active session, matching every other tab switcher.
+          if (!prev.open) {
+            const ids = buildSwitcherIds();
+            if (ids.length < 2) return prev;
+            return { open: true, idx: e.shiftKey ? ids.length - 1 : 1, mruIds: ids };
+          }
+          // Already open: cycle within the snapshot.
+          const n = prev.mruIds.length;
+          if (n === 0) return prev;
+          const nextIdx = e.shiftKey
+            ? (prev.idx - 1 + n) % n
+            : (prev.idx + 1) % n;
+          return { ...prev, idx: nextIdx };
+        });
+        return;
+      }
+
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       switch (e.key) {
@@ -2724,7 +2791,41 @@ export function ChatApp() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [buildSwitcherIds]);
+
+  // Ctrl-release commits the switcher selection — classic hold-to-show.
+  // Esc cancels without switching. Both only matter while the switcher is
+  // open, so we mount the listeners conditionally.
+  useEffect(() => {
+    if (!switcher.open) return;
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        const target = switcher.mruIds[switcher.idx];
+        setSwitcher({ open: false, idx: 0, mruIds: [] });
+        if (target && target !== activeId) handleSelectSession(target);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSwitcher({ open: false, idx: 0, mruIds: [] });
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const target = switcher.mruIds[switcher.idx];
+        setSwitcher({ open: false, idx: 0, mruIds: [] });
+        if (target && target !== activeId) handleSelectSession(target);
+      }
+    };
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+    // handleSelectSession is stable for the relevant scope; including the
+    // switcher state ensures we always commit the latest highlight.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [switcher.open, switcher.idx, switcher.mruIds, activeId]);
 
   const activeStatus = activeId ? (statuses[activeId] || 'disconnected') : 'disconnected';
   const activeSession = sessions.find(s => s.id === activeId);
@@ -5258,6 +5359,22 @@ export function ChatApp() {
           actions={paletteActions}
           fileIndex={fileIndex}
           onFileOpen={handleFileOpen}
+        />
+        <CtrlTabSwitcher
+          open={switcher.open}
+          sessions={switcher.mruIds.map(id => sessions.find(s => s.id === id)!).filter(Boolean)}
+          selectedIdx={switcher.idx}
+          sessionStates={sessionStates}
+          sessionLastMessageAt={sessionLastMessageAt}
+          tabGroups={tabGroups}
+          tabGroupMap={tabGroupMap}
+          onSelectIdx={(i) => setSwitcher(s => ({ ...s, idx: i }))}
+          onCommit={() => {
+            const target = switcher.mruIds[switcher.idx];
+            setSwitcher({ open: false, idx: 0, mruIds: [] });
+            if (target && target !== activeId) handleSelectSession(target);
+          }}
+          onClose={() => setSwitcher({ open: false, idx: 0, mruIds: [] })}
         />
         {/* Unsaved changes dialog */}
         {unsavedClosePrompt && (
