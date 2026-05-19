@@ -56,17 +56,15 @@ interface Props {
    *  users can't pick a backend that's guaranteed to fail to spawn. */
   opencodeAvailable?: boolean;
   opencodeModels?: Array<{ id: string; label: string; providerName: string }>;
+  /** SDK-reported Claude models, snapshotted on the bridge from any
+   *  prior session. Empty until a Claude session has booted at least
+   *  once — by design, there is no hardcoded fallback. */
+  claudeModels?: Array<{ id: string; label: string }>;
   /** Called once the session is successfully created. The modal has already
    *  closed itself by the time this fires; callers typically switch to the
    *  new session id here. */
   onCreated: (sessionId: string, cwd: string) => void;
 }
-
-const CLAUDE_MODEL_OPTIONS = [
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-];
 
 /**
  * Mobile-first "New Session" modal. Fullscreen sheet with breadcrumb
@@ -77,7 +75,7 @@ const CLAUDE_MODEL_OPTIONS = [
  * associated console output. Power users can still reach those from the
  * desktop.
  */
-export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable, opencodeModels = [], onCreated }: Props) {
+export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable, opencodeModels = [], claudeModels = [], onCreated }: Props) {
   const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
   const [cwd, setCwd] = useState('/');
   const [folders, setFolders] = useState<string[]>([]);
@@ -171,7 +169,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
 
   const modelOptions = provider === 'opencode'
     ? opencodeModels.map((m) => ({ id: m.id, label: `${m.providerName} ${m.label}` }))
-    : CLAUDE_MODEL_OPTIONS;
+    : claudeModels;
 
   return (
     <div

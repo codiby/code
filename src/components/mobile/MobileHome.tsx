@@ -13,6 +13,7 @@ interface Props {
   onQuickStart: (provider: string) => void;
   opencodeAvailable: boolean;
   opencodeModels?: Array<{ id: string; label: string; providerName: string }>;
+  claudeModels?: Array<{ id: string; label: string }>;
   onSelectSession: (id: string) => void;
   onSessionCreated?: (id: string, cwd: string) => void;
   onCloseSession: (id: string) => void;
@@ -85,6 +86,7 @@ export function MobileHome({
   onQuickStart,
   opencodeAvailable,
   opencodeModels = [],
+  claudeModels = [],
   onSelectSession,
   onSessionCreated,
   onCloseSession,
@@ -389,6 +391,7 @@ export function MobileHome({
         client={client}
         opencodeAvailable={opencodeAvailable}
         opencodeModels={opencodeModels}
+        claudeModels={claudeModels}
         onCreated={(id, cwd) => { onSessionCreated?.(id, cwd); onSelectSession(id); setNewModalOpen(false); }}
       />
     </div>

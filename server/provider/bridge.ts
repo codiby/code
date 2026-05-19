@@ -15,6 +15,7 @@ import type { ChatMessage, PermissionRequest } from '../state';
 import type { Session } from '../types';
 import { notify } from '../notify';
 import { updateWorkingWithTool } from '../telegram';
+import { setClaudeModels } from '../handlers/claude-info';
 import type { PermissionDecision, PermissionRequestDetail, ProviderEvents } from './types';
 
 export type BridgeDeps = {
@@ -215,6 +216,10 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     onModelsAvailable(models) {
       updateSessionState(session.id, s => ({ ...s, supportedModels: models }));
       deps.broadcastToSession(session.id, { type: 'supported_models', sessionId: session.id, models });
+      // Snapshot the Claude list to the global cache so non-session pickers
+      // (project settings, new-session modals) can surface the SDK's models
+      // even when no live session is around to ask.
+      if (session.provider === 'claudeAgent') setClaudeModels(models);
     },
 
     async onPermissionRequest(req: PermissionRequestDetail): Promise<PermissionDecision> {

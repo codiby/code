@@ -24,12 +24,6 @@ import type { MockupComment } from '../../lib/mockup-inspector';
 
 const TOKEN_STORAGE_KEY = 'mobileToken';
 
-const CLAUDE_MODEL_OPTIONS = [
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-];
-
 type SessionRuntime = {
   messages: ChatMessage[];
   partialText: string;
@@ -194,6 +188,9 @@ export function MobileApp() {
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
   // Cached opencode probe — see ChatApp.tsx for the desktop equivalent.
   const [opencodeInfo, setOpencodeInfo] = useState<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }> } | null>(null);
+  // Cached Claude model list (SDK-reported). Empty until the bridge has
+  // seen at least one Claude session — there is no hardcoded fallback.
+  const [claudeModels, setClaudeModels] = useState<SupportedModel[]>([]);
   // Mockups broadcast by the `mockup_write` / `mockup_edit` SDK tools, keyed
   // by session id. The list is the dock pill row above the composer; the
   // optional `openName` per session is the mockup currently rendered in the
@@ -373,6 +370,10 @@ export function MobileApp() {
       onInitInfo: () => {},
       onSupportedModels: (sessionId, models) => {
         setSupportedModelsBySession((prev) => ({ ...prev, [sessionId]: models }));
+        // Treat the live session's report as the freshest snapshot of the
+        // SDK's supportedModels(). Mirror it into the shared cache so pickers
+        // outside this session (new-session modal) reflect the latest list.
+        if (models.length > 0) setClaudeModels(models);
       },
       onOpenFile: () => {},
       onOpenMockup: (sessionId, name, html) => {
@@ -414,6 +415,11 @@ export function MobileApp() {
     client.getOpencodeInfo()
       .then(info => { if (!cancelled) setOpencodeInfo({ available: info.available, models: info.models || [] }); })
       .catch(() => { if (!cancelled) setOpencodeInfo({ available: false, models: [] }); });
+    // Seed the shared Claude model cache. Per-session updates keep it fresh
+    // (see the `onSupportedModels` handler that mirrors into `claudeModels`).
+    client.getClaudeInfo()
+      .then(info => { if (!cancelled) setClaudeModels(info.models || []); })
+      .catch(() => {});
     return () => {
       cancelled = true;
       client.destroy();
@@ -757,12 +763,12 @@ export function MobileApp() {
     if (!activeSession) return [];
     const providerModels = activeSession.provider === 'opencode'
       ? (opencodeInfo?.models ?? []).map((m) => ({ id: m.id, label: `${m.providerName} ${m.label}` }))
-      : (supportedModelsBySession[activeSession.id]?.length ? supportedModelsBySession[activeSession.id]! : CLAUDE_MODEL_OPTIONS);
+      : (supportedModelsBySession[activeSession.id]?.length ? supportedModelsBySession[activeSession.id]! : claudeModels);
     if (activeSession.model && !providerModels.some((m) => m.id === activeSession.model)) {
       return [{ id: activeSession.model, label: activeSession.model }, ...providerModels];
     }
     return providerModels;
-  }, [activeSession, opencodeInfo?.models, supportedModelsBySession]);
+  }, [activeSession, opencodeInfo?.models, supportedModelsBySession, claudeModels]);
 
   // Derive per-session flags for the sessions sheet
   const streamingBySession = useMemo(() => {
@@ -866,6 +872,7 @@ export function MobileApp() {
           }}
           opencodeAvailable={opencodeInfo?.available ?? false}
           opencodeModels={opencodeInfo?.models ?? []}
+          claudeModels={claudeModels}
           onSelectSession={selectSessionAndOpenChat}
           onCloseSession={closeSession}
           onReopenSession={reopenSessionAndOpenChat}

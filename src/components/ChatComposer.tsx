@@ -63,6 +63,12 @@ interface Props {
   activeSession?: ActiveSessionLike;
   connectionStatus: ConnectionStatus;
   opencodeInfo: OpencodeInfoLike | null;
+  /** Shared snapshot of the Claude Agent SDK's supportedModels() — used as a
+   *  cross-session fallback when this session hasn't yet reported its own
+   *  list (e.g. just spawned). The SDK is the single source of truth: there
+   *  is no hardcoded backup. Empty until the bridge has seen at least one
+   *  Claude session boot since the cache was created. */
+  claudeModels: { id: string; label: string }[];
 
   /** Slash commands available for this session (builtins + SDK-published).
    *  Computed in the host because it depends on `initInfo` shape. */
@@ -84,7 +90,7 @@ interface Props {
 export function ChatComposer(props: Props) {
   const {
     input, onChangeInput, pastedImages, onChangePastedImages,
-    active, activeSession, connectionStatus, opencodeInfo,
+    active, activeSession, connectionStatus, opencodeInfo, claudeModels,
     slashCommands, client, cwd,
     onSend, onInterrupt, onSelectModel, onSelectPermissionMode, onFocus,
     autoFocus,
@@ -141,7 +147,14 @@ export function ChatComposer(props: Props) {
   const isOpenCode = activeSession?.provider === 'opencode';
   const ocModels = isOpenCode ? (opencodeInfo?.models ?? null) : undefined;
   const ocLoading = isOpenCode && opencodeInfo === null;
-  const claudeModels = !isOpenCode ? (active.supportedModels ?? []) : [];
+  // Prefer this session's own SDK-reported list once it lands, then fall
+  // back to the cross-session cache. Both come from the Agent SDK — there
+  // is no hardcoded list anywhere.
+  const claudeModelChoices = isOpenCode
+    ? []
+    : (active.supportedModels && active.supportedModels.length > 0
+        ? active.supportedModels
+        : claudeModels);
   const sendDisabled = isTerminalMode
     ? !cmdText.trim() || connectionStatus !== 'connected'
     : !input.trim() || connectionStatus !== 'connected';
@@ -370,28 +383,20 @@ export function ChatComposer(props: Props) {
                 <SelectPopover>
                   <ListBox>
                     <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
-                    {isOpenCode ? (
-                      (ocModels ?? []).map(m => (
-                        <ListBoxItem key={m.id} id={m.id} textValue={`${m.providerName} ${m.label}`}>
-                          <span className="text-xs">
-                            <span className="text-zinc-500">{m.providerName}</span>{' '}
-                            {m.label}
-                          </span>
-                        </ListBoxItem>
-                      ))
-                    ) : claudeModels.length > 0 ? (
-                      claudeModels.map(m => (
-                        <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
-                          <span className="text-xs">{m.label}</span>
-                        </ListBoxItem>
-                      ))
-                    ) : (
-                      <>
-                        <ListBoxItem key="claude-sonnet-4-6" id="claude-sonnet-4-6" textValue="Sonnet 4.6"><span className="text-xs">Sonnet 4.6</span></ListBoxItem>
-                        <ListBoxItem key="claude-opus-4-6" id="claude-opus-4-6" textValue="Opus 4.6"><span className="text-xs">Opus 4.6</span></ListBoxItem>
-                        <ListBoxItem key="claude-haiku-4-5-20251001" id="claude-haiku-4-5-20251001" textValue="Haiku 4.5"><span className="text-xs">Haiku 4.5</span></ListBoxItem>
-                      </>
-                    )}
+                    {isOpenCode
+                      ? (ocModels ?? []).map(m => (
+                          <ListBoxItem key={m.id} id={m.id} textValue={`${m.providerName} ${m.label}`}>
+                            <span className="text-xs">
+                              <span className="text-zinc-500">{m.providerName}</span>{' '}
+                              {m.label}
+                            </span>
+                          </ListBoxItem>
+                        ))
+                      : claudeModelChoices.map(m => (
+                          <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
+                            <span className="text-xs">{m.label}</span>
+                          </ListBoxItem>
+                        ))}
                   </ListBox>
                 </SelectPopover>
               </Select>

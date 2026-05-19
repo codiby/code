@@ -39,6 +39,7 @@ interface Props {
   groupCwd: string;
   client: ClaudeClient | null;
   opencodeInfo?: OpencodeInfoLike | null;
+  claudeModels?: { id: string; label: string }[];
   onSpawn: (
     cwd: string,
     provider: string,
@@ -58,7 +59,7 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, onSpawn, onBrowseFolder }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], onSpawn, onBrowseFolder }: Props) {
   const [prompt, setPrompt] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [cwd, setCwd] = useState(groupCwd);
@@ -295,6 +296,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, onSpa
           activeSession={{ model: model || null, permission_mode: permissionMode, provider }}
           connectionStatus="connected"
           opencodeInfo={opencodeInfo ?? null}
+          claudeModels={claudeModels}
           slashCommands={[]}
           client={client}
           cwd={cwd}

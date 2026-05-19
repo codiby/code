@@ -720,6 +720,19 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  /**
+   * Cached snapshot of the Claude Agent SDK's `supportedModels()` list,
+   * captured the last time any session reported in. Empty array if the
+   * bridge has never seen a Claude session boot (fresh install with no
+   * prior sessions). Pickers that exist outside a live session read this
+   * instead of hardcoding a model list.
+   */
+  async getClaudeInfo(): Promise<{ models: SupportedModel[] }> {
+    const resp = await authedFetch(`${this.serverUrl}/providers/claude/info`);
+    if (!resp.ok) return { models: [] };
+    return resp.json();
+  }
+
   async updateSession(
     sessionId: string,
     updates: { permissionMode?: string; name?: string; status?: 'open' | 'archived' },

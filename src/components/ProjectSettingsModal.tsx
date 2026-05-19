@@ -37,6 +37,11 @@ interface ProjectSettingsModalProps {
   onChangeGlobalEnvVars: (next: ProjectEnvVar[]) => void;
   /** Needed for the hooks editor to call getClaudeHooks/setClaudeHooks. */
   client: ClaudeClient | null;
+  /** Cross-session snapshot of the Claude Agent SDK's supportedModels(). The
+   *  "Default model" picker reads from this — the SDK is the only source of
+   *  truth, no hardcoded list. Empty array on first launch before any Claude
+   *  session has booted; the picker degrades to just the inherit option. */
+  claudeModels: { id: string; label: string }[];
   onDeleteGroup: (groupId: string) => void;
   onPatchGroup: (groupId: string, patch: Partial<TabGroupInfo>) => void;
 }
@@ -121,12 +126,7 @@ type SelectedNav =
   | { kind: 'global'; id: GlobalSection }
   | { kind: 'project'; id: string };
 
-const MODEL_OPTIONS = [
-  { id: '', label: '— Use global default —' },
-  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7 (recommended)' },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-];
+const INHERIT_OPTION = { id: '', label: '— Use global default —' };
 
 const AGENT_OPTIONS = [
   { id: '', label: '— Use global default —' },
@@ -743,9 +743,18 @@ function ProjectGeneralPane({ group, onPatch }: { group: TabGroupInfo; onPatch: 
   );
 }
 
-function ProjectDefaultsPane({ group, onPatch }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void }) {
+function ProjectDefaultsPane({ group, onPatch, claudeModels }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void; claudeModels: { id: string; label: string }[] }) {
   const [systemPrompt, setSystemPrompt] = useState(group.systemPromptAddition || '');
   useEffect(() => { setSystemPrompt(group.systemPromptAddition || ''); }, [group.id]);
+
+  // Currently-saved override always renders, even if the cache hasn't seen
+  // it — otherwise editing an old project would silently drop the value.
+  const overrideMissing = !!group.defaultModel && !claudeModels.some(m => m.id === group.defaultModel);
+  const modelOptions = [
+    INHERIT_OPTION,
+    ...(overrideMissing ? [{ id: group.defaultModel!, label: group.defaultModel! }] : []),
+    ...claudeModels,
+  ];
 
   return (
     <>
@@ -757,11 +766,11 @@ function ProjectDefaultsPane({ group, onPatch }: { group: TabGroupInfo; onPatch:
           onChange={e => onPatch({ defaultModel: e.target.value || undefined })}
           className="w-full bg-surface-light border border-border rounded-md text-zinc-100 text-[12.5px] px-3 py-2 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20"
         >
-          {MODEL_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+          {modelOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
         </select>
         <InheritNote
           overriding={!!group.defaultModel}
-          fallback={MODEL_OPTIONS.find(o => o.id === 'claude-sonnet-4-6')!.label}
+          fallback={claudeModels[0]?.label ?? 'global default'}
           onReset={() => onPatch({ defaultModel: undefined })}
         />
       </Field>
@@ -1399,7 +1408,7 @@ export function ProjectSettingsModal({
   autoGroupSessions, onToggleAutoGroup,
   showTelegramSession, onToggleShowTelegramSession,
   globalEnvVars, onChangeGlobalEnvVars,
-  client,
+  client, claudeModels,
   onDeleteGroup, onPatchGroup,
 }: ProjectSettingsModalProps) {
   const [selected, setSelected] = useState<SelectedNav>({ kind: 'global', id: 'general' });
@@ -1516,6 +1525,7 @@ export function ProjectSettingsModal({
                   tabGroupMap={tabGroupMap}
                   memberCount={memberCount[activeProject.id] || 0}
                   client={client}
+                  claudeModels={claudeModels}
                 />
               )
               : (
@@ -1599,7 +1609,7 @@ function PluginsContent() {
 }
 
 /* Project content (right pane when a project is selected) */
-function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount, client }: {
+function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount, client, claudeModels }: {
   group: TabGroupInfo;
   tab: ProjectTab;
   onTabChange: (t: ProjectTab) => void;
@@ -1608,6 +1618,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
   tabGroupMap: Record<string, string>;
   memberCount: number;
   client: ClaudeClient | null;
+  claudeModels: { id: string; label: string }[];
 }) {
   const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
   const Icon = group.icon ? ICON_MAP[group.icon] : Folder;
@@ -1666,7 +1677,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
 
       {/* Pane */}
       {tab === 'general'     && <ProjectGeneralPane group={group} onPatch={onPatch} />}
-      {tab === 'defaults'    && <ProjectDefaultsPane group={group} onPatch={onPatch} />}
+      {tab === 'defaults'    && <ProjectDefaultsPane group={group} onPatch={onPatch} claudeModels={claudeModels} />}
       {tab === 'permissions' && <ProjectPermissionsPane group={group} onPatch={onPatch} />}
       {tab === 'environment' && <ProjectEnvironmentPane group={group} onPatch={onPatch} />}
       {tab === 'mcp'         && <ProjectMcpPane group={group} onPatch={onPatch} />}

@@ -45,6 +45,7 @@ import {
 } from './gateway';
 import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import { getOpencodeInfo } from './handlers/opencode-info';
+import { getClaudeInfo } from './handlers/claude-info';
 import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
 import { CodexAdapter } from './provider/adapters/CodexAdapter';
 import { OpenCodeAdapter } from './provider/adapters/OpenCodeAdapter';
@@ -1283,6 +1284,10 @@ const server = Bun.serve({
     if (url.pathname === '/providers/opencode/info' && req.method === 'GET') {
       const info = await getOpencodeInfo();
       return Response.json(info, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/providers/claude/info' && req.method === 'GET') {
+      return Response.json(getClaudeInfo(), { headers: corsHeaders });
     }
 
     const stopMatch = url.pathname.match(/^\/sessions\/(.+)\/stop$/);

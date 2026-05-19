@@ -54,6 +54,7 @@ import {
   type SessionInfo,
   type SessionInitInfo,
   type SessionState,
+  type SupportedModel,
 } from '../lib/claude-client';
 import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
@@ -735,6 +736,11 @@ export function ChatApp() {
   // provider.list, so it reflects whichever providers the user has
   // authenticated for.
   const [opencodeInfo, setOpencodeInfo] = useState<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }> } | null>(null);
+  // Cached snapshot of the Claude Agent SDK's supportedModels(), shared by
+  // every Claude picker. Populated lazily from `/providers/claude/info`; the
+  // server fills the cache as soon as any Claude session reports its list.
+  // Stays an empty array on first launch when no Claude session has booted yet.
+  const [claudeModels, setClaudeModels] = useState<SupportedModel[]>([]);
   // Per-message-id set of interactive terminals the user has minimized via the
   // shells badge bar or bubble header. Transient UI state; not persisted.
   const [minimizedShells, setMinimizedShells] = useState<Set<string>>(new Set());
@@ -1658,6 +1664,32 @@ export function ChatApp() {
       .catch(() => { if (!cancelled) setOpencodeInfo({ available: false, models: [] }); });
     return () => { cancelled = true; };
   }, [client, opencodeInfo]);
+
+  // Prime the global Claude model cache from the bridge on connect. The
+  // live `supported_models` WS message keeps the per-session lists fresh;
+  // this seed covers pickers that render before any session is alive
+  // (project settings, the new-session modal).
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    client.getClaudeInfo()
+      .then(info => { if (!cancelled) setClaudeModels(info.models || []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [client]);
+
+  // The same WS message that updates per-session state also reflects the
+  // latest SDK snapshot. Mirror it into the shared list so modals refresh
+  // without an extra HTTP round-trip.
+  useEffect(() => {
+    if (!activeId) return;
+    const list = sessionStates[activeId]?.supportedModels;
+    if (!list || list.length === 0) return;
+    setClaudeModels(prev => {
+      if (prev.length === list.length && prev.every((m, i) => m.id === list[i].id && m.label === list[i].label)) return prev;
+      return list;
+    });
+  }, [activeId, sessionStates]);
 
   // Jump to line when openFile.line changes (e.g. clicking different search results in same file)
   useEffect(() => {
@@ -3378,6 +3410,7 @@ export function ChatApp() {
         activeSession={sess ?? undefined}
         connectionStatus={status}
         opencodeInfo={opencodeInfo}
+        claudeModels={claudeModels}
         slashCommands={sessionSlashCommands}
         client={client}
         cwd={s.initInfo?.cwd || sess?.cwd || null}
@@ -4081,6 +4114,7 @@ export function ChatApp() {
                 }
                 client={client}
                 opencodeInfo={opencodeInfo}
+                claudeModels={claudeModels}
                 onSpawn={handleSpawnHome}
                 onBrowseFolder={() => setShowNewSession(true)}
               />
@@ -4268,6 +4302,7 @@ export function ChatApp() {
                       }
                       client={client}
                       opencodeInfo={opencodeInfo}
+                      claudeModels={claudeModels}
                       onSpawn={(cwd, provider, prompt, model, permissionMode) =>
                         handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode)
                       }
@@ -5131,6 +5166,7 @@ export function ChatApp() {
             persistPrefs({ globalEnvVars: next });
           }}
           client={client}
+          claudeModels={claudeModels}
           onDeleteGroup={handleDeleteGroup}
           onPatchGroup={(groupId, patch) => {
             const current = tabGroups[groupId];
