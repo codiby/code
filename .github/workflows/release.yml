@@ -54,6 +54,31 @@ jobs:
             echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Pull just this version's section out of CHANGELOG.md so the release
+      # body renders as proper Markdown (### Added / ### Changed headings,
+      # bullets, bold) on the GitHub release page — instead of falling back
+      # to a generic "built from vX.Y.Z" line. Tag annotation is plain text
+      # by git convention; the release body is where Markdown lives.
+      - name: Extract changelog section for this release
+        id: changelog
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          VERSION="${TAG#v}"
+          {
+            echo 'body<<__CHANGELOG_EOF__'
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+              /^## \[/ && flag { flag=0 }
+              flag { print }
+            ' CHANGELOG.md | sed '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+            echo
+            echo '---'
+            echo
+            echo "**macOS (Apple Silicon)**: \`Codiby Code-*-arm64.dmg\`"
+            echo '__CHANGELOG_EOF__'
+          } >> "$GITHUB_OUTPUT"
+
       # Pipeline:
       #   1. frontend dist/ via bun build
       #   2. bun runtime + bundled server.js into electron/resources/
@@ -86,10 +111,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           name: "Codiby Code ${{ steps.tag.outputs.name }}"
-          body: |
-            Automated release built from `${{ steps.tag.outputs.name }}`.
-
-            **macOS (Apple Silicon)**: `Codiby Code-*-arm64.dmg`
+          body: ${{ steps.changelog.outputs.body }}
           draft: false
           prerelease: false
           files: |
