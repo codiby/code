@@ -5,6 +5,87 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-05-19
+
+### Added
+
+- **Per-jar browser cookies.** `browser_open` (and `ui_browser_open`)
+  takes an optional `cookieJar` parameter. Previews sharing a jar name
+  share cookies, localStorage, and cache; different jars are fully
+  isolated via Electron `session.fromPartition()`. Omitting `cookieJar`
+  uses the shared `"default"` jar so existing flows are unchanged. Lets
+  the agent drive, e.g., a "qa-testing" identity and an "admin" identity
+  side by side without cross-contamination.
+- **Auto-focus browser preview on agent actions.** When the agent runs
+  an action-style `browser_*` tool (click / hover / type / press_key /
+  select_option / scroll / navigate / handle_dialog) on a preview that
+  isn't the active tab, the panel switches to it so the user actually
+  sees the action happen. Observational tools (snapshot, screenshot,
+  evaluate, `wait_for`, console / network reads) never trigger a
+  switch. Controlled by a new `autoFocusBrowserOnAction` setting —
+  global default in Project Settings → General, with a per-project
+  override (Inherit / Always / Never) on each tab group.
+- **Ctrl+Tab session switcher.** A most-recently-used switcher with
+  inline chat preview, mirroring the editor-style tab-switching the
+  rest of the app already uses.
+- **Worktree-aware autogroup.** New sessions opened in a worktree are
+  bucketed under the parent repo's tab group instead of the worktree
+  branch, and file mentions resolve against the same parent root.
+
+### Changed
+
+- **Model picker driven by the Claude SDK.** The default-model dropdown
+  is populated from `supportedModels()` instead of a hardcoded list, so
+  newly-released Claude models show up the moment the SDK exposes them.
+
+## [0.10.1] — 2026-05-18
+
+### Fixed
+
+- **Browser preview in-page navigation.** Switching tabs no longer
+  snaps the embedded browser back to its original URL — the host now
+  mirrors the live URL into session state via the `url-changed` relay
+  event, so a remount re-opens the preview at the current page rather
+  than the one `browser_open` was first called with.
+
+## [0.10.0] — 2026-05-16
+
+### Added
+
+- **Hooks editor.** Per-scope (user / project / local) UI for editing
+  Claude Code hooks (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`,
+  `Notification`, `Stop`, `SubagentStop`, `PreCompact`, `SessionStart`,
+  `SessionEnd`), including matcher patterns and per-command timeouts.
+- **Per-project env injection.** Tab groups grow `envVars` and the
+  global `globalEnvVars` preference, layered (process.env → global →
+  project) into every Bash tool call and user terminal.
+- **Project Settings modal.** Sidebar-driven modal grouping global
+  settings (general / telegram / deepgram / tailscale / mobile /
+  remotes / plugins / hooks / environment / tab groups / about) and
+  per-project overrides (identity, defaults, permissions, env,
+  MCP, hooks) under one roof.
+- **Per-project overrides on tab groups.** `TabGroupInfo` grows
+  `autoClaim`, `defaultModel`, `defaultAgent`, `systemPromptAddition`,
+  `envVars`, `autoApproveRules`, and `mcpOverrides` — each optional and
+  layered over the global default.
+- **Double-Esc interrupt.** Press Esc twice quickly to interrupt the
+  current turn even in permission-bypass mode; user-interaction tools
+  (`AskUserQuestion`, dialogs) keep prompting normally rather than
+  being auto-approved.
+
+### Changed
+
+- **Tauri references removed.** The desktop shell is Electron-only;
+  legacy `@tauri-apps/plugin-*` imports and `electron:replace` /
+  `electron:build:replace` scripts retain their names for muscle
+  memory but no longer touch Tauri.
+
+### Fixed
+
+- **Windows titlebar overlay.** Hide the native titlebar on Windows,
+  align the custom overlay to the right height, and match its colour
+  to the surrounding chrome so the window-controls strip blends in.
+
 ## [0.9.0] — 2026-05-16
 
 ### Added
