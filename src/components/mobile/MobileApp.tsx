@@ -396,6 +396,7 @@ export function MobileApp() {
       // `browser_open` tool doesn't crash on a connected mobile client.
       onOpenBrowser: () => {},
       onCloseBrowser: () => {},
+      onFocusBrowser: () => {},
       onPreferences: (prefs) => {
         if (prefs.tabGroups && typeof prefs.tabGroups === 'object') {
           setTabGroups(prefs.tabGroups as Record<string, { id: string; name: string; color: string }>);

@@ -44,6 +44,13 @@ export interface TabGroupInfo {
   envVars?: ProjectEnvVar[];
   autoApproveRules?: ProjectAutoApproveRule[];
   mcpOverrides?: ProjectMcpOverrides;
+
+  /** Per-project override for the global `autoFocusBrowserOnAction` toggle.
+   *  `undefined` = inherit global. When true, action-style browser_* SDK
+   *  tools (click/type/scroll/…) bring the targeted preview to the front
+   *  before they run, so the user sees the action happen even when another
+   *  preview was active. */
+  autoFocusBrowserOnAction?: boolean;
 }
 
 export const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'] as const;

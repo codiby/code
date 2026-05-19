@@ -265,6 +265,11 @@ type ClientCallbacks = {
    *  jars are fully isolated. Defaults to "default" when the server omits it. */
   onOpenBrowser: (sessionId: string, name: string, url: string, title: string, cookieJar: string) => void;
   onCloseBrowser: (sessionId: string, name: string) => void;
+  /** Server-initiated "make this preview the active tab" hint. Emitted by
+   *  action-style browser_* SDK tools so the user sees which preview the
+   *  agent is driving. The host should only switch when a preview with
+   *  `name` is currently open in the session — otherwise ignore. */
+  onFocusBrowser: (sessionId: string, name: string) => void;
   /**
    * Bridge → frontend CDP request channel. The bridge issues `browser_request`
    * over the WS when an SDK tool (browser_snapshot / browser_click / etc.)
@@ -489,6 +494,9 @@ export class ClaudeClient {
           (msg.title as string) || '',
           (msg.cookieJar as string) || 'default',
         );
+        break;
+      case 'focus_browser':
+        this.callbacks.onFocusBrowser(sessionId, msg.name as string);
         break;
       case 'close_browser':
         this.callbacks.onCloseBrowser(sessionId, msg.name as string);

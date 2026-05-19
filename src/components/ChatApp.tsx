@@ -382,6 +382,11 @@ export function ChatApp() {
    *  session's chat body. Cleared as soon as a session is selected. */
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [autoGroupSessions, setAutoGroupSessions] = useState(false);
+  // When true, action-style browser_* SDK tools (click/type/scroll/…) bring
+  // the targeted preview to the front before they run, so the user actually
+  // sees the action happen. Per-project override lives on TabGroupInfo and
+  // wins over this global default. Defaults to true on first launch.
+  const [autoFocusBrowserOnAction, setAutoFocusBrowserOnAction] = useState(true);
   // Hides the Telegram bot's "main-session" pseudo-tab from the sidebar /
   // tab bar. The tab itself is non-closable from the regular UI; this
   // settings-only toggle is the user's escape hatch.
@@ -1343,6 +1348,29 @@ export function ChatApp() {
           }));
         },
 
+        // Server-initiated "focus this preview" — emitted by action-style
+        // browser_* SDK tools (click/hover/type/…) when the auto-focus
+        // setting resolves true. Only act if the preview is open in this
+        // session; never re-open a closed tab from this hint. Also clears
+        // competing side panels so the user actually sees the browser
+        // when the action lands.
+        onFocusBrowser: (sid, name) => {
+          if (!name) return;
+          updateLocalState(sid, s => {
+            if (!s.browsers[name]) return s;
+            if (s.activeBrowserName === name && !s.openFile && !s.openMockup && !s.openTerminalId) return s;
+            return {
+              ...s,
+              activeBrowserName: name,
+              openFile: null,
+              openMockup: null,
+              openTerminalId: null,
+              diffView: null,
+              editorDirty: false,
+            };
+          });
+        },
+
         // Server-initiated close for a specific named preview. The other
         // tabs in this session keep running. If the closed one was active,
         // fall back to whatever's still open (or `null` to hide the panel).
@@ -1392,6 +1420,9 @@ export function ChatApp() {
           }
           if (typeof prefs.autoGroupSessions === 'boolean') {
             setAutoGroupSessions(prefs.autoGroupSessions);
+          }
+          if (typeof prefs.autoFocusBrowserOnAction === 'boolean') {
+            setAutoFocusBrowserOnAction(prefs.autoFocusBrowserOnAction);
           }
           if (typeof prefs.showTelegramSession === 'boolean') {
             setShowTelegramSession(prefs.showTelegramSession);
@@ -1803,6 +1834,11 @@ export function ChatApp() {
   const handleToggleAutoGroup = (next: boolean) => {
     setAutoGroupSessions(next);
     persistPrefs({ autoGroupSessions: next });
+  };
+
+  const handleToggleAutoFocusBrowserOnAction = (next: boolean) => {
+    setAutoFocusBrowserOnAction(next);
+    persistPrefs({ autoFocusBrowserOnAction: next });
   };
 
   const handleCreateSession = async (cwd: string, provider?: string, remoteId?: string | null) => {
@@ -5272,6 +5308,8 @@ export function ChatApp() {
           tabGroupMap={tabGroupMap}
           autoGroupSessions={autoGroupSessions}
           onToggleAutoGroup={handleToggleAutoGroup}
+          autoFocusBrowserOnAction={autoFocusBrowserOnAction}
+          onToggleAutoFocusBrowserOnAction={handleToggleAutoFocusBrowserOnAction}
           showTelegramSession={showTelegramSession}
           onToggleShowTelegramSession={(next) => {
             setShowTelegramSession(next);

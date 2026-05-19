@@ -31,6 +31,8 @@ interface ProjectSettingsModalProps {
   tabGroupMap: Record<string, string>;
   autoGroupSessions: boolean;
   onToggleAutoGroup: (next: boolean) => void;
+  autoFocusBrowserOnAction: boolean;
+  onToggleAutoFocusBrowserOnAction: (next: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (next: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
@@ -573,7 +575,7 @@ function TabGroupsListSection({ tabGroups, tabGroupMap, onDeleteGroup, onSelect 
   );
 }
 
-function GeneralSection({ autoGroupSessions, onToggleAutoGroup }: { autoGroupSessions: boolean; onToggleAutoGroup: (v: boolean) => void }) {
+function GeneralSection({ autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction }: { autoGroupSessions: boolean; onToggleAutoGroup: (v: boolean) => void; autoFocusBrowserOnAction: boolean; onToggleAutoFocusBrowserOnAction: (v: boolean) => void }) {
   return (
     <>
       <SectionHeader title="General" subtitle="App-wide behavior. Per-project overrides live under each project in the sidebar to the left." />
@@ -586,6 +588,19 @@ function GeneralSection({ autoGroupSessions, onToggleAutoGroup }: { autoGroupSes
           <div className="flex-1 min-w-0 text-left">
             <div className="text-[12.5px] text-zinc-100">Auto-group new sessions</div>
             <div className="text-[11px] text-zinc-500 mt-0.5">Bucket new sessions into a tab group named after the project folder.</div>
+          </div>
+          <SwitchControl>
+            <SwitchThumb />
+          </SwitchControl>
+        </Switch>
+        <Switch
+          isSelected={autoFocusBrowserOnAction}
+          onChange={onToggleAutoFocusBrowserOnAction}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border hover:border-border-light transition-colors cursor-pointer"
+        >
+          <div className="flex-1 min-w-0 text-left">
+            <div className="text-[12.5px] text-zinc-100">Bring browser preview to front on agent actions</div>
+            <div className="text-[11px] text-zinc-500 mt-0.5">When the agent clicks, types, scrolls, or navigates in a browser preview that isn't the active tab, switch to it so you see what's happening. Observational tools (snapshot, screenshot, evaluate, network/console reads) never trigger this.</div>
           </div>
           <SwitchControl>
             <SwitchThumb />
@@ -738,6 +753,21 @@ function ProjectGeneralPane({ group, onPatch }: { group: TabGroupInfo; onPatch: 
           <span className="text-[12.5px] text-zinc-200">{group.autoClaim ? 'Enabled' : 'Disabled'}</span>
           <SwitchControl><SwitchThumb /></SwitchControl>
         </Switch>
+      </Field>
+
+      <Field label="Bring browser preview to front on agent actions" hint="Override the global default for this project. When the agent clicks/types/scrolls/navigates in a preview that isn't active, switch to it. Leave on 'Inherit' to use the global setting.">
+        <select
+          value={group.autoFocusBrowserOnAction === undefined ? 'inherit' : group.autoFocusBrowserOnAction ? 'on' : 'off'}
+          onChange={(e) => {
+            const v = e.target.value;
+            onPatch({ autoFocusBrowserOnAction: v === 'inherit' ? undefined : v === 'on' });
+          }}
+          className="w-full bg-surface-light border border-border rounded-md text-zinc-100 text-[12.5px] px-3 py-2 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20"
+        >
+          <option value="inherit">Inherit (use global setting)</option>
+          <option value="on">Always bring to front</option>
+          <option value="off">Never bring to front</option>
+        </select>
       </Field>
     </>
   );
@@ -1406,6 +1436,7 @@ function NavProject({ group, memberCount, active, onClick }: { group: TabGroupIn
 export function ProjectSettingsModal({
   open, onClose, tabGroups, tabGroupMap,
   autoGroupSessions, onToggleAutoGroup,
+  autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction,
   showTelegramSession, onToggleShowTelegramSession,
   globalEnvVars, onChangeGlobalEnvVars,
   client, claudeModels,
@@ -1536,6 +1567,8 @@ export function ProjectSettingsModal({
                   tabGroupMap={tabGroupMap}
                   autoGroupSessions={autoGroupSessions}
                   onToggleAutoGroup={onToggleAutoGroup}
+                  autoFocusBrowserOnAction={autoFocusBrowserOnAction}
+                  onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction}
                   showTelegramSession={showTelegramSession}
                   onToggleShowTelegramSession={onToggleShowTelegramSession}
                   globalEnvVars={globalEnvVars}
@@ -1565,13 +1598,15 @@ export function ProjectSettingsModal({
 }
 
 /* Global content router (right pane when no project selected) */
-function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, client, onDeleteGroup, onSelectGroup }: {
+function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, client, onDeleteGroup, onSelectGroup }: {
   section: GlobalSection;
   serverUrl: string | null;
   tabGroups: Record<string, TabGroupInfo>;
   tabGroupMap: Record<string, string>;
   autoGroupSessions: boolean;
   onToggleAutoGroup: (v: boolean) => void;
+  autoFocusBrowserOnAction: boolean;
+  onToggleAutoFocusBrowserOnAction: (v: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (v: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
@@ -1582,7 +1617,7 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
 }) {
   return (
     <div className="px-8 pt-6 pb-8">
-      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} />}
+      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} />}
       {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
       {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
       {section === 'tailscale'   && <TailscaleSection serverUrl={serverUrl} />}

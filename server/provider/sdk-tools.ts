@@ -221,7 +221,38 @@ function notOpen(name: string) {
 export type SdkToolDeps = {
   broadcastToSession: (sessionId: string, msg: object) => void;
   broadcastSessionList: () => void;
+  /** Read the current ui-preferences.json blob. Used by the per-session
+   *  resolution of `autoFocusBrowserOnAction` (global default + per-project
+   *  override on the session's tab group). */
+  loadPreferences: () => Record<string, unknown>;
 };
+
+/** Resolve whether action-style browser_* tools should bring the targeted
+ *  preview to the front for this session. Per-project override (on the
+ *  session's tab group) wins over the global default; if neither is set,
+ *  defaults to `true`. */
+function resolveAutoFocusBrowser(sessionId: string, deps: SdkToolDeps): boolean {
+  const prefs = deps.loadPreferences();
+  const map = (prefs.tabGroupMap as Record<string, string> | undefined) || {};
+  const groupId = map[sessionId];
+  if (groupId) {
+    const groups = (prefs.tabGroups as Record<string, { autoFocusBrowserOnAction?: boolean }> | undefined) || {};
+    const override = groups[groupId]?.autoFocusBrowserOnAction;
+    if (typeof override === 'boolean') return override;
+  }
+  const global = prefs.autoFocusBrowserOnAction;
+  if (typeof global === 'boolean') return global;
+  return true;
+}
+
+/** Broadcast a `focus_browser` hint so the UI switches the active preview
+ *  to the one the agent is about to act on. No-op when the resolved
+ *  setting is false. The client ignores the hint if the preview isn't
+ *  currently open in the session. */
+function maybeFocusBrowser(sessionId: string, name: string, deps: SdkToolDeps): void {
+  if (!resolveAutoFocusBrowser(sessionId, deps)) return;
+  deps.broadcastToSession(sessionId, { type: 'focus_browser', sessionId, name });
+}
 
 export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
   return createSdkMcpServer({
@@ -590,6 +621,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'click', { ref: args.ref, button: args.button, doubleClick: args.doubleClick }, deps.broadcastToSession);
             const tag = (args.doubleClick ? 'double-' : '') + `${args.button ?? 'left'}-clicked`;
@@ -610,6 +642,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'hover', { ref: args.ref }, deps.broadcastToSession);
             return { content: [{ type: 'text', text: `Hovered ${args.ref} in "${name}".` }] };
@@ -635,6 +668,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'type', { ref: args.ref, text: args.text, submit: args.submit }, deps.broadcastToSession);
             const tail = args.submit ? ' and pressed Enter' : '';
@@ -655,6 +689,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'press_key', { key: args.key }, deps.broadcastToSession);
             return { content: [{ type: 'text', text: `Pressed ${args.key} in "${name}".` }] };
@@ -675,6 +710,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'select_option', { ref: args.ref, values: args.values }, deps.broadcastToSession);
             return { content: [{ type: 'text', text: `Selected ${JSON.stringify(args.values)} on ${args.ref} in "${name}".` }] };
@@ -696,6 +732,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'scroll', { ref: args.ref, x: args.x, y: args.y }, deps.broadcastToSession);
             const where = args.ref ? `ref=${args.ref}` : `(${args.x ?? 0}, ${args.y ?? 0})`;
@@ -717,6 +754,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'navigate', { action: args.action, url: args.url }, deps.broadcastToSession);
             return { content: [{ type: 'text', text: args.action === 'goto' ? `"${name}" navigating to ${args.url}.` : `"${name}" navigation: ${args.action}.` }] };
@@ -835,6 +873,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
+          maybeFocusBrowser(sessionId, name, deps);
           try {
             const r = (await cdpRequest(sessionId, name, 'handle_dialog', { accept: args.accept, promptText: args.promptText }, deps.broadcastToSession)) as { ok: true; handled: { type: string; message: string } | null };
             const text = r.handled
