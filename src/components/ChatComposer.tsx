@@ -125,7 +125,7 @@ export function ChatComposer(props: Props) {
 
   const fileIndex: FileEntry[] = useFileIndex(client, cwd);
   const slash = useSlashCommands(input, slashCommands);
-  const fileMention = useFileMention(input, fileIndex);
+  const fileMention = useFileMention(input, fileIndex, client, cwd);
 
   // Selection completion — slash command picker → "/cmd " prefix.
   const handleSlashSelect = (cmd: string) => {

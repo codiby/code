@@ -532,18 +532,21 @@ export function ChatApp() {
     prompt: string,
     model?: string,
     permissionMode?: string,
+    worktreeOrigin?: string,
   ) => {
     const c = clientRef.current;
     if (!c) return;
     const group = tabGroups[groupId];
     if (!group || !cwd) return;
     try {
-      const session = await c.createSession(cwd, { provider, model, permissionMode });
+      const session = await c.createSession(cwd, { provider, model, permissionMode, groupCwd: worktreeOrigin });
       const newMap = { ...tabGroupMap, [session.id]: groupId };
       setTabGroupMap(newMap);
       let nextGroups = tabGroups;
       if (!group.cwd) {
-        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd } };
+        // Prefer the parent repo over the worktree path so future opens
+        // resolve to the main repo, matching handleWorktreeCreatedForGroup.
+        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd: worktreeOrigin || cwd } };
         setTabGroups(nextGroups);
       }
       setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
@@ -568,11 +571,16 @@ export function ChatApp() {
     prompt: string,
     model?: string,
     permissionMode?: string,
+    worktreeOrigin?: string,
   ) => {
     const c = clientRef.current;
     if (!c || !cwd) return;
     try {
-      const session = await c.createSession(cwd, { provider, model, permissionMode });
+      // When the cwd is a worktree, autogroup under the parent repo's folder
+      // name instead of the worktree branch. Server-side autogroup honors
+      // the user's autoGroupSessions preference — if it's off, the session
+      // still lands as an ungrouped tab.
+      const session = await c.createSession(cwd, { provider, model, permissionMode, groupCwd: worktreeOrigin });
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
       setActiveId(session.id);
@@ -4404,8 +4412,8 @@ export function ChatApp() {
                       client={client}
                       opencodeInfo={opencodeInfo}
                       claudeModels={claudeModels}
-                      onSpawn={(cwd, provider, prompt, model, permissionMode) =>
-                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode)
+                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
                     />

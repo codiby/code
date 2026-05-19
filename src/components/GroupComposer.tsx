@@ -46,6 +46,10 @@ interface Props {
     prompt: string,
     model?: string,
     permissionMode?: string,
+    /** When `cwd` points at a freshly-created worktree, this is the parent
+     *  repo's top-level — used by the host to autogroup the new session
+     *  under the main repo's folder rather than the worktree branch. */
+    worktreeOrigin?: string,
   ) => void;
   /** Opens the full folder-picker modal (parent-owned). Invoked from the
    *  "Browse for folder…" item at the bottom of the project dropdown. */
@@ -72,6 +76,11 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   const [permissionMode, setPermissionMode] = useState<string>('default');
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
   const [showWorktreeForm, setShowWorktreeForm] = useState(false);
+  // Parent repo when the user creates a worktree in this composer. Threaded
+  // to the host on submit so the spawned session can autogroup under the
+  // main repo's folder name, matching the modal-driven flow. Cleared when
+  // the user picks a different folder via the dropdown.
+  const [worktreeOrigin, setWorktreeOrigin] = useState<string | null>(null);
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
@@ -90,6 +99,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     setShowWorktreeForm(false);
     setPrompt('');
     setPastedImages([]);
+    setWorktreeOrigin(null);
   }, [groupCwd]);
 
   // Reload recent dirs from localStorage each time the dropdown opens — the
@@ -189,6 +199,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       prompt.trim(),
       model || undefined,
       permissionMode && permissionMode !== 'default' ? permissionMode : undefined,
+      worktreeOrigin || undefined,
     );
   };
 
@@ -230,7 +241,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
                     <button
                       key={dir}
                       type="button"
-                      onClick={() => { setCwd(dir); setFolderMenuOpen(false); }}
+                      onClick={() => { setCwd(dir); setWorktreeOrigin(null); setFolderMenuOpen(false); }}
                       className={`w-full flex items-center gap-2 px-3 py-1.5 text-left ${
                         isCurrent ? 'bg-surface-light/60 text-zinc-100' : 'text-zinc-300 hover:bg-surface-light/50 hover:text-zinc-100'
                       }`}
@@ -416,6 +427,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
               existingWorktrees={gitInfo.worktrees}
               onCreated={(path) => {
                 setCwd(path);
+                setWorktreeOrigin(gitInfo.top_level!);
                 setShowWorktreeForm(false);
               }}
             />

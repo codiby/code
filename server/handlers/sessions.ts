@@ -60,6 +60,10 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   let model: string | null = null;
   let permissionMode = 'default';
   let provider = DEFAULT_PROVIDER;
+  // Hint forwarded by the client when a session is being spawned in a
+  // worktree — used by the autogroup step in the outer route handler to
+  // pick the parent repo's folder name instead of the worktree's branch.
+  let groupCwd: string | null = null;
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
@@ -67,6 +71,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     if (body.model && typeof body.model === 'string') model = body.model;
     if (body.permissionMode && typeof body.permissionMode === 'string') permissionMode = body.permissionMode;
     if (body.provider && typeof body.provider === 'string') provider = body.provider;
+    if (body.group_cwd && typeof body.group_cwd === 'string') groupCwd = body.group_cwd;
   } catch {}
 
   const now = Date.now();
@@ -96,7 +101,11 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   startProviderSession(session, port);
   saveSessions();
 
-  return Response.json(sessionToJSON(session, port), { headers: corsHeaders });
+  const payload = sessionToJSON(session, port);
+  // Echo back so the route handler can prefer this over `cwd` when
+  // autogrouping; only meaningful for worktree spawns.
+  if (groupCwd) (payload as Record<string, unknown>).group_cwd = groupCwd;
+  return Response.json(payload, { headers: corsHeaders });
 }
 
 export function handleResumeSession(sessionId: string, port: number): Response {

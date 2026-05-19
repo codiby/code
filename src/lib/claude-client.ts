@@ -657,7 +657,15 @@ export class ClaudeClient {
 
   async createSession(
     cwd?: string,
-    opts: { name?: string; model?: string | null; permissionMode?: string; provider?: string; remoteId?: string | null } = {},
+    opts: {
+      name?: string; model?: string | null; permissionMode?: string;
+      provider?: string; remoteId?: string | null;
+      /** Override the path used for server-side autogrouping. Defaults to
+       *  `cwd`. Set when the session is spawned in a worktree so it lands
+       *  in the parent repo's autogroup instead of one named after the
+       *  worktree branch. */
+      groupCwd?: string;
+    } = {},
   ): Promise<SessionInfo> {
     const resp = await authedFetch(`${this.serverUrl}/sessions`, {
       method: 'POST',
@@ -669,6 +677,7 @@ export class ClaudeClient {
         permissionMode: opts.permissionMode,
         provider: opts.provider,
         remoteId: opts.remoteId ?? null,
+        group_cwd: opts.groupCwd,
       }),
     });
     if (!resp.ok) throw new Error(`Failed to create session: ${resp.status}`);
@@ -1024,6 +1033,11 @@ export class ClaudeClient {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      // Dispatch by `event:` line. The server sends raw strings for log/error
+      // and a JSON envelope for done — blindly JSON.parsing every data line
+      // silently dropped errors like "Branch already exists" and left the
+      // form spinning forever.
+      let evt: string | null = null;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1031,16 +1045,16 @@ export class ClaudeClient {
         const lines = buf.split('\n');
         buf = lines.pop() || '';
         for (const line of lines) {
-          if (line.startsWith('event: log')) continue;
-          if (line.startsWith('event: done')) continue;
-          if (line.startsWith('event: error')) continue;
-          if (line.startsWith('data: ')) {
+          if (line.startsWith('event: ')) { evt = line.slice(7).trim(); continue; }
+          if (!line.startsWith('data: ')) { if (line === '') evt = null; continue; }
+          const raw = line.slice(6);
+          if (evt === 'log') callbacks.onLog(raw);
+          else if (evt === 'error') callbacks.onError(raw);
+          else if (evt === 'done') {
             try {
-              const data = JSON.parse(line.slice(6));
-              if (typeof data === 'string') callbacks.onLog(data);
-              else if (data.path) callbacks.onDone(data);
-              else if (data.error) callbacks.onError(data.error);
-            } catch {}
+              const data = JSON.parse(raw);
+              if (data?.path) callbacks.onDone(data);
+            } catch (e) { callbacks.onError(String(e)); }
           }
         }
       }

@@ -1,19 +1,70 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Folder, File as FileIcon } from 'lucide-react';
 import { searchFiles, type FileEntry } from '../lib/fuzzy-file-search';
+import type { ClaudeClient } from '../lib/claude-client';
 
-export function useFileMention(input: string, fileIndex: FileEntry[]) {
+export function useFileMention(
+  input: string,
+  fileIndex: FileEntry[],
+  client?: ClaudeClient | null,
+  cwd?: string | null,
+) {
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const atIdx = input.lastIndexOf('@');
   const isActive = atIdx >= 0 && (atIdx === 0 || input[atIdx - 1] === ' ');
   const query = isActive ? input.slice(atIdx + 1) : '';
-  const showPicker = isActive && !query.includes(' ') && fileIndex.length > 0;
+  // Queries starting with `../` (or just `..`) escape the cwd file index and
+  // walk into parent directories. We list the resolved dir server-side via
+  // `listFiles` instead of fuzzy-searching the preloaded index.
+  const isParentNav = query === '..' || query.startsWith('../');
+  const showPicker = isActive && !query.includes(' ') &&
+    (isParentNav ? !!(client && cwd) : fileIndex.length > 0);
+
+  // Split a parent-nav query into the directory portion (everything up to and
+  // including the last `/`) and the prefix filter typed for the basename.
+  // `..` with no trailing slash yet lists the parent itself and applies no
+  // filter — letting the picker appear as soon as the user types `..`.
+  const lastSlash = query.lastIndexOf('/');
+  const dirPart = isParentNav
+    ? (lastSlash >= 0 ? query.slice(0, lastSlash + 1) : '../')
+    : '';
+  const filter = isParentNav && lastSlash >= 0
+    ? query.slice(lastSlash + 1).toLowerCase()
+    : '';
+
+  const [parentEntries, setParentEntries] = useState<FileEntry[]>([]);
+  const reqIdRef = useRef(0);
+  useEffect(() => {
+    if (!isParentNav || !client || !cwd) {
+      setParentEntries([]);
+      return;
+    }
+    const id = ++reqIdRef.current;
+    client.listFiles(`${cwd}/${dirPart}`).then(items => {
+      if (id !== reqIdRef.current) return;
+      setParentEntries(items.map(it => ({
+        name: it.name,
+        path: it.path,
+        rel: `${dirPart}${it.name}`,
+        type: it.type,
+      })));
+    }).catch(() => {
+      if (id === reqIdRef.current) setParentEntries([]);
+    });
+  }, [isParentNav, client, cwd, dirPart]);
 
   const results = useMemo(() => {
-    if (!showPicker || !query) return [];
+    if (!showPicker) return [];
+    if (isParentNav) {
+      const matches = filter
+        ? parentEntries.filter(e => e.name.toLowerCase().startsWith(filter))
+        : parentEntries;
+      return matches.slice(0, 15);
+    }
+    if (!query) return [];
     return searchFiles(fileIndex, query, 15);
-  }, [showPicker, query, fileIndex]);
+  }, [showPicker, query, fileIndex, isParentNav, parentEntries, filter]);
 
   useEffect(() => setSelectedIndex(0), [query]);
 

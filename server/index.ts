@@ -1254,10 +1254,14 @@ const server = Bun.serve({
       let createdId: string | null = null;
       if (resp.ok) {
         try {
-          const created = await resp.clone().json() as { id?: string; cwd?: string };
+          const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string };
           if (created?.id) {
             createdId = created.id;
-            if (created.cwd) maybeAutoGroupSession(created.id, created.cwd);
+            // Prefer the explicit group_cwd hint (sent by worktree spawns so
+            // the new session lands under the parent repo's folder name
+            // instead of one named after the worktree branch).
+            const groupingCwd = created.group_cwd || created.cwd;
+            if (groupingCwd) maybeAutoGroupSession(created.id, groupingCwd);
           }
         } catch {}
       }
