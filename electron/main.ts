@@ -171,7 +171,7 @@ function registerIpcHandlers(): void {
 
   // --- browser preview ------------------------------------------------------
   ipcMain.handle('app:open_browser_preview', async (_e, args: {
-    label: string; url: string; title?: string;
+    label: string; url: string; title?: string; cookieJar?: string;
     x: number; y: number; width: number; height: number;
   }) => {
     await openBrowserPreview(args);

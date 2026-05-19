@@ -112,7 +112,7 @@ type LocalSessionState = SessionState & {
   // entry is bumped on every `open_browser` broadcast so the panel re-runs
   // its open effect when the same name is re-broadcast (retry after error,
   // reopen from chat-header chip).
-  browsers: Record<string, { url: string; title: string; openSeq: number }>;
+  browsers: Record<string, { url: string; title: string; openSeq: number; cookieJar: string }>;
   /** Which browser name is currently shown in the panel. `null` when none
    *  is open (panel hidden). Matches a key in `browsers`. */
   activeBrowserName: string | null;
@@ -1320,14 +1320,15 @@ export function ChatApp() {
         // within the session's browsers map; multiple can co-exist.
         // `openSeq` bumps per-name on every broadcast so the panel's
         // open-effect re-fires even for retry-after-error on the same URL.
-        onOpenBrowser: (sid, name, url, title) => {
+        onOpenBrowser: (sid, name, url, title, cookieJar) => {
           if (!name || !url) return;
           const t = title || name;
+          const jar = cookieJar || 'default';
           updateLocalState(sid, s => ({
             ...s,
             browsers: {
               ...s.browsers,
-              [name]: { url, title: t, openSeq: Date.now() },
+              [name]: { url, title: t, openSeq: Date.now(), cookieJar: jar },
             },
             lastBrowsers: {
               ...s.lastBrowsers,
@@ -1607,7 +1608,12 @@ export function ChatApp() {
                 ...s,
                 browsers: {
                   ...s.browsers,
-                  [name]: { url: remembered.url, title: remembered.title, openSeq: Date.now() },
+                  [name]: {
+                    url: remembered.url,
+                    title: remembered.title,
+                    openSeq: Date.now(),
+                    cookieJar: 'default',
+                  },
                 },
                 activeBrowserName: name,
                 openFile: null,
@@ -4077,6 +4083,7 @@ export function ChatApp() {
                 url={activeBrowser.url}
                 title={activeBrowser.title}
                 openSeq={activeBrowser.openSeq}
+                cookieJar={activeBrowser.cookieJar}
               />
             )}
           </div>
@@ -4788,7 +4795,8 @@ export function ChatApp() {
                       url={activeBrowser.url}
                       title={activeBrowser.title}
                       openSeq={activeBrowser.openSeq}
-                      obscured={showPalette}
+                      cookieJar={activeBrowser.cookieJar}
+                      obscured={showPalette || projectSettings.open || switcher.open}
                       inspect={!!active.browserInspect[activeName]}
                       comments={commentsForActive}
                       tabs={tabs}
@@ -5337,7 +5345,12 @@ export function ChatApp() {
               ...s,
               browsers: {
                 ...s.browsers,
-                [trimmedName]: { url: next, title: trimmedName, openSeq: Date.now() },
+                [trimmedName]: {
+                  url: next,
+                  title: trimmedName,
+                  openSeq: Date.now(),
+                  cookieJar: s.browsers[trimmedName]?.cookieJar ?? 'default',
+                },
               },
               lastBrowsers: { ...s.lastBrowsers, [trimmedName]: preview },
               activeBrowserName: trimmedName,
@@ -5616,6 +5629,7 @@ function FocusBrowserAnchor(props: {
   url: string;
   title: string;
   openSeq: number;
+  cookieJar: string;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   useBrowserPreviewBounds({
@@ -5624,6 +5638,7 @@ function FocusBrowserAnchor(props: {
     url: props.url,
     title: props.title,
     openSeq: props.openSeq,
+    cookieJar: props.cookieJar,
     visible: false,
   });
   return (

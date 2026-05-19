@@ -260,8 +260,10 @@ type ClientCallbacks = {
   /** A named browser preview was opened or re-navigated. `name` identifies
    *  which preview within the session (multiple can co-exist). Same name +
    *  same URL reuses the existing OS-level webview; different URL navigates
-   *  it; new name opens a fresh preview. */
-  onOpenBrowser: (sessionId: string, name: string, url: string, title: string) => void;
+   *  it; new name opens a fresh preview. `cookieJar` selects the cookie/
+   *  storage partition; previews sharing a jar name share cookies, different
+   *  jars are fully isolated. Defaults to "default" when the server omits it. */
+  onOpenBrowser: (sessionId: string, name: string, url: string, title: string, cookieJar: string) => void;
   onCloseBrowser: (sessionId: string, name: string) => void;
   /**
    * Bridge → frontend CDP request channel. The bridge issues `browser_request`
@@ -480,7 +482,13 @@ export class ClaudeClient {
         this.callbacks.onOpenMockup(sessionId, msg.name as string, msg.html as string);
         break;
       case 'open_browser':
-        this.callbacks.onOpenBrowser(sessionId, msg.name as string, msg.url as string, (msg.title as string) || '');
+        this.callbacks.onOpenBrowser(
+          sessionId,
+          msg.name as string,
+          msg.url as string,
+          (msg.title as string) || '',
+          (msg.cookieJar as string) || 'default',
+        );
         break;
       case 'close_browser':
         this.callbacks.onCloseBrowser(sessionId, msg.name as string);

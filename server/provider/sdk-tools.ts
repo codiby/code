@@ -135,7 +135,7 @@ export async function listPersistedMockups(sessionId: string): Promise<string[]>
 // share the same in-memory snapshot. Action tools (snapshot / click / fill /
 // scroll / etc.) look up `(sessionId, name)` to confirm the target preview
 // is open before round-tripping a CDP request through the desktop frontend.
-export type BrowserPreview = { url: string; title?: string };
+export type BrowserPreview = { url: string; title?: string; cookieJar?: string };
 const browserStore = new Map<string, Map<string, BrowserPreview>>();
 
 export function getBrowserPreview(sessionId: string, name: string): BrowserPreview | null {
@@ -167,6 +167,19 @@ export function listBrowserPreviews(sessionId: string): Array<{ name: string; pr
 export function sanitizeBrowserName(raw: string): string | null {
   const name = (raw || '').trim();
   if (!name) return null;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(name)) return null;
+  return name;
+}
+
+/** Validate a model-supplied cookie-jar name. Same shape as a browser name
+ *  (kebab/snake-case, 1–40 chars, must start with letter/digit) so the jar
+ *  name passes the Electron-side partition validator. Falsy input maps to
+ *  the shared "default" jar — every preview opened without an explicit jar
+ *  shares the same cookie scope. */
+export const DEFAULT_BROWSER_COOKIE_JAR = 'default';
+export function sanitizeCookieJar(raw: string | undefined | null): string | null {
+  const name = (raw || '').trim();
+  if (!name) return DEFAULT_BROWSER_COOKIE_JAR;
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(name)) return null;
   return name;
 }
@@ -442,12 +455,15 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           '',
           'If a preview with this `name` is already open in the session, it just navigates that one to the new URL (state, cookies, scroll position, and authenticated cookies are preserved — only the page changes). Otherwise a new preview is opened.',
           '',
+          'Cookie isolation is controlled by `cookieJar`: previews sharing the same jar name share cookies / localStorage / cache, and different jar names are completely isolated. Omitting `cookieJar` puts the preview in the shared "default" jar. Use distinct jars (e.g. "qa-testing", "admin-account") when you need a separate logged-in identity.',
+          '',
           'Use when the user is iterating on a real running app: previewing their local dev server, reviewing how a deployed page looks, or driving multiple flows in parallel.',
         ].join('\n'),
         {
           name: z.string().min(1).max(40).describe('Stable identifier for this browser preview within the session. Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Examples: "qa-admin-workflow", "checkout-flow", "docs". Reuse the same name across browser_* tools to drive the same preview.'),
           url: z.string().min(1).describe('Absolute http:// or https:// URL. localhost URLs are reachable as long as the bridge process can connect to them.'),
           title: z.string().max(120).optional().describe('Short label shown in the panel tab. Defaults to the `name`.'),
+          cookieJar: z.string().min(1).max(40).optional().describe('Cookie jar name. Previews sharing the same jar share cookies/storage/cache; different jars are isolated. Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Defaults to "default" when omitted.'),
         },
         async (args) => {
           const name = sanitizeBrowserName(args.name);
@@ -458,16 +474,21 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!target) {
             return { content: [{ type: 'text', text: `Invalid URL "${args.url}". Must be an absolute http:// or https:// URL.` }], isError: true };
           }
+          const cookieJar = sanitizeCookieJar(args.cookieJar);
+          if (!cookieJar) {
+            return { content: [{ type: 'text', text: `Invalid cookieJar "${args.cookieJar}". Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Example: "qa-testing".` }], isError: true };
+          }
           const title = (args.title || '').trim() || name;
-          setBrowserPreview(sessionId, name, { url: target.toString(), title });
+          setBrowserPreview(sessionId, name, { url: target.toString(), title, cookieJar });
           deps.broadcastToSession(sessionId, {
             type: 'open_browser',
             sessionId,
             name,
             url: target.toString(),
             title,
+            cookieJar,
           });
-          return { content: [{ type: 'text', text: `Opened browser preview "${name}" → ${target.toString()}.` }] };
+          return { content: [{ type: 'text', text: `Opened browser preview "${name}" (jar "${cookieJar}") → ${target.toString()}.` }] };
         },
       ),
       tool(

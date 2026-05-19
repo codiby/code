@@ -26,7 +26,7 @@
  *     - "browser-preview://inspect-auto-off"
  *     - "browser-preview://url-changed"
  */
-import { BrowserView, BrowserWindow, WebContents } from 'electron';
+import { BrowserView, BrowserWindow, WebContents, session as electronSession } from 'electron';
 import { join } from 'node:path';
 import { renderInspectorScript } from './inspector_script';
 import { attachCdp, detachCdp } from './cdp';
@@ -40,6 +40,11 @@ type PreviewState = {
   attached: boolean;
   bounds: Bounds;
   inspectorReady: boolean;
+  /** Cookie-jar name used to build this view's partition. Tracked so an
+   *  open call requesting a different jar can tear down and recreate the
+   *  view under the new partition — Electron pins the partition at
+   *  `BrowserView` construction time, so an in-place swap isn't possible. */
+  cookieJar: string;
 };
 
 const previews = new Map<string, PreviewState>();
@@ -64,6 +69,22 @@ function requireMainWindow(): BrowserWindow {
 function validateLabel(label: string): void {
   if (!label || label.length > 80) throw new Error('label must be 1..=80 chars');
   if (!/^[a-zA-Z0-9_-]+$/.test(label)) throw new Error('label must match [a-zA-Z0-9_-]+');
+}
+
+/** Validate a cookie-jar name and turn it into an Electron partition string.
+ *  Falsy / missing → the shared "default" jar. The `persist:` prefix tells
+ *  Electron to keep cookies on disk across launches; the `codiby-browser-`
+ *  namespace keeps these partitions clear of the ones used by `plugin_oauth`. */
+const DEFAULT_COOKIE_JAR = 'default';
+function partitionForJar(raw: string | undefined | null): string {
+  const name = (raw || '').trim() || DEFAULT_COOKIE_JAR;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(name)) {
+    throw new Error(`invalid cookieJar "${raw}" — letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit`);
+  }
+  return `persist:codiby-browser-${name}`;
+}
+function normalizeJar(raw: string | undefined | null): string {
+  return (raw || '').trim() || DEFAULT_COOKIE_JAR;
 }
 
 function validateUrl(raw: string): URL {
@@ -121,11 +142,14 @@ export async function openBrowserPreview(args: {
   label: string;
   url: string;
   title?: string; // accepted for API symmetry, no chrome
+  cookieJar?: string;
   x: number; y: number; width: number; height: number;
 }): Promise<void> {
   validateLabel(args.label);
   const parsed = validateUrl(args.url);
   const targetUrl = parsed.toString();
+  const jar = normalizeJar(args.cookieJar);
+  const partition = partitionForJar(jar);
 
   const main = requireMainWindow();
   const bounds = clampBounds({ x: args.x, y: args.y, width: args.width, height: args.height });
@@ -135,13 +159,15 @@ export async function openBrowserPreview(args: {
   // destroy/recreate here would reload the page from scratch every time
   // — losing scroll state, form input, authenticated sessions, etc.
   //
-  //   - Same URL as the live view → just re-show it and push fresh bounds.
-  //   - Different URL → navigate the existing view (loadURL) instead of
-  //     spinning up a new one. Cheaper than destroy+create, and preserves
-  //     the BrowserView's cookie/cache scope.
+  //   - Same URL + same jar → just re-show it and push fresh bounds.
+  //   - Different URL + same jar → navigate the existing view (loadURL).
+  //     Cheaper than destroy+create, preserves the cookie/cache scope.
+  //   - Different jar → fall through and recreate. The partition is fixed
+  //     at `BrowserView` construction time, so an in-place swap is not
+  //     possible; close + open is the only way to apply the new jar.
   //   - No existing view → create.
   const existing = previews.get(args.label);
-  if (existing) {
+  if (existing && existing.cookieJar === jar) {
     if (!existing.attached) {
       main.addBrowserView(existing.view);
       existing.attached = true;
@@ -154,13 +180,20 @@ export async function openBrowserPreview(args: {
     }
     return;
   }
+  if (existing) {
+    // Jar changed — tear down the live view so the new partition takes
+    // effect on the recreate below.
+    closeBrowserPreview(args.label);
+  }
 
+  const partitionedSession = electronSession.fromPartition(partition);
   const view = new BrowserView({
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
       preload: previewPreloadPath(),
+      session: partitionedSession,
     },
   });
 
@@ -171,6 +204,7 @@ export async function openBrowserPreview(args: {
     attached: true,
     bounds,
     inspectorReady: false,
+    cookieJar: jar,
   };
   previews.set(args.label, state);
   wcIdToLabel.set(wcId, args.label);

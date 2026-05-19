@@ -47,6 +47,9 @@ export type BrowserPanelProps = {
   url: string;
   title: string;
   openSeq: number;
+  /** Cookie/storage partition for the underlying webview. Previews sharing
+   *  the same jar share cookies; different jars are fully isolated. */
+  cookieJar: string;
   inspect: boolean;
   comments: MockupComment[];
   /** When true, hide the OS-level child webview so a React overlay (e.g.
@@ -155,13 +158,18 @@ export function useBrowserPreviewBounds(args: {
   url: string;
   title: string;
   openSeq: number;
+  /** Cookie/storage partition for the underlying webview. Changing this
+   *  between renders re-fires the open effect so main can recreate the
+   *  BrowserView under the new partition — partition is fixed at
+   *  construction time, so an in-place navigate isn't enough. */
+  cookieJar: string;
   /** When false, the OS-level webview is hidden even though its bounds
    *  keep tracking the host element. The focus-mode anchor passes `false`
    *  here so the webview survives the layout switch without appearing
    *  over the chat-focus grid. */
   visible: boolean;
 }): { windowOpen: boolean; openError: string | null } {
-  const { hostRef, label, url, title, openSeq, visible } = args;
+  const { hostRef, label, url, title, openSeq, cookieJar, visible } = args;
   // The open-effect below is keyed on `openSeq` (the model-driven re-open
   // bump), not `url` — otherwise propagating the user's in-page navigation
   // back into session state would re-fire the effect on every URL change.
@@ -203,7 +211,7 @@ export function useBrowserPreviewBounds(args: {
       const rect = readBounds(hostRef.current) || { x: 0, y: 0, width: 800, height: 600 };
       lastBoundsRef.current = rect;
       native.invoke<void>('open_browser_preview', {
-        label, url: urlRef.current, title: titleRef.current, ...rect,
+        label, url: urlRef.current, title: titleRef.current, cookieJar, ...rect,
       })
         .then(() => { if (!cancelled) setWindowOpen(true); })
         .catch((e: unknown) => { if (!cancelled) setOpenError(String(e)); });
@@ -258,7 +266,7 @@ export function useBrowserPreviewBounds(args: {
 }
 
 export function BrowserPanel({
-  label, url, title, openSeq, inspect, comments, obscured,
+  label, url, title, openSeq, cookieJar, inspect, comments, obscured,
   tabs, onSelectTab, onCloseTab,
   onSetInspect, onSetComments, onSendToChat, onWriteToChat, onClose,
   onUrlChanged,
@@ -290,7 +298,7 @@ export function BrowserPanel({
 
   const { windowOpen, openError } = useBrowserPreviewBounds({
     hostRef: bodyRef,
-    label, url, title, openSeq,
+    label, url, title, openSeq, cookieJar,
     visible: !obscured,
   });
 

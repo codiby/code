@@ -26,6 +26,7 @@ import {
   listPersistedMockups,
   sanitizeBrowserUrl,
   sanitizeBrowserName,
+  sanitizeCookieJar,
   setBrowserPreview,
   getBrowserPreview,
 } from './provider/sdk-tools';
@@ -404,13 +405,14 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'ui_browser_open',
-      description: 'Open an http(s) URL in a named browser preview tab inside Codiby Code. Multiple previews can co-exist per session — choose a stable kebab/snake-case `name` (e.g. "qa-admin-workflow") and reuse it for follow-up tools. Re-opening with the same name navigates the existing preview without losing state.',
+      description: 'Open an http(s) URL in a named browser preview tab inside Codiby Code. Multiple previews can co-exist per session — choose a stable kebab/snake-case `name` (e.g. "qa-admin-workflow") and reuse it for follow-up tools. Re-opening with the same name navigates the existing preview without losing state. Use `cookieJar` to isolate cookies across previews; previews sharing the same jar share cookies/storage, different jars are isolated. Omitting `cookieJar` uses the shared "default" jar.',
       inputSchema: {
         type: 'object' as const,
         properties: {
           name: { type: 'string', description: 'Stable identifier for this browser preview within the session. Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Example: "qa-admin-workflow".' },
           url: { type: 'string', description: 'Absolute http:// or https:// URL.' },
           title: { type: 'string', description: 'Short label shown in the panel tab. Defaults to the `name`.' },
+          cookieJar: { type: 'string', description: 'Cookie jar name. Previews sharing the same jar share cookies; different jars are isolated. Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Defaults to "default".' },
         },
         required: ['name', 'url'],
       },
@@ -911,6 +913,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         const rawName = typeof args!.name === 'string' ? args!.name : '';
         const rawUrl = typeof args!.url === 'string' ? args!.url : '';
         const rawTitle = typeof args!.title === 'string' ? args!.title : '';
+        const rawJar = typeof args!.cookieJar === 'string' ? args!.cookieJar : '';
         const name = sanitizeBrowserName(rawName);
         if (!name) {
           return { content: [{ type: 'text', text: `Invalid browser name "${rawName}". Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit.` }], isError: true };
@@ -919,16 +922,21 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!target) {
           return { content: [{ type: 'text', text: `Invalid URL "${rawUrl}". Must be an absolute http:// or https:// URL.` }], isError: true };
         }
+        const cookieJar = sanitizeCookieJar(rawJar);
+        if (!cookieJar) {
+          return { content: [{ type: 'text', text: `Invalid cookieJar "${rawJar}". Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit.` }], isError: true };
+        }
         const title = rawTitle.trim() || name;
-        setBrowserPreview(uiSessionId, name, { url: target.toString(), title });
+        setBrowserPreview(uiSessionId, name, { url: target.toString(), title, cookieJar });
         _deps.broadcastToSession(uiSessionId, {
           type: 'open_browser',
           sessionId: uiSessionId,
           name,
           url: target.toString(),
           title,
+          cookieJar,
         });
-        return { content: [{ type: 'text', text: `Opened browser preview "${name}" → ${target.toString()}.` }] };
+        return { content: [{ type: 'text', text: `Opened browser preview "${name}" (jar "${cookieJar}") → ${target.toString()}.` }] };
       }
       case 'ui_browser_close': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
