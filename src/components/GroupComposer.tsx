@@ -186,14 +186,38 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     };
   }, [branchMenuOpen, client, cwd]);
 
+  // When the user picks a branch that's already checked out in some worktree,
+  // `git checkout` would fail with `fatal: '<branch>' is already used by
+  // worktree at '<path>'`. Instead of surfacing the error, switch the
+  // composer's cwd to that worktree's path so the session spawns there.
+  const switchToWorktree = (wtPath: string) => {
+    const main = (gitInfo?.worktrees || []).find(w => !w.path.includes('/.wt/'));
+    const isMain = !wtPath.includes('/.wt/');
+    setCwd(wtPath);
+    setWorktreeOrigin(isMain ? null : (main?.path ?? null));
+  };
+
   const doCheckout = async (branch: string) => {
     if (!client || !cwd) return;
+    // Preflight: if we already know the branch is in a worktree (different
+    // from cwd), skip the API call and just switch. Saves a round-trip and
+    // avoids the server even attempting an `already used` checkout.
+    const existing = (gitInfo?.worktrees || []).find(w => w.branch === branch && w.path && w.path !== cwd);
+    if (existing) {
+      switchToWorktree(existing.path);
+      setBranchMenuOpen(false);
+      return;
+    }
     setCheckingOut(true);
     try {
       const result = await client.checkoutBranch(cwd, branch);
       if (result.ok) {
         const info = await client.getGitInfo(cwd);
         setGitInfo(info);
+      } else if (result.alreadyInWorktree?.path) {
+        // Stale gitInfo: the server saw the branch in a worktree we didn't
+        // know about. Switch instead of failing.
+        switchToWorktree(result.alreadyInWorktree.path);
       }
     } finally {
       setCheckingOut(false);

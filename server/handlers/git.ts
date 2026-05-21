@@ -125,10 +125,22 @@ export function handleGitBranches(cwd: string): Response {
 
 export function handleGitCheckout(cwd: string, branch: string): Response {
   try {
-    execSync(`git checkout ${JSON.stringify(branch)}`, { cwd, encoding: 'utf-8', timeout: 10000 });
+    execSync(`git checkout ${JSON.stringify(branch)} 2>&1`, { cwd, encoding: 'utf-8', timeout: 10000 });
     const current = execSync('git branch --show-current', { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
     return Response.json({ ok: true, branch: current }, { headers: corsHeaders });
   } catch (e: any) {
-    return Response.json({ ok: false, error: e.message }, { status: 400, headers: corsHeaders });
+    // When the branch is already checked out in another worktree, git prints
+    // `fatal: '<branch>' is already used by worktree at '<path>'`. Surface the
+    // path so the caller can switch into that worktree instead of failing.
+    const msg = String(e?.stdout || e?.message || e);
+    const m = msg.match(/already (?:used by|checked out at) worktree at ['"]?([^'"\n]+)['"]?/i)
+      || msg.match(/is already checked out at ['"]?([^'"\n]+)['"]?/i);
+    if (m) {
+      return Response.json(
+        { ok: false, error: msg, alreadyInWorktree: { path: m[1]!.trim(), branch } },
+        { status: 409, headers: corsHeaders },
+      );
+    }
+    return Response.json({ ok: false, error: msg }, { status: 400, headers: corsHeaders });
   }
 }

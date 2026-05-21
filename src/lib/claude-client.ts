@@ -981,7 +981,15 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async checkoutBranch(cwd: string, branch: string): Promise<{ ok: boolean; branch?: string; error?: string }> {
+  async checkoutBranch(cwd: string, branch: string): Promise<{
+    ok: boolean;
+    branch?: string;
+    error?: string;
+    /** Set when the branch is already checked out in another worktree.
+     *  The caller can switch its cwd to `path` instead of treating this
+     *  as a failure. */
+    alreadyInWorktree?: { path: string; branch: string };
+  }> {
     const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-checkout`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
