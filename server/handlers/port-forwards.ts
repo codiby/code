@@ -36,7 +36,7 @@ export async function handleAddPortForward(sessionId: string, req: Request): Pro
     return badRequest('remotePort is required (integer).');
   }
   try {
-    const { localPort } = await sshAddForward(remoteId, body.remotePort, body.localPort ?? null);
+    const { localPort } = await sshAddForward(remoteId, body.remotePort, body.localPort ?? null, body.label);
     // Mirror in the remote's persisted Session.portForwards so it survives
     // reconnects and other clients see it too. Best-effort — the local
     // tunnel forward is the authority for live state.

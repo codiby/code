@@ -72,6 +72,7 @@ import {
   type Workspace,
 } from './ChatFocusLayout';
 import { BookmarkPlus, MessageSquarePlus } from 'lucide-react';
+import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
 import { GroupComposer } from './GroupComposer';
@@ -3987,6 +3988,16 @@ export function ChatApp() {
               </button>
             </>
           )}
+
+          {/* Port forwards chip — only renders when the active session lives
+              on a remote. The popover handles its own visibility. */}
+          <div className="ml-auto mr-1.5 flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <PortForwardsPopover
+              client={client}
+              session={activeSession}
+              tunnelStatus={activeSession?.remoteId ? remoteStatuses[activeSession.remoteId]?.status : undefined}
+            />
+          </div>
 
           {/* Right cluster: workspace actions (only in focus mode) + layout
               switcher. Both groups opt out of the drag region so clicks

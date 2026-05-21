@@ -1013,6 +1013,38 @@ export class ClaudeClient {
   }
 
   // ---------------------------------------------------------------------------
+  // Port forwards (remote sessions only). The local bridge owns the SSH
+  // ControlMaster, so add/list/remove all hit the local server even when the
+  // session lives on a remote.
+  // ---------------------------------------------------------------------------
+
+  async listPortForwards(sessionId: string): Promise<{ localPort: number; remotePort: number; label?: string }[]> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  async addPortForward(
+    sessionId: string,
+    body: { remotePort: number; localPort?: number | null; label?: string },
+  ): Promise<{ localPort: number; remotePort: number; label?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({})) as { error?: string };
+      throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+    return resp.json();
+  }
+
+  async removePortForward(sessionId: string, localPort: number, remotePort: number): Promise<void> {
+    await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards/${localPort}/${remotePort}`, { method: 'DELETE' });
+  }
+
+  // ---------------------------------------------------------------------------
   // Preferences (tab groups, ordering, closed sessions) — shared with the
   // desktop UI so both views agree on which sessions are "open" and how they
   // are grouped.

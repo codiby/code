@@ -47,7 +47,7 @@ interface TunnelState {
   reconnectAttempt: number;
   reconnectTimer: NodeJS.Timeout | null;
   /** Forwards currently registered on the master, keyed by "localPort:remotePort". */
-  activeForwards: Map<string, { localPort: number; remotePort: number }>;
+  activeForwards: Map<string, { localPort: number; remotePort: number; label?: string }>;
   /** Callers waiting for the master to reach `online`. */
   pendingReady: Array<{ resolve: (state: TunnelState) => void; reject: (e: Error) => void }>;
 }
@@ -401,6 +401,7 @@ export async function addPortForward(
   remoteId: string,
   remotePort: number,
   localPortHint: number | null,
+  label?: string,
 ): Promise<{ localPort: number }> {
   const state = tunnels.get(remoteId);
   if (!state || state.status !== 'online') {
@@ -410,7 +411,7 @@ export async function addPortForward(
   const key = `${localPort}:${remotePort}`;
   if (state.activeForwards.has(key)) return { localPort };
   await runSshControlCommand(state, 'forward', localPort, remotePort);
-  state.activeForwards.set(key, { localPort, remotePort });
+  state.activeForwards.set(key, { localPort, remotePort, label });
   log(`[ssh-tunnel:${remoteId}] forward +L ${localPort}:localhost:${remotePort}`);
   return { localPort };
 }
