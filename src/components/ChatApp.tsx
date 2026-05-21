@@ -2916,10 +2916,12 @@ export function ChatApp() {
 
   // Keep the module-level "active remote" in sync so the client auto-injects
   // `?remoteId=` on session-agnostic endpoints (file browse, git, search…)
-  // while a remote tab is focused.
-  useEffect(() => {
-    setActiveRemoteId(activeSession?.remoteId ?? null);
-  }, [activeSession?.remoteId]);
+  // while a remote tab is focused. Done in the render body (not a useEffect)
+  // because child effects — most notably FileExplorer's `listFiles` on
+  // `rootPath` change — run BEFORE parent effects in React's commit phase.
+  // If we waited for an effect, the first fetch after a tab change would
+  // still see the previous tab's remoteId and hit the wrong filesystem.
+  setActiveRemoteId(activeSession?.remoteId ?? null);
 
   // Bypass-mode warning gate. Switching a session to `bypassPermissions`
   // pops a confirmation modal the first time; the user can tick "don't show
