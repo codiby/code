@@ -5,6 +5,25 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] — 2026-05-21
+
+### Added
+
+- **Interrupt-on-send.** New global toggle in Settings → General, on by
+  default. When the agent is mid-response and you hit Enter, the current
+  turn is cancelled and your new message ships right away — barging-in
+  matches the typical "wait, do this instead" intent. Flip it off to
+  keep the previous queue behavior, where follow-ups stack and drain in
+  order after each turn finishes.
+
+### Fixed
+
+- **Embedded browser respects host zoom.** Cmd+= / Cmd+− on the main
+  window no longer leaves a black band along the bottom or right edge of
+  the browser preview. Bounds pushed to the native `BrowserView` are
+  now multiplied by the host renderer's `webFrame.getZoomFactor()`, so
+  the embedded surface tracks the visible div at any zoom level.
+
 ## [0.11.1] — 2026-05-21
 
 ### Added
