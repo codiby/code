@@ -5,6 +5,38 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] — 2026-05-21
+
+### Added
+
+- **Remote sessions, end-to-end.** Tab groups whose members all live on
+  the same remote inherit that remote: sidebar row and horizontal
+  tab-strip paint a colored pill, the GroupComposer wears a matching
+  badge, and new sessions spawned from that group land on the right
+  remote instead of falling through to local. The frontend WS proxy now
+  multiplexes per-remote with merged session broadcasts, HTTP calls
+  auto-inject the active `remoteId`, and a `Ctrl+Tab` cycle order
+  follows sidebar position with sticky group labels.
+- **Port forwards popover.** A chip in the chat header (visible only on
+  remote sessions) lists live forwards with copy-URL / open / remove
+  per row, plus an inline add form (remote port required, local port
+  optional — server picks a free one — label optional).
+
+### Fixed
+
+- **Worktree branch checkout no longer fails when the branch is
+  already in a worktree.** Picking such a branch from the
+  GroupComposer's branch dropdown now switches the composer's cwd to
+  the existing worktree (preserving the parent-repo group via
+  `worktreeOrigin`) instead of surfacing git's "already used by
+  worktree" error. The git-checkout HTTP handler also surfaces the
+  destination path so other callers can react the same way.
+- **Active remote no longer races child fetches** on group switch —
+  it's synced during render rather than in an effect, so the very
+  first request after a swap goes to the right remote.
+- **SSH ControlMasters are killed on bun shutdown**, preventing
+  orphaned masters from blocking subsequent connections.
+
 ## [0.11.0] — 2026-05-19
 
 ### Added
