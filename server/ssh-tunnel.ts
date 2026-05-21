@@ -346,6 +346,34 @@ export async function disconnectTunnel(remoteId: string): Promise<void> {
   tunnels.delete(remoteId);
 }
 
+/**
+ * Tear down every live SSH master. Called from the shutdown handler so the
+ * bun process doesn't leave orphaned `ssh -N -M` children running after it
+ * exits — on macOS/Linux child processes are reparented to init by default,
+ * so without this you accumulate one zombie ssh per remote on every restart.
+ *
+ * Stays synchronous (no awaits) because `process.on('exit')` can't wait on
+ * async work. `kill('SIGTERM')` is just a signal dispatch; the child reaps
+ * itself.
+ */
+export function closeAllTunnels(): void {
+  let killed = 0;
+  for (const state of tunnels.values()) {
+    if (state.graceTimer) { clearTimeout(state.graceTimer); state.graceTimer = null; }
+    if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+    state.paneRefcount = 0;
+    if (state.master) {
+      try { state.master.kill('SIGTERM'); } catch {}
+      killed++;
+    }
+    state.master = null;
+    state.activeForwards.clear();
+    state.localTunnelPort = null;
+  }
+  tunnels.clear();
+  if (killed > 0) log(`[shutdown] Closed ${killed} SSH tunnel${killed === 1 ? '' : 's'}`);
+}
+
 export function getTunnelStatus(remoteId: string): { status: TunnelStatus; lastError: string | null } {
   const state = tunnels.get(remoteId);
   if (!state) return { status: 'idle', lastError: null };
