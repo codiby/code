@@ -29,6 +29,10 @@ interface Props {
   sessionHasPermission: Record<string, boolean>;
   tabGroups: Record<string, SessionTabStripGroup>;
   tabGroupMap: Record<string, string>;
+  /** Per-group remote affiliation, derived by the host from members. When a
+   *  group's members all share the same remoteId, the group displays a pill
+   *  in the remote's color so it's visually clear which remote owns it. */
+  groupRemoteInfo?: Record<string, { remoteId: string; remoteName: string | null; remoteColor: string | null }>;
   expandedGroupIds: Set<string>;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
@@ -86,6 +90,7 @@ export function SessionTabStrip({
   sessionHasPermission,
   tabGroups,
   tabGroupMap,
+  groupRemoteInfo,
   expandedGroupIds,
   onSelect,
   onClose,
@@ -206,11 +211,14 @@ export function SessionTabStrip({
         }
         const groupColor = resolveGroupColor(item.group.color);
         const expanded = expandedGroupIds.has(item.group.id);
+        const remote = groupRemoteInfo?.[item.group.id];
         return (
           <GroupContainer
             key={item.group.id}
             group={item.group}
             color={groupColor}
+            remoteName={remote?.remoteName ?? null}
+            remoteColor={remote?.remoteColor ?? null}
             sessions={item.sessions}
             activeSessionId={activeSessionId}
             sessionStatuses={sessionStatuses}
@@ -345,6 +353,8 @@ function TabPill({
 function GroupContainer({
   group: _group,
   color,
+  remoteName,
+  remoteColor,
   sessions,
   activeSessionId,
   sessionStatuses,
@@ -361,6 +371,8 @@ function GroupContainer({
 }: {
   group: SessionTabStripGroup;
   color: string;
+  remoteName?: string | null;
+  remoteColor?: string | null;
   sessions: SessionInfo[];
   activeSessionId: string | null;
   sessionStatuses: Record<string, ConnectionStatus>;
@@ -375,13 +387,19 @@ function GroupContainer({
   onCloseGroup?: () => void;
   leadingGap?: boolean;
 }) {
+  const tint = remoteColor || null;
   return (
     <div
       className="group/grp flex items-center shrink-0 relative"
       style={{
         height: 36,
         padding: '2px 8px 4px 8px',
-        borderBottom: `2px solid ${color}`,
+        // When the group sits on a remote, blend the group's accent with the
+        // remote tint so both identities are legible at once.
+        borderBottom: tint
+          ? `2px solid ${tint}`
+          : `2px solid ${color}`,
+        boxShadow: tint ? `inset 0 1px 0 ${tint}33` : undefined,
         boxSizing: 'border-box',
         marginLeft: leadingGap ? 8 : 0,
       }}
@@ -395,11 +413,28 @@ function GroupContainer({
         style={{
           width: 9, height: 9,
           background: color,
-          marginRight: expanded ? 8 : 0,
+          marginRight: expanded || remoteName ? 8 : 0,
           padding: 0,
           border: 'none',
+          // Subtle ring in the remote's color so even when the group's own
+          // color is similar to the remote's, the affiliation is still visible.
+          boxShadow: tint ? `0 0 0 2px ${tint}33` : undefined,
         }}
       />
+      {remoteName && (
+        <span
+          className="shrink-0 inline-flex items-center gap-1 text-[9.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-md border"
+          style={{
+            color: tint || '#a78bfa',
+            background: `${tint || '#a78bfa'}14`,
+            borderColor: `${tint || '#a78bfa'}40`,
+            marginRight: expanded ? 8 : 0,
+          }}
+          title={`This group lives on remote "${remoteName}"`}
+        >
+          {remoteName}
+        </span>
+      )}
       {expanded && sessions.map((s, i) => {
         const state = deriveState({
           sessionId: s.id,

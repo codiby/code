@@ -40,6 +40,12 @@ interface Props {
   client: ClaudeClient | null;
   opencodeInfo?: OpencodeInfoLike | null;
   claudeModels?: { id: string; label: string }[];
+  /** When the group sits on a remote (all members share the same remoteId),
+   *  this is set so spawned sessions land on that remote and the composer
+   *  badges itself as remote. Null for local / mixed groups. */
+  remoteId?: string | null;
+  remoteName?: string | null;
+  remoteColor?: string | null;
   onSpawn: (
     cwd: string,
     provider: string,
@@ -50,6 +56,8 @@ interface Props {
      *  repo's top-level — used by the host to autogroup the new session
      *  under the main repo's folder rather than the worktree branch. */
     worktreeOrigin?: string,
+    /** Inherited from the group when it's a remote group. */
+    remoteId?: string | null,
   ) => void;
   /** Opens the full folder-picker modal (parent-owned). Invoked from the
    *  "Browse for folder…" item at the bottom of the project dropdown. */
@@ -63,7 +71,7 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], onSpawn, onBrowseFolder }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, onSpawn, onBrowseFolder }: Props) {
   const [prompt, setPrompt] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [cwd, setCwd] = useState(groupCwd);
@@ -104,14 +112,21 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
 
   // Reload recent dirs from localStorage each time the dropdown opens — the
   // list may have grown since mount via other modals adding to it. Also wire
-  // click-outside / Escape to dismiss.
+  // click-outside / Escape to dismiss. For remote groups, skip the local
+  // recents entirely — those paths live on the user's local machine, but the
+  // session would be spawned on the remote where they don't exist (provider
+  // would crash mid-turn → red dot).
   useEffect(() => {
     if (!folderMenuOpen) return;
-    try {
-      const raw = localStorage.getItem(RECENT_DIRS_KEY);
-      const dirs = raw ? JSON.parse(raw) : [];
-      setRecentDirs(Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === 'string') : []);
-    } catch { setRecentDirs([]); }
+    if (remoteId) {
+      setRecentDirs([]);
+    } else {
+      try {
+        const raw = localStorage.getItem(RECENT_DIRS_KEY);
+        const dirs = raw ? JSON.parse(raw) : [];
+        setRecentDirs(Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === 'string') : []);
+      } catch { setRecentDirs([]); }
+    }
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (folderMenuRef.current?.contains(target)) return;
@@ -200,6 +215,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       model || undefined,
       permissionMode && permissionMode !== 'default' ? permissionMode : undefined,
       worktreeOrigin || undefined,
+      remoteId ?? null,
     );
   };
 
@@ -208,6 +224,20 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       <div className="w-full max-w-[720px] space-y-3">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[22px] text-zinc-400 font-light px-3">
           <span>New session in</span>
+          {remoteId && (
+            <span
+              className="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider rounded-md px-2 py-0.5 border"
+              style={{
+                color: remoteColor || '#a78bfa',
+                background: `${remoteColor || '#a78bfa'}14`,
+                borderColor: `${remoteColor || '#a78bfa'}40`,
+              }}
+              title={`This group lives on remote "${remoteName || remoteId}"`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: remoteColor || '#a78bfa' }} />
+              {remoteName || 'remote'}
+            </span>
+          )}
           <div className="relative inline-flex">
             <button
               ref={folderBtnRef}

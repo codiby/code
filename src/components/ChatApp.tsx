@@ -446,8 +446,14 @@ export function ChatApp() {
     const firstMember = sessions.find(s => tabGroupMap[s.id] === groupId);
     const cwd = group.cwd || firstMember?.cwd || '';
     if (!cwd) return;
+    // If every member of this group lives on the same remote, the new
+    // session goes there too — otherwise it stays local.
+    const groupRemoteId = firstMember?.remoteId
+      && sessions.filter(s => tabGroupMap[s.id] === groupId).every(s => s.remoteId === firstMember.remoteId)
+        ? firstMember.remoteId
+        : null;
     try {
-      const session = await c.createSession(cwd);
+      const session = await c.createSession(cwd, { remoteId: groupRemoteId });
       const newMap = { ...tabGroupMap, [session.id]: groupId };
       setTabGroupMap(newMap);
       // Persist the inferred cwd back into the group so subsequent
@@ -535,13 +541,14 @@ export function ChatApp() {
     model?: string,
     permissionMode?: string,
     worktreeOrigin?: string,
+    remoteId?: string | null,
   ) => {
     const c = clientRef.current;
     if (!c) return;
     const group = tabGroups[groupId];
     if (!group || !cwd) return;
     try {
-      const session = await c.createSession(cwd, { provider, model, permissionMode, groupCwd: worktreeOrigin });
+      const session = await c.createSession(cwd, { provider, model, permissionMode, groupCwd: worktreeOrigin, remoteId: remoteId ?? null });
       const newMap = { ...tabGroupMap, [session.id]: groupId };
       setTabGroupMap(newMap);
       let nextGroups = tabGroups;
@@ -2974,6 +2981,36 @@ export function ChatApp() {
       return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
     }), [sessions, tabOrder, showTelegramSession]);
 
+  /** Derive a remoteId/color/name for each tab group from its members. A
+   *  group is "remote" only when every member sits on the same remote (mixed
+   *  groups stay local — there's no sensible color to pick otherwise). The
+   *  GroupComposer uses this to spawn new sessions on the right remote, and
+   *  the sidebar / tab strip use it to tint the group header. */
+  const groupRemoteInfo = useMemo(() => {
+    const out: Record<string, { remoteId: string; remoteName: string | null; remoteColor: string | null }> = {};
+    const byGroup = new Map<string, SessionInfo[]>();
+    for (const s of sessions) {
+      const gid = tabGroupMap[s.id];
+      if (!gid) continue;
+      let list = byGroup.get(gid);
+      if (!list) { list = []; byGroup.set(gid, list); }
+      list.push(s);
+    }
+    for (const [gid, members] of byGroup) {
+      const ids = new Set(members.map(m => m.remoteId ?? null));
+      if (ids.size !== 1) continue;
+      const remoteId = [...ids][0];
+      if (!remoteId) continue;
+      const first = members.find(m => m.remoteId === remoteId);
+      out[gid] = {
+        remoteId,
+        remoteName: first?.remoteName ?? null,
+        remoteColor: first?.remoteColor ?? null,
+      };
+    }
+    return out;
+  }, [sessions, tabGroupMap]);
+
   // Sessions surfaced in the "+" dropdown's CLOSED section. Now backed by
   // the archived status — the legacy three-state model collapsed into
   // two, so "recently closed" and "archived" are the same list. The
@@ -3961,6 +3998,7 @@ export function ChatApp() {
               sessionHasPermission={sessionHasPermission}
               tabGroups={tabGroups}
               tabGroupMap={tabGroupMap}
+              groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
               onSelect={handleSelectSession}
               onClose={handleCloseTab}
@@ -4193,6 +4231,7 @@ export function ChatApp() {
               onReorder={handleReorder}
               tabGroups={tabGroups}
               tabGroupMap={tabGroupMap}
+              groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
               onCreateGroup={handleCreateGroup}
               onGroupTabs={handleGroupTabs}
@@ -4499,8 +4538,11 @@ export function ChatApp() {
                       client={client}
                       opencodeInfo={opencodeInfo}
                       claudeModels={claudeModels}
-                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin) =>
-                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin)
+                      remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
+                      remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
+                      remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
+                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
                     />

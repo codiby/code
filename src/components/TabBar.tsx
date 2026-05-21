@@ -39,6 +39,9 @@ interface Props {
   onReorder: (fromId: string, toId: string) => void;
   tabGroups: Record<string, TabGroup>;
   tabGroupMap: Record<string, string>;
+  /** Per-group remote affiliation. When every member of a group sits on the
+   *  same remote, the group header shows a pill in the remote's color. */
+  groupRemoteInfo?: Record<string, { remoteId: string; remoteName: string | null; remoteColor: string | null }>;
   expandedGroupIds: Set<string>;
   onCreateGroup: (tabIds: string[]) => void;
   onGroupTabs: (a: string, b: string) => void;
@@ -208,8 +211,9 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
   );
 }
 
-function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivity, onToggle, onRename, onMenuOpen, onOpenComposer }: {
+function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivity, remoteName, remoteColor, onToggle, onRename, onMenuOpen, onOpenComposer }: {
   group: TabGroup; memberCount: number; isExpanded: boolean; hasActive: boolean; hasActivity?: boolean;
+  remoteName?: string | null; remoteColor?: string | null;
   onToggle: () => void; onRename: (name: string) => void; onMenuOpen: (x: number, y: number) => void;
   onOpenComposer: () => void;
 }) {
@@ -270,6 +274,20 @@ function SortableGroupTab({ group, memberCount, isExpanded, hasActive, hasActivi
       ) : (
         <span className="text-[12px] truncate flex-1" onDoubleClick={e => { e.stopPropagation(); setEditing(true); setName(group.name); }}>
           {group.name}
+        </span>
+      )}
+      {remoteName && (
+        <span
+          className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded border shrink-0"
+          style={{
+            color: remoteColor || '#a78bfa',
+            background: `${remoteColor || '#a78bfa'}14`,
+            borderColor: `${remoteColor || '#a78bfa'}40`,
+            lineHeight: 1,
+          }}
+          title={`Remote: ${remoteName}`}
+        >
+          {remoteName}
         </span>
       )}
       <span className="text-[11px] text-zinc-600">{memberCount}</span>
@@ -408,7 +426,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionLastMessageAt,
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onSelectGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
+    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onSelectGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
     collapsed, onToggleCollapsed } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
@@ -679,11 +697,14 @@ export const TabBar = memo(function TabBar(props: Props) {
               const isExpanded = expandedGroupIds.has(item.groupId);
               const hasActive = item.members.some(m => m.id === activeSessionId);
 
+              const remote = groupRemoteInfo?.[item.groupId];
               return (
                 <div key={`grp-${item.groupId}`} className="flex flex-col gap-0.5">
                   <SortableGroupTab
                     group={group} memberCount={item.members.length} isExpanded={isExpanded} hasActive={hasActive}
                     hasActivity={!isExpanded && item.members.some(m => sessionHasPermission[m.id])}
+                    remoteName={remote?.remoteName ?? null}
+                    remoteColor={remote?.remoteColor ?? null}
                     onToggle={() => onToggleGroup(item.groupId)}
                     onRename={name => onRenameGroup(item.groupId, name)}
                     onMenuOpen={(x, y) => setGroupMenu({ groupId: item.groupId, x, y })}
