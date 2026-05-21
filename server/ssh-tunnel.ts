@@ -353,7 +353,16 @@ export function getTunnelStatus(remoteId: string): { status: TunnelStatus; lastE
 }
 
 export function getTunnelLocalPort(remoteId: string): number | null {
-  return tunnels.get(remoteId)?.localTunnelPort ?? null;
+  // Only expose the local port once the SSH master has confirmed the
+  // forward is actually listening. During the `connecting` window the
+  // port number is already assigned (we picked it before spawn) but no
+  // listener is bound yet — callers must instead go through
+  // `acquireTunnel`, which queues on `pendingReady` until `waitForPort`
+  // resolves. Returning the port too early caused proxy fetches to hang
+  // indefinitely against a dead socket with no timeout.
+  const state = tunnels.get(remoteId);
+  if (!state || state.status !== 'online') return null;
+  return state.localTunnelPort;
 }
 
 // ---------------------------------------------------------------------------

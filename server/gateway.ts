@@ -230,6 +230,166 @@ export function relayWsMessage(ws: ServerWebSocket<any>, message: string | Buffe
   } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Multiplexed frontend WS proxy for remote sessions
+//
+// The frontend opens a single `/ws` connection to the local bridge and
+// expects all session-keyed messages to round-trip there — local AND remote.
+// For each remote session it subscribes to, we lazily open one outbound
+// `/ws` to that remote's bridge (per local-ws), forward subscribe/send_message
+// /etc. there, and relay all messages tagged with a sessionId back to the
+// frontend. Without this, remote sessions never get a `status` or `init_info`
+// and the UI hangs on "waiting for connection".
+// ---------------------------------------------------------------------------
+
+type RemoteFrontendData = {
+  remoteFrontendSockets?: Map<string, WebSocket>;
+  remoteFrontendPending?: Map<string, Promise<WebSocket>>;
+  remoteFrontendQueues?: Map<string, string[]>;
+  /** Set of sessionIds the frontend ws has subscribed to over each outbound,
+   *  used to filter inbound messages so we don't relay unrelated broadcasts
+   *  (the remote bridge also emits `preferences`, `sessions`, etc.). */
+  remoteFrontendSubs?: Map<string, Set<string>>;
+};
+
+/** Lazily open (or reuse) an outbound `/ws` to the named remote, anchored on
+ *  the given local frontend ws. Inbound messages are filtered to the set of
+ *  remote sessionIds this frontend ws has subscribed to via the proxy. */
+async function getOrOpenRemoteFrontendWs(
+  ws: ServerWebSocket<any>,
+  remoteId: string,
+): Promise<WebSocket> {
+  const data = ws.data as RemoteFrontendData;
+  data.remoteFrontendSockets ||= new Map();
+  data.remoteFrontendPending ||= new Map();
+  data.remoteFrontendQueues ||= new Map();
+  data.remoteFrontendSubs ||= new Map();
+
+  const existing = data.remoteFrontendSockets.get(remoteId);
+  if (existing && existing.readyState === WebSocket.OPEN) return existing;
+
+  const inflight = data.remoteFrontendPending.get(remoteId);
+  if (inflight) return inflight;
+
+  const pending = (async (): Promise<WebSocket> => {
+    const { localTunnelPort } = await acquireTunnel(remoteId);
+    const url = `ws://127.0.0.1:${localTunnelPort}/ws`;
+    const out = new WebSocket(url);
+    out.binaryType = 'arraybuffer';
+
+    await new Promise<void>((resolve, reject) => {
+      out.addEventListener('open', () => resolve(), { once: true });
+      out.addEventListener('error', () => reject(new Error(`Failed to connect to ${url}`)), { once: true });
+      out.addEventListener('close', () => reject(new Error(`Closed before open: ${url}`)), { once: true });
+    });
+
+    log(`[gateway] frontend-ws → remote ${remoteId.slice(0, 12)} open`);
+
+    out.addEventListener('message', (ev) => {
+      let msg: any;
+      try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer)); }
+      catch { return; }
+      // Filter: only relay messages whose sessionId is one this frontend ws
+      // has subscribed to via this outbound. Drops the remote's unrelated
+      // broadcasts (welcome/preferences/sessions/etc.) so they don't clobber
+      // the local app's state.
+      const subs = data.remoteFrontendSubs!.get(remoteId);
+      const sid = msg?.sessionId;
+      if (typeof sid === 'string' && subs?.has(sid)) {
+        try { ws.send(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer)); }
+        catch {}
+      }
+    });
+
+    out.addEventListener('close', () => {
+      log(`[gateway] frontend-ws → remote ${remoteId.slice(0, 12)} closed`);
+      data.remoteFrontendSockets!.delete(remoteId);
+      releaseTunnel(remoteId);
+    });
+
+    data.remoteFrontendSockets!.set(remoteId, out);
+    data.remoteFrontendPending!.delete(remoteId);
+
+    // Drain any messages that arrived while we were dialing.
+    const queue = data.remoteFrontendQueues!.get(remoteId);
+    if (queue?.length) {
+      for (const msg of queue) {
+        try { out.send(msg); } catch {}
+      }
+      data.remoteFrontendQueues!.delete(remoteId);
+    }
+    return out;
+  })();
+
+  data.remoteFrontendPending.set(remoteId, pending);
+  pending.catch(() => {
+    data.remoteFrontendPending!.delete(remoteId);
+  });
+  return pending;
+}
+
+/** Forward a frontend-issued message to the remote bridge that hosts the
+ *  given sessionId. Tracks subscriptions so inbound messages are correctly
+ *  routed back. Returns true if forwarded (caller should not handle locally). */
+export async function proxyFrontendWsMessage(
+  ws: ServerWebSocket<any>,
+  remoteId: string,
+  msg: any,
+  rawText: string,
+): Promise<boolean> {
+  const data = ws.data as RemoteFrontendData;
+  data.remoteFrontendSubs ||= new Map();
+  if (msg?.type === 'subscribe' && typeof msg.sessionId === 'string') {
+    let set = data.remoteFrontendSubs.get(remoteId);
+    if (!set) { set = new Set(); data.remoteFrontendSubs.set(remoteId, set); }
+    set.add(msg.sessionId);
+  } else if (msg?.type === 'unsubscribe' && typeof msg.sessionId === 'string') {
+    data.remoteFrontendSubs.get(remoteId)?.delete(msg.sessionId);
+  }
+
+  let out: WebSocket;
+  try {
+    out = await getOrOpenRemoteFrontendWs(ws, remoteId);
+  } catch (e: any) {
+    log(`[gateway] frontend-ws → remote ${remoteId.slice(0, 12)} dial failed: ${e?.message || e}`);
+    // Surface a synthetic error so the UI can react instead of hanging.
+    try {
+      ws.send(JSON.stringify({
+        type: 'status',
+        sessionId: msg?.sessionId,
+        status: 'error',
+        error: `Remote unreachable: ${e?.message || e}`,
+      }));
+    } catch {}
+    return true;
+  }
+
+  if (out.readyState === WebSocket.CONNECTING) {
+    // Buffer; getOrOpenRemoteFrontendWs drains the queue on open.
+    data.remoteFrontendQueues ||= new Map();
+    const q = data.remoteFrontendQueues.get(remoteId) ?? [];
+    q.push(rawText);
+    data.remoteFrontendQueues.set(remoteId, q);
+  } else if (out.readyState === WebSocket.OPEN) {
+    try { out.send(rawText); } catch {}
+  }
+  return true;
+}
+
+/** Close every outbound /ws this frontend ws had opened. Called when the
+ *  frontend disconnects so we don't leak refcounts or sockets. */
+export function closeFrontendRemoteSockets(ws: ServerWebSocket<any>) {
+  const data = ws.data as RemoteFrontendData;
+  if (!data.remoteFrontendSockets) return;
+  for (const [, out] of data.remoteFrontendSockets) {
+    try { out.close(); } catch {}
+  }
+  data.remoteFrontendSockets.clear();
+  data.remoteFrontendSubs?.clear();
+  data.remoteFrontendQueues?.clear();
+  data.remoteFrontendPending?.clear();
+}
+
 /** Tear down the outbound WS and drop the tunnel refcount. */
 export function closeWsProxy(ws: ServerWebSocket<any>) {
   const data = ws.data as {

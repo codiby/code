@@ -42,6 +42,8 @@ import {
   startWsProxy,
   relayWsMessage,
   closeWsProxy,
+  proxyFrontendWsMessage,
+  closeFrontendRemoteSockets,
 } from './gateway';
 import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import { getOpencodeInfo } from './handlers/opencode-info';
@@ -143,10 +145,45 @@ function broadcastToSession(sessionId: string, msg: object) {
   }
 }
 
+/** Build the merged local + cached-remote session list the frontend
+ *  consumes. Local entries get `remoteId: null`; remote entries are flattened
+ *  into the same wire shape as a local session, with the remote's color/name
+ *  attached so the sidebar can tint them. */
+function buildFullSessionList(): any[] {
+  const localList: any[] = [...sessions.values()].map(s => {
+    const j = sessionToJSON(s, server.port) as any;
+    j.remoteId = null;
+    j.remoteColor = null;
+    j.remoteName = null;
+    return j;
+  });
+  const remoteList: any[] = listAllCachedRemoteSessions().map(s => {
+    const r = getRemote(s.remoteId);
+    return {
+      id: s.id,
+      name: s.name,
+      cwd: s.cwd,
+      created_at: s.createdAt,
+      status: s.status,
+      runtime_status: s.runtimeStatus,
+      ready: false,
+      claude_session_id: s.claudeSessionId,
+      ws_url: `ws://localhost:${server.port}/browser/ws/${s.id}`,
+      saved_commands: [],
+      model: s.model,
+      permission_mode: s.permissionMode,
+      provider: s.provider,
+      remoteId: s.remoteId,
+      remoteColor: r?.color ?? null,
+      remoteName: r?.name ?? null,
+    };
+  });
+  return [...localList, ...remoteList];
+}
+
 /** Broadcast the full session list to all connected frontend clients */
 function broadcastSessionList() {
-  const list = [...sessions.values()].map(s => sessionToJSON(s, server.port));
-  const msg = JSON.stringify({ type: 'sessions', sessions: list });
+  const msg = JSON.stringify({ type: 'sessions', sessions: buildFullSessionList() });
   for (const ws of frontendClients) {
     try { ws.send(msg); } catch {}
   }
@@ -323,10 +360,22 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 
   const { type } = msg as { type: string };
 
+  // If the message targets a session that lives on a remote bridge, forward
+  // it (subscribe / send_message / interrupt / set_model / etc.) over a
+  // multiplexed outbound /ws to that remote. Without this, remote-session
+  // events never reach the frontend and the UI hangs on "waiting for
+  // connection". Local sessions fall through to the handlers below.
+  if (typeof msg.sessionId === 'string') {
+    const remoteId = resolveSessionRemote(msg.sessionId);
+    if (remoteId) {
+      try { await proxyFrontendWsMessage(ws, remoteId, msg, text); } catch {}
+      return;
+    }
+  }
+
   // ---- get_sessions --------------------------------------------------------
   if (type === 'get_sessions') {
-    const list = [...sessions.values()].map(s => sessionToJSON(s, server.port));
-    ws.send(JSON.stringify({ type: 'sessions', sessions: list }));
+    ws.send(JSON.stringify({ type: 'sessions', sessions: buildFullSessionList() }));
     return;
   }
 
@@ -1170,35 +1219,7 @@ const server = Bun.serve({
     // -----------------------------------------------------------------------
 
     if (url.pathname === '/sessions' && req.method === 'GET') {
-      const localList = [...sessions.values()].map(s => {
-        const j = sessionToJSON(s, server.port) as any;
-        j.remoteId = null;
-        j.remoteColor = null;
-        j.remoteName = null;
-        return j;
-      });
-      const remoteList = listAllCachedRemoteSessions().map(s => {
-        const r = getRemote(s.remoteId);
-        return {
-          id: s.id,
-          name: s.name,
-          cwd: s.cwd,
-          created_at: s.createdAt,
-          status: s.status,
-          runtime_status: s.runtimeStatus,
-          ready: false,
-          claude_session_id: s.claudeSessionId,
-          ws_url: `ws://localhost:${server.port}/browser/ws/${s.id}`,
-          saved_commands: [],
-          model: s.model,
-          permission_mode: s.permissionMode,
-          provider: s.provider,
-          remoteId: s.remoteId,
-          remoteColor: r?.color ?? null,
-          remoteName: r?.name ?? null,
-        };
-      });
-      return Response.json([...localList, ...remoteList], { headers: corsHeaders });
+      return Response.json(buildFullSessionList(), { headers: corsHeaders });
     }
 
     if (url.pathname === '/sessions' && req.method === 'POST') {
@@ -1911,8 +1932,7 @@ const server = Bun.serve({
         // show, so receiving the session list first would race the prefs and
         // briefly render every persisted session as an open tab.
         ws.send(JSON.stringify({ type: 'preferences', preferences: loadPreferences() }));
-        const list = [...sessions.values()].map(s => sessionToJSON(s, server.port));
-        ws.send(JSON.stringify({ type: 'sessions', sessions: list }));
+        ws.send(JSON.stringify({ type: 'sessions', sessions: buildFullSessionList() }));
         return;
       }
 
@@ -2021,6 +2041,7 @@ const server = Bun.serve({
       if (type === 'frontend') {
         frontendClients.delete(ws);
         subscriptions.delete(ws);
+        closeFrontendRemoteSockets(ws);
         log(`[/ws] Frontend client disconnected (${frontendClients.size} remaining)`);
         return;
       }
