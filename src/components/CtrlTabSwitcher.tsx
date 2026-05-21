@@ -2,9 +2,10 @@
  * Ctrl+Tab session switcher.
  *
  * macOS-style hold-to-show overlay: Ctrl+Tab opens it and pre-selects the
- * second-most-recently-used session (so a single Ctrl+Tab + release swaps
- * to the previous session). Repeat-Tab advances the highlight, Shift+Tab
- * goes back, Esc cancels, releasing Ctrl commits.
+ * next session below the active one in the sidebar (Ctrl+Shift+Tab picks
+ * the one above), so a single Ctrl+Tab + release advances by one slot.
+ * Repeat-Tab advances the highlight, Shift+Tab goes back, Esc cancels,
+ * releasing Ctrl commits.
  *
  * Layout matches the `ctrl-tab-switcher` mockup: 800x460 modal, compact
  * grouped list on the left, chat preview on the right. Sessions awaiting
@@ -23,8 +24,9 @@ interface SwitcherSessionState {
 
 interface Props {
   open: boolean;
-  /** Sessions in MRU order — most recently active first. The host (ChatApp)
-   *  owns MRU bookkeeping; the switcher just renders the given order. */
+  /** Sessions in tab-bar order — same top-to-bottom order the user sees in
+   *  the sidebar. The host (ChatApp) computes this from `tabOrder`; the
+   *  switcher just renders the given order. */
   sessions: SessionInfo[];
   selectedIdx: number;
   sessionStates: Record<string, SwitcherSessionState>;
@@ -124,8 +126,9 @@ export function CtrlTabSwitcher(props: Props) {
     selectedRef.current?.scrollIntoView({ block: 'nearest' });
   }, [open, selectedIdx]);
 
-  // Group sessions in their given (MRU) order — first appearance of each
-  // group wins position. Sessions without a group land under "Ungrouped".
+  // Group sessions in their given (tab-bar) order — first appearance of
+  // each group wins position. Sessions without a group land under
+  // "Ungrouped".
   const grouped = useMemo(() => {
     const order: string[] = [];
     const buckets = new Map<string, { key: string; label: string; color?: string; items: Array<{ s: SessionInfo; i: number }> }>();
@@ -164,7 +167,7 @@ export function CtrlTabSwitcher(props: Props) {
         onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
         <div className="cts-switcher" role="dialog" aria-label="Switch session">
-          {/* ----- left pane: grouped MRU list ----- */}
+          {/* ----- left pane: grouped, tab-bar-ordered list ----- */}
           <div className="cts-pane-left">
             <div className="cts-header">
               <span>Switch session</span>
@@ -368,7 +371,14 @@ const SWITCHER_CSS = `
 }
 .cts-count { color: var(--cts-dim); text-transform: none; letter-spacing: 0; font-size: 11px; }
 .cts-list { flex: 1; overflow-y: auto; padding: 4px 0 6px; }
+/* Sticky group labels: stay pinned to the top of the scroll container
+ * while their group's rows are in view, then get pushed off by the next
+ * group's label. The opaque background hides rows scrolling underneath. */
 .cts-group-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--cts-bg);
   display: flex; align-items: center; gap: 7px;
   padding: 8px 14px 4px;
   font-size: 9.5px;
@@ -387,6 +397,11 @@ const SWITCHER_CSS = `
   border-radius: 6px;
   cursor: pointer;
   min-width: 0;
+  /* Leave room under the sticky group label so scrollIntoView({ block:
+   * 'nearest' }) doesn't park the highlighted row behind it. Tuned to
+   * the group label's height (~24px). */
+  scroll-margin-top: 28px;
+  scroll-margin-bottom: 4px;
 }
 .cts-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cts-faint); justify-self: center; }
 .cts-dot--streaming { background: var(--cts-accent); box-shadow: 0 0 0 2px rgba(124,92,255,0.18); }

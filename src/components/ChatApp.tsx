@@ -361,16 +361,11 @@ export function ChatApp() {
   const archivedIdsRef = useRef(archivedSessionIds);
   useEffect(() => { archivedIdsRef.current = archivedSessionIds; }, [archivedSessionIds]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  // MRU stack of session IDs — most-recently-active first. Updated whenever
-  // `activeId` changes, so Ctrl+Tab can cycle in true MRU order (previously-
-  // active session lands at index 1, ready to be swapped to with one tap).
-  // Held in a ref so updates don't trigger re-renders of the whole app; the
-  // switcher snapshots it into local state when it opens.
-  const sessionMRURef = useRef<string[]>([]);
-  // Ctrl+Tab switcher — open flag + currently-highlighted index. `mruIds` is
-  // the frozen list the switcher renders for the lifetime of one open cycle.
-  const [switcher, setSwitcher] = useState<{ open: boolean; idx: number; mruIds: string[] }>({
-    open: false, idx: 0, mruIds: [],
+  // Ctrl+Tab switcher — open flag + currently-highlighted index. `ids` is
+  // the frozen, tab-bar-ordered list the switcher renders for the lifetime
+  // of one open cycle (see `buildSwitcherIds`).
+  const [switcher, setSwitcher] = useState<{ open: boolean; idx: number; ids: string[] }>({
+    open: false, idx: 0, ids: [],
   });
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [tabGroups, setTabGroups] = useState<Record<string, TabGroupInfo>>({});
@@ -2743,34 +2738,51 @@ export function ChatApp() {
   const closePanelRef = useRef(handleCloseCurrentPanel);
   closePanelRef.current = handleCloseCurrentPanel;
 
-  // Maintain MRU of session ids. On every activeId change, move the new
-  // active session to the front. Ref-only — the switcher snapshots it on
-  // open, so updates here don't re-render anything.
-  useEffect(() => {
-    if (!activeId) return;
-    const prev = sessionMRURef.current;
-    if (prev[0] === activeId) return;
-    sessionMRURef.current = [activeId, ...prev.filter(id => id !== activeId)];
-  }, [activeId]);
-
-  // Garbage-collect MRU entries for sessions that no longer exist (closed,
-  // deleted) so we don't end up cycling through ghosts.
-  useEffect(() => {
-    const live = new Set(sessions.map(s => s.id));
-    sessionMRURef.current = sessionMRURef.current.filter(id => live.has(id));
-  }, [sessions]);
-
-  /** Build the MRU-ordered list of open session ids the switcher should
-   *  cycle through. Falls back to tab-bar order for any sessions that
-   *  haven't been touched since launch (so they're still reachable). */
+  /** Build the list of open session ids the switcher cycles through, in
+   *  the same top-to-bottom order the user sees in the sidebar — that means
+   *  *group-clustered*: walking `tabOrder`, the first time we hit a session
+   *  belonging to a group, we emit all of that group's members in their
+   *  `tabOrder` positions; subsequent encounters with the same group are
+   *  skipped. Ungrouped sessions are emitted in place. `main-session` is
+   *  hoisted to the front to mirror `openSessions`.
+   *
+   *  Mirrors `TabBar.tsx`'s render loop (lines ~517–546) so Ctrl+Tab order
+   *  matches what the user sees. Intentionally **not** MRU and **not**
+   *  recency-sorted within a group — cycling through "recently edited"
+   *  makes the selected slot move under the user's fingers between
+   *  Ctrl+Tab presses, which is disorienting. Top-to-bottom is predictable. */
   const buildSwitcherIds = useCallback((): string[] => {
-    const liveOpen = sessions.filter(s => s.status !== 'archived').map(s => s.id);
-    const liveSet = new Set(liveOpen);
-    const mru = sessionMRURef.current.filter(id => liveSet.has(id));
-    const seen = new Set(mru);
-    const tail = liveOpen.filter(id => !seen.has(id));
-    return [...mru, ...tail];
-  }, [sessions]);
+    const liveOpen = sessions.filter(s => s.status !== 'archived');
+    const liveById = new Map(liveOpen.map(s => [s.id, s]));
+
+    // Tab-order walk with main-session hoisted to front; anything live but
+    // missing from tabOrder is appended at the end so it stays reachable.
+    const walk: string[] = [];
+    const seen = new Set<string>();
+    const pushId = (id: string) => {
+      if (liveById.has(id) && !seen.has(id)) { walk.push(id); seen.add(id); }
+    };
+    if (liveById.has('main-session')) pushId('main-session');
+    tabOrder.forEach(pushId);
+    liveOpen.forEach(s => pushId(s.id));
+
+    // Group-cluster pass: emit each group's members together on first hit.
+    const out: string[] = [];
+    const emittedGroups = new Set<string>();
+    for (const id of walk) {
+      const gid = tabGroupMap[id];
+      if (gid && tabGroups[gid]) {
+        if (emittedGroups.has(gid)) continue;
+        emittedGroups.add(gid);
+        for (const m of walk) {
+          if (tabGroupMap[m] === gid) out.push(m);
+        }
+      } else {
+        out.push(id);
+      }
+    }
+    return out;
+  }, [sessions, tabOrder, tabGroupMap, tabGroups]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -2782,16 +2794,22 @@ export function ChatApp() {
       if (e.key === 'Tab' && e.ctrlKey) {
         e.preventDefault();
         setSwitcher(prev => {
-          // Opening for the first time: snapshot MRU. Pre-select the
-          // *second* entry so a single Ctrl+Tab + release swaps to the
-          // previously-active session, matching every other tab switcher.
+          // Opening for the first time: snapshot the tab-bar-ordered list.
+          // Pre-select the neighbour of the currently-active session — next
+          // on plain Ctrl+Tab, previous on Ctrl+Shift+Tab — so a single tap
+          // + release advances by one slot, matching browser tab cycling.
           if (!prev.open) {
             const ids = buildSwitcherIds();
             if (ids.length < 2) return prev;
-            return { open: true, idx: e.shiftKey ? ids.length - 1 : 1, mruIds: ids };
+            const activeIdx = activeId ? ids.indexOf(activeId) : -1;
+            const base = activeIdx === -1 ? 0 : activeIdx;
+            const nextIdx = e.shiftKey
+              ? (base - 1 + ids.length) % ids.length
+              : (base + 1) % ids.length;
+            return { open: true, idx: nextIdx, ids };
           }
           // Already open: cycle within the snapshot.
-          const n = prev.mruIds.length;
+          const n = prev.ids.length;
           if (n === 0) return prev;
           const nextIdx = e.shiftKey
             ? (prev.idx - 1 + n) % n
@@ -2850,19 +2868,19 @@ export function ChatApp() {
     if (!switcher.open) return;
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === 'Control' || e.key === 'Meta') {
-        const target = switcher.mruIds[switcher.idx];
-        setSwitcher({ open: false, idx: 0, mruIds: [] });
+        const target = switcher.ids[switcher.idx];
+        setSwitcher({ open: false, idx: 0, ids: [] });
         if (target && target !== activeId) handleSelectSession(target);
       }
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        setSwitcher({ open: false, idx: 0, mruIds: [] });
+        setSwitcher({ open: false, idx: 0, ids: [] });
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        const target = switcher.mruIds[switcher.idx];
-        setSwitcher({ open: false, idx: 0, mruIds: [] });
+        const target = switcher.ids[switcher.idx];
+        setSwitcher({ open: false, idx: 0, ids: [] });
         if (target && target !== activeId) handleSelectSession(target);
       }
     };
@@ -2875,7 +2893,7 @@ export function ChatApp() {
     // handleSelectSession is stable for the relevant scope; including the
     // switcher state ensures we always commit the latest highlight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [switcher.open, switcher.idx, switcher.mruIds, activeId]);
+  }, [switcher.open, switcher.idx, switcher.ids, activeId]);
 
   const activeStatus = activeId ? (statuses[activeId] || 'disconnected') : 'disconnected';
   const activeSession = sessions.find(s => s.id === activeId);
@@ -5421,7 +5439,7 @@ export function ChatApp() {
         />
         <CtrlTabSwitcher
           open={switcher.open}
-          sessions={switcher.mruIds.map(id => sessions.find(s => s.id === id)!).filter(Boolean)}
+          sessions={switcher.ids.map(id => sessions.find(s => s.id === id)!).filter(Boolean)}
           selectedIdx={switcher.idx}
           sessionStates={sessionStates}
           sessionLastMessageAt={sessionLastMessageAt}
@@ -5429,11 +5447,11 @@ export function ChatApp() {
           tabGroupMap={tabGroupMap}
           onSelectIdx={(i) => setSwitcher(s => ({ ...s, idx: i }))}
           onCommit={() => {
-            const target = switcher.mruIds[switcher.idx];
-            setSwitcher({ open: false, idx: 0, mruIds: [] });
+            const target = switcher.ids[switcher.idx];
+            setSwitcher({ open: false, idx: 0, ids: [] });
             if (target && target !== activeId) handleSelectSession(target);
           }}
-          onClose={() => setSwitcher({ open: false, idx: 0, mruIds: [] })}
+          onClose={() => setSwitcher({ open: false, idx: 0, ids: [] })}
         />
         {/* Unsaved changes dialog */}
         {unsavedClosePrompt && (
