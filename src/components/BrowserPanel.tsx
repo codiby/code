@@ -123,16 +123,23 @@ function coerceUrlScheme(raw: string): string {
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
-function readBounds(el: HTMLElement | null): Bounds | null {
+function readBounds(el: HTMLElement | null, zoom: number): Bounds | null {
   if (!el) return null;
   const r = el.getBoundingClientRect();
+  // BrowserView.setBounds() takes window-content DIPs; getBoundingClientRect()
+  // returns CSS pixels of the host renderer. Those agree at zoom 1.0 but
+  // diverge by exactly `zoomFactor` when the user hits Cmd+= / Cmd+- on the
+  // host window — without this multiply, a zoomed-in host leaves the
+  // BrowserView sized for the unzoomed viewport and a black band shows along
+  // the right / bottom edges. x/y scale too: the panel doesn't sit at (0,0).
   // Defensively clamp to integers — sub-pixel bounds cause the OS-level
   // webview to jitter on splitter drags.
+  const z = zoom > 0 ? zoom : 1;
   return {
-    x: Math.max(0, Math.round(r.left)),
-    y: Math.max(0, Math.round(r.top)),
-    width: Math.max(1, Math.round(r.width)),
-    height: Math.max(1, Math.round(r.height)),
+    x: Math.max(0, Math.round(r.left * z)),
+    y: Math.max(0, Math.round(r.top * z)),
+    width: Math.max(1, Math.round(r.width * z)),
+    height: Math.max(1, Math.round(r.height * z)),
   };
 }
 
@@ -188,7 +195,8 @@ export function useBrowserPreviewBounds(args: {
     if (rafRef.current != null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
-      const next = readBounds(hostRef.current);
+      const zoom = getNative()?.getZoomFactor() ?? 1;
+      const next = readBounds(hostRef.current, zoom);
       if (!next) return;
       if (sameBounds(next, lastBoundsRef.current)) return;
       lastBoundsRef.current = next;
@@ -208,7 +216,8 @@ export function useBrowserPreviewBounds(args: {
     lastBoundsRef.current = null;
 
     const start = requestAnimationFrame(() => {
-      const rect = readBounds(hostRef.current) || { x: 0, y: 0, width: 800, height: 600 };
+      const zoom = native.getZoomFactor?.() ?? 1;
+      const rect = readBounds(hostRef.current, zoom) || { x: 0, y: 0, width: 800, height: 600 };
       lastBoundsRef.current = rect;
       native.invoke<void>('open_browser_preview', {
         label, url: urlRef.current, title: titleRef.current, cookieJar, ...rect,

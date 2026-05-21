@@ -7,7 +7,7 @@
  * `onBrowserPreviewEvent(...)` and `onCdpRequest(...)` — the React code
  * mounts those callbacks in `BrowserPanel.tsx` and the CDP bridge.
  */
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webFrame } from 'electron';
 
 type RelayPayload = { label: string; payload: string | null };
 
@@ -54,5 +54,16 @@ contextBridge.exposeInMainWorld('codiby', {
     };
     ipcRenderer.on('cdp-request', handler);
     return () => ipcRenderer.removeListener('cdp-request', handler);
+  },
+
+  /**
+   * Current zoom factor of the host webContents. `BrowserView.setBounds()`
+   * takes window-content DIPs while `getBoundingClientRect()` in the renderer
+   * returns CSS pixels — these diverge when the user hits Cmd+=/Cmd+-. The
+   * renderer multiplies bounds by this before pushing them to main.
+   * Sync, local-process call (no IPC).
+   */
+  getZoomFactor(): number {
+    return webFrame.getZoomFactor();
   },
 });
