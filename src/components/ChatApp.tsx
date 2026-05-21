@@ -388,6 +388,12 @@ export function ChatApp() {
   // tab bar. The tab itself is non-closable from the regular UI; this
   // settings-only toggle is the user's escape hatch.
   const [showTelegramSession, setShowTelegramSession] = useState(true);
+  // When true, sending a message while the agent is mid-response cancels
+  // the in-flight turn and ships the new message immediately. When false,
+  // the message is appended to the per-session queue and drains after the
+  // current turn finishes. Defaults to true — barging-in is the more
+  // common intent than calmly queueing follow-ups.
+  const [interruptOnSend, setInterruptOnSend] = useState(true);
   // Global env vars (apply to every Bash tool call + user terminal, on
   // top of process.env, with per-project envVars layered last). Persisted
   // alongside other prefs in ~/.codiby/ui-preferences.json.
@@ -1434,6 +1440,9 @@ export function ChatApp() {
           if (typeof prefs.showTelegramSession === 'boolean') {
             setShowTelegramSession(prefs.showTelegramSession);
           }
+          if (typeof prefs.interruptOnSend === 'boolean') {
+            setInterruptOnSend(prefs.interruptOnSend);
+          }
           if (Array.isArray(prefs.globalEnvVars)) {
             setGlobalEnvVars(prefs.globalEnvVars as ProjectEnvVar[]);
           }
@@ -1850,6 +1859,11 @@ export function ChatApp() {
   const handleToggleAutoFocusBrowserOnAction = (next: boolean) => {
     setAutoFocusBrowserOnAction(next);
     persistPrefs({ autoFocusBrowserOnAction: next });
+  };
+
+  const handleToggleInterruptOnSend = (next: boolean) => {
+    setInterruptOnSend(next);
+    persistPrefs({ interruptOnSend: next });
   };
 
   const handleCreateSession = async (cwd: string, provider?: string, remoteId?: string | null) => {
@@ -2413,14 +2427,30 @@ export function ChatApp() {
         images: images?.map(img => ({ media_type: img.media_type, data: img.data })),
         isPending: true,
       };
-      updateLocalState(sid, s => ({
-        ...s,
-        messages: [...s.messages, pendingMsg],
-        pendingMessages: [
-          ...s.pendingMessages,
-          { id: pendingId, text: effectiveText, images },
-        ],
-      }));
+      if (interruptOnSend) {
+        // Barge-in mode: cancel the in-flight turn and stage this message
+        // as the sole pending item. The drain effect fires on the
+        // streaming→idle transition the interrupt causes, pops this entry,
+        // and ships it. Any messages that were already queued get dropped
+        // — "interrupt" implies discarding the rest of the lineup too.
+        clientRef.current.interrupt(sid);
+        updateLocalState(sid, s => ({
+          ...s,
+          isStreaming: false,
+          messages: [...s.messages.filter(m => !m.isPending), pendingMsg],
+          pendingMessages: [{ id: pendingId, text: effectiveText, images }],
+        }));
+      } else {
+        // Queue mode: append behind any other pending messages.
+        updateLocalState(sid, s => ({
+          ...s,
+          messages: [...s.messages, pendingMsg],
+          pendingMessages: [
+            ...s.pendingMessages,
+            { id: pendingId, text: effectiveText, images },
+          ],
+        }));
+      }
       setInputForSession(sid, '');
       setPastedImagesForSession(sid, []);
       return;
@@ -5398,6 +5428,8 @@ export function ChatApp() {
           onToggleAutoGroup={handleToggleAutoGroup}
           autoFocusBrowserOnAction={autoFocusBrowserOnAction}
           onToggleAutoFocusBrowserOnAction={handleToggleAutoFocusBrowserOnAction}
+          interruptOnSend={interruptOnSend}
+          onToggleInterruptOnSend={handleToggleInterruptOnSend}
           showTelegramSession={showTelegramSession}
           onToggleShowTelegramSession={(next) => {
             setShowTelegramSession(next);

@@ -33,6 +33,8 @@ interface ProjectSettingsModalProps {
   onToggleAutoGroup: (next: boolean) => void;
   autoFocusBrowserOnAction: boolean;
   onToggleAutoFocusBrowserOnAction: (next: boolean) => void;
+  interruptOnSend: boolean;
+  onToggleInterruptOnSend: (next: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (next: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
@@ -575,7 +577,21 @@ function TabGroupsListSection({ tabGroups, tabGroupMap, onDeleteGroup, onSelect 
   );
 }
 
-function GeneralSection({ autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction }: { autoGroupSessions: boolean; onToggleAutoGroup: (v: boolean) => void; autoFocusBrowserOnAction: boolean; onToggleAutoFocusBrowserOnAction: (v: boolean) => void }) {
+function GeneralSection({
+  autoGroupSessions,
+  onToggleAutoGroup,
+  autoFocusBrowserOnAction,
+  onToggleAutoFocusBrowserOnAction,
+  interruptOnSend,
+  onToggleInterruptOnSend,
+}: {
+  autoGroupSessions: boolean;
+  onToggleAutoGroup: (v: boolean) => void;
+  autoFocusBrowserOnAction: boolean;
+  onToggleAutoFocusBrowserOnAction: (v: boolean) => void;
+  interruptOnSend: boolean;
+  onToggleInterruptOnSend: (v: boolean) => void;
+}) {
   return (
     <>
       <SectionHeader title="General" subtitle="App-wide behavior. Per-project overrides live under each project in the sidebar to the left." />
@@ -601,6 +617,19 @@ function GeneralSection({ autoGroupSessions, onToggleAutoGroup, autoFocusBrowser
           <div className="flex-1 min-w-0 text-left">
             <div className="text-[12.5px] text-zinc-100">Bring browser preview to front on agent actions</div>
             <div className="text-[11px] text-zinc-500 mt-0.5">When the agent clicks, types, scrolls, or navigates in a browser preview that isn't the active tab, switch to it so you see what's happening. Observational tools (snapshot, screenshot, evaluate, network/console reads) never trigger this.</div>
+          </div>
+          <SwitchControl>
+            <SwitchThumb />
+          </SwitchControl>
+        </Switch>
+        <Switch
+          isSelected={interruptOnSend}
+          onChange={onToggleInterruptOnSend}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border hover:border-border-light transition-colors cursor-pointer"
+        >
+          <div className="flex-1 min-w-0 text-left">
+            <div className="text-[12.5px] text-zinc-100">Interrupt the agent when sending a new message</div>
+            <div className="text-[11px] text-zinc-500 mt-0.5">If the agent is still working when you hit Enter, cancel the current turn and send your message right away. Off: the message waits in a queue and ships once the current turn finishes.</div>
           </div>
           <SwitchControl>
             <SwitchThumb />
@@ -1437,6 +1466,7 @@ export function ProjectSettingsModal({
   open, onClose, tabGroups, tabGroupMap,
   autoGroupSessions, onToggleAutoGroup,
   autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction,
+  interruptOnSend, onToggleInterruptOnSend,
   showTelegramSession, onToggleShowTelegramSession,
   globalEnvVars, onChangeGlobalEnvVars,
   client, claudeModels,
@@ -1569,6 +1599,8 @@ export function ProjectSettingsModal({
                   onToggleAutoGroup={onToggleAutoGroup}
                   autoFocusBrowserOnAction={autoFocusBrowserOnAction}
                   onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction}
+                  interruptOnSend={interruptOnSend}
+                  onToggleInterruptOnSend={onToggleInterruptOnSend}
                   showTelegramSession={showTelegramSession}
                   onToggleShowTelegramSession={onToggleShowTelegramSession}
                   globalEnvVars={globalEnvVars}
@@ -1598,7 +1630,7 @@ export function ProjectSettingsModal({
 }
 
 /* Global content router (right pane when no project selected) */
-function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, client, onDeleteGroup, onSelectGroup }: {
+function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, interruptOnSend, onToggleInterruptOnSend, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, client, onDeleteGroup, onSelectGroup }: {
   section: GlobalSection;
   serverUrl: string | null;
   tabGroups: Record<string, TabGroupInfo>;
@@ -1607,6 +1639,8 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
   onToggleAutoGroup: (v: boolean) => void;
   autoFocusBrowserOnAction: boolean;
   onToggleAutoFocusBrowserOnAction: (v: boolean) => void;
+  interruptOnSend: boolean;
+  onToggleInterruptOnSend: (v: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (v: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
@@ -1617,7 +1651,7 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
 }) {
   return (
     <div className="px-8 pt-6 pb-8">
-      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} />}
+      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} />}
       {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
       {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
       {section === 'tailscale'   && <TailscaleSection serverUrl={serverUrl} />}
