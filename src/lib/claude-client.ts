@@ -75,6 +75,29 @@ function withToken(url: string): string {
   return `${url}${sep}t=${encodeURIComponent(_authToken)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Active remote — set by the UI when the focused session lives on a remote.
+// `withActiveRemote` injects `?remoteId=` on session-agnostic endpoints (file
+// browse, git, search, …) so the local bun bridge proxies them through the
+// SSH tunnel. Endpoints that resolve `remoteId` from their own state
+// (`/sessions/*`, `/remotes/*`) are not touched.
+// ---------------------------------------------------------------------------
+
+let _activeRemoteId: string | null = null;
+
+export function setActiveRemoteId(id: string | null): void {
+  _activeRemoteId = id && id.length > 0 ? id : null;
+}
+
+/** Append `remoteId=<active>` if the focused session lives on a remote and
+ *  the URL doesn't already carry one. No-op on local sessions. */
+function withActiveRemote(url: string): string {
+  if (!_activeRemoteId) return url;
+  if (url.includes('remoteId=')) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}remoteId=${encodeURIComponent(_activeRemoteId)}`;
+}
+
 /** Build fetch init with Authorization header when a token is set. */
 function authedInit(init?: RequestInit): RequestInit {
   if (!_authToken) return init || {};
@@ -281,6 +304,10 @@ type ClientCallbacks = {
   onBrowserRequest?: (req: { sessionId: string; name: string; requestId: string; action: string; args: unknown }) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
   onFocusSession: (sessionId: string) => void;
+  /** Tunnel status for a remote changed. Used by the chat header chip to
+   *  show "tunnel offline" / "reconnecting" without polling. Optional —
+   *  consumers that don't show remote UI can omit it. */
+  onRemoteStatus?: (remoteId: string, status: 'connecting' | 'online' | 'reconnecting' | 'offline', lastError: string | null) => void;
   /** Server broadcasts this when a session was cleared in place
    *  (`/clear` on a tab that can't be archived). The UI should drop the
    *  in-memory chat history for the session so the next replay/render
@@ -512,6 +539,13 @@ export class ClaudeClient {
           action: msg.action as string,
           args: msg.args,
         });
+        break;
+      case 'remote.status':
+        this.callbacks.onRemoteStatus?.(
+          msg.remoteId as string,
+          msg.status as 'connecting' | 'online' | 'reconnecting' | 'offline',
+          (msg.lastError as string | null) ?? null,
+        );
         break;
       case 'preferences':
         this.callbacks.onPreferences(msg.preferences as Record<string, unknown>);
@@ -822,7 +856,7 @@ export class ClaudeClient {
   }
 
   async listDirs(prefix: string): Promise<string[]> {
-    const resp = await authedFetch(`${this.serverUrl}/ls?prefix=${encodeURIComponent(prefix)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/ls?prefix=${encodeURIComponent(prefix)}`));
     if (!resp.ok) return [];
     return resp.json();
   }
@@ -838,19 +872,19 @@ export class ClaudeClient {
   private _userHomeCache: string | null = null;
 
   async listFiles(dirPath: string): Promise<{ name: string; path: string; type: 'file' | 'dir' }[]> {
-    const resp = await authedFetch(`${this.serverUrl}/files?path=${encodeURIComponent(dirPath)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/files?path=${encodeURIComponent(dirPath)}`));
     if (!resp.ok) return [];
     return resp.json();
   }
 
   async readFile(path: string): Promise<{ path: string; content: string } | null> {
-    const resp = await authedFetch(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return null;
     return resp.json();
   }
 
   async writeFile(path: string, content: string): Promise<boolean> {
-    const resp = await authedFetch(`${this.serverUrl}/file-content`, {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content`), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, content }),
@@ -859,14 +893,14 @@ export class ClaudeClient {
   }
 
   async deletePath(path: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`), { method: 'DELETE' });
     if (resp.ok) return { ok: true };
     const data = await resp.json().catch(() => ({})) as { error?: string };
     return { ok: false, error: data.error || `HTTP ${resp.status}` };
   }
 
   async renamePath(from: string, to: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(`${this.serverUrl}/file-rename`, {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-rename`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ from, to }),
@@ -877,7 +911,7 @@ export class ClaudeClient {
   }
 
   async createFile(path: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(`${this.serverUrl}/file-new`, {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-new`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, kind: 'file' }),
@@ -888,7 +922,7 @@ export class ClaudeClient {
   }
 
   async createDir(path: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(`${this.serverUrl}/file-new`, {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-new`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, kind: 'dir' }),
@@ -910,7 +944,7 @@ export class ClaudeClient {
   }
 
   async readFileOriginal(path: string): Promise<string> {
-    const resp = await authedFetch(`${this.serverUrl}/file-original?path=${encodeURIComponent(path)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-original?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return '';
     const data = await resp.json();
     return data.content || '';
@@ -921,19 +955,19 @@ export class ClaudeClient {
     worktrees?: { path: string; branch: string }[];
     package_manager?: string; has_env?: boolean;
   }> {
-    const resp = await authedFetch(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return { is_git: false };
     return resp.json();
   }
 
   async getGitModified(root: string): Promise<{ path: string; staged: boolean; untracked?: boolean }[]> {
-    const resp = await authedFetch(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}`));
     if (!resp.ok) return [];
     return resp.json();
   }
 
   async gitStage(root: string, files: string[], unstage = false): Promise<boolean> {
-    const resp = await authedFetch(`${this.serverUrl}/git-stage`, {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-stage`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ root, files, unstage }),
@@ -942,13 +976,13 @@ export class ClaudeClient {
   }
 
   async listBranches(cwd: string): Promise<{ current: string; local: string[]; remote: string[] }> {
-    const resp = await authedFetch(`${this.serverUrl}/git-branches?cwd=${encodeURIComponent(cwd)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-branches?cwd=${encodeURIComponent(cwd)}`));
     if (!resp.ok) return { current: '', local: [], remote: [] };
     return resp.json();
   }
 
   async checkoutBranch(cwd: string, branch: string): Promise<{ ok: boolean; branch?: string; error?: string }> {
-    const resp = await authedFetch(`${this.serverUrl}/git-checkout`, {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-checkout`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cwd, branch }),
@@ -958,7 +992,7 @@ export class ClaudeClient {
 
   async searchFiles(root: string, query: string): Promise<{ file: string; line: number; text: string }[]> {
     const params = new URLSearchParams({ root, q: query });
-    const resp = await authedFetch(`${this.serverUrl}/search?${params}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/search?${params}`));
     if (!resp.ok) return [];
     const data = await resp.json();
     return data.results || [];
@@ -1008,7 +1042,7 @@ export class ClaudeClient {
   }
 
   async getFileIndex(root: string): Promise<{ name: string; path: string; rel: string; type?: 'file' | 'dir' }[]> {
-    const resp = await authedFetch(`${this.serverUrl}/file-index?root=${encodeURIComponent(root)}`);
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-index?root=${encodeURIComponent(root)}`));
     if (!resp.ok) return [];
     return resp.json();
   }

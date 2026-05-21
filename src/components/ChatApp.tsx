@@ -48,6 +48,7 @@ import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   ClaudeClient,
   resolveServerUrl,
+  setActiveRemoteId,
   type ChatMessage,
   type ConnectionStatus,
   type PermissionRequest,
@@ -742,6 +743,9 @@ export function ChatApp() {
   };
 
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
+  /** Tunnel status per remote, pushed by the server's `remote.status`
+   *  broadcasts. Drives the offline state on the chat-header forwards chip. */
+  const [remoteStatuses, setRemoteStatuses] = useState<Record<string, { status: 'connecting' | 'online' | 'reconnecting' | 'offline'; lastError: string | null }>>({});
   // Server is the source of truth for session state. This map is populated only by server messages.
   const [sessionStates, setSessionStates] = useState<Record<string, LocalSessionState>>({});
   const historyIdxRef = useRef(-1);
@@ -1425,6 +1429,10 @@ export function ChatApp() {
           if (Array.isArray(prefs.globalEnvVars)) {
             setGlobalEnvVars(prefs.globalEnvVars as ProjectEnvVar[]);
           }
+        },
+
+        onRemoteStatus: (remoteId, status, lastError) => {
+          setRemoteStatuses(prev => ({ ...prev, [remoteId]: { status, lastError } }));
         },
 
         // External trigger (e.g. the `codiby` CLI) wants the UI to switch
@@ -2897,6 +2905,13 @@ export function ChatApp() {
 
   const activeStatus = activeId ? (statuses[activeId] || 'disconnected') : 'disconnected';
   const activeSession = sessions.find(s => s.id === activeId);
+
+  // Keep the module-level "active remote" in sync so the client auto-injects
+  // `?remoteId=` on session-agnostic endpoints (file browse, git, search…)
+  // while a remote tab is focused.
+  useEffect(() => {
+    setActiveRemoteId(activeSession?.remoteId ?? null);
+  }, [activeSession?.remoteId]);
 
   // Bypass-mode warning gate. Switching a session to `bypassPermissions`
   // pops a confirmation modal the first time; the user can tick "don't show
