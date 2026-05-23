@@ -5,6 +5,21 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] — 2026-05-23
+
+### Added
+
+- **Windows installer.** The release workflow now builds an NSIS
+  installer for Windows (x64) alongside the macOS DMG. Both platforms
+  build in parallel and publish to a single GitHub release.
+
+### Fixed
+
+- **Duplicate DMG in GitHub releases.** electron-builder auto-published
+  artifacts when it detected `GH_TOKEN` in CI, then the release action
+  uploaded the same files again with different name sanitisation. The
+  builder now runs with `--publish never` so only one copy is uploaded.
+
 ## [0.12.0] — 2026-05-21
 
 ### Added

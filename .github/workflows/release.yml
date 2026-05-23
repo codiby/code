@@ -17,14 +17,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
 
-    permissions:
-      contents: write
-
     env:
-      # Skip auto cert discovery so the build doesn't fail looking for a
-      # local Developer ID keychain entry that doesn't exist on the
-      # runner. When the repo gets signing secrets (CSC_LINK +
-      # CSC_KEY_PASSWORD), flip this to "true".
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:
@@ -44,6 +37,100 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build frontend
+        run: bun run build-server
+
+      - name: Bundle bun + server.js resources
+        run: bun run electron:bundle-resources
+
+      - name: Compile electron main
+        run: bun run electron:build:main
+
+      - name: Package with electron-builder (mac dmg, arm64)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bunx electron-builder --mac dmg --arm64 --publish never
+
+      - name: Stage release artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp electron-out/*.dmg release-artifacts/
+          cp electron-out/*.dmg.blockmap release-artifacts/
+          cp electron-out/latest-mac.yml release-artifacts/ 2>/dev/null || true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: release-artifacts/
+
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend
+        run: bun run build-server
+
+      - name: Bundle bun + server.js resources
+        run: bun run electron:bundle-resources
+
+      - name: Compile electron main
+        run: bun run electron:build:main
+
+      - name: Package with electron-builder (win nsis)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bunx electron-builder --win nsis --publish never
+
+      - name: Stage release artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp electron-out/*.exe release-artifacts/
+          cp electron-out/*.exe.blockmap release-artifacts/ 2>/dev/null || true
+          cp electron-out/latest.yml release-artifacts/ 2>/dev/null || true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: release-artifacts/
+
+  release:
+    name: Create GitHub Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Resolve release tag
         id: tag
         shell: bash
@@ -54,11 +141,6 @@ jobs:
             echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
-      # Pull just this version's section out of CHANGELOG.md so the release
-      # body renders as proper Markdown (### Added / ### Changed headings,
-      # bullets, bold) on the GitHub release page — instead of falling back
-      # to a generic "built from vX.Y.Z" line. Tag annotation is plain text
-      # by git convention; the release body is where Markdown lives.
       - name: Extract changelog section for this release
         id: changelog
         shell: bash
@@ -76,37 +158,20 @@ jobs:
             echo '---'
             echo
             echo "**macOS (Apple Silicon)**: \`Codiby Code-*-arm64.dmg\`"
+            echo "**Windows (x64)**: \`Codiby Code Setup *.exe\`"
             echo '__CHANGELOG_EOF__'
           } >> "$GITHUB_OUTPUT"
 
-      # Pipeline:
-      #   1. frontend dist/ via bun build
-      #   2. bun runtime + bundled server.js into electron/resources/
-      #   3. tsc electron/ → electron-dist/
-      #   4. electron-builder packages .app + .dmg under electron-out/
-      # Notarisation auto-skips when APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD
-      # / APPLE_TEAM_ID secrets are missing — the dmg ships ad-hoc signed.
-      - name: Build frontend
-        run: bun run build-server
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
-      - name: Bundle bun + server.js resources
-        run: bun run electron:bundle-resources
+      - name: List release files
+        run: ls -lhR artifacts/
 
-      - name: Compile electron main
-        run: bun run electron:build:main
-
-      - name: Package with electron-builder (mac dmg, arm64)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: bunx electron-builder --mac dmg --arm64
-
-      - name: List build artifacts
-        run: ls -lh electron-out/
-
-      - name: Create / update GitHub release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
@@ -114,6 +179,4 @@ jobs:
           body: ${{ steps.changelog.outputs.body }}
           draft: false
           prerelease: false
-          files: |
-            electron-out/Codiby Code-*-arm64.dmg
-            electron-out/Codiby Code-*-arm64.dmg.blockmap
+          files: artifacts/*

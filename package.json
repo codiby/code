@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "license": "SEE LICENSE IN LICENSE",
   "main": "electron-dist/main.js",
   "scripts": {
@@ -67,7 +67,6 @@
     ],
     "extraResources": [
       { "from": "electron/resources/server.js", "to": "server.js" },
-      { "from": "electron/resources/bun",       "to": "bun" },
       { "from": "scripts/codiby",               "to": "scripts/codiby" },
       { "from": "dist",                         "to": "dist" }
     ],
@@ -80,11 +79,17 @@
       "icon": "electron/build/icon.icns",
       "target": [
         { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "extraResources": [
+        { "from": "electron/resources/bun", "to": "bun" }
       ]
     },
     "win": {
       "icon": "electron/build/icon.ico",
-      "target": ["nsis"]
+      "target": ["nsis"],
+      "extraResources": [
+        { "from": "electron/resources/bun.exe", "to": "bun.exe" }
+      ]
     },
     "afterSign": "electron/build/notarize.cjs"
   }
