@@ -9,6 +9,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectPopover,
   ListBox, ListBoxItem,
 } from '@heroui/react';
+import { Virtualizer, ListLayout } from 'react-aria-components';
 import type { ClaudeClient } from '../lib/claude-client';
 
 const PM_OPTIONS = ['bun', 'npm', 'yarn', 'pnpm'] as const;
@@ -147,6 +148,19 @@ export function WorktreeCreateForm({
     return availableBranches.filter(b => !inUse.has(b));
   }, [availableBranches, existingWorktrees]);
 
+  // Object-shaped item lists so the ListBox can render dynamically via
+  // the `items` prop. Required by the Virtualizer: it only paints rows in
+  // the visible window, so repos with thousands of remote branches stop
+  // blocking the popover open.
+  const availableBranchItems = useMemo(
+    () => availableBranches.map(b => ({ id: b })),
+    [availableBranches],
+  );
+  const attachableBranchItems = useMemo(
+    () => attachableBranches.map(b => ({ id: b })),
+    [attachableBranches],
+  );
+
   useEffect(() => {
     if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
   }, [logs]);
@@ -252,13 +266,15 @@ export function WorktreeCreateForm({
                   <SearchField aria-label="Filter branches" autoFocus>
                     <SearchFieldInput placeholder="Search branches…" className="font-mono text-xs text-zinc-100" />
                   </SearchField>
-                  <ListBox>
-                    {attachableBranches.map(b => (
-                      <ListBoxItem key={b} id={b} textValue={b}>
-                        <span className="text-sm font-mono">{b}</span>
-                      </ListBoxItem>
-                    ))}
-                  </ListBox>
+                  <Virtualizer layout={ListLayout} layoutOptions={{ rowHeight: 36 }}>
+                    <ListBox items={attachableBranchItems} className="max-h-60 outline-none">
+                      {(item) => (
+                        <ListBoxItem id={item.id} textValue={item.id}>
+                          <span className="text-sm font-mono">{item.id}</span>
+                        </ListBoxItem>
+                      )}
+                    </ListBox>
+                  </Virtualizer>
                 </AutocompleteFilter>
               </AutocompletePopover>
             </Autocomplete>
@@ -288,14 +304,16 @@ export function WorktreeCreateForm({
                     <SearchField aria-label="Filter branches" autoFocus>
                       <SearchFieldInput placeholder="Search branches…" className="font-mono text-xs text-zinc-100" />
                     </SearchField>
-                    <ListBox>
-                      {availableBranches.map(b => (
-                        <ListBoxItem key={b} id={b} textValue={b}>
-                          <span className="text-sm font-mono">{b}</span>
-                          {b === branchesInfo.current && <span className="text-xs text-zinc-500 ml-1">(current)</span>}
-                        </ListBoxItem>
-                      ))}
-                    </ListBox>
+                    <Virtualizer layout={ListLayout} layoutOptions={{ rowHeight: 36 }}>
+                      <ListBox items={availableBranchItems} className="max-h-60 outline-none">
+                        {(item) => (
+                          <ListBoxItem id={item.id} textValue={item.id}>
+                            <span className="text-sm font-mono">{item.id}</span>
+                            {item.id === branchesInfo.current && <span className="text-xs text-zinc-500 ml-1">(current)</span>}
+                          </ListBoxItem>
+                        )}
+                      </ListBox>
+                    </Virtualizer>
                   </AutocompleteFilter>
                 </AutocompletePopover>
               </Autocomplete>
