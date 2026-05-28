@@ -1718,8 +1718,16 @@ const server = Bun.serve({
     if (url.pathname === '/search' && req.method === 'GET') {
       const root = url.searchParams.get('root');
       const query = url.searchParams.get('q') || '';
+      const caseParam = url.searchParams.get('case');
+      const caseMode = caseParam === 'sensitive' || caseParam === 'insensitive' ? caseParam : 'smart';
+      const ignoreParam = url.searchParams.get('ignore') || '';
+      const ignoreGlobs = ignoreParam
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .slice(0, 32);
       if (!root || !query) return Response.json({ results: [] }, { headers: corsHeaders });
-      return handleSearch(root, query);
+      return handleSearch(root, query, caseMode, ignoreGlobs);
     }
 
     // -----------------------------------------------------------------------

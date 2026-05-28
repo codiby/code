@@ -92,7 +92,14 @@ async function spawnSidecar(): Promise<number> {
     if (existsSync(portFile)) rmSync(portFile, { force: true });
   } catch {}
 
-  const { bunPath, serverScript } = resolveSidecarPaths();
+  const { bunPath, serverScript, dev } = resolveSidecarPaths();
+
+  // In a packaged build the ripgrep binary lives next to `bun` and `server.js`
+  // in `process.resourcesPath`. In dev the handler resolves it through the
+  // `@vscode/ripgrep` npm package, so we leave the env var unset.
+  const rgPath = dev
+    ? undefined
+    : join(process.resourcesPath, platform() === 'win32' ? 'rg.exe' : 'rg');
 
   // `--spawned-by=app` makes the bridge skip the bulk session boot it
   // would do under launchd. The Electron shell drives spawning lazily
@@ -106,6 +113,7 @@ async function spawnSidecar(): Promise<number> {
         CODIBY_CODE_PORT_FILE: portFile,
         CLAUDE_UI_PORT: '3111',
         CLAUDE_UI_HOST: '127.0.0.1',
+        ...(rgPath ? { CODIBY_RG_PATH: rgPath } : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,

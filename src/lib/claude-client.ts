@@ -1081,9 +1081,15 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async searchFiles(root: string, query: string): Promise<{ file: string; line: number; text: string }[]> {
+  async searchFiles(
+    root: string,
+    query: string,
+    opts: { caseSensitive?: boolean; ignore?: string; signal?: AbortSignal } = {},
+  ): Promise<{ file: string; line: number; text: string }[]> {
     const params = new URLSearchParams({ root, q: query });
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/search?${params}`));
+    params.set('case', opts.caseSensitive ? 'sensitive' : 'insensitive');
+    if (opts.ignore && opts.ignore.trim()) params.set('ignore', opts.ignore.trim());
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/search?${params}`), { signal: opts.signal });
     if (!resp.ok) return [];
     const data = await resp.json();
     return data.results || [];
