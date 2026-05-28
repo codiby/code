@@ -806,7 +806,9 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     // No source-action exclusion — this isn't tied to a specific action.
     const execShellPrefs = loadPreferences();
     const execShellGroup = resolveGroupForSession(execShellPrefs, sessionId);
-    const execShellEnv = buildInjectedActionEnv(execShellGroup, getGlobalTld(execShellPrefs));
+    // Use the shell's own cwd for worktree detection so the injected URLs
+    // match the branch the user is actually running in (not the project root).
+    const execShellEnv = buildInjectedActionEnv(execShellGroup, getGlobalTld(execShellPrefs), undefined, execCwd);
 
     const pty = spawnPty({ cwd: execCwd, cols: execCols, rows: execRows, sessionId, extraEnv: execShellEnv });
     if (!pty) {

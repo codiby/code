@@ -24,8 +24,8 @@ import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProces
 import { spawnPty } from '../pty';
 import type { TrackedProcess } from '../types';
 import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../portless';
-import { buildInjectedActionEnv, getGlobalTld } from '../action-env';
-import type { TabGroupInfo } from '../../src/lib/tab-groups';
+import { buildInjectedActionEnv, configuredActionUrl, getGlobalTld, worktreePrefix } from '../action-env';
+import type { PortlessConfig, TabGroupInfo } from '../../src/lib/tab-groups';
 
 /** Resolve a tracked process for the current session by procId OR name. */
 function resolveTrackedProcess(
@@ -957,7 +957,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const cols = 120;
           const rows = 30;
           const spawnTermGroup = resolveSessionGroup(sessionId, deps)?.group as TabGroupInfo | undefined;
-          const spawnTermEnv = buildInjectedActionEnv(spawnTermGroup, getGlobalTld(deps.loadPreferences()));
+          const spawnTermEnv = buildInjectedActionEnv(spawnTermGroup, getGlobalTld(deps.loadPreferences()), undefined, args.cwd);
           const pty = spawnPty({ cwd: args.cwd, cols, rows, sessionId, extraEnv: spawnTermEnv });
           if (!pty) {
             return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
@@ -1170,7 +1170,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!ctx) {
             return { content: [{ type: 'text', text: 'This session is not associated with a project. Open Project Settings → Actions and add this session to a project to configure actions.' }] };
           }
-          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string; portless?: boolean }[]; tld?: string };
+          const cfg: PortlessConfig = ctx.group.portless || {};
           const actions = cfg.actions || [];
           if (actions.length === 0) {
             return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no actions configured yet. Add some in Project Settings → Actions.` }] };
@@ -1181,15 +1181,15 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
               labelToProc.set(tp.label.toLowerCase(), tp);
             }
           }
+          const globalTld = getGlobalTld(deps.loadPreferences());
+          const branchPrefix = cfg.worktreeSubdomains ? worktreePrefix(ctx.group.cwd) : null;
           const lines = actions.map(a => {
             const tp = labelToProc.get(`action · ${a.name}`.toLowerCase());
             const status = tp ? `running (pid ${tp.pid})` : 'idle';
             const usePortless = a.portless !== false;
             if (usePortless) {
-              const tld = cfg.tld || 'localhost';
-              const slug = a.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
-              const host = a.hostname && a.hostname.includes('.') ? a.hostname : `${slug}.${tld}`;
-              return `- ${a.name} · ${a.command} · portless → https://${host} [${status}]`;
+              const url = configuredActionUrl(a, cfg, globalTld, branchPrefix);
+              return `- ${a.name} · ${a.command} · portless → ${url} [${status}]`;
             }
             return `- ${a.name} · ${a.command} · raw command [${status}]`;
           });
@@ -1211,17 +1211,24 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           name: z.string().min(1).describe('The action name as configured in Project Settings → Actions. Matched case-insensitively. Use `actions_list` to discover available names.'),
         },
         async (args) => {
-          if (!sessions.get(sessionId)) {
+          const session = sessions.get(sessionId);
+          if (!session) {
             return { content: [{ type: 'text', text: `Session ${sessionId} not found.` }], isError: true };
           }
           const ctx = resolveSessionGroup(sessionId, deps);
           if (!ctx) {
             return { content: [{ type: 'text', text: 'This session is not associated with a project — cannot resolve which actions to run.' }], isError: true };
           }
-          if (!ctx.group.cwd) {
+          // Spawn from the session's cwd when set — that's the worktree
+          // the user is actually working in — falling back to the project
+          // root. portless reads the cwd's git checkout to pick its
+          // subdomain, so this is what makes worktree-prefixed URLs work
+          // end to end.
+          const spawnCwd = session.cwd || ctx.group.cwd;
+          if (!spawnCwd) {
             return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no working directory set; cannot spawn the action.` }], isError: true };
           }
-          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string; portless?: boolean }[]; tld?: 'localhost' | 'test'; tls?: boolean };
+          const cfg: PortlessConfig = ctx.group.portless || {};
           const actions = cfg.actions || [];
           const match = actions.find(a => a.name === args.name) || actions.find(a => a.name.toLowerCase() === args.name.toLowerCase());
           if (!match) {
@@ -1230,10 +1237,17 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           }
 
           const usePortless = match.portless !== false;
-          const tld = cfg.tld || 'localhost';
+          const prefs = deps.loadPreferences();
+          const globalTld = getGlobalTld(prefs);
+          // Worktree prefix derived from the SPAWN cwd (the session's cwd
+          // when it's a worktree of the project) — not group.cwd — so an
+          // action started from worktree `feat-x` advertises
+          // `feat-x.<slug>.<tld>`.
+          const branchPrefix = cfg.worktreeSubdomains ? worktreePrefix(spawnCwd) : null;
           const slug = match.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
-          const hostname = match.hostname && match.hostname.includes('.') ? match.hostname : `${slug}.${tld}`;
-          const url = `https://${hostname}`;
+          const portlessSlug = branchPrefix ? `${branchPrefix}-${slug}` : slug;
+          const url = configuredActionUrl(match, cfg, globalTld, branchPrefix) || `https://${slug}.${globalTld}`;
+          const hostname = url.replace(/^https?:\/\//, '');
           const label = `Action · ${match.name}`;
 
           if (usePortless) {
@@ -1255,7 +1269,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           // Build the command the user sees in the chat. With Portless on,
           // wrap the raw command so it serves at the stable hostname.
           const visibleCommand = usePortless
-            ? `portless ${slug} -- sh -c '${match.command.replace(/'/g, `'\\''`)}'`
+            ? `portless ${portlessSlug} -- sh -c '${match.command.replace(/'/g, `'\\''`)}'`
             : match.command;
 
           const procId = randomUUID();
@@ -1263,8 +1277,9 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const rows = 30;
           // Inject env from sibling actions — never from this one itself
           // (an api action receiving its own API_URL would be useless).
-          const actionEnv = buildInjectedActionEnv(ctx.group as TabGroupInfo, getGlobalTld(deps.loadPreferences()), match.id);
-          const pty = spawnPty({ cwd: ctx.group.cwd, cols, rows, sessionId, extraEnv: actionEnv });
+          // Pass spawnCwd so the injected URLs honor the active worktree.
+          const actionEnv = buildInjectedActionEnv(ctx.group as TabGroupInfo, globalTld, match.id, spawnCwd);
+          const pty = spawnPty({ cwd: spawnCwd, cols, rows, sessionId, extraEnv: actionEnv });
           if (!pty) {
             return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
           }
@@ -1273,7 +1288,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             id: procId,
             pid: pty.pid,
             command: visibleCommand,
-            cwd: ctx.group.cwd,
+            cwd: spawnCwd,
             sessionId,
             startedAt: Date.now(),
             proc: null,
@@ -1338,7 +1353,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             isInteractiveTerminal: true,
             procId,
             terminalCommand: visibleCommand,
-            terminalCwd: ctx.group.cwd,
+            terminalCwd: spawnCwd,
             terminalName: match.name,
             terminalUrl: usePortless ? url : undefined,
           };
@@ -1358,7 +1373,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
                 command: visibleCommand,
                 hostname,
                 url,
-                cwd: ctx.group.cwd,
+                cwd: spawnCwd,
                 pid: pty.pid,
                 state: 'starting',
                 startedAt: Date.now(),

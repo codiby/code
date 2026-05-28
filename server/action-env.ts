@@ -16,6 +16,7 @@
  * → Environment) win on conflict — see server/pty.ts's merge order.
  */
 
+import { spawnSync } from 'child_process';
 import type {
   TabGroupInfo,
   PortlessConfig,
@@ -28,23 +29,59 @@ function slugHostname(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
 }
 
+/** Returns the slugified branch name a worktree subdomain should use,
+ *  or null when the project isn't in a git checkout, isn't on a
+ *  worktree-y branch, or the current branch is the default (main /
+ *  master / trunk — those keep the bare hostname). Mirrors how portless
+ *  itself prefixes subdomains for non-main worktrees. */
+export function worktreePrefix(cwd: string | undefined): string | null {
+  if (!cwd) return null;
+  try {
+    const res = spawnSync('git', ['symbolic-ref', '--short', 'HEAD'], {
+      cwd, encoding: 'utf-8', timeout: 1000,
+    });
+    if (res.status !== 0) return null;
+    const branch = (res.stdout || '').trim();
+    if (!branch) return null;
+    if (branch === 'main' || branch === 'master' || branch === 'trunk') return null;
+    return slugHostname(branch);
+  } catch {
+    return null;
+  }
+}
+
 /** Deterministic hostname for an action. The TLD comes from the GLOBAL
- *  Portless preference (not per-project) because portless's proxy serves
- *  one TLD at a time — making it a project setting would be misleading.
- *  Pass it as a 3rd arg; falls back to "localhost" when not provided. */
-function configuredHost(action: PortlessAction, _cfg: PortlessConfig | undefined, tld: string): string {
-  return (action.hostname && action.hostname.includes('.'))
+ *  Portless preference; the optional `worktreeBranch` prefixes the host
+ *  when the project enabled `worktreeSubdomains` so each branch lives at
+ *  its own subdomain (mirrors portless's own behavior). */
+function configuredHost(
+  action: PortlessAction,
+  cfg: PortlessConfig | undefined,
+  tld: string,
+  worktreeBranch: string | null,
+): string {
+  const base = (action.hostname && action.hostname.includes('.'))
     ? action.hostname
     : `${slugHostname(action.name)}.${tld}`;
+  if (cfg?.worktreeSubdomains && worktreeBranch) {
+    return `${worktreeBranch}.${base}`;
+  }
+  return base;
 }
 
 /** Pure-config URL derivation — exported for callers that want the same
  *  string the action would advertise to other shells. Returns null when
- *  the action is non-portless (no published URL). */
-export function configuredActionUrl(action: PortlessAction, cfg: PortlessConfig | undefined, globalTld: string): string | null {
+ *  the action is non-portless (no published URL). The `worktreeBranch`
+ *  hint is applied when the project enables worktree subdomains. */
+export function configuredActionUrl(
+  action: PortlessAction,
+  cfg: PortlessConfig | undefined,
+  globalTld: string,
+  worktreeBranch: string | null = null,
+): string | null {
   if (action.portless === false) return null;
   const tls = cfg?.tls !== false;
-  return `${tls ? 'https' : 'http'}://${configuredHost(action, cfg, globalTld)}`;
+  return `${tls ? 'https' : 'http'}://${configuredHost(action, cfg, globalTld, worktreeBranch)}`;
 }
 
 /** Render a configured URL/host into the value an export wants. Used by
@@ -54,11 +91,12 @@ export function renderExportValue(
   action: PortlessAction,
   cfg: PortlessConfig | undefined,
   globalTld: string,
+  worktreeBranch: string | null,
   customTemplate?: string,
 ): string {
   const tls = cfg?.tls !== false;
   const scheme = tls ? 'https' : 'http';
-  const host = configuredHost(action, cfg, globalTld);
+  const host = configuredHost(action, cfg, globalTld, worktreeBranch);
   const port = tls ? '443' : '80';
   const url = `${scheme}://${host}`;
   if (format === 'host') return host;
@@ -85,6 +123,13 @@ export function buildInjectedActionEnv(
   group: TabGroupInfo | undefined,
   globalTld: string,
   excludeActionId?: string,
+  /** Cwd the new process will actually run in — used to detect the active
+   *  git worktree when `worktreeSubdomains` is on. Pass the real spawn
+   *  cwd (session's cwd, action's effective cwd, etc.); falls back to the
+   *  group's cwd when omitted. Two sibling actions in the same worktree
+   *  see the same URL; two sessions in different worktrees see different
+   *  URLs for the same action. */
+  spawnCwd?: string,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   const cfg = group?.portless;
@@ -93,6 +138,9 @@ export function buildInjectedActionEnv(
   const actions = cfg.actions || [];
   const actionById = new Map<string, PortlessAction>();
   for (const a of actions) actionById.set(a.id, a);
+  const worktreeBranch = cfg.worktreeSubdomains
+    ? worktreePrefix(spawnCwd || group?.cwd)
+    : null;
 
   // Prefer the modern project-level list; if the project still carries
   // the legacy per-action `exports` field (left around from an earlier
@@ -118,7 +166,7 @@ export function buildInjectedActionEnv(
     const source = actionById.get(exp.sourceActionId);
     if (!source) continue;
     if (source.portless === false) continue;
-    out[exp.name] = renderExportValue(exp.format || 'url', source, cfg, globalTld, exp.template);
+    out[exp.name] = renderExportValue(exp.format || 'url', source, cfg, globalTld, worktreeBranch, exp.template);
   }
   return out;
 }
