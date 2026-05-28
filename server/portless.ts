@@ -13,39 +13,103 @@
 
 import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
 import type { Readable } from 'stream';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, statSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import { log } from './logger';
 
 // ---------------------------------------------------------------------------
 // CLI detection
 // ---------------------------------------------------------------------------
 
-/** Common locations Portless installs to. The user's shell PATH (enriched
- *  in config.ts) is consulted first via `spawnSync('which', …)` so an nvm/
- *  fnm install is found even when the bridge was launched by launchd. */
-const PORTLESS_CANDIDATES = [
-  '/opt/homebrew/bin/portless',
-  '/usr/local/bin/portless',
-  '/usr/bin/portless',
-];
+/** Static locations to probe before falling back to PATH walking. We
+ *  enumerate the common Node-version-manager layouts (nvm + fnm + asdf +
+ *  volta) because launchd-spawned Electron loses the user's shell PATH
+ *  even after config.ts's enrichment when the user picked their default
+ *  shell as zsh non-interactive. */
+function nvmVersionDirs(): string[] {
+  const root = join(homedir(), '.nvm', 'versions', 'node');
+  try {
+    return readdirSync(root)
+      .map(v => join(root, v, 'bin', 'portless'))
+      .sort()
+      .reverse();
+  } catch { return []; }
+}
 
-let cachedBin: string | null | undefined;
+function fnmVersionDirs(): string[] {
+  const root = join(homedir(), '.local', 'share', 'fnm', 'node-versions');
+  try {
+    return readdirSync(root)
+      .map(v => join(root, v, 'installation', 'bin', 'portless'))
+      .sort()
+      .reverse();
+  } catch { return []; }
+}
+
+function staticCandidates(): string[] {
+  return [
+    '/opt/homebrew/bin/portless',
+    '/usr/local/bin/portless',
+    '/usr/bin/portless',
+    join(homedir(), '.bun', 'bin', 'portless'),
+    join(homedir(), '.volta', 'bin', 'portless'),
+    join(homedir(), '.asdf', 'shims', 'portless'),
+    ...nvmVersionDirs(),
+    ...fnmVersionDirs(),
+  ];
+}
+
+/** Walk `process.env.PATH` (which config.ts pre-enriches from the user's
+ *  login shell). Picks the first directory containing an executable
+ *  `portless`. */
+function searchEnvPath(): string | null {
+  const path = process.env.PATH || '';
+  for (const dir of path.split(':')) {
+    if (!dir) continue;
+    const candidate = join(dir, 'portless');
+    try {
+      const stat = statSync(candidate);
+      if (stat.isFile() && (stat.mode & 0o111)) return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+/** Last-resort: ask the user's login shell where portless lives. This
+ *  catches setups (zsh interactive plugins, direnv, etc.) that only
+ *  publish the binary inside a fully-loaded shell session. */
+function askLoginShell(): string | null {
+  const shell = process.env.SHELL || '/bin/zsh';
+  try {
+    const res = spawnSync(shell, ['-lic', 'command -v portless 2>/dev/null'], {
+      encoding: 'utf-8', timeout: 4000,
+    });
+    const out = (res.stdout || '').trim();
+    if (out && existsSync(out)) return out;
+  } catch {}
+  return null;
+}
+
+/** Resolved binary path. Cached only on success — a failed lookup is
+ *  retried on every call so the user can install Portless without
+ *  restarting taskr. */
+let cachedBin: string | null = null;
 let cachedVersion: string | null = null;
 
 function resolvePortlessBin(): string | null {
-  if (cachedBin !== undefined) return cachedBin;
+  if (cachedBin && existsSync(cachedBin)) return cachedBin;
   if (process.env.PORTLESS_BIN && existsSync(process.env.PORTLESS_BIN)) {
     cachedBin = process.env.PORTLESS_BIN;
     return cachedBin;
   }
-  try {
-    const which = spawnSync('which', ['portless'], { encoding: 'utf-8' });
-    const path = (which.stdout || '').trim();
-    if (path && existsSync(path)) { cachedBin = path; return cachedBin; }
-  } catch {}
-  for (const p of PORTLESS_CANDIDATES) {
+  for (const p of staticCandidates()) {
     if (existsSync(p)) { cachedBin = p; return cachedBin; }
   }
+  const onPath = searchEnvPath();
+  if (onPath) { cachedBin = onPath; return cachedBin; }
+  const fromShell = askLoginShell();
+  if (fromShell) { cachedBin = fromShell; return cachedBin; }
   cachedBin = null;
   return null;
 }
@@ -194,6 +258,20 @@ function emitFired(a: RunningAction, source: 'user' | 'agent', sessionId?: strin
   const snap = snapshotOne(a);
   for (const cb of firedListeners) {
     try { cb({ action: snap, source, sessionId }); } catch {}
+  }
+}
+
+/** External helper for callers that bypass `runAction` (e.g. MCP tools that
+ *  spawn their own visible terminal) but still want the action-fired toast
+ *  to pop. Takes a pre-built status snapshot — caller is responsible for
+ *  shaping it correctly. */
+export function emitPortlessActionFired(
+  status: PortlessActionStatus,
+  source: 'user' | 'agent',
+  sessionId?: string,
+): void {
+  for (const cb of firedListeners) {
+    try { cb({ action: status, source, sessionId }); } catch {}
   }
 }
 
