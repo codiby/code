@@ -57,7 +57,7 @@ import { resolvePermissionDecision } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleExecCreate, terminalWsOpen, terminalWsClose, spawnTrackedProcess } from './handlers/exec';
-import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput } from './handlers/processes';
+import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput, addToGraveyard, isInGraveyard, dismissShell, getDismissedShells } from './handlers/processes';
 import type { TrackedProcess } from './types';
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout } from './handlers/git';
 import { handleSearch } from './handlers/search';
@@ -92,7 +92,9 @@ import {
   snapshotAll as portlessSnapshotAll,
   onPortlessStatus,
   onPortlessActionFired,
+  onPortlessUrlResolved,
   type PortlessActionStatus,
+  type PortlessUrlResolvedDetail,
 } from './portless';
 
 // ---------------------------------------------------------------------------
@@ -248,8 +250,20 @@ function broadcastPortlessFired(info: { action: PortlessActionStatus; source: 'u
   }
 }
 
+/** Broadcast the resolved Portless URL after the proxy boots — usually a
+ *  high port like :1355 because portless can't bind :443 without root.
+ *  Components show the optimistic `https://<host>` first and swap it
+ *  once this event arrives. */
+function broadcastPortlessUrlResolved(detail: PortlessUrlResolvedDetail) {
+  const data = JSON.stringify({ type: 'portless_url_resolved', ...detail });
+  for (const ws of frontendClients) {
+    try { ws.send(data); } catch {}
+  }
+}
+
 onPortlessStatus(broadcastPortlessStatus);
 onPortlessActionFired(broadcastPortlessFired);
+onPortlessUrlResolved(broadcastPortlessUrlResolved);
 
 /** Broadcast the full preferences object so clients stay in sync after a
  *  server-side mutation (e.g. an MCP tool updating tab groups). */
@@ -736,6 +750,16 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     const execCols = Math.max(1, Math.min(500, Number(cols) || 120));
     const execRows = Math.max(1, Math.min(200, Number(rows) || 30));
 
+    // Graveyard short-circuit: this procId points to a PTY that already
+    // died (clean exit, or bridge restart cleanup). Don't auto-resurrect
+    // it — the bubble is just remounting from chat history. Tell the
+    // viewer to render as exited so the user can re-launch explicitly.
+    if (clientProcId && isInGraveyard(procId)) {
+      broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: -1 });
+      log(`[exec_shell] declined respawn for tombed procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)}`);
+      return;
+    }
+
     // Re-attach path: if the client already sent us this procId and the PTY
     // is still live, don't spawn a second shell. Instead replay whatever
     // buffered output we have so the xterm that just mounted can paint the
@@ -790,11 +814,18 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       cols: execCols,
       rows: execRows,
       pty,
+      label,
     };
     trackedProcesses.set(procId, tp);
     saveProcessRegistry();
-    log(`[exec_shell] spawned pty procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)} pid=${pty.pid} cwd=${execCwd}`);
+    log(`[exec_shell] spawned pty procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)} pid=${pty.pid} cwd=${execCwd}${label ? ` label="${label}"` : ''}`);
 
+    // NOTE: We deliberately do NOT auto-type `command` here even when the
+    // bubble forwards one. The label/command on the message are for
+    // identity (so MCP lookups still find the bubble) and for display —
+    // re-running the command on every bubble remount caused dev servers
+    // to be silently re-launched on app reopen. Users that want to
+    // restart an action invoke actions_run / actions_stop explicitly.
     pty.onData((text) => {
       tp.outputBuffer.push(text);
       if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
@@ -806,6 +837,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       tp.exitCode = code;
       log(`[exec_shell] pty exited procId=${procId.slice(0, 8)} code=${code}`);
       broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
+      addToGraveyard(procId);
       setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
     });
 
@@ -1420,6 +1452,30 @@ const server = Bun.serve({
     const pfDelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/port-forwards\/(\d+)\/(\d+)$/);
     if (pfDelMatch && req.method === 'DELETE') {
       return handleRemovePortForward(pfDelMatch[1]!, Number(pfDelMatch[2]), Number(pfDelMatch[3]));
+    }
+
+    // Per-session dismissed shells — the bridge owns visibility for
+    // terminal bubbles. Frontend asks `GET /sessions/:id/shells/dismissed`
+    // on session load and filters those procIds out of the rendered chat.
+    // `DELETE /sessions/:id/shells/:procId` marks the bubble as dismissed
+    // (persistent across bridge restarts). A WS `shell_dismissed` event
+    // notifies other viewers so the bubble vanishes everywhere.
+    const shellsListMatch = url.pathname.match(/^\/sessions\/([^/]+)\/shells\/dismissed$/);
+    if (shellsListMatch && req.method === 'GET') {
+      return Response.json({ dismissed: getDismissedShells(shellsListMatch[1]!) }, { headers: corsHeaders });
+    }
+    const shellDismissMatch = url.pathname.match(/^\/sessions\/([^/]+)\/shells\/([^/]+)$/);
+    if (shellDismissMatch && req.method === 'DELETE') {
+      const sid = shellDismissMatch[1]!;
+      const procId = shellDismissMatch[2]!;
+      const changed = dismissShell(sid, procId);
+      if (changed) {
+        const data = JSON.stringify({ type: 'shell_dismissed', sessionId: sid, procId });
+        for (const ws of frontendClients) {
+          try { ws.send(data); } catch {}
+        }
+      }
+      return Response.json({ ok: true, changed }, { headers: corsHeaders });
     }
 
     // POST /sessions/:id/messages — HTTP path used by the gateway to forward

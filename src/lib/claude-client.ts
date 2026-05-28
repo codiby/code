@@ -156,6 +156,11 @@ export interface ChatMessage {
   terminalExited?: boolean;
   terminalExitCode?: number;
   terminalCwd?: string;
+  /** Display name for the terminal — shown as the bubble title AND as the
+   *  pill in the shells dock. Set by tools that spawn named terminals
+   *  (e.g. `actions_run` sets this to the action's name) so the chat
+   *  shows "api" instead of the cwd or the full portless command. */
+  terminalName?: string;
   costUsd?: number;
   durationMs?: number;
   usage?: { input_tokens: number; output_tokens: number };
@@ -320,6 +325,15 @@ type ClientCallbacks = {
   /** A Portless action was just started. Drives the action-fired toast,
    *  separate from status transitions. */
   onPortlessFired?: (info: { action: PortlessActionStatus; source: 'user' | 'agent'; sessionId?: string }) => void;
+  /** Resolved Portless URL — fires after the proxy boots and we know the
+   *  actual port it's listening on (typically a high one like :1355 when
+   *  portless can't bind :443). Components should replace the optimistic
+   *  `https://<host>` they were showing with this URL. */
+  onPortlessUrlResolved?: (info: { key: string; groupId: string; actionId: string; url: string }) => void;
+  /** A terminal bubble was dismissed (× clicked anywhere or on another
+   *  viewer). The bridge owns the dismissed set — receiving this event
+   *  means the FE should drop the matching bubble from its rendered list. */
+  onShellDismissed?: (info: { sessionId: string; procId: string }) => void;
   onConnectionChange: (status: ConnectionStatus) => void;
 };
 
@@ -610,6 +624,20 @@ export class ClaudeClient {
           sessionId: msg.sessionId as string | undefined,
         });
         break;
+      case 'portless_url_resolved':
+        this.callbacks.onPortlessUrlResolved?.({
+          key: msg.key as string,
+          groupId: msg.groupId as string,
+          actionId: msg.actionId as string,
+          url: msg.url as string,
+        });
+        break;
+      case 'shell_dismissed':
+        this.callbacks.onShellDismissed?.({
+          sessionId: msg.sessionId as string,
+          procId: msg.procId as string,
+        });
+        break;
     }
   }
 
@@ -680,8 +708,12 @@ export class ClaudeClient {
   }
 
   // ---- Interactive PTY (/terminal slash command) ----
-  execShell(sessionId: string, procId: string, cwd: string, cols: number, rows: number) {
-    this.send({ type: 'exec_shell', sessionId, procId, cwd, cols, rows });
+  /** `label` + `command` are only honoured on the fresh-spawn path —
+   *  re-attaches preserve whatever the server already has. They let
+   *  bubble-driven respawns (after a bridge restart wiped the original
+   *  PTY) reclaim their identity so MCP lookups by name still work. */
+  execShell(sessionId: string, procId: string, cwd: string, cols: number, rows: number, opts?: { label?: string; command?: string }) {
+    this.send({ type: 'exec_shell', sessionId, procId, cwd, cols, rows, label: opts?.label, command: opts?.command });
   }
 
   sendTerminalInput(sessionId: string, procId: string, data: string) {
@@ -1101,6 +1133,23 @@ export class ClaudeClient {
 
   async removePortForward(sessionId: string, localPort: number, remotePort: number): Promise<void> {
     await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards/${localPort}/${remotePort}`, { method: 'DELETE' });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dismissed shells — bridge-owned list of terminal procIds the user has
+  // explicitly closed. The frontend asks at session load (so it knows what
+  // to hide) and DELETEs to add a new entry.
+  // ---------------------------------------------------------------------------
+
+  async listDismissedShells(sessionId: string): Promise<string[]> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/shells/dismissed`);
+    if (!resp.ok) return [];
+    const data = await resp.json() as { dismissed?: string[] };
+    return data.dismissed || [];
+  }
+
+  async dismissShell(sessionId: string, procId: string): Promise<void> {
+    await authedFetch(`${this.serverUrl}/sessions/${sessionId}/shells/${encodeURIComponent(procId)}`, { method: 'DELETE' });
   }
 
   // ---------------------------------------------------------------------------

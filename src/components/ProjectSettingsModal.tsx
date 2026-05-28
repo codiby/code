@@ -3,6 +3,7 @@ import {
   X, Settings as SettingsIcon, Folder, Send, Mic, Smartphone, Plug,
   ArrowRight, Pin, ExternalLink, Plus, Trash2, Check, Terminal,
   ShieldCheck, Globe, Server, Zap, Variable,
+  ChevronRight, Copy, RefreshCw, Webhook, Play, Square, ScanLine,
 } from 'lucide-react';
 import { Button, TextField, Input, Switch, SwitchControl, SwitchThumb } from '@heroui/react';
 import {
@@ -672,7 +673,7 @@ const PROJECT_TABS: { id: ProjectTab; label: string }[] = [
   { id: 'environment', label: 'Environment' },
   { id: 'mcp', label: 'MCP Servers' },
   { id: 'hooks', label: 'Hooks' },
-  { id: 'portless', label: 'Portless' },
+  { id: 'portless', label: 'Actions' },
   { id: 'sessions', label: 'Sessions' },
 ];
 
@@ -1384,7 +1385,8 @@ function GlobalEnvironmentSection({ envVars, onChange }: { envVars: ProjectEnvVa
 }
 
 /* ============================================================
- *  Portless — named dev-server actions, one per row in the 3-col grid.
+ *  Actions — named server commands, each can optionally route through
+ *  Portless to get a stable hostname.
  * ============================================================ */
 
 function genActionId(): string {
@@ -1415,6 +1417,7 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
 
   const [cli, setCli] = useState<PortlessCliStatus | null>(null);
   const [running, setRunning] = useState<Map<string, PortlessActionStatus>>(new Map());
+  const [resolvedUrls, setResolvedUrls] = useState<Map<string, string>>(new Map());
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
@@ -1441,23 +1444,45 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
     return () => { cancelled = true; };
   }, [client, group.id]);
 
-  // Subscribe to status updates flowing in over WS by polling the lib hook —
-  // ClaudeClient already routes `portless_status` to onPortlessStatus, which
-  // is wired up at the ChatApp level. Here we listen to a custom window
-  // event the ChatApp re-emits so this pane stays self-contained.
+  // Subscribe to status + URL-resolved events the ChatApp re-emits as
+  // window events. Status maintains the live/idle dot per row; the
+  // resolved URL is the actual reachable URL (with the real proxy port,
+  // not the optimistic :443).
   useEffect(() => {
     const onStatus = (e: Event) => {
       const status = (e as CustomEvent<PortlessActionStatus>).detail;
       if (!status || status.groupId !== group.id) return;
       setRunning(prev => {
         const next = new Map(prev);
-        if (status.state === 'exited' || status.state === 'failed') next.delete(status.actionId);
-        else next.set(status.actionId, status);
+        if (status.state === 'exited' || status.state === 'failed') {
+          next.delete(status.actionId);
+          setResolvedUrls(urls => {
+            if (!urls.has(status.actionId)) return urls;
+            const m = new Map(urls);
+            m.delete(status.actionId);
+            return m;
+          });
+        } else {
+          next.set(status.actionId, status);
+        }
+        return next;
+      });
+    };
+    const onUrl = (e: Event) => {
+      const detail = (e as CustomEvent<{ groupId: string; actionId: string; url: string }>).detail;
+      if (!detail || detail.groupId !== group.id) return;
+      setResolvedUrls(prev => {
+        const next = new Map(prev);
+        next.set(detail.actionId, detail.url);
         return next;
       });
     };
     window.addEventListener('portless_status', onStatus);
-    return () => window.removeEventListener('portless_status', onStatus);
+    window.addEventListener('portless_url_resolved', onUrl);
+    return () => {
+      window.removeEventListener('portless_status', onStatus);
+      window.removeEventListener('portless_url_resolved', onUrl);
+    };
   }, [group.id]);
 
   const persist = (next: PortlessConfig) => {
@@ -1476,7 +1501,7 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
     setActions(merged);
   };
   const addAction = () => {
-    const fresh: PortlessAction = { id: genActionId(), name: '', command: '', hostname: '' };
+    const fresh: PortlessAction = { id: genActionId(), name: '', command: '', hostname: '', portless: true };
     setActions([...draft, fresh]);
   };
   const removeAction = (id: string) => {
@@ -1543,7 +1568,7 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
     const additions: PortlessAction[] = [];
     for (const s of res.suggested) {
       if (existingNames.has(s.name)) continue;
-      additions.push({ id: genActionId(), name: s.name, command: s.command, hostname: `${slugHost(s.name)}.${tld}` });
+      additions.push({ id: genActionId(), name: s.name, command: s.command, hostname: `${slugHost(s.name)}.${tld}`, portless: true });
     }
     if (additions.length > 0) setActions([...draft, ...additions]);
     else setError('All detected scripts already have actions.');
@@ -1558,9 +1583,11 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
         <div>
           <h3 className="text-[13px] font-semibold text-zinc-200">Actions</h3>
           <p className="mt-1 text-[12px] text-zinc-500 max-w-[68ch]">
-            Named server commands taskr can run through{' '}
-            <a href="https://portless.sh" target="_blank" rel="noreferrer" className="text-zinc-300 underline">Portless</a>.
-            Each row becomes its own URL — no port number, HTTPS by default.
+            Named server commands taskr can run. Toggle the globe per row to
+            route through{' '}
+            <a href="https://portless.sh" target="_blank" rel="noreferrer" className="text-zinc-300 underline">Portless</a>{' '}
+            — when on, the command serves at a stable hostname (no port). Off
+            runs the command as-is.
           </p>
         </div>
         {runningCount > 0 && (
@@ -1571,9 +1598,9 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
         )}
       </div>
 
-      {cli && !cli.available && (
+      {cli && !cli.available && draft.some(a => a.portless !== false) && (
         <div className="text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2.5 mb-4">
-          Portless CLI not found. Install with <code className="font-mono text-amber-200">npm install -g portless</code> and restart taskr.
+          Portless CLI not found. Install with <code className="font-mono text-amber-200">npm install -g portless</code> and restart taskr — or disable the globe on rows that don't need it.
         </div>
       )}
 
@@ -1582,8 +1609,8 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border hover:border-border-light text-left mb-5"
       >
         <div className="flex-1 min-w-0">
-          <div className="text-[12.5px] text-zinc-100">Use Portless for this project's actions</div>
-          <div className="text-[11px] text-zinc-500 mt-0.5">Off: actions still appear but taskr won't route them through Portless.</div>
+          <div className="text-[12.5px] text-zinc-100">Enable actions for this project</div>
+          <div className="text-[11px] text-zinc-500 mt-0.5">Off: actions still appear in this list but the agent's `actions_*` MCP tools won't see this project.</div>
         </div>
         <span className={`w-8 h-[18px] rounded-full relative transition-colors ${enabled ? 'bg-violet-600' : 'bg-zinc-700'}`}>
           <span className={`absolute top-[2px] left-[2px] w-3.5 h-3.5 rounded-full bg-white transition-transform ${enabled ? 'translate-x-[14px]' : ''}`} />
@@ -1592,17 +1619,18 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
 
       {/* Actions grid */}
       <div className="rounded-lg border border-border bg-surface-light/30 overflow-hidden">
-        <div className="grid grid-cols-[14px_180px_1.6fr_1fr_32px] gap-2.5 px-3 py-2 bg-surface-light border-b border-border text-[10px] uppercase tracking-[0.12em] text-zinc-500 font-medium items-center">
+        <div className="grid grid-cols-[14px_180px_1.6fr_22px_1fr_32px] gap-2.5 px-3 py-2 bg-surface-light border-b border-border text-[10px] uppercase tracking-[0.12em] text-zinc-500 font-medium items-center">
           <div />
           <div>Name</div>
           <div>Command</div>
-          <div>Portless hostname</div>
+          <div title="Portless on/off"><Globe className="w-3 h-3 mx-auto" /></div>
+          <div>Hostname</div>
           <div />
         </div>
 
         {draft.length === 0 ? (
           <div className="px-3 py-6 text-center text-[12px] text-zinc-500">
-            No actions yet. Add one below to run a dev server through Portless.
+            No actions yet. Add one below to define a named server command.
           </div>
         ) : (
           draft.map(a => {
@@ -1610,6 +1638,7 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
             const live = status && (status.state === 'running' || status.state === 'starting');
             const failed = status && status.state === 'failed';
             const isBusy = busy.has(a.id);
+            const usePortless = a.portless !== false;
             const dotClass =
               status?.state === 'running' ? 'bg-emerald-400 animate-pulse' :
               status?.state === 'starting' ? 'bg-amber-400 animate-pulse' :
@@ -1623,11 +1652,11 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
               failed ? (status?.lastError || 'Failed — click to retry') :
               'Idle — click to run';
             return (
-              <div key={a.id} className="grid grid-cols-[14px_180px_1.6fr_1fr_32px] gap-2.5 px-3 py-2 items-center hover:bg-violet-500/[0.04]">
+              <div key={a.id} className="grid grid-cols-[14px_180px_1.6fr_22px_1fr_32px] gap-2.5 px-3 py-2 items-center hover:bg-violet-500/[0.04]">
                 <button
                   type="button"
                   onClick={() => (live ? stop(a) : run(a))}
-                  disabled={isBusy || !cli?.available || !group.cwd}
+                  disabled={isBusy || (usePortless && !cli?.available) || !group.cwd}
                   title={title}
                   className="w-3.5 h-3.5 inline-flex items-center justify-center rounded-full disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -1647,13 +1676,36 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
                   placeholder="bun run dev"
                   className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 focus:bg-surface-lighter font-mono text-[11.5px] text-zinc-100 outline-none"
                 />
-                <input
-                  value={a.hostname || ''}
-                  onChange={e => patchAction(a.id, { hostname: e.target.value })}
-                  onBlur={() => commitAction(a.id)}
-                  placeholder={`${slugHost(a.name) || 'app'}.${tld}`}
-                  className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 focus:bg-surface-lighter font-mono text-[11.5px] text-zinc-100 outline-none"
-                />
+                <button
+                  type="button"
+                  onClick={() => { patchAction(a.id, { portless: !usePortless }); setActions(draft.map(x => x.id === a.id ? { ...x, portless: !usePortless } : x)); }}
+                  title={usePortless ? 'Portless on — click to run command raw' : 'Portless off — click to wrap with portless'}
+                  className={`w-[22px] h-[22px] inline-flex items-center justify-center rounded transition-colors ${usePortless ? 'text-violet-300 bg-violet-500/15 border border-violet-500/35' : 'text-zinc-600 hover:text-zinc-300 border border-transparent hover:bg-surface-lighter'}`}
+                >
+                  <Globe className="w-3 h-3" strokeWidth={2} />
+                </button>
+                <div className="min-w-0">
+                  <input
+                    value={a.hostname || ''}
+                    onChange={e => patchAction(a.id, { hostname: e.target.value })}
+                    onBlur={() => commitAction(a.id)}
+                    placeholder={usePortless ? `${slugHost(a.name) || 'app'}.${tld}` : '— raw command —'}
+                    disabled={!usePortless}
+                    className={`w-full px-2.5 py-1.5 rounded font-mono text-[11.5px] outline-none border focus:border-violet-500 ${usePortless ? 'bg-surface-light border-border focus:bg-surface-lighter text-zinc-100' : 'bg-transparent border-transparent text-zinc-600 placeholder:text-zinc-700 cursor-not-allowed'}`}
+                  />
+                  {usePortless && live && resolvedUrls.get(a.id) && (
+                    <a
+                      href={resolvedUrls.get(a.id)!}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={`Open ${resolvedUrls.get(a.id)}`}
+                      className="mt-1 inline-flex items-center gap-1 text-[10.5px] font-mono text-emerald-400/90 hover:text-emerald-300"
+                    >
+                      <span className="w-1 h-1 rounded-full bg-emerald-400" />
+                      {resolvedUrls.get(a.id)!.replace(/^https?:\/\//, '')}
+                    </a>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => removeAction(a.id)}
@@ -1714,9 +1766,9 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
         </div>
       )}
 
-      {/* Defaults strip */}
+      {/* Defaults strip — only apply to portless-enabled rows */}
       <div className="mt-6">
-        <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 mb-2.5">Defaults</div>
+        <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 mb-2.5">Portless defaults</div>
         <div className="grid grid-cols-3 gap-2">
           <div className="flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border">
             <div className="flex-1 min-w-0">

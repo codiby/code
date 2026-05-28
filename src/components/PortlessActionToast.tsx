@@ -49,7 +49,25 @@ export function PortlessActionToast() {
       }, ttl);
     };
     window.addEventListener('portless_fired', onFired);
-    return () => window.removeEventListener('portless_fired', onFired);
+
+    // The boot log eventually prints the real proxy URL (with the port
+    // portless actually bound to — often :1355 because 443 needs root).
+    // Swap it in-place so the user clicks the right link.
+    const onUrlResolved = (e: Event) => {
+      const detail = (e as CustomEvent<{ key: string; url: string }>).detail;
+      if (!detail) return;
+      setToasts(prev => prev.map(t =>
+        t.action.key === detail.key
+          ? { ...t, action: { ...t.action, url: detail.url, state: 'running' } }
+          : t,
+      ));
+    };
+    window.addEventListener('portless_url_resolved', onUrlResolved);
+
+    return () => {
+      window.removeEventListener('portless_fired', onFired);
+      window.removeEventListener('portless_url_resolved', onUrlResolved);
+    };
   }, []);
 
   if (toasts.length === 0) return null;

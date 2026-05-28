@@ -20,10 +20,10 @@ import type { ChatMessage } from '../state';
 import { sessions, saveSessions } from '../sessions';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host';
 import { cdpRequest } from './browser-cdp';
-import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProcessOutput } from '../handlers/processes';
+import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProcessOutput, addToGraveyard } from '../handlers/processes';
 import { spawnPty } from '../pty';
 import type { TrackedProcess } from '../types';
-import { emitPortlessActionFired, getPortlessCliStatus } from '../portless';
+import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../portless';
 
 /** Resolve a tracked process for the current session by procId OR name. */
 function resolveTrackedProcess(
@@ -997,6 +997,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             tp.exitCode = code;
             log(`[spawn_terminal] "${label}" procId=${procId.slice(0, 8)} exited code=${code}`);
             deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
+            addToGraveyard(procId);
             setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
           });
 
@@ -1144,25 +1145,23 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
         },
       ),
       tool(
-        'portless_list',
+        'actions_list',
         [
-          'List the Portless actions configured for the current project (named dev-server commands routed through portless.sh).',
+          'List every named server action configured for the current project — what the user defined in Project Settings → Actions. Returns ALL configured actions (not only the ones currently running), with their command, whether they\'re wrapped through Portless, the resolved URL when Portless is on, and live state (running/idle) in this session.',
           '',
-          'Returns the configured actions for the session\'s project plus which are currently running as a terminal in this session. Use this before `portless_run` to discover the available action names, or to check which dev servers are already up.',
+          'Call this whenever you need to know what dev servers / scripts the user has set up. It\'s the discovery tool for `actions_run`.',
         ].join('\n'),
         {},
         async () => {
           const ctx = resolveSessionGroup(sessionId, deps);
           if (!ctx) {
-            return { content: [{ type: 'text', text: 'This session is not associated with a project. Open Project Settings → Portless and add this session to a project to configure actions.' }] };
+            return { content: [{ type: 'text', text: 'This session is not associated with a project. Open Project Settings → Actions and add this session to a project to configure actions.' }] };
           }
-          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string }[]; tld?: string };
+          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string; portless?: boolean }[]; tld?: string };
           const actions = cfg.actions || [];
           if (actions.length === 0) {
-            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no Portless actions configured yet. Add some in Project Settings → Portless.` }] };
+            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no actions configured yet. Add some in Project Settings → Actions.` }] };
           }
-          // A Portless action is "running" when its label-tagged terminal
-          // is still alive in this session.
           const labelToProc = new Map<string, TrackedProcess>();
           for (const tp of trackedProcesses.values()) {
             if (tp.sessionId === sessionId && tp.label && tp.exitCode === null) {
@@ -1170,69 +1169,81 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             }
           }
           const lines = actions.map(a => {
-            const tp = labelToProc.get(`portless · ${a.name}`.toLowerCase());
-            const tld = cfg.tld || 'localhost';
-            const slug = a.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
-            const host = a.hostname && a.hostname.includes('.') ? a.hostname : `${slug}.${tld}`;
+            const tp = labelToProc.get(`action · ${a.name}`.toLowerCase());
             const status = tp ? `running (pid ${tp.pid})` : 'idle';
-            return `- ${a.name} · ${a.command} · https://${host} [${status}]`;
+            const usePortless = a.portless !== false;
+            if (usePortless) {
+              const tld = cfg.tld || 'localhost';
+              const slug = a.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+              const host = a.hostname && a.hostname.includes('.') ? a.hostname : `${slug}.${tld}`;
+              return `- ${a.name} · ${a.command} · portless → https://${host} [${status}]`;
+            }
+            return `- ${a.name} · ${a.command} · raw command [${status}]`;
           });
-          return { content: [{ type: 'text', text: `Portless actions for "${ctx.group.name}":\n${lines.join('\n')}` }] };
+          return { content: [{ type: 'text', text: `Actions for "${ctx.group.name}":\n${lines.join('\n')}` }] };
         },
       ),
       tool(
-        'portless_run',
+        'actions_run',
         [
-          'Start a Portless action in the current project. Spawns the action\'s command — prefixed with `portless <slug> --` so the dev server is reachable at a stable hostname (e.g. `https://api.localhost`) — inside a live terminal bubble in this chat. The full command line is visible so the user can see exactly what was launched, and the process also appears in the Processes panel.',
+          'Start a named server action in the current project. Spawns the action\'s command inside a live terminal bubble in the chat — the full command line is visible so the user can see exactly what was launched, and the process also shows up in the Processes panel.',
           '',
-          'A toast also pops in the corner of the app with the URL as a clickable link. Use this when the user asks to "start the api", "boot the web server", "run my dev server", etc. — and an action with that name is already configured in their Project Settings → Portless. Call `portless_list` first if you\'re unsure of the action names.',
+          'Per-action wrapping: if the action has Portless enabled, the command is prefixed with `portless <slug> --` and the resulting dev server is reachable at a stable hostname (e.g. `https://api.localhost`) instead of a random port — a toast also pops with the URL. If Portless is off for that action, the raw command is run as-is.',
           '',
-          'Idempotent: starting an already-running action returns the existing terminal\'s procId without restarting it.',
+          'Use this when the user asks to "start the api", "boot the web server", "run dev", etc. — and an action with that name is configured in Project Settings → Actions. Call `actions_list` first if you\'re unsure of the available names.',
+          '',
+          'Idempotent: starting an already-running action returns the existing terminal\'s procId without spawning a duplicate.',
         ].join('\n'),
         {
-          name: z.string().min(1).describe('The action name as configured in Project Settings → Portless. Matched case-insensitively against configured actions. Use `portless_list` to discover available names.'),
+          name: z.string().min(1).describe('The action name as configured in Project Settings → Actions. Matched case-insensitively. Use `actions_list` to discover available names.'),
         },
         async (args) => {
           if (!sessions.get(sessionId)) {
             return { content: [{ type: 'text', text: `Session ${sessionId} not found.` }], isError: true };
           }
-          const cli = getPortlessCliStatus();
-          if (!cli.available) {
-            return { content: [{ type: 'text', text: 'Portless CLI is not installed. Ask the user to run `npm install -g portless` and restart taskr.' }], isError: true };
-          }
           const ctx = resolveSessionGroup(sessionId, deps);
           if (!ctx) {
-            return { content: [{ type: 'text', text: 'This session is not associated with a project — cannot resolve which Portless actions to run.' }], isError: true };
+            return { content: [{ type: 'text', text: 'This session is not associated with a project — cannot resolve which actions to run.' }], isError: true };
           }
           if (!ctx.group.cwd) {
-            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no working directory set; cannot spawn portless.` }], isError: true };
+            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no working directory set; cannot spawn the action.` }], isError: true };
           }
-          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string }[]; tld?: 'localhost' | 'test'; tls?: boolean };
+          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string; portless?: boolean }[]; tld?: 'localhost' | 'test'; tls?: boolean };
           const actions = cfg.actions || [];
           const match = actions.find(a => a.name === args.name) || actions.find(a => a.name.toLowerCase() === args.name.toLowerCase());
           if (!match) {
             const known = actions.map(a => a.name).join(', ') || '(none configured)';
-            return { content: [{ type: 'text', text: `No Portless action named "${args.name}" in project "${ctx.group.name}". Known: ${known}.` }], isError: true };
+            return { content: [{ type: 'text', text: `No action named "${args.name}" in project "${ctx.group.name}". Known: ${known}.` }], isError: true };
           }
+
+          const usePortless = match.portless !== false;
           const tld = cfg.tld || 'localhost';
           const slug = match.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
           const hostname = match.hostname && match.hostname.includes('.') ? match.hostname : `${slug}.${tld}`;
           const url = `https://${hostname}`;
-          const label = `Portless · ${match.name}`;
+          const label = `Action · ${match.name}`;
 
-          // Don't double-spawn — if a tracked terminal with this label is
-          // already live in the session, reuse it (matches spawn_terminal's
-          // idempotence contract).
-          for (const tp of trackedProcesses.values()) {
-            if (tp.sessionId === sessionId && tp.label === label && tp.exitCode === null) {
-              return { content: [{ type: 'text', text: `"${match.name}" is already running (procId=${tp.id}, pid=${tp.pid}). URL: ${url}` }] };
+          if (usePortless) {
+            const cli = getPortlessCliStatus();
+            if (!cli.available) {
+              return { content: [{ type: 'text', text: `Action "${match.name}" is configured to use Portless, but the portless CLI is not installed. Ask the user to run \`npm install -g portless\` and restart taskr, or disable Portless for this action.` }], isError: true };
             }
           }
 
-          // Visible composite command: portless wraps the user's command so
-          // the chat shows EXACTLY what's running. `sh -lc` so login shell
-          // PATH (nvm/fnm/asdf) finds the portless binary.
-          const visibleCommand = `portless ${slug} -- sh -c '${match.command.replace(/'/g, `'\\''`)}'`;
+          // Don't double-spawn — if a tracked terminal with this label is
+          // already live in the session, reuse it.
+          for (const tp of trackedProcesses.values()) {
+            if (tp.sessionId === sessionId && tp.label === label && tp.exitCode === null) {
+              const where = usePortless ? ` URL: ${url}` : '';
+              return { content: [{ type: 'text', text: `"${match.name}" is already running (procId=${tp.id}, pid=${tp.pid}).${where}` }] };
+            }
+          }
+
+          // Build the command the user sees in the chat. With Portless on,
+          // wrap the raw command so it serves at the stable hostname.
+          const visibleCommand = usePortless
+            ? `portless ${slug} -- sh -c '${match.command.replace(/'/g, `'\\''`)}'`
+            : match.command;
 
           const procId = randomUUID();
           const cols = 120;
@@ -1263,6 +1274,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           saveProcessRegistry();
 
           let didTypeCommand = false;
+          let resolvedUrl: string | null = null;
           pty.onData((text: string) => {
             tp.outputBuffer.push(text);
             if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
@@ -1272,18 +1284,32 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
               didTypeCommand = true;
               try { pty.write(visibleCommand + '\r'); } catch {}
             }
+            if (usePortless && !resolvedUrl) {
+              const found = extractPortlessUrl(text);
+              if (found) {
+                resolvedUrl = found;
+                emitPortlessUrlResolved({
+                  key: `${ctx.groupId}:${match.id}`,
+                  groupId: ctx.groupId,
+                  actionId: match.id,
+                  url: found,
+                });
+              }
+            }
           });
           pty.onExit((code: number) => {
             if (tp.exitCode !== null) return;
             tp.exitCode = code;
-            log(`[portless_run] "${label}" procId=${procId.slice(0, 8)} exited code=${code}`);
+            log(`[actions_run] "${label}" procId=${procId.slice(0, 8)} exited code=${code}`);
             deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
+            addToGraveyard(procId);
             setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
           });
 
-          // Interactive terminal bubble in the chat — same UX as
-          // spawn_terminal, so the user sees the colored portless boot
-          // log right in the conversation.
+          // Interactive terminal bubble in the chat. `terminalName`
+          // promotes the action's configured name to the bubble title and
+          // the shells-dock pill so the user sees "api" / "web-renter"
+          // rather than the cwd or the full portless wrapper.
           const termMsg: ChatMessage = {
             id: procId,
             role: 'system',
@@ -1293,77 +1319,88 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             procId,
             terminalCommand: visibleCommand,
             terminalCwd: ctx.group.cwd,
+            terminalName: match.name,
           };
           if (addMessage(sessionId, termMsg)) {
             deps.broadcastToSession(sessionId, { type: 'message', sessionId, message: termMsg });
           }
 
-          // Toast with the URL so the user can jump into the running app.
-          emitPortlessActionFired(
-            {
-              key: `${ctx.groupId}:${match.id}`,
-              groupId: ctx.groupId,
-              actionId: match.id,
-              name: match.name,
-              command: visibleCommand,
-              hostname,
-              url,
-              cwd: ctx.group.cwd,
-              pid: pty.pid,
-              state: 'starting',
-              startedAt: Date.now(),
-              exitedAt: null,
-              exitCode: null,
-              lastError: null,
-              logTail: [],
-            },
-            'agent',
-            sessionId,
-          );
+          // Toast only when there's a stable URL to surface — otherwise the
+          // visible terminal bubble is sufficient feedback.
+          if (usePortless) {
+            emitPortlessActionFired(
+              {
+                key: `${ctx.groupId}:${match.id}`,
+                groupId: ctx.groupId,
+                actionId: match.id,
+                name: match.name,
+                command: visibleCommand,
+                hostname,
+                url,
+                cwd: ctx.group.cwd,
+                pid: pty.pid,
+                state: 'starting',
+                startedAt: Date.now(),
+                exitedAt: null,
+                exitCode: null,
+                lastError: null,
+                logTail: [],
+              },
+              'agent',
+              sessionId,
+            );
+          }
 
-          log(`[portless_run] "${label}" procId=${procId.slice(0, 8)} pid=${pty.pid} session=${sessionId.slice(0, 8)} cmd=${visibleCommand.slice(0, 80)}`);
+          log(`[actions_run] "${label}" procId=${procId.slice(0, 8)} pid=${pty.pid} session=${sessionId.slice(0, 8)} portless=${usePortless} cmd=${visibleCommand.slice(0, 80)}`);
 
-          const summary = [
-            `Started "${match.name}" → ${url}`,
-            `command: ${visibleCommand}`,
-            `cwd: ${ctx.group.cwd}`,
-            'A live terminal is mounted in the chat and the process appears in the Processes panel. Read output with read_terminal_output, send keystrokes with send_terminal_input, stop it with portless_stop or kill_terminal — all by name.',
-          ].join('\n');
+          const summary = usePortless
+            ? [
+                `Started "${match.name}" → ${url}`,
+                `command: ${visibleCommand}`,
+                `cwd: ${ctx.group.cwd}`,
+                'A live terminal is mounted in the chat and the process appears in the Processes panel. Read output with read_terminal_output, send keystrokes with send_terminal_input, stop it with actions_stop or kill_terminal.',
+              ].join('\n')
+            : [
+                `Started "${match.name}" (raw command, no Portless wrapper).`,
+                `command: ${visibleCommand}`,
+                `cwd: ${ctx.group.cwd}`,
+                'A live terminal is mounted in the chat and the process appears in the Processes panel.',
+              ].join('\n');
           return { content: [{ type: 'text', text: summary }] };
         },
       ),
       tool(
-        'portless_stop',
+        'actions_stop',
         [
-          'Stop a Portless action previously started in this session. Looks up the action\'s tracked terminal by label and signals the entire process group (SIGTERM → SIGKILL after 500ms).',
+          'Stop a project action previously started in this session. Looks up the action\'s tracked terminal by label and signals the entire process group (SIGTERM → SIGKILL after 500ms).',
           '',
-          'Use when the user asks to stop a dev server, free a port, or "kill the api". With no `name`, every Portless terminal in this session is stopped.',
+          'With no `name`, every action started in this session is stopped.',
         ].join('\n'),
         {
-          name: z.string().optional().describe('Action name to stop (matched case-insensitively). Omit to stop every running Portless action in this session.'),
+          name: z.string().optional().describe('Action name to stop (matched case-insensitively). Omit to stop every running action started in this session.'),
         },
         async (args) => {
           const targets: TrackedProcess[] = [];
           const wanted = args.name?.trim().toLowerCase();
           for (const tp of trackedProcesses.values()) {
             if (tp.sessionId !== sessionId) continue;
-            if (!tp.label || !tp.label.startsWith('Portless · ')) continue;
+            if (!tp.label || !tp.label.startsWith('Action · ')) continue;
             if (tp.exitCode !== null) continue;
             if (wanted) {
-              const actionName = tp.label.slice('Portless · '.length).toLowerCase();
+              const actionName = tp.label.slice('Action · '.length).toLowerCase();
               if (actionName !== wanted) continue;
             }
             targets.push(tp);
           }
           if (targets.length === 0) {
-            return { content: [{ type: 'text', text: wanted ? `No Portless action named "${args.name}" is running in this session.` : 'No Portless actions running in this session.' }] };
+            return { content: [{ type: 'text', text: wanted ? `No action named "${args.name}" is running in this session.` : 'No actions running in this session.' }] };
           }
           let stopped = 0;
           for (const tp of targets) {
             if (killTrackedProcess(tp.id)) stopped++;
             deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId: tp.id, code: -1 });
           }
-          const names = targets.map(t => t.label!.slice('Portless · '.length)).join(', ');
+          const names = targets.map(t => t.label!.slice('Action · '.length)).join(', ');
           return { content: [{ type: 'text', text: `Stopped ${stopped} action${stopped === 1 ? '' : 's'}: ${names}.` }] };
         },
       ),

@@ -9,10 +9,105 @@ export const trackedProcesses = new Map<string, TrackedProcess>();
 
 const PROC_DIR = join(CODIBY_DIR, 'ui-processes');
 const PROC_REGISTRY = join(PROC_DIR, 'registry.json');
+const PROC_GRAVEYARD = join(PROC_DIR, 'graveyard.json');
+const PROC_DISMISSED = join(PROC_DIR, 'dismissed-shells.json');
 
 try { mkdirSync(PROC_DIR, { recursive: true }); } catch {}
 
 type PersistedProc = { id: string; pid: number; command: string; cwd: string; sessionId: string; startedAt: number; kind?: 'oneshot' | 'pty'; label?: string };
+
+// ---------------------------------------------------------------------------
+// PTY graveyard — procIds whose PTY died (exit, bridge restart, etc.). The
+// `exec_shell` handler consults this before spawning so a terminal bubble
+// remounting from chat history doesn't auto-resurrect a process that's
+// already dead. Persisted so the marker survives across bridge restarts.
+//
+// Capped at GRAVEYARD_LIMIT entries (FIFO) so it doesn't grow forever — old
+// chat history that's no longer relevant rolls off naturally.
+// ---------------------------------------------------------------------------
+
+const GRAVEYARD_LIMIT = 2000;
+const graveyard = (() => {
+  try {
+    const parsed = JSON.parse(readFileSync(PROC_GRAVEYARD, 'utf-8')) as string[];
+    return new Set<string>(Array.isArray(parsed) ? parsed : []);
+  } catch { return new Set<string>(); }
+})();
+
+function persistGraveyard() {
+  try { writeFileSync(PROC_GRAVEYARD, JSON.stringify([...graveyard])); } catch {}
+}
+
+export function addToGraveyard(procId: string) {
+  if (graveyard.has(procId)) return;
+  graveyard.add(procId);
+  // FIFO eviction: drop the oldest entries when over the cap. Set iteration
+  // is insertion order so the first N keys are the oldest.
+  while (graveyard.size > GRAVEYARD_LIMIT) {
+    const oldest = graveyard.values().next().value;
+    if (!oldest) break;
+    graveyard.delete(oldest);
+  }
+  persistGraveyard();
+}
+
+export function isInGraveyard(procId: string): boolean {
+  return graveyard.has(procId);
+}
+
+// ---------------------------------------------------------------------------
+// Dismissed shells — per-session set of procIds the user explicitly closed
+// (clicked the × on a terminal bubble). The frontend asks the bridge what's
+// dismissed for the active session and filters those bubbles out of the
+// rendered chat. This makes the backend the authoritative source of which
+// shells are visible — the frontend doesn't deduce anything from messages
+// alone.
+// ---------------------------------------------------------------------------
+
+const dismissedShells = (() => {
+  try {
+    const parsed = JSON.parse(readFileSync(PROC_DISMISSED, 'utf-8')) as Record<string, string[]>;
+    const m = new Map<string, Set<string>>();
+    for (const [sid, ids] of Object.entries(parsed || {})) {
+      if (Array.isArray(ids)) m.set(sid, new Set(ids));
+    }
+    return m;
+  } catch { return new Map<string, Set<string>>(); }
+})();
+
+function persistDismissed() {
+  const out: Record<string, string[]> = {};
+  for (const [sid, set] of dismissedShells) {
+    if (set.size > 0) out[sid] = [...set];
+  }
+  try { writeFileSync(PROC_DISMISSED, JSON.stringify(out)); } catch {}
+}
+
+export function dismissShell(sessionId: string, procId: string): boolean {
+  let set = dismissedShells.get(sessionId);
+  if (!set) { set = new Set<string>(); dismissedShells.set(sessionId, set); }
+  if (set.has(procId)) return false;
+  set.add(procId);
+  persistDismissed();
+  return true;
+}
+
+export function isShellDismissed(sessionId: string, procId: string): boolean {
+  return dismissedShells.get(sessionId)?.has(procId) === true;
+}
+
+export function getDismissedShells(sessionId: string): string[] {
+  const set = dismissedShells.get(sessionId);
+  return set ? [...set] : [];
+}
+
+/** Drop all dismissed entries for a session — used when a session is
+ *  deleted so its on-disk record doesn't leak forever. */
+export function clearDismissedShells(sessionId: string): void {
+  if (!dismissedShells.has(sessionId)) return;
+  dismissedShells.delete(sessionId);
+  persistDismissed();
+}
 
 function isPidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -58,9 +153,12 @@ export function restoreProcessRegistry() {
     if (!isPidAlive(entry.pid)) {
       changed = true;
       removeProcessOutput(entry.id);
+      addToGraveyard(entry.id);
       continue;
     }
-    // PTY sessions cannot be re-adopted across server restarts — kill and drop.
+    // PTY sessions cannot be re-adopted across server restarts — kill, drop,
+    // and tomb the procId so the bubble that remounts from chat history
+    // doesn't trigger a fresh spawn.
     if (entry.kind === 'pty') {
       // Best-effort: PTY shells weren't started with `detached: true`, so the
       // PID has no process group. Kill the PID directly — its children are
@@ -70,6 +168,7 @@ export function restoreProcessRegistry() {
         try { process.kill(entry.pid, 'SIGKILL'); } catch {}
       }, 500);
       removeProcessOutput(entry.id);
+      addToGraveyard(entry.id);
       changed = true;
       log(`[proc] Dropped stale PTY ${entry.id.slice(0, 8)} (pid=${entry.pid})`);
       continue;

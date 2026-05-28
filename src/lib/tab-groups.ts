@@ -22,15 +22,24 @@ export interface ProjectMcpOverrides {
   disabled?: string[];
 }
 
-/** A named dev-server command this project can run through Portless. The
- *  `name` is the slug Portless uses to identify the app (and the default
- *  subdomain prefix when worktree subdomains are off). The `hostname` is
- *  the full local URL host (e.g. "api.localhost") — when undefined we
- *  derive it from `name` + the project's TLD default. */
+/** A named server command this project can run. Each action can optionally
+ *  route through Portless (when `portless` is true, the command is wrapped
+ *  with `portless <slug> --` and served at `hostname`); otherwise it runs
+ *  as a plain shell command inside a tracked terminal.
+ *
+ *  Compat note: actions created before the per-action flag was introduced
+ *  have `portless === undefined` and are treated as portless-enabled, so
+ *  existing setups don't silently change behavior. */
 export interface PortlessAction {
   id: string;
   name: string;
   command: string;
+  /** When true (or undefined, for legacy actions), the command is wrapped
+   *  with `portless <slug> --`. When false, the command runs raw. */
+  portless?: boolean;
+  /** Used only when portless is on. Full local hostname (e.g.
+   *  "api.localhost"); when blank we derive it from `name` + the project
+   *  TLD default. */
   hostname?: string;
 }
 

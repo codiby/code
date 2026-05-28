@@ -761,6 +761,10 @@ export function ChatApp() {
   /** Tunnel status per remote, pushed by the server's `remote.status`
    *  broadcasts. Drives the offline state on the chat-header forwards chip. */
   const [remoteStatuses, setRemoteStatuses] = useState<Record<string, { status: 'connecting' | 'online' | 'reconnecting' | 'offline'; lastError: string | null }>>({});
+  // Dismissed-shell registry mirrored from the bridge — bridge is the source
+  // of truth for which terminal bubbles are visible. Keyed by sessionId,
+  // each entry is a Set of procIds the user has closed.
+  const [dismissedShells, setDismissedShells] = useState<Record<string, Set<string>>>({});
   // Server is the source of truth for session state. This map is populated only by server messages.
   const [sessionStates, setSessionStates] = useState<Record<string, LocalSessionState>>({});
   const historyIdxRef = useRef(-1);
@@ -1487,6 +1491,21 @@ export function ChatApp() {
         onPortlessFired: (info) => {
           window.dispatchEvent(new CustomEvent('portless_fired', { detail: info }));
         },
+        onPortlessUrlResolved: (info) => {
+          window.dispatchEvent(new CustomEvent('portless_url_resolved', { detail: info }));
+        },
+        onShellDismissed: ({ sessionId: sid, procId }) => {
+          // Only update if we already have the cached set for this session;
+          // otherwise let the focus-time loader fetch the full authoritative
+          // list (avoids creating a partial set that the loader then skips).
+          setDismissedShells(prev => {
+            const existing = prev[sid];
+            if (!existing) return prev;
+            if (existing.has(procId)) return prev;
+            const next = new Set(existing); next.add(procId);
+            return { ...prev, [sid]: next };
+          });
+        },
 
         onConnectionChange: (status) => {
           if (status === 'connected') {
@@ -1571,6 +1590,20 @@ export function ChatApp() {
   useEffect(() => {
     if (!activeId) return;
     clientRef.current?.notifyActiveTab(activeId);
+  }, [activeId, client]);
+
+  // Pull the dismissed-shells registry from the bridge whenever a new
+  // session becomes active. The bridge is authoritative — bubbles only
+  // render when their procId is NOT in this set.
+  useEffect(() => {
+    if (!activeId || !clientRef.current) return;
+    if (dismissedShells[activeId]) return; // already cached for this session
+    let cancelled = false;
+    void clientRef.current.listDismissedShells(activeId).then(list => {
+      if (cancelled) return;
+      setDismissedShells(prev => ({ ...prev, [activeId]: new Set(list) }));
+    });
+    return () => { cancelled = true; };
   }, [activeId, client]);
 
   // Sync active session to URL hash. The hash is what lets a webview reload
@@ -4633,7 +4666,16 @@ export function ChatApp() {
                       All shells are mounted (hidden via `display:none`) so their xterm
                       state survives switching. */}
                   {(() => {
-                    const shells = active.messages.filter(m => m.isInteractiveTerminal);
+                    // The bridge owns visibility — bubbles whose procId is in
+                    // the dismissed set never render, even though the chat
+                    // message still exists in the log.
+                    const dismissed = activeId ? dismissedShells[activeId] : undefined;
+                    const shells = active.messages.filter(m => {
+                      if (!m.isInteractiveTerminal) return false;
+                      if (!dismissed) return true;
+                      const pid = m.procId || m.id;
+                      return !dismissed.has(pid);
+                    });
                     if (shells.length === 0 || !activeId) return null;
                     const activeShellId = activeShellBySession[activeId] || shells[shells.length - 1]!.id;
                     const activeMinimized = minimizedShells.has(activeShellId);
@@ -4645,7 +4687,12 @@ export function ChatApp() {
                           {shells.map(sh => {
                             const running = sh.exitCode === undefined && !sh.terminalExited;
                             const code = sh.terminalExitCode ?? sh.exitCode;
-                            const label = sh.terminalCommand || (sh.terminalCwd ? sh.terminalCwd.split('/').filter(Boolean).pop() || '/' : 'shell');
+                            // Prefer the explicit display name set by tools
+                            // (e.g. `actions_run` → "api") so the user sees
+                            // the action name rather than the long portless
+                            // wrapper command. Falls back to command/cwd for
+                            // legacy bubbles that don't carry a name.
+                            const label = sh.terminalName || sh.terminalCommand || (sh.terminalCwd ? sh.terminalCwd.split('/').filter(Boolean).pop() || '/' : 'shell');
                             const isActive = sh.id === activeShellId;
                             const shellMinimized = minimizedShells.has(sh.id);
                             const visuallyMinimized = isActive && shellMinimized;
@@ -4697,10 +4744,18 @@ export function ChatApp() {
                                     // Best-effort kill_process speeds up server-side cleanup
                                     // (the registry auto-prunes 30 s after exit anyway).
                                     try { clientRef.current!.killProcess(activeId, procId); } catch {}
-                                    updateLocalState(activeId, s => ({
-                                      ...s,
-                                      messages: s.messages.filter(m => m.id !== sh.id),
-                                    }));
+                                    // Tell the bridge the user closed this bubble; it
+                                    // remembers across restarts so reload doesn't
+                                    // resurrect a dismissed shell. The WS round-trip
+                                    // also drops the bubble from sessionStates via the
+                                    // dismissed-set filter, no need to mutate it here.
+                                    try { void clientRef.current!.dismissShell(activeId, procId); } catch {}
+                                    setDismissedShells(prev => {
+                                      const existing = prev[activeId] || new Set<string>();
+                                      if (existing.has(procId)) return prev;
+                                      const next = new Set(existing); next.add(procId);
+                                      return { ...prev, [activeId]: next };
+                                    });
                                     setMinimizedShells(prev => {
                                       if (!prev.has(sh.id)) return prev;
                                       const n = new Set(prev);

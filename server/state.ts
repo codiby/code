@@ -39,6 +39,10 @@ export interface ChatMessage {
   thinkingRedacted?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
+  /** Display name shown as the bubble title and shells-dock pill — set
+   *  by `actions_run` to the action name so the chat shows the user's
+   *  configured action (e.g. "api") instead of the cwd or full command. */
+  terminalName?: string;
   exitCode?: number;
   /** Set on `isTerminal` messages produced by the `spawn_terminal` SDK tool —
    *  i.e. background processes the model started for the user (dev servers,

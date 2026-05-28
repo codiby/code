@@ -276,6 +276,47 @@ export function emitPortlessActionFired(
 }
 
 // ---------------------------------------------------------------------------
+// Resolved-URL event bus
+//
+// Portless 0.7 on a non-privileged shell can't bind :443, so the actual
+// proxy URL it serves at is `http://<hostname>:1355` (or similar). The
+// child process logs this as `PORTLESS_URL=...` on stdout right after
+// boot. We parse that line and re-broadcast the resolved URL so the toast
+// and the Project Settings pane can replace the optimistic
+// `https://<hostname>` with the real reachable one.
+// ---------------------------------------------------------------------------
+
+export interface PortlessUrlResolvedDetail {
+  key: string;
+  groupId: string;
+  actionId: string;
+  /** Resolved URL with the actual proxy port (e.g. http://api.localhost:1355). */
+  url: string;
+}
+
+type UrlResolvedListener = (detail: PortlessUrlResolvedDetail) => void;
+const urlResolvedListeners = new Set<UrlResolvedListener>();
+
+export function onPortlessUrlResolved(cb: UrlResolvedListener): () => void {
+  urlResolvedListeners.add(cb);
+  return () => urlResolvedListeners.delete(cb);
+}
+
+export function emitPortlessUrlResolved(detail: PortlessUrlResolvedDetail): void {
+  for (const cb of urlResolvedListeners) {
+    try { cb(detail); } catch {}
+  }
+}
+
+/** Extract a `PORTLESS_URL=http(s)://…` substring from a chunk of stdout.
+ *  Returns the URL or null. Used by both run paths (silent + MCP terminal)
+ *  to find the actual proxy URL after portless boots. */
+export function extractPortlessUrl(text: string): string | null {
+  const m = text.match(/PORTLESS_URL=(https?:\/\/[^\s]+)/);
+  return m ? m[1]! : null;
+}
+
+// ---------------------------------------------------------------------------
 // Spawn / kill
 // ---------------------------------------------------------------------------
 
@@ -385,6 +426,15 @@ export function runAction(input: PortlessActionInput): RunResult {
       if (!line) continue;
       action.logTail.push(line);
       while (action.logTail.length > LOG_TAIL_LIMIT) action.logTail.shift();
+      // First sighting of `PORTLESS_URL=...` is the canonical proxy URL —
+      // replace our optimistic https://<hostname> guess with whatever the
+      // CLI actually bound to (1355 etc.).
+      const resolved = extractPortlessUrl(line);
+      if (resolved && resolved !== action.url) {
+        action.url = resolved;
+        emit(action);
+        emitPortlessUrlResolved({ key: action.key, groupId: action.groupId, actionId: action.actionId, url: resolved });
+      }
     }
   };
 

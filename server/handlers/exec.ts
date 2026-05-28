@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { corsHeaders } from '../config';
 import { log } from '../logger';
 import type { TrackedProcess } from '../types';
-import { trackedProcesses, saveProcessRegistry, appendProcessOutput } from './processes';
+import { trackedProcesses, saveProcessRegistry, appendProcessOutput, addToGraveyard } from './processes';
 import { getSessionEnvOverrides } from '../session-env';
 
 export interface SpawnTrackedOptions {
@@ -97,6 +97,7 @@ export function spawnTrackedProcess(opts: SpawnTrackedOptions): SpawnTrackedResu
   proc.on('close', (code) => {
     tp.exitCode = code ?? 0;
     opts.onExit?.(tp.exitCode);
+    addToGraveyard(procId);
     // Keep around briefly so any late viewer can see the exit code, then GC.
     setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
   });
@@ -105,6 +106,7 @@ export function spawnTrackedProcess(opts: SpawnTrackedOptions): SpawnTrackedResu
     log(`[spawnTrackedProcess] ${procId.slice(0, 8)} error: ${err.message}`);
     tp.exitCode = 1;
     opts.onExit?.(1);
+    addToGraveyard(procId);
     setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
   });
 

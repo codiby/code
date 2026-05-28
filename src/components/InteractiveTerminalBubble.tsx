@@ -174,9 +174,15 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
       });
 
       // Spawn the PTY exactly once per message mount (StrictMode-safe via ref).
+      // Forward the message's name/command so a fresh respawn (after the
+      // bridge restarted and dropped the original PTY) re-establishes the
+      // tracked-process identity — otherwise MCP lookups by name fail.
       if (!didSpawnRef.current && !exited) {
         didSpawnRef.current = true;
-        client.execShell(sessionId, procId, cwd, term.cols, term.rows);
+        client.execShell(sessionId, procId, cwd, term.cols, term.rows, {
+          label: message.terminalName,
+          command: message.terminalCommand,
+        });
       }
 
       // Forward keystrokes (xterm already encodes Enter as \r, Ctrl+C as \x03, arrows, etc.)
@@ -319,8 +325,17 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
           </span>
           <span className="text-[10px] text-green-400 font-mono shrink-0">$</span>
           <span className="text-[11px] font-mono text-zinc-400 truncate flex-1">
-            {cwdLabel || 'terminal'}
-            {initialCommand ? <span className="text-zinc-600"> · {initialCommand}</span> : null}
+            {message.terminalName ? (
+              <>
+                <span className="text-violet-300 font-medium">{message.terminalName}</span>
+                {cwdLabel ? <span className="text-zinc-600"> · {cwdLabel}</span> : null}
+              </>
+            ) : (
+              <>
+                {cwdLabel || 'terminal'}
+                {initialCommand ? <span className="text-zinc-600"> · {initialCommand}</span> : null}
+              </>
+            )}
           </span>
           {exited ? (
             <>
