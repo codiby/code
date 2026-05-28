@@ -21,6 +21,9 @@ export interface SpawnTrackedOptions {
   onData?: (text: string) => void;
   /** Called once with the final exit code (0 on clean exit, 1 on spawn error). */
   onExit?: (code: number) => void;
+  /** Extra env layered on top of session overrides — used for dynamic
+   *  taskr-managed values like cross-action portless URL injection. */
+  extraEnv?: Record<string, string>;
 }
 
 export interface SpawnTrackedResult {
@@ -59,6 +62,9 @@ export function spawnTrackedProcess(opts: SpawnTrackedOptions): SpawnTrackedResu
       // User-defined globals + per-project env overrides layered on top
       // so the project's API keys / config are visible to commands.
       ...getSessionEnvOverrides(opts.sessionId),
+      // Dynamic taskr-injected env (e.g. cross-action portless URLs)
+      // wins over project env so consumers always get the live host.
+      ...(opts.extraEnv || {}),
     },
     // stdin is piped (not ignored) so callers — including the
     // `send_terminal_input` SDK tool — can feed more input to a long-lived

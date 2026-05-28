@@ -156,11 +156,17 @@ export interface ChatMessage {
   terminalExited?: boolean;
   terminalExitCode?: number;
   terminalCwd?: string;
-  /** Display name for the terminal — shown as the bubble title AND as the
-   *  pill in the shells dock. Set by tools that spawn named terminals
-   *  (e.g. `actions_run` sets this to the action's name) so the chat
-   *  shows "api" instead of the cwd or the full portless command. */
+  /** Display name for the terminal — shown as the chat launch chip's
+   *  title and as the tab label in the terminals panel. Set by tools
+   *  that spawn named terminals (e.g. `actions_run` sets this to the
+   *  action's name) so the chat shows "api" instead of the full
+   *  portless wrapper command. */
   terminalName?: string;
+  /** Best-effort URL the terminal serves at. Set by `actions_run` to
+   *  the portless hostname (e.g. `https://api.localhost`). May be
+   *  refined to the actual proxy port via `portless_url_resolved`
+   *  events kept in component state. */
+  terminalUrl?: string;
   costUsd?: number;
   durationMs?: number;
   usage?: { input_tokens: number; output_tokens: number };
@@ -334,6 +340,10 @@ type ClientCallbacks = {
    *  viewer). The bridge owns the dismissed set — receiving this event
    *  means the FE should drop the matching bubble from its rendered list. */
   onShellDismissed?: (info: { sessionId: string; procId: string }) => void;
+  /** A terminal was spawned and taskr injected cross-action env vars into
+   *  it (e.g., `API_URL` for a web-renter shell). The frontend stores
+   *  these to power the `env · N` badge in the terminals panel. */
+  onTerminalEnvInjected?: (info: { sessionId: string; procId: string; env: Record<string, string> }) => void;
   onConnectionChange: (status: ConnectionStatus) => void;
 };
 
@@ -370,6 +380,20 @@ export interface PortlessCliStatus {
   available: boolean;
   bin: string | null;
   version: string | null;
+}
+
+export type PortlessProxyMode = 'default' | 'http80' | 'https443';
+
+export interface PortlessProxyStatus {
+  running: boolean;
+  port: number | null;
+  mode: PortlessProxyMode | null;
+}
+
+export interface PortlessProxyActionResult {
+  ok: boolean;
+  output: string;
+  error?: string;
 }
 
 export class ClaudeClient {
@@ -636,6 +660,13 @@ export class ClaudeClient {
         this.callbacks.onShellDismissed?.({
           sessionId: msg.sessionId as string,
           procId: msg.procId as string,
+        });
+        break;
+      case 'terminal_env_injected':
+        this.callbacks.onTerminalEnvInjected?.({
+          sessionId: msg.sessionId as string,
+          procId: msg.procId as string,
+          env: (msg.env as Record<string, string>) || {},
         });
         break;
     }
@@ -1215,6 +1246,47 @@ export class ClaudeClient {
     const resp = await authedFetch(`${this.serverUrl}/portless/detect?cwd=${encodeURIComponent(cwd)}`);
     if (!resp.ok) return { projectName: null, suggested: [] };
     return resp.json();
+  }
+
+  async scanEnvForActions(cwd: string, actionNames: string[]): Promise<{
+    candidates: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean }[];
+    scanned: string[];
+  }> {
+    const params = new URLSearchParams({ cwd, actionNames: actionNames.join(',') });
+    const resp = await authedFetch(`${this.serverUrl}/portless/scan-env?${params}`);
+    if (!resp.ok) return { candidates: [], scanned: [] };
+    return resp.json();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Portless proxy admin — start/stop the system proxy, trust the local CA.
+  // The privileged modes (HTTP :80, HTTPS :443) bring up a system password
+  // prompt via osascript on macOS.
+  // ---------------------------------------------------------------------------
+
+  async getPortlessProxyStatus(): Promise<PortlessProxyStatus> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/proxy/status`);
+    if (!resp.ok) return { running: false, port: null, mode: null };
+    return resp.json();
+  }
+
+  async startPortlessProxy(mode: PortlessProxyMode): Promise<PortlessProxyActionResult> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/proxy/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    return resp.json().catch(() => ({ ok: false, output: '', error: `HTTP ${resp.status}` }));
+  }
+
+  async stopPortlessProxy(): Promise<PortlessProxyActionResult> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/proxy/stop`, { method: 'POST' });
+    return resp.json().catch(() => ({ ok: false, output: '', error: `HTTP ${resp.status}` }));
+  }
+
+  async trustPortlessCA(): Promise<PortlessProxyActionResult> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/trust`, { method: 'POST' });
+    return resp.json().catch(() => ({ ok: false, output: '', error: `HTTP ${resp.status}` }));
   }
 
   // ---------------------------------------------------------------------------

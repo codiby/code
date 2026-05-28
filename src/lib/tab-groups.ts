@@ -22,6 +22,29 @@ export interface ProjectMcpOverrides {
   disabled?: string[];
 }
 
+/** Format of a `PortlessExport` value. `url`/`host`/`port` are presets the
+ *  bridge renders from the source action's config. `custom` lets the user
+ *  write a template with `{host}` / `{url}` / `{port}` / `{scheme}`
+ *  placeholders so things like `http://{host}/api` are possible. */
+export type PortlessExportFormat = 'url' | 'host' | 'port' | 'custom';
+
+/** A single env var the project publishes for taskr-spawned processes
+ *  (other actions, /terminal shells, spawn_terminal MCP shells). The
+ *  value comes from `sourceActionId`'s configured URL — computed at spawn
+ *  time, no runtime dependency. The source action never receives its own
+ *  exports (would be a self-reference). */
+export interface PortlessExport {
+  id: string;
+  name: string;
+  /** Action whose URL drives this export's value. */
+  sourceActionId: string;
+  format: PortlessExportFormat;
+  /** Only honoured when `format === 'custom'`. Supports the placeholders
+   *  `{host}` `{url}` `{port}` `{scheme}` — substituted from the source
+   *  action's config at spawn time. */
+  template?: string;
+}
+
 /** A named server command this project can run. Each action can optionally
  *  route through Portless (when `portless` is true, the command is wrapped
  *  with `portless <slug> --` and served at `hostname`); otherwise it runs
@@ -48,14 +71,21 @@ export interface PortlessConfig {
    *  taskr won't spawn portless — useful for temporarily falling back to
    *  raw `bun run dev`. Defaults to true when at least one action exists. */
   enabled?: boolean;
-  /** Top-level domain used when an action's hostname is left blank. */
-  tld?: 'localhost' | 'test';
+  /** @deprecated TLD is now a global pref (`portlessTld` on ui-preferences).
+   *  Left here so old projects still load without errors; the new code
+   *  ignores it. */
+  tld?: string;
   /** HTTPS via the portless local CA. Defaults to true. */
   tls?: boolean;
   /** Prefix the active worktree's branch onto each action's hostname so
    *  every worktree gets its own subdomain. */
   worktreeSubdomains?: boolean;
   actions?: PortlessAction[];
+  /** Project-level list of env vars to inject into spawned processes.
+   *  Each entry references a source action by id; the value is computed
+   *  from that action's hostname + the project's tls/tld settings at
+   *  spawn time. */
+  exports?: PortlessExport[];
 }
 
 export interface TabGroupInfo {

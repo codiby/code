@@ -32,6 +32,10 @@ export interface SpawnPtyOptions {
   /** When set, the PTY inherits the user's global + per-project env
    *  overrides for this session (project API keys, NODE_ENV, etc). */
   sessionId?: string;
+  /** Extra env layered ON TOP of session overrides — used for dynamic
+   *  taskr-managed values like cross-action URL injection. Wins over both
+   *  process.env and the session/project env overrides. */
+  extraEnv?: Record<string, string>;
 }
 
 export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
@@ -84,7 +88,12 @@ export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
     : {};
 
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries({ ...process.env, ...(opts.env || {}), ...sessionOverrides })) {
+  for (const [k, v] of Object.entries({
+    ...process.env,
+    ...(opts.env || {}),
+    ...sessionOverrides,
+    ...(opts.extraEnv || {}),
+  })) {
     if (typeof v === 'string') env[k] = v;
   }
   env.TERM = env.TERM || 'xterm-256color';

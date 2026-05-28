@@ -39,10 +39,13 @@ export interface ChatMessage {
   thinkingRedacted?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
-  /** Display name shown as the bubble title and shells-dock pill — set
-   *  by `actions_run` to the action name so the chat shows the user's
-   *  configured action (e.g. "api") instead of the cwd or full command. */
+  /** Display name shown as the chat launch chip's title and as the
+   *  terminals panel tab label — set by `actions_run` to the action
+   *  name so the chat shows "api" instead of the cwd or full command. */
   terminalName?: string;
+  /** Best-effort URL the terminal serves at, used by the chat launch
+   *  chip (e.g. `https://api.localhost`). */
+  terminalUrl?: string;
   exitCode?: number;
   /** Set on `isTerminal` messages produced by the `spawn_terminal` SDK tool —
    *  i.e. background processes the model started for the user (dev servers,

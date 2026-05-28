@@ -105,4 +105,9 @@ export interface TrackedProcess {
   // `spawn_terminal` SDK tool ("API Server", "Vite Dev", etc). Lets the
   // model look the process up by name in `read_terminal_output`.
   label?: string;
+  // Env vars taskr injected into this child at spawn time — purely for
+  // UI display in the terminals panel ("env · N" badge). The actual env
+  // was already merged into the OS-level process; this is just a snapshot
+  // so the user can see what was bound without diffing manually.
+  injectedEnv?: Record<string, string>;
 }

@@ -27,6 +27,8 @@ import {
   type ProjectAutoApproveRule,
   type PortlessAction,
   type PortlessConfig,
+  type PortlessExport,
+  type PortlessExportFormat,
 } from '../lib/tab-groups';
 
 interface ProjectSettingsModalProps {
@@ -44,6 +46,10 @@ interface ProjectSettingsModalProps {
   onToggleShowTelegramSession: (next: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
   onChangeGlobalEnvVars: (next: ProjectEnvVar[]) => void;
+  /** Global Portless TLD (e.g. "localhost", "test") — applies project-wide
+   *  because portless's proxy serves one TLD at a time. */
+  portlessTld: string;
+  onChangePortlessTld: (next: string) => void;
   /** Needed for the hooks editor to call getClaudeHooks/setClaudeHooks. */
   client: ClaudeClient | null;
   /** Cross-session snapshot of the Claude Agent SDK's supportedModels(). The
@@ -60,6 +66,7 @@ type GlobalSection =
   | 'telegram'
   | 'deepgram'
   | 'tailscale'
+  | 'portless'
   | 'mobile'
   | 'remotes'
   | 'plugins'
@@ -1235,6 +1242,219 @@ function HooksEditor({ scope, cwd, client }: { scope: HookScope; cwd?: string; c
                   <div className="text-[12.5px] font-medium text-zinc-100">{evt.label}</div>
                   <div className="text-[11px] text-zinc-500">{evt.hint}</div>
                 </div>
+/** Global Portless settings — controls the system proxy (start/stop/mode)
+ *  and the local CA trust. The proxy mode determines whether the user can
+ *  visit `https://api.localhost` cleanly (HTTPS :443) or has to keep
+ *  appending `:1355` (default mode). Privileged modes call sudo via
+ *  osascript so the user sees a system password prompt. */
+function PortlessProxySection({ client, tld, onChangeTld }: { client: ClaudeClient | null; tld: string; onChangeTld: (next: string) => void }) {
+  const [tldDraft, setTldDraft] = useState(tld);
+  useEffect(() => { setTldDraft(tld); }, [tld]);
+  const [cli, setCli] = useState<{ available: boolean; bin: string | null; version: string | null } | null>(null);
+  const [proxy, setProxy] = useState<{ running: boolean; port: number | null; mode: 'default' | 'http80' | 'https443' | null } | null>(null);
+  const [busy, setBusy] = useState<null | 'start' | 'stop' | 'trust'>(null);
+  const [pickedMode, setPickedMode] = useState<'default' | 'http80' | 'https443'>('default');
+  const [lastResult, setLastResult] = useState<{ ok: boolean; output: string; error?: string } | null>(null);
+
+  const refresh = async () => {
+    if (!client) return;
+    const [c, p] = await Promise.all([
+      client.getPortlessCliStatus(),
+      client.getPortlessProxyStatus(),
+    ]);
+    setCli(c);
+    setProxy(p);
+    if (p.mode) setPickedMode(p.mode);
+  };
+  useEffect(() => { void refresh(); }, [client]);
+
+  const onStart = async () => {
+    if (!client) return;
+    setBusy('start');
+    setLastResult(null);
+    try {
+      const res = await client.startPortlessProxy(pickedMode);
+      setLastResult(res);
+    } finally {
+      setBusy(null);
+      void refresh();
+    }
+  };
+  const onStop = async () => {
+    if (!client) return;
+    setBusy('stop');
+    setLastResult(null);
+    try {
+      const res = await client.stopPortlessProxy();
+      setLastResult(res);
+    } finally {
+      setBusy(null);
+      void refresh();
+    }
+  };
+  const onTrust = async () => {
+    if (!client) return;
+    setBusy('trust');
+    setLastResult(null);
+    try {
+      const res = await client.trustPortlessCA();
+      setLastResult(res);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const modeLabel = (m: 'default' | 'http80' | 'https443' | null) =>
+    m === 'https443' ? 'HTTPS · :443'
+    : m === 'http80' ? 'HTTP · :80'
+    : m === 'default' ? 'HTTP · :1355 (default)'
+    : 'unknown';
+
+  return (
+    <>
+      <SectionHeader
+        title="Portless proxy"
+        subtitle="Configure where the local Portless reverse proxy listens. The default port 1355 doesn't need root but forces you to type the port at the end of every URL. HTTPS :443 (or HTTP :80) gives you clean URLs like `https://api.localhost` but requires admin to bind privileged ports."
+        action={proxy?.running ? (
+          <span className="inline-flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-emerald-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            {modeLabel(proxy.mode)}
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-zinc-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" />
+            stopped
+          </span>
+        )}
+      />
+
+      {cli && !cli.available && (
+        <div className="text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2.5 mb-4">
+          Portless CLI not found. Install with <code className="font-mono text-amber-200">npm install -g portless</code> and restart taskr.
+        </div>
+      )}
+
+      <Field label="Current proxy" hint="Detected by probing :443, :80, then :1355.">
+        <div className="text-[12px] text-zinc-200">
+          {proxy?.running
+            ? <>Running on port <code className="font-mono text-violet-300">{proxy.port}</code> · {modeLabel(proxy.mode)}</>
+            : <span className="text-zinc-500 italic">Not running</span>}
+        </div>
+      </Field>
+
+      <Field label="TLD" hint={<>Suffix every action's hostname uses (e.g. <code className="font-mono text-zinc-400">api.{tldDraft || 'localhost'}</code>). Portless serves one TLD at a time, so this is a global setting — not per-project.</> as unknown as string}>
+        <div className="flex items-center gap-2">
+          <span className="text-zinc-600 font-mono text-[12px]">.</span>
+          <input
+            value={tldDraft}
+            onChange={e => setTldDraft(e.target.value.toLowerCase().replace(/[^a-z]/g, ''))}
+            onBlur={() => { if (tldDraft !== tld) onChangeTld(tldDraft || 'localhost'); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
+            placeholder="localhost"
+            className="w-48 px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 font-mono text-[12px] text-zinc-100 outline-none"
+          />
+          <span className="text-[11px] text-zinc-500">
+            {tldDraft === 'localhost'
+              ? '(default — browsers resolve *.localhost automatically)'
+              : '(may require dnsmasq or /etc/hosts setup)'}
+          </span>
+        </div>
+      </Field>
+
+      <Field label="Mode" hint="Pick how the proxy listens. Privileged modes prompt for your admin password.">
+        <div className="space-y-1.5">
+          {[
+            { id: 'default' as const,  label: 'Default · port 1355',       caption: 'No sudo. URLs require the :1355 suffix.' },
+            { id: 'http80'  as const,  label: 'HTTP · port 80',            caption: 'Requires admin. Clean URLs but no HTTPS.' },
+            { id: 'https443' as const, label: 'HTTPS · port 443 (recommended)', caption: 'Requires admin. Clean URLs with HTTPS — pair with "Trust CA" so browsers stop warning.' },
+          ].map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setPickedMode(opt.id)}
+              className={`w-full flex items-start gap-3 px-3 py-2 rounded-md border text-left transition-colors ${
+                pickedMode === opt.id
+                  ? 'border-violet-500/50 bg-violet-500/10'
+                  : 'border-border bg-surface-light hover:border-border-light'
+              }`}
+            >
+              <span className={`mt-1 w-3 h-3 rounded-full border ${pickedMode === opt.id ? 'bg-violet-500 border-violet-500' : 'border-zinc-600'}`} />
+              <span className="min-w-0">
+                <span className="block text-[12.5px] text-zinc-100">{opt.label}</span>
+                <span className="block text-[11px] text-zinc-500 mt-0.5">{opt.caption}</span>
+              </span>
+              {proxy?.mode === opt.id && proxy.running && (
+                <span className="ml-auto text-[10px] uppercase tracking-wider text-emerald-400 shrink-0 mt-1">active</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Actions" hint="Start applies the picked mode. Trust CA adds the Portless root CA to your system keychain so HTTPS works without browser warnings.">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onStart}
+            disabled={busy !== null || !cli?.available}
+            className="h-8 px-3 rounded-md text-[12px] text-white bg-violet-600 hover:bg-violet-500 border border-violet-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {busy === 'start' ? 'Starting…' : (proxy?.running && proxy.mode === pickedMode ? 'Restart with this mode' : `Start with ${modeLabel(pickedMode)}`)}
+          </button>
+          <button
+            type="button"
+            onClick={onStop}
+            disabled={busy !== null || !cli?.available || !proxy?.running}
+            className="h-8 px-3 rounded-md text-[12px] text-zinc-200 bg-surface-light hover:bg-surface-lighter border border-border disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {busy === 'stop' ? 'Stopping…' : 'Stop proxy'}
+          </button>
+          <button
+            type="button"
+            onClick={onTrust}
+            disabled={busy !== null || !cli?.available}
+            className="h-8 px-3 rounded-md text-[12px] text-zinc-200 bg-surface-light hover:bg-surface-lighter border border-border disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+            title="Adds the Portless local CA to your keychain (sudo)"
+          >
+            <ShieldCheck className="w-3 h-3" />
+            {busy === 'trust' ? 'Trusting…' : 'Trust local CA'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={busy !== null}
+            className="h-8 w-8 rounded-md inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-surface-light disabled:opacity-50"
+            title="Refresh status"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </Field>
+
+      {lastResult && (
+        <div className={`mt-4 text-[11.5px] rounded-md px-3 py-2 border ${lastResult.ok ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' : 'text-red-300 bg-red-500/10 border-red-500/30'}`}>
+          <div className="font-medium">
+            {lastResult.ok ? '✓ Done' : '✗ Failed'}
+          </div>
+          {lastResult.error && (
+            <pre className="mt-1 font-mono text-[10.5px] whitespace-pre-wrap text-red-200/90">{lastResult.error}</pre>
+          )}
+          {lastResult.output && (
+            <pre className="mt-1 font-mono text-[10.5px] whitespace-pre-wrap text-zinc-400">{lastResult.output}</pre>
+          )}
+        </div>
+      )}
+
+      {cli?.available && (
+        <div className="mt-5 text-[11px] text-zinc-500 inline-flex items-center gap-2">
+          <Check className="w-3 h-3 text-emerald-400" />
+          portless {cli.version} · <span className="font-mono">{cli.bin}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
                 <button onClick={() => addRow(evt.id)} className="text-[11.5px] inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-300 hover:text-zinc-100 hover:bg-surface-lighter">
                   <Plus className="w-3 h-3" />
                   Add
@@ -1401,13 +1621,13 @@ function slugHost(name: string): string {
 
 /** Resolve the hostname to use for an action — explicit override, or
  *  derived from the action name + project TLD. */
-function resolveHost(action: PortlessAction, tld: 'localhost' | 'test'): string {
+function resolveHost(action: PortlessAction, tld: string): string {
   if (action.hostname && action.hostname.includes('.')) return action.hostname;
   const slug = slugHost(action.name) || 'app';
   return `${slug}.${tld}`;
 }
 
-function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void; client: ClaudeClient | null }) {
+function ProjectPortlessPane({ group, onPatch, client, tld }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void; client: ClaudeClient | null; tld: string }) {
   const cfg: PortlessConfig = group.portless || {};
   const tld: 'localhost' | 'test' = cfg.tld || 'localhost';
   const tls = cfg.tls !== false;
@@ -1662,13 +1882,33 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
                 >
                   <span className={`w-2 h-2 rounded-full ${dotClass}`} />
                 </button>
-                <input
-                  value={a.name}
-                  onChange={e => patchAction(a.id, { name: e.target.value })}
-                  onBlur={() => commitAction(a.id)}
-                  placeholder="action-name"
-                  className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 focus:bg-surface-lighter font-mono text-[12px] text-violet-200 outline-none"
-                />
+                <div className="min-w-0">
+                  <input
+                    value={a.name}
+                    onChange={e => patchAction(a.id, { name: e.target.value })}
+                    onBlur={() => commitAction(a.id)}
+                    placeholder="action-name"
+                    className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 focus:bg-surface-lighter font-mono text-[12px] text-violet-200 outline-none"
+                  />
+                  {usePortless && (
+                    liveUrl ? (
+                      <a
+                        href={liveUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={`Open ${liveUrl}`}
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400/90 hover:text-emerald-300 truncate"
+                      >
+                        <span className="w-1 h-1 rounded-full bg-emerald-400" />
+                        {liveUrl.replace(/^https?:\/\//, '')}
+                      </a>
+                    ) : (
+                      <div className="mt-1 text-[10px] font-mono text-zinc-600 truncate" title={`https://${derivedHost}`}>
+                        {derivedHost}
+                      </div>
+                    )
+                  )}
+                </div>
                 <input
                   value={a.command}
                   onChange={e => patchAction(a.id, { command: e.target.value })}
@@ -1684,28 +1924,6 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
                 >
                   <Globe className="w-3 h-3" strokeWidth={2} />
                 </button>
-                <div className="min-w-0">
-                  <input
-                    value={a.hostname || ''}
-                    onChange={e => patchAction(a.id, { hostname: e.target.value })}
-                    onBlur={() => commitAction(a.id)}
-                    placeholder={usePortless ? `${slugHost(a.name) || 'app'}.${tld}` : '— raw command —'}
-                    disabled={!usePortless}
-                    className={`w-full px-2.5 py-1.5 rounded font-mono text-[11.5px] outline-none border focus:border-violet-500 ${usePortless ? 'bg-surface-light border-border focus:bg-surface-lighter text-zinc-100' : 'bg-transparent border-transparent text-zinc-600 placeholder:text-zinc-700 cursor-not-allowed'}`}
-                  />
-                  {usePortless && live && resolvedUrls.get(a.id) && (
-                    <a
-                      href={resolvedUrls.get(a.id)!}
-                      target="_blank"
-                      rel="noreferrer"
-                      title={`Open ${resolvedUrls.get(a.id)}`}
-                      className="mt-1 inline-flex items-center gap-1 text-[10.5px] font-mono text-emerald-400/90 hover:text-emerald-300"
-                    >
-                      <span className="w-1 h-1 rounded-full bg-emerald-400" />
-                      {resolvedUrls.get(a.id)!.replace(/^https?:\/\//, '')}
-                    </a>
-                  )}
-                </div>
                 <button
                   type="button"
                   onClick={() => removeAction(a.id)}
@@ -1766,24 +1984,16 @@ function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; 
         </div>
       )}
 
-      {/* Defaults strip — only apply to portless-enabled rows */}
+      {/* Defaults strip — only apply to portless-enabled rows.
+          TLD lives in Settings → Portless Proxy now (one TLD per system). */}
       <div className="mt-6">
-        <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 mb-2.5">Portless defaults</div>
-        <div className="grid grid-cols-3 gap-2">
-          <div className="flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border">
-            <div className="flex-1 min-w-0">
-              <div className="text-[12px] text-zinc-200">TLD</div>
-              <div className="text-[10.5px] text-zinc-500">suffix on new actions</div>
-            </div>
-            <select
-              value={tld}
-              onChange={e => persist({ ...cfg, tld: e.target.value as 'localhost' | 'test' })}
-              className="bg-surface-lighter border border-border rounded px-2 py-1 text-[11.5px] text-zinc-200"
-            >
-              <option value="localhost">.localhost</option>
-              <option value="test">.test</option>
-            </select>
-          </div>
+        <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 mb-2.5">
+          Portless defaults
+          <span className="text-zinc-700 normal-case tracking-normal text-[10.5px] ml-1.5">
+            · TLD <code className="font-mono text-zinc-400">.{tld}</code> (global)
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
             onClick={() => persist({ ...cfg, tls: !tls })}
@@ -2095,7 +2305,7 @@ export function ProjectSettingsModal({
 }
 
 /* Global content router (right pane when no project selected) */
-function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, interruptOnSend, onToggleInterruptOnSend, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, client, onDeleteGroup, onSelectGroup }: {
+function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, interruptOnSend, onToggleInterruptOnSend, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, portlessTld, onChangePortlessTld, client, onDeleteGroup, onSelectGroup }: {
   section: GlobalSection;
   serverUrl: string | null;
   tabGroups: Record<string, TabGroupInfo>;
@@ -2143,7 +2353,7 @@ function PluginsContent() {
 }
 
 /* Project content (right pane when a project is selected) */
-function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount, client, claudeModels }: {
+function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount, client, claudeModels, portlessTld }: {
   group: TabGroupInfo;
   tab: ProjectTab;
   onTabChange: (t: ProjectTab) => void;
@@ -2156,6 +2366,30 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
 }) {
   const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
   const Icon = group.icon ? ICON_MAP[group.icon] : Folder;
+  /** Scan-env modal state — when non-null shows the detect-from-.env UI. */
+  const [scanResults, setScanResults] = useState<null | {
+    candidates: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean; format: PortlessExportFormat }[];
+    scanned: string[];
+  }>(null);
+  const [scanning, setScanning] = useState(false);
+
+  // Local helpers around the project-level `exports` list.
+  const exports = cfg.exports || [];
+  const genExportId = () => { try { return crypto.randomUUID(); } catch { return Math.random().toString(36).slice(2); } };
+  const setExportsList = (next: PortlessExport[]) => persist({ ...cfg, exports: next });
+  const patchExport = (id: string, patch: Partial<PortlessExport>) => {
+    setExportsList(exports.map(e => e.id === id ? { ...e, ...patch } : e));
+  };
+  const removeExport = (id: string) => setExportsList(exports.filter(e => e.id !== id));
+  const addExport = () => {
+    const firstAction = draft.find(a => (a.portless !== false) && a.name.trim());
+    setExportsList([...exports, {
+      id: genExportId(),
+      name: '',
+      sourceActionId: firstAction?.id || '',
+      format: 'url' as const,
+    }]);
+  };
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
@@ -2216,7 +2450,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
       {tab === 'environment' && <ProjectEnvironmentPane group={group} onPatch={onPatch} />}
       {tab === 'mcp'         && <ProjectMcpPane group={group} onPatch={onPatch} />}
       {tab === 'hooks'       && <ProjectHooksPane group={group} client={client} />}
-      {tab === 'portless'    && <ProjectPortlessPane group={group} onPatch={onPatch} client={client} />}
+      {tab === 'portless'    && <ProjectPortlessPane group={group} onPatch={onPatch} client={client} tld={portlessTld} />}
       {tab === 'sessions'    && <ProjectSessionsPane group={group} tabGroupMap={tabGroupMap} />}
 
       {/* Danger zone (always present, at the bottom) */}
@@ -2257,3 +2491,399 @@ function shade(hex: string, amount: number): string {
   b = Math.max(0, Math.min(255, b));
   return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
 }
+  /** Launch the scan-env modal — fetches candidates from the bridge and
+   *  surfaces them for bulk apply. */
+  const openScanModal = async () => {
+    if (!client || !group.cwd) { setError('Set a working directory on this project first.'); return; }
+    setScanning(true);
+    setError(null);
+    try {
+      const actionNames = draft.map(a => a.name).filter(Boolean);
+      const res = await client.scanEnvForActions(group.cwd, actionNames);
+      setScanResults({
+        candidates: res.candidates.map(c => ({ ...c, format: 'url' as const })),
+        scanned: res.scanned,
+      });
+    } catch (e: any) {
+      setError(e?.message || 'Scan failed');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  /** Apply selected scan candidates as entries in the project's global
+   *  exports list. */
+  const applyScanSelections = (selectedIdxs: Set<number>) => {
+    if (!scanResults) return;
+    const next: PortlessExport[] = [...exports];
+    const existingNames = new Set(next.map(e => e.name));
+    scanResults.candidates.forEach((c, i) => {
+      if (!selectedIdxs.has(i)) return;
+      if (!c.suggestedAction) return;
+      if (existingNames.has(c.var)) return;
+      const sourceAction = draft.find(a => a.name === c.suggestedAction);
+      if (!sourceAction) return;
+      next.push({
+        id: genExportId(),
+        name: c.var,
+        sourceActionId: sourceAction.id,
+        format: c.format,
+      });
+      existingNames.add(c.var);
+    });
+    setExportsList(next);
+    setScanResults(null);
+  };
+
+            // Hostname always derives from name + project TLD now —
+            // surface the resolved URL as a sub-line under the name when
+            // the action is running. Users who need a custom hostname
+            // can rename the action.
+            const derivedHost = `${slugHost(a.name) || 'app'}.${tld}`;
+            const liveUrl = resolvedUrls.get(a.id);
+      {/* Env exports — project-level list of env vars taskr injects into
+          OTHER actions / shells when they spawn. Each row picks a source
+          action and a format; `custom` lets the user write a template with
+          {host} / {url} / {port} / {scheme} placeholders. */}
+      <div className="mt-6">
+        <div className="flex items-end justify-between mb-2.5">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 inline-flex items-center gap-2">
+              Env exports
+              <span className="text-zinc-700 normal-case tracking-normal text-[10.5px]">· {exports.length}</span>
+            </div>
+            <p className="mt-1 text-[11.5px] text-zinc-500 max-w-[68ch]">
+              Injected into every taskr-spawned process (actions, /terminal, spawn_terminal). The source action never receives its own exports.
+            </p>
+          </div>
+          <div className="inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={addExport}
+              disabled={draft.length === 0}
+              className="text-[11.5px] px-2.5 py-1.5 rounded-md text-zinc-200 bg-surface-light hover:bg-surface-lighter border border-border inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Plus className="w-3 h-3" />
+              Add export
+            </button>
+            <button
+              type="button"
+              onClick={openScanModal}
+              disabled={!client || !group.cwd || draft.length === 0}
+              className="text-[11.5px] px-2.5 py-1.5 rounded-md text-violet-200 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Walk .env files in this project and suggest exports"
+            >
+              <ScanLine className="w-3 h-3" />
+              Detect from .env
+            </button>
+          </div>
+        </div>
+
+        {exports.length === 0 ? (
+          <div className="text-[11.5px] text-zinc-500 italic px-3 py-4 rounded-md border border-dashed border-border bg-surface-light/30 text-center">
+            No env vars exported yet. Add one or scan your project's <code className="font-mono text-zinc-400">.env</code> files.
+          </div>
+        ) : (
+          <div className="rounded-md border border-border bg-surface-light/30 overflow-hidden">
+            <div className="grid grid-cols-[1fr_100px_1.4fr_160px_28px] gap-2 px-3 py-2 bg-surface-light border-b border-border text-[9.5px] uppercase tracking-wider text-zinc-500 font-medium">
+              <div>Name</div>
+              <div>Format</div>
+              <div>Template</div>
+              <div>Source action</div>
+              <div />
+            </div>
+            {exports.map(exp => (
+              <ExportRow
+                key={exp.id}
+                exp={exp}
+                actions={draft}
+                tld={tld}
+                tls={tls}
+                onPatch={(patch) => patchExport(exp.id, patch)}
+                onRemove={() => removeExport(exp.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+/** Render a configured URL/host/port for an action — mirrors the
+ *  server-side `renderExportValue` in `server/action-env.ts` so the UI
+ *  preview matches what the bridge will inject. */
+function previewExportValue(
+  format: PortlessExportFormat,
+  action: PortlessAction | undefined,
+  tld: string,
+  tls: boolean,
+  customTemplate?: string,
+): string {
+  if (!action) return '—';
+  const slug = action.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+  const host = (action.hostname && action.hostname.includes('.')) ? action.hostname : `${slug}.${tld}`;
+  const scheme = tls ? 'https' : 'http';
+  const port = tls ? '443' : '80';
+  const url = `${scheme}://${host}`;
+  if (format === 'host') return host;
+  if (format === 'port') return port;
+  if (format === 'url') return url;
+  const template = customTemplate || url;
+  return template
+    .replace(/\$\{host\}|\{host\}/g, host)
+    .replace(/\$\{url\}|\{url\}/g, url)
+    .replace(/\$\{port\}|\{port\}/g, port)
+    .replace(/\$\{scheme\}|\{scheme\}/g, scheme);
+}
+
+/** A single row in the project-level Env exports section. Layout:
+ *  [name input] [format dropdown] [template input · disabled unless custom]
+ *  [source action picker] [×]. A live preview of the value sits underneath
+ *  the template field so the user knows what the consumer will see. */
+function ExportRow({
+  exp,
+  actions,
+  tld,
+  tls,
+  onPatch,
+  onRemove,
+}: {
+  exp: PortlessExport;
+  actions: PortlessAction[];
+  tld: string;
+  tls: boolean;
+  onPatch: (patch: Partial<PortlessExport>) => void;
+  onRemove: () => void;
+}) {
+  const sourceAction = actions.find(a => a.id === exp.sourceActionId);
+  const presetTemplate = (format: PortlessExportFormat): string => {
+    if (format === 'host') return '{host}';
+    if (format === 'port') return '{port}';
+    if (format === 'url') return `${tls ? 'https' : 'http'}://{host}`;
+    return exp.template || `${tls ? 'https' : 'http'}://{host}`;
+  };
+  const displayedTemplate = exp.format === 'custom'
+    ? (exp.template || `${tls ? 'https' : 'http'}://{host}`)
+    : presetTemplate(exp.format);
+  const preview = previewExportValue(exp.format, sourceAction, tld, tls, exp.template);
+
+  return (
+    <div className="grid grid-cols-[1fr_100px_1.4fr_160px_28px] gap-2 px-3 py-2 items-center border-t border-border/60 first:border-t-0 hover:bg-violet-500/[0.04]">
+      <input
+        value={exp.name}
+        onChange={e => onPatch({ name: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })}
+        placeholder="API_URL"
+        className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 font-mono text-[11.5px] text-zinc-100 outline-none"
+      />
+      <select
+        value={exp.format}
+        onChange={e => {
+          const next = e.target.value as PortlessExportFormat;
+          // Picking a preset overwrites the persisted custom template so
+          // switching back to `custom` later starts from the preset's value.
+          onPatch({ format: next, template: next === 'custom' ? (exp.template || presetTemplate(exp.format)) : undefined });
+        }}
+        className="bg-surface-lighter border border-border rounded px-2 py-1.5 text-[11px] text-zinc-200 font-mono"
+      >
+        <option value="url">url</option>
+        <option value="host">host</option>
+        <option value="port">port</option>
+        <option value="custom">custom</option>
+      </select>
+      <div className="min-w-0">
+        <input
+          value={displayedTemplate}
+          onChange={e => onPatch({ template: e.target.value })}
+          disabled={exp.format !== 'custom'}
+          placeholder={`${tls ? 'https' : 'http'}://{host}/api`}
+          className={`w-full px-2.5 py-1.5 rounded font-mono text-[11.5px] outline-none border focus:border-violet-500 ${
+            exp.format === 'custom'
+              ? 'bg-surface-light border-border focus:bg-surface-lighter text-zinc-100'
+              : 'bg-transparent border-transparent text-zinc-500 cursor-default'
+          }`}
+          title="Placeholders: {host} {url} {port} {scheme}"
+        />
+        <div className="mt-0.5 px-1 text-[10.5px] text-emerald-400/90 font-mono truncate" title={preview}>
+          → {preview}
+        </div>
+      </div>
+      <select
+        value={exp.sourceActionId}
+        onChange={e => onPatch({ sourceActionId: e.target.value })}
+        className={`bg-surface-lighter border rounded px-2 py-1.5 text-[11px] font-mono ${
+          sourceAction ? 'text-zinc-200 border-border' : 'text-amber-300 border-amber-500/40'
+        }`}
+        title="Which action's URL drives this export"
+      >
+        <option value="">— pick source —</option>
+        {actions.filter(a => a.portless !== false && a.name.trim()).map(a => (
+          <option key={a.id} value={a.id}>{a.name}</option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove export"
+        className="w-7 h-7 inline-flex items-center justify-center rounded-md text-zinc-500 hover:text-red-300 hover:bg-red-500/10"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+
+/** Modal listing env-var candidates the bridge found in the project's
+ *  .env files. Each row maps a detected KEY=URL into an action's
+ *  `exports` entry (via the suggested action). Bulk-apply with the
+ *  checkboxes; ambiguous mappings require manual pick. */
+function ScanEnvModal({
+  candidates,
+  scanned,
+  actionNames,
+  onCancel,
+  onApply,
+  onUpdateCandidate,
+}: {
+  candidates: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean; format: PortlessExportFormat }[];
+  scanned: string[];
+  actionNames: string[];
+  onCancel: () => void;
+  onApply: (selected: Set<number>) => void;
+  onUpdateCandidate: (i: number, patch: { suggestedAction?: string | null; format?: PortlessExportFormat }) => void;
+}) {
+  const [selected, setSelected] = useState<Set<number>>(() => {
+    // Default: select everything that has a non-ambiguous match
+    const s = new Set<number>();
+    candidates.forEach((c, i) => { if (c.suggestedAction && !c.ambiguous) s.add(i); });
+    return s;
+  });
+  const toggle = (i: number) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    return next;
+  });
+  const allMatched = candidates.filter(c => c.suggestedAction).map((_, i) => i);
+  const allSelected = allMatched.every(i => selected.has(i));
+
+  return (
+    <div className="fixed inset-0 z-[9000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6" onClick={onCancel}>
+      <div className="w-[820px] max-w-full max-h-[80vh] rounded-xl border border-border-light bg-surface shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-border flex items-center gap-3 shrink-0">
+          <ScanLine className="w-4 h-4 text-violet-300" />
+          <span className="text-[13px] text-zinc-200 font-medium">Detected env vars · {candidates.length} candidates</span>
+          <button onClick={onCancel} className="ml-auto w-7 h-7 rounded-md hover:bg-surface-light text-zinc-500 hover:text-zinc-200 inline-flex items-center justify-center">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="px-4 py-2 text-[10.5px] text-zinc-500 font-mono border-b border-border bg-surface-light/30 shrink-0">
+          scanned {scanned.length} file{scanned.length === 1 ? '' : 's'}: <span className="text-zinc-400">{scanned.map(f => f.split('/').slice(-2).join('/')).join(', ') || '(none)'}</span>
+        </div>
+        {candidates.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center text-[12px] text-zinc-500 italic p-8">
+            No URL-shaped env vars found in this project.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-[28px_1.4fr_110px_1fr_1fr] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-zinc-600 border-b border-border bg-surface-light/40 shrink-0">
+              <div></div>
+              <div>Detected var · file:line</div>
+              <div>Format</div>
+              <div>Source action</div>
+              <div>Will become</div>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {candidates.map((c, i) => {
+                const isSelected = selected.has(i);
+                const sourceOk = !!c.suggestedAction;
+                const preview = c.suggestedAction
+                  ? (() => {
+                      // We don't know the cfg here, so render a placeholder.
+                      // Real value lands when the export is applied — at
+                      // export-time we compute from the action's hostname.
+                      return c.format === 'host'
+                        ? `<${c.suggestedAction}>.localhost`
+                        : c.format === 'port' ? '443'
+                        : `https://<${c.suggestedAction}>.localhost`;
+                    })()
+                  : '— pick a source first —';
+                return (
+                  <div key={i} className={`grid grid-cols-[28px_1.4fr_110px_1fr_1fr] gap-2 px-4 py-2.5 items-center border-b border-border/40 hover:bg-violet-500/[0.04] ${isSelected ? 'bg-violet-500/[0.03]' : ''}`}>
+                    <div className="flex items-center justify-center">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggle(i)}
+                        disabled={!sourceOk}
+                        className="accent-violet-500"
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-mono text-zinc-100">{c.var}</div>
+                      <div className="text-[10.5px] text-zinc-500 font-mono truncate">
+                        {c.file}:{c.line} <span className="text-zinc-700">·</span> {c.value}
+                        {c.ambiguous && <span className="text-amber-400 ml-1.5">⚠ ambiguous</span>}
+                      </div>
+                    </div>
+                    <select
+                      value={c.format}
+                      onChange={e => onUpdateCandidate(i, { format: e.target.value as PortlessExportFormat })}
+                      className="bg-surface-lighter border border-border rounded px-2 py-1.5 text-[11px] text-zinc-200 font-mono"
+                    >
+                      <option value="url">url</option>
+                      <option value="host">host</option>
+                      <option value="port">port</option>
+                      <option value="custom">custom</option>
+                    </select>
+                    <select
+                      value={c.suggestedAction || ''}
+                      onChange={e => onUpdateCandidate(i, { suggestedAction: e.target.value || null })}
+                      className={`bg-surface-lighter border border-border rounded px-2 py-1.5 text-[11px] font-mono ${sourceOk ? 'text-zinc-200' : 'text-zinc-500'}`}
+                    >
+                      <option value="">— pick —</option>
+                      {actionNames.map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                    <code className={`text-[11px] font-mono px-2 py-1 rounded truncate ${sourceOk ? 'text-emerald-300 bg-emerald-500/[0.06] border border-emerald-500/20' : 'text-zinc-500 italic'}`}>
+                      {preview}
+                    </code>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="px-4 py-2.5 border-t border-border bg-surface-light/40 flex items-center gap-2 shrink-0">
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() => setSelected(allSelected ? new Set() : new Set(allMatched))}
+                  className="accent-violet-500"
+                />
+                select all matched
+              </label>
+              <span className="text-[10.5px] text-zinc-500 ml-1">{selected.size} of {candidates.length} selected</span>
+              <span className="ml-auto inline-flex items-center gap-1.5">
+                <button onClick={onCancel} className="h-7 px-3 rounded-md text-[11.5px] text-zinc-300 hover:bg-surface-light border border-border">Cancel</button>
+                <button
+                  onClick={() => onApply(selected)}
+                  disabled={selected.size === 0}
+                  className="h-7 px-3 rounded-md text-[11.5px] text-white bg-violet-600 hover:bg-violet-500 border border-violet-500/50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Apply {selected.size > 0 ? selected.size : ''} mapping{selected.size === 1 ? '' : 's'}
+                </button>
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+  if (cfg.exports && cfg.exports.length > 0) out.exports = cfg.exports;
+  portlessTld, onChangePortlessTld,
+            <NavItem icon={<Globe className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Portless Proxy" active={selected.kind === 'global' && selected.id === 'portless'} onClick={() => setSelected({ kind: 'global', id: 'portless' })} />
+                  portlessTld={portlessTld}
+                  portlessTld={portlessTld}
+                  onChangePortlessTld={onChangePortlessTld}
+  portlessTld: string;
+  onChangePortlessTld: (next: string) => void;
+      {section === 'portless'    && <PortlessProxySection client={client} tld={portlessTld} onChangeTld={onChangePortlessTld} />}
+  portlessTld: string;

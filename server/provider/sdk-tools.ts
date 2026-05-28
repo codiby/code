@@ -24,6 +24,8 @@ import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProces
 import { spawnPty } from '../pty';
 import type { TrackedProcess } from '../types';
 import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../portless';
+import { buildInjectedActionEnv, getGlobalTld } from '../action-env';
+import type { TabGroupInfo } from '../../src/lib/tab-groups';
 
 /** Resolve a tracked process for the current session by procId OR name. */
 function resolveTrackedProcess(
@@ -946,10 +948,17 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           // bubble used by `/terminal` can re-attach to it. Default size is
           // re-negotiated by the bubble's xterm via `terminal_resize` once
           // it mounts.
+          //
+          // Inject env from every configured action in this session's
+          // project so the spawned command sees `API_URL`, `WEB_URL`, etc.
+          // — no source-action exclusion since `spawn_terminal` is
+          // session-scoped, not action-scoped.
           const procId = randomUUID();
           const cols = 120;
           const rows = 30;
-          const pty = spawnPty({ cwd: args.cwd, cols, rows, sessionId });
+          const spawnTermGroup = resolveSessionGroup(sessionId, deps)?.group as TabGroupInfo | undefined;
+          const spawnTermEnv = buildInjectedActionEnv(spawnTermGroup, getGlobalTld(deps.loadPreferences()));
+          const pty = spawnPty({ cwd: args.cwd, cols, rows, sessionId, extraEnv: spawnTermEnv });
           if (!pty) {
             return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
           }
@@ -970,9 +979,13 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             rows,
             pty,
             label,
+            injectedEnv: Object.keys(spawnTermEnv).length > 0 ? spawnTermEnv : undefined,
           };
           trackedProcesses.set(procId, tp);
           saveProcessRegistry();
+          if (Object.keys(spawnTermEnv).length > 0) {
+            deps.broadcastToSession(sessionId, { type: 'terminal_env_injected', sessionId, procId, env: spawnTermEnv });
+          }
 
           // Inject the user's command on the PTY's first byte. We pre-type
           // here (instead of relying on the bubble's `terminalCommand`
@@ -1248,7 +1261,10 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const procId = randomUUID();
           const cols = 120;
           const rows = 30;
-          const pty = spawnPty({ cwd: ctx.group.cwd, cols, rows, sessionId });
+          // Inject env from sibling actions — never from this one itself
+          // (an api action receiving its own API_URL would be useless).
+          const actionEnv = buildInjectedActionEnv(ctx.group as TabGroupInfo, getGlobalTld(deps.loadPreferences()), match.id);
+          const pty = spawnPty({ cwd: ctx.group.cwd, cols, rows, sessionId, extraEnv: actionEnv });
           if (!pty) {
             return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
           }
@@ -1269,9 +1285,13 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             rows,
             pty,
             label,
+            injectedEnv: Object.keys(actionEnv).length > 0 ? actionEnv : undefined,
           };
           trackedProcesses.set(procId, tp);
           saveProcessRegistry();
+          if (Object.keys(actionEnv).length > 0) {
+            deps.broadcastToSession(sessionId, { type: 'terminal_env_injected', sessionId, procId, env: actionEnv });
+          }
 
           let didTypeCommand = false;
           let resolvedUrl: string | null = null;
@@ -1320,6 +1340,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             terminalCommand: visibleCommand,
             terminalCwd: ctx.group.cwd,
             terminalName: match.name,
+            terminalUrl: usePortless ? url : undefined,
           };
           if (addMessage(sessionId, termMsg)) {
             deps.broadcastToSession(sessionId, { type: 'message', sessionId, message: termMsg });

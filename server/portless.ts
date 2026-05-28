@@ -13,6 +13,7 @@
 
 import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
 import type { Readable } from 'stream';
+import { connect } from 'net';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -314,6 +315,140 @@ export function emitPortlessUrlResolved(detail: PortlessUrlResolvedDetail): void
 export function extractPortlessUrl(text: string): string | null {
   const m = text.match(/PORTLESS_URL=(https?:\/\/[^\s]+)/);
   return m ? m[1]! : null;
+}
+
+// ---------------------------------------------------------------------------
+// Proxy admin — start/stop/trust the system-wide Portless proxy.
+//
+// HTTPS on :443 and HTTP on :80 require root because of the privileged port
+// range. We wrap the command in `osascript do shell script ... with
+// administrator privileges` on macOS so the system password dialog pops up.
+// Non-privileged mode (default port 1355) runs directly without sudo.
+// ---------------------------------------------------------------------------
+
+export type ProxyMode = 'default' | 'http80' | 'https443';
+
+export interface ProxyStatus {
+  /** Best-effort guess at whether the proxy is up. Set by probing the
+   *  common ports — false negatives are possible if portless binds an
+   *  unusual port. */
+  running: boolean;
+  /** Port we observed responding, if any. */
+  port: number | null;
+  /** Inferred mode based on the responding port. */
+  mode: ProxyMode | null;
+}
+
+function probePort(port: number, timeoutMs = 250): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const sock = connect({ host: '127.0.0.1', port });
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch {}
+      resolve(ok);
+    };
+    sock.once('connect', () => finish(true));
+    sock.once('error', () => finish(false));
+    sock.setTimeout(timeoutMs, () => finish(false));
+  });
+}
+
+export async function getProxyStatus(): Promise<ProxyStatus> {
+  // Check ports in order of most-useful → least-useful. The first one that
+  // responds wins.
+  const candidates: { port: number; mode: ProxyMode }[] = [
+    { port: 443, mode: 'https443' },
+    { port: 80, mode: 'http80' },
+    { port: 1355, mode: 'default' },
+  ];
+  for (const c of candidates) {
+    if (await probePort(c.port)) {
+      return { running: true, port: c.port, mode: c.mode };
+    }
+  }
+  return { running: false, port: null, mode: null };
+}
+
+export interface ProxyActionResult { ok: boolean; output: string; error?: string }
+
+/** Run a shell command with administrator privileges via osascript. The
+ *  user is prompted by the OS for their password. Errors propagate. */
+function runWithSudo(commandLine: string): Promise<ProxyActionResult> {
+  if (process.platform !== 'darwin') {
+    return Promise.resolve({ ok: false, output: '', error: 'Privileged port modes are currently macOS-only.' });
+  }
+  const escaped = commandLine.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const script = `do shell script "${escaped}" with administrator privileges`;
+  return new Promise((resolve) => {
+    const proc = spawn('osascript', ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    proc.stdout?.on('data', (d) => { out += d.toString(); });
+    proc.stderr?.on('data', (d) => { err += d.toString(); });
+    proc.on('exit', (code) => {
+      if (code === 0) resolve({ ok: true, output: out.trim() });
+      else resolve({ ok: false, output: out.trim(), error: (err || `osascript exited with code ${code}`).trim() });
+    });
+    proc.on('error', (e) => resolve({ ok: false, output: out.trim(), error: e.message }));
+  });
+}
+
+/** Run a portless subcommand WITHOUT sudo. Captures stdout/stderr. */
+function runPortless(args: string[]): Promise<ProxyActionResult> {
+  const cli = getPortlessCliStatus();
+  if (!cli.available || !cli.bin) {
+    return Promise.resolve({ ok: false, output: '', error: 'Portless CLI not found.' });
+  }
+  return new Promise((resolve) => {
+    const proc = spawn(cli.bin!, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    proc.stdout?.on('data', (d) => { out += d.toString(); });
+    proc.stderr?.on('data', (d) => { err += d.toString(); });
+    proc.on('exit', (code) => {
+      if (code === 0) resolve({ ok: true, output: out.trim() });
+      else resolve({ ok: false, output: out.trim(), error: (err || `portless ${args.join(' ')} exited with code ${code}`).trim() });
+    });
+    proc.on('error', (e) => resolve({ ok: false, output: '', error: e.message }));
+  });
+}
+
+export async function stopProxy(): Promise<ProxyActionResult> {
+  // `portless proxy stop` itself doesn't need sudo even if the proxy was
+  // started with it — the CLI talks to its supervisor.
+  return runPortless(['proxy', 'stop']);
+}
+
+export async function startProxy(mode: ProxyMode): Promise<ProxyActionResult> {
+  const cli = getPortlessCliStatus();
+  if (!cli.available || !cli.bin) return { ok: false, output: '', error: 'Portless CLI not found.' };
+  // Always stop the existing proxy first so a port-mode change actually
+  // takes effect. Ignore the stop result — it might already be down.
+  await runPortless(['proxy', 'stop']).catch(() => {});
+  if (mode === 'default') {
+    return runPortless(['proxy', 'start']);
+  }
+  // Privileged modes — wrap in osascript so the user sees a system
+  // password prompt. We pre-stop the proxy inside the same elevated
+  // session so neither half races the other.
+  const bin = cli.bin;
+  const inner = mode === 'http80'
+    ? `${bin} proxy stop; ${bin} proxy start -p 80`
+    : `${bin} proxy stop; ${bin} proxy start --https -p 443`;
+  return runWithSudo(inner);
+}
+
+export async function trustCA(): Promise<ProxyActionResult> {
+  // `portless trust` adds the local CA to the system keychain — that
+  // mutation needs admin on macOS.
+  const cli = getPortlessCliStatus();
+  if (!cli.available || !cli.bin) return { ok: false, output: '', error: 'Portless CLI not found.' };
+  if (process.platform === 'darwin') {
+    return runWithSudo(`${cli.bin} trust`);
+  }
+  return runPortless(['trust']);
 }
 
 // ---------------------------------------------------------------------------

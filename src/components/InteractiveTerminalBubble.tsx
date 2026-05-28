@@ -48,6 +48,11 @@ interface Props {
    *  Only surfaced after the PTY has emitted its exit event; tapping it
    *  is a "goodbye", not a kill. */
   onClose?: () => void;
+  /** When true, the bubble renders only the xterm body — no header row,
+   *  no rounded border, no inline status chrome. Used when the bottom
+   *  Terminals panel hosts the bubble inside its own tab + status strip
+   *  and the bubble's own chrome would be redundant duplication. */
+  hideHeader?: boolean;
 }
 
 /**
@@ -62,7 +67,7 @@ interface Props {
  * On exit, the bubble stays visible but input is disabled and status flips to
  * `exited <code>`. No auto-restart — the user types `/t` again for a new shell.
  */
-function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, onToggleMinimize, hidden, onClose }: Props) {
+function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, onToggleMinimize, hidden, onClose, hideHeader }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<TerminalInstance | null>(null);
   const fitRef = useRef<FitAddonInstance | null>(null);
@@ -177,7 +182,14 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
       // Forward the message's name/command so a fresh respawn (after the
       // bridge restarted and dropped the original PTY) re-establishes the
       // tracked-process identity — otherwise MCP lookups by name fail.
-      if (!didSpawnRef.current && !exited) {
+      //
+      // Skip while `hidden` — the bubble is rendered inside a tab that's
+      // currently `display:none`, so `fit.fit()` saw a 0×0 container and
+      // term.cols/rows are still the xterm defaults (80×24). Spawning now
+      // would make zsh draw its prompt at the wrong width; later, when the
+      // tab becomes visible, the resize-on-show effect below handles the
+      // initial spawn with the real dimensions.
+      if (!didSpawnRef.current && !exited && !hidden) {
         didSpawnRef.current = true;
         client.execShell(sessionId, procId, cwd, term.cols, term.rows, {
           label: message.terminalName,
@@ -288,6 +300,11 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
   // container just re-gained layout. Refit xterm to its visible size —
   // ResizeObserver alone doesn't fire when `display` toggles between
   // none/block on a parent.
+  //
+  // Also handles the deferred-spawn case: the mount effect skips execShell
+  // when `hidden` is true (so the PTY isn't created at the wrong 80×24
+  // default), and this effect picks it up the first time the bubble
+  // actually has layout.
   useEffect(() => {
     if (minimized || hidden) return;
     const term = termRef.current;
@@ -297,12 +314,20 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
     const raf = requestAnimationFrame(() => {
       try {
         fit.fit();
-        if (!exited) client.resizeTerminal(sessionId, procId, term.cols, term.rows);
+        if (!didSpawnRef.current && !exited) {
+          didSpawnRef.current = true;
+          client.execShell(sessionId, procId, cwd, term.cols, term.rows, {
+            label: message.terminalName,
+            command: message.terminalCommand,
+          });
+        } else if (!exited) {
+          client.resizeTerminal(sessionId, procId, term.cols, term.rows);
+        }
         term.focus();
       } catch {}
     });
     return () => cancelAnimationFrame(raf);
-  }, [minimized, hidden, exited, client, sessionId, procId]);
+  }, [minimized, hidden, exited, client, sessionId, procId, cwd, message.terminalName, message.terminalCommand]);
 
   // Short, readable cwd label
   const cwdLabel = (() => {
@@ -311,6 +336,27 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
     const s = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
     return s.length > 40 ? '…' + s.slice(-40) : s;
   })();
+
+  // Header-less mode: the bottom Terminals panel hosts the bubble inside
+  // its own tab + status strip, so the bubble's wrapper / header would
+  // just be duplicated chrome. Render only the xterm container, fully
+  // filling whatever box the panel gives us.
+  if (hideHeader) {
+    return (
+      <div
+        ref={containerRef}
+        style={{
+          height: '100%',
+          width: '100%',
+          background: '#141414',
+          padding: '6px 8px',
+          overflow: 'hidden',
+          touchAction: 'pan-y',
+          display: hidden ? 'none' : undefined,
+        }}
+      />
+    );
+  }
 
   return (
     <div className="py-1" style={hidden ? { display: 'none' } : undefined}>
@@ -377,11 +423,6 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
             padding: minimized ? 0 : undefined,
             overflow: 'hidden',
             background: '#141414',
-            // Tell the browser we'll handle vertical drags ourselves — pan-y
-            // lets a vertical touchmove reach our listener (which then
-            // preventDefault's the page scroll). Without this, iOS Safari
-            // eats the first touchmove and the page jumps instead of the
-            // terminal scrolling.
             touchAction: 'pan-y',
           }}
         />

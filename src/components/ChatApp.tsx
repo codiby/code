@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -19,6 +19,8 @@ import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { PortlessActionToast } from './PortlessActionToast';
+import { TerminalLaunchChip } from './TerminalLaunchChip';
+import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
@@ -484,6 +486,31 @@ export function ChatApp() {
     );
   };
 
+  /** Permanently dismiss a terminal bubble — kills the tracked process,
+   *  tells the bridge to remember the dismiss (survives reloads), and
+   *  prunes related local state. Shared by the context menu, the chip's
+   *  × button, and the tab strip's × button. */
+  const dismissShellPersistent = (procId: string, shellId: string) => {
+    if (!activeId) return;
+    try { clientRef.current?.killProcess(activeId, procId); } catch {}
+    try { void clientRef.current?.dismissShell(activeId, procId); } catch {}
+    setDismissedShells(prev => {
+      const existing = prev[activeId] || new Set<string>();
+      if (existing.has(procId)) return prev;
+      const next = new Set(existing); next.add(procId);
+      return { ...prev, [activeId]: next };
+    });
+    setMinimizedShells(prev => {
+      if (!prev.has(shellId)) return prev;
+      const n = new Set(prev); n.delete(shellId); return n;
+    });
+    setActiveShellBySession(prev => {
+      if (prev[activeId] !== shellId) return prev;
+      const { [activeId]: _drop, ...rest } = prev;
+      return rest;
+    });
+  };
+
   const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
   let groupColorIdx = Object.keys(tabGroups).length;
 
@@ -837,6 +864,38 @@ export function ChatApp() {
   // of truth for which terminal bubbles are visible. Keyed by sessionId,
   // each entry is a Set of procIds the user has closed.
   const [dismissedShells, setDismissedShells] = useState<Record<string, Set<string>>>({});
+  // Bottom Terminals panel — collapsed means the panel is a single status
+  // strip with no xterm body shown; expanded means full tabbed UI. Persists
+  // across reloads via ui-preferences.
+  const [terminalsPanelExpanded, setTerminalsPanelExpanded] = useState<boolean>(true);
+  /** Maximize toggles the panel height between the default ~340px and a
+   *  much taller 70vh — handy when watching a noisy dev server. */
+  const [terminalsPanelMaximized, setTerminalsPanelMaximized] = useState<boolean>(false);
+  /** User-resizable panel height in pixels. Persisted via prefs. Clamped
+   *  to [120, viewportHeight * 0.85] at runtime. */
+  const [terminalsPanelHeight, setTerminalsPanelHeight] = useState<number>(340);
+  /** True while the user is dragging the splitter — used to show an overlay
+   *  that prevents iframes/xterm from eating mousemove events. */
+  const [panelResizing, setPanelResizing] = useState<boolean>(false);
+  /** Per-session, per-shell custom display names. Persisted via the
+   *  prefs system so renames survive across reloads. Falls back to the
+   *  message's `terminalName` then to a derived value. */
+  const [shellRenames, setShellRenames] = useState<Record<string, Record<string, string>>>({});
+  /** Global Portless TLD — applies to every project (portless's proxy
+   *  serves one TLD at a time, so this can't be per-project). */
+  const [portlessTld, setPortlessTld] = useState<string>('localhost');
+  /** When non-null, the tab with this shellId renders an inline rename
+   *  input instead of its display name. */
+  const [renamingShellId, setRenamingShellId] = useState<string | null>(null);
+  /** Cross-action env vars taskr injected into each PTY at spawn time.
+   *  Keyed by procId. Populated by the `terminal_env_injected` WS event. */
+  const [injectedEnvByProc, setInjectedEnvByProc] = useState<Record<string, Record<string, string>>>({});
+  /** Status-strip env popover state — which terminal's env is open. */
+  const [envPopoverProcId, setEnvPopoverProcId] = useState<string | null>(null);
+  /** Right-click context menu state for the tab strip. */
+  const [tabContextMenu, setTabContextMenu] = useState<
+    { shellId: string; procId: string; running: boolean; x: number; y: number } | null
+  >(null);
   // Server is the source of truth for session state. This map is populated only by server messages.
   const [sessionStates, setSessionStates] = useState<Record<string, LocalSessionState>>({});
   const historyIdxRef = useRef(-1);
@@ -1523,6 +1582,16 @@ export function ChatApp() {
           if (Array.isArray(prefs.globalEnvVars)) {
             setGlobalEnvVars(prefs.globalEnvVars as ProjectEnvVar[]);
           }
+          if (prefs.shellRenames && typeof prefs.shellRenames === 'object') {
+            setShellRenames(prefs.shellRenames as Record<string, Record<string, string>>);
+          }
+          if (typeof prefs.portlessTld === 'string' && prefs.portlessTld.trim()) {
+            setPortlessTld(prefs.portlessTld.trim());
+          }
+          if (typeof prefs.terminalsPanelHeight === 'number') {
+            const h = prefs.terminalsPanelHeight;
+            if (h > 80 && h < 4000) setTerminalsPanelHeight(h);
+          }
         },
 
         onRemoteStatus: (remoteId, status, lastError) => {
@@ -1577,6 +1646,9 @@ export function ChatApp() {
             const next = new Set(existing); next.add(procId);
             return { ...prev, [sid]: next };
           });
+        },
+        onTerminalEnvInjected: ({ procId, env }) => {
+          setInjectedEnvByProc(prev => ({ ...prev, [procId]: env }));
         },
 
         onConnectionChange: (status) => {
@@ -3841,9 +3913,27 @@ export function ChatApp() {
           </button>
         )}
         {(() => {
+          // Interactive-terminal messages stay in the stream now — they
+          // render as compact launch chips (announcement only). The
+          // dismissed-shells filter still applies so closed terminals
+          // disappear permanently.
+          const sessionDismissed = activeId ? dismissedShells[activeId] : undefined;
           const grouped = collapseToolRuns(groupMessages(
             [...cs.messages]
-              .filter(m => !m.isInteractiveTerminal && !(m.isTerminal && !m.isManagedTerminal))
+              .filter(m => {
+                if (m.isTerminal && !m.isManagedTerminal) return false;
+                if (m.isInteractiveTerminal) {
+                  // Only NAMED terminals (spawned by `actions_run`) get a
+                  // chat announcement chip. Anonymous shells (the `+ new`
+                  // button in the panel, the `/terminal` slash command)
+                  // live only in the bottom Terminals panel — keeps the
+                  // chat clutter-free for ad-hoc tinkering.
+                  if (!m.terminalName) return false;
+                  const pid = m.procId || m.id;
+                  return !sessionDismissed?.has(pid);
+                }
+                return true;
+              })
               .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))
               .slice(-visibleMessageCount)
           ));
@@ -3864,6 +3954,43 @@ export function ChatApp() {
                   client={clientRef.current || undefined}
                   hasContentAfter={hasContentAfter}
                 />
+              );
+            }
+            // Interactive-terminal messages are announcements only in the
+            // chat — the live xterm lives in the bottom Terminals panel.
+            if (item.isInteractiveTerminal) {
+              const procId = item.procId || item.id;
+              return (
+                <div key={item.id} id={`msg-${item.id}`} className="py-0.5">
+                  <TerminalLaunchChip
+                    message={item}
+                    sessionId={sid}
+                    client={clientRef.current}
+                    onShowLogs={(pid) => {
+                      setActiveShellBySession(prev => ({ ...prev, [sid]: pid }));
+                      setMinimizedShells(prev => {
+                        if (!prev.has(pid)) return prev;
+                        const n = new Set(prev); n.delete(pid); return n;
+                      });
+                      setTerminalsPanelExpanded(true);
+                    }}
+                    onDismiss={(pid) => {
+                      try { clientRef.current?.killProcess(sid, pid); } catch {}
+                      try { void clientRef.current?.dismissShell(sid, pid); } catch {}
+                      setDismissedShells(prev => {
+                        const existing = prev[sid] || new Set<string>();
+                        if (existing.has(pid)) return prev;
+                        const next = new Set(existing); next.add(pid);
+                        return { ...prev, [sid]: next };
+                      });
+                      setActiveShellBySession(prev => {
+                        if (prev[sid] !== procId) return prev;
+                        const { [sid]: _drop, ...rest } = prev;
+                        return rest;
+                      });
+                    }}
+                  />
+                </div>
               );
             }
             const isAskTool = item.toolName === 'AskUserQuestion' && Array.isArray((item.toolInput as any)?.questions);
@@ -4734,155 +4861,441 @@ export function ChatApp() {
                   )}
                   </div>
 
-                  {/* Interactive terminals: sticky bottom panel (badges + active xterm).
-                      All shells are mounted (hidden via `display:none`) so their xterm
-                      state survives switching. */}
                   {(() => {
-                    // The bridge owns visibility — bubbles whose procId is in
-                    // the dismissed set never render, even though the chat
-                    // message still exists in the log.
-                    const dismissed = activeId ? dismissedShells[activeId] : undefined;
+                    if (!activeId) return null;
+                    // Bridge-owned visibility filter (dismissed shells never render).
+                    const dismissed = dismissedShells[activeId];
                     const shells = active.messages.filter(m => {
                       if (!m.isInteractiveTerminal) return false;
                       if (!dismissed) return true;
                       const pid = m.procId || m.id;
                       return !dismissed.has(pid);
                     });
-                    if (shells.length === 0 || !activeId) return null;
-                    const activeShellId = activeShellBySession[activeId] || shells[shells.length - 1]!.id;
-                    const activeMinimized = minimizedShells.has(activeShellId);
-                    return (
-                      <div className="shrink-0 border-t border-border bg-surface/40">
-                        {/* Badge bar */}
-                        <div className="flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto">
-                          <span className="text-[10px] text-zinc-600 shrink-0 font-mono pr-1">shells</span>
-                          {shells.map(sh => {
-                            const running = sh.exitCode === undefined && !sh.terminalExited;
-                            const code = sh.terminalExitCode ?? sh.exitCode;
-                            // Prefer the explicit display name set by tools
-                            // (e.g. `actions_run` → "api") so the user sees
-                            // the action name rather than the long portless
-                            // wrapper command. Falls back to command/cwd for
-                            // legacy bubbles that don't carry a name.
-                            const label = sh.terminalName || sh.terminalCommand || (sh.terminalCwd ? sh.terminalCwd.split('/').filter(Boolean).pop() || '/' : 'shell');
-                            const isActive = sh.id === activeShellId;
-                            const shellMinimized = minimizedShells.has(sh.id);
-                            const visuallyMinimized = isActive && shellMinimized;
-                            return (
+                    const hasShells = shells.length > 0;
+                    const activeShellId = hasShells
+                      ? (activeShellBySession[activeId] || shells[shells.length - 1]!.id)
+                      : null;
+                    const activeShell = hasShells
+                      ? (shells.find(s => s.id === activeShellId) || shells[shells.length - 1]!)
+                      : null;
+                    const runningCount = shells.filter(s => s.exitCode === undefined && !s.terminalExited).length;
+                    const idleCount = shells.length - runningCount;
+
+                    const dismissProcId = (procId: string, shellId: string) => {
+                      try { clientRef.current?.killProcess(activeId, procId); } catch {}
+                      try { void clientRef.current?.dismissShell(activeId, procId); } catch {}
+                      setDismissedShells(prev => {
+                        const existing = prev[activeId] || new Set<string>();
+                        if (existing.has(procId)) return prev;
+                        const next = new Set(existing); next.add(procId);
+                        return { ...prev, [activeId]: next };
+                      });
+                      setMinimizedShells(prev => {
+                        if (!prev.has(shellId)) return prev;
+                        const n = new Set(prev); n.delete(shellId); return n;
+                      });
+                      setActiveShellBySession(prev => {
+                        if (prev[activeId] !== shellId) return prev;
+                        const { [activeId]: _drop, ...rest } = prev;
+                        return rest;
+                      });
+                    };
+
+                    // Helper used by both the collapsed bar and the expanded
+                    // panel toolbar. Anonymous shells (no terminalName) live
+                    // only in the panel — the chat filter excludes them.
+                    const spawnNewShellHere = () => {
+                      const procId = crypto.randomUUID();
+                      const cwd = getState(activeId).initInfo?.cwd
+                        || sessions.find(s => s.id === activeId)?.cwd
+                        || '/';
+                      updateLocalState(activeId, s => ({
+                        ...s,
+                        messages: [...s.messages, {
+                          id: procId,
+                          role: 'system' as const,
+                          content: '',
+                          isInteractiveTerminal: true,
+                          procId,
+                          terminalCwd: cwd,
+                          timestamp: Date.now(),
+                        }],
+                      }));
+                      setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
+                      setTerminalsPanelExpanded(true);
+                    };
+
+                    // Collapsed state — thin status bar with counter + chips.
+                    // Always rendered (even with zero shells) so the user
+                    // always has a quick way to spawn or open the panel.
+                    if (!terminalsPanelExpanded) {
+                      return (
+                        <div
+                          className="order-last shrink-0 border-t border-border bg-surface/40 px-3 py-1.5 flex items-center gap-2.5 transition-colors"
+                          title={hasShells ? 'Expand Terminals panel' : 'No terminals yet'}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => hasShells && setTerminalsPanelExpanded(true)}
+                            className="flex items-center gap-2.5 flex-1 min-w-0 text-left cursor-pointer disabled:cursor-default"
+                            disabled={!hasShells}
+                          >
+                            <Terminal className={`w-3.5 h-3.5 ${hasShells ? 'text-emerald-400' : 'text-zinc-600'}`} strokeWidth={1.75} />
+                            <span className="text-[11.5px] text-zinc-300 font-medium">Terminals</span>
+                            <span className="text-[10.5px] text-zinc-500 font-mono">
+                              {hasShells ? `${runningCount} running${idleCount ? ` · ${idleCount} idle` : ''}` : 'none'}
+                            </span>
+                            <span className="inline-flex items-center gap-1.5 ml-1">
+                              {shells.filter(s => s.exitCode === undefined && !s.terminalExited).slice(-4).map(s => {
+                                const pid = s.procId || s.id;
+                                const renamed = shellRenames[activeId]?.[pid];
+                                return (
+                                  <span
+                                    key={s.id}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-mono text-emerald-300"
+                                    title={renamed || s.terminalName || s.terminalCommand}
+                                  >
+                                    <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+                                    {(renamed || s.terminalName || (s.terminalCommand || 'shell')).slice(0, 14)}
+                                  </span>
+                                );
+                              })}
+                            </span>
+                          </button>
+                          <div className="ml-auto inline-flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={spawnNewShellHere}
+                              className="h-6 px-2 inline-flex items-center gap-1 rounded text-[10.5px] text-zinc-300 hover:text-zinc-100 hover:bg-surface-light"
+                              title="New shell"
+                            >
+                              <Plus className="w-3 h-3" />
+                              new
+                            </button>
+                            {hasShells && (
                               <button
-                                key={sh.id}
-                                className={`group shrink-0 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-mono transition-colors ${
-                                  isActive ? 'ring-1 ring-green-400/40 ' : ''
-                                }${
-                                  visuallyMinimized ? 'opacity-60 ' : ''
-                                }${
-                                  running
-                                    ? 'border-green-900/60 bg-green-500/10 text-green-300 hover:bg-green-500/20'
-                                    : code === 0
-                                      ? 'border-border-light bg-surface-light text-zinc-400 hover:text-zinc-200'
-                                      : 'border-red-900/50 bg-red-500/10 text-red-300 hover:bg-red-500/20'
-                                }`}
-                                onClick={() => {
-                                  if (isActive) {
-                                    // Click the currently-active shell's badge → toggle minimize.
-                                    toggleShellMinimized(sh.id);
-                                  } else {
-                                    // Clicking a different shell → activate it and ensure expanded.
-                                    setActiveShellBySession(prev => ({ ...prev, [activeId]: sh.id }));
-                                    setMinimizedShells(prev => { const n = new Set(prev); n.delete(sh.id); return n; });
-                                  }
-                                }}
-                                title={
-                                  isActive
-                                    ? (shellMinimized ? 'Click to expand shell' : 'Click to minimize shell')
-                                    : 'Click to switch to this shell'
-                                }
+                                type="button"
+                                onClick={() => setTerminalsPanelExpanded(true)}
+                                className="h-6 w-6 inline-flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-surface-light"
+                                title="Expand panel"
                               >
-                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                  running ? 'bg-green-400 animate-pulse' : code === 0 ? 'bg-zinc-600' : 'bg-red-400'
-                                }`} />
-                                <span className="truncate max-w-[160px]">{label}</span>
-                                {!running && code !== undefined && (
-                                  <span className="text-[9px] opacity-70 shrink-0">exit {code}</span>
-                                )}
-                                {clientRef.current && (() => {
-                                  const procId = sh.procId || sh.id;
-                                  const handleAction = () => {
-                                    if (running) {
-                                      clientRef.current!.killTerminal(activeId, procId);
-                                      return;
-                                    }
-                                    // Already exited — second click removes the bubble.
-                                    // Best-effort kill_process speeds up server-side cleanup
-                                    // (the registry auto-prunes 30 s after exit anyway).
-                                    try { clientRef.current!.killProcess(activeId, procId); } catch {}
-                                    // Tell the bridge the user closed this bubble; it
-                                    // remembers across restarts so reload doesn't
-                                    // resurrect a dismissed shell. The WS round-trip
-                                    // also drops the bubble from sessionStates via the
-                                    // dismissed-set filter, no need to mutate it here.
-                                    try { void clientRef.current!.dismissShell(activeId, procId); } catch {}
-                                    setDismissedShells(prev => {
-                                      const existing = prev[activeId] || new Set<string>();
-                                      if (existing.has(procId)) return prev;
-                                      const next = new Set(existing); next.add(procId);
-                                      return { ...prev, [activeId]: next };
-                                    });
+                                <ChevronUp className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Expanded state — full bottom panel. `order-last` pins
+                    // it under the composer regardless of JSX position.
+                    const startResize = (e: React.MouseEvent) => {
+                      e.preventDefault();
+                      // Maximize state is incompatible with manual drag — clear it
+                      // so the splitter has a known starting height to grow from.
+                      if (terminalsPanelMaximized) setTerminalsPanelMaximized(false);
+                      const startY = e.clientY;
+                      const startHeight = terminalsPanelMaximized
+                        ? Math.round(window.innerHeight * 0.7)
+                        : terminalsPanelHeight;
+                      setPanelResizing(true);
+                      const onMove = (ev: MouseEvent) => {
+                        const dy = startY - ev.clientY; // dragging up grows the panel
+                        const next = startHeight + dy;
+                        const max = Math.round(window.innerHeight * 0.85);
+                        const clamped = Math.min(max, Math.max(120, next));
+                        setTerminalsPanelHeight(clamped);
+                      };
+                      const onUp = () => {
+                        document.removeEventListener('mousemove', onMove);
+                        document.removeEventListener('mouseup', onUp);
+                        setPanelResizing(false);
+                        // Persist whatever the final value ended up being.
+                        setTerminalsPanelHeight(h => { persistPrefs({ terminalsPanelHeight: h }); return h; });
+                      };
+                      document.addEventListener('mousemove', onMove);
+                      document.addEventListener('mouseup', onUp);
+                    };
+                    return (
+                      <div
+                        className="order-last shrink-0 border-t border-border bg-base flex flex-col relative"
+                        style={{ height: terminalsPanelMaximized ? '70vh' : terminalsPanelHeight }}
+                      >
+                        {/* Drag handle — 6px-tall hit zone at the top edge.
+                            Visually a 2px line on hover, dims back when idle. */}
+                        <div
+                          onMouseDown={startResize}
+                          onDoubleClick={() => setTerminalsPanelHeight(340)}
+                          title="Drag to resize · double-click to reset"
+                          className="absolute top-0 left-0 right-0 h-1.5 -translate-y-[3px] z-20 cursor-row-resize group"
+                          style={{ touchAction: 'none' }}
+                        >
+                          <div className={`absolute inset-x-0 top-[3px] h-[2px] transition-colors ${panelResizing ? 'bg-violet-500' : 'bg-transparent group-hover:bg-violet-500/60'}`} />
+                        </div>
+                        {/* Fullscreen overlay during resize so xterm / iframes
+                            don't swallow the mousemove. */}
+                        {panelResizing && <div className="fixed inset-0 z-[9999] cursor-row-resize" />}
+                        {/* Tab strip + tools — fixed h-9 keeps the active
+                            indicator consistent regardless of tab count.
+                            Active state uses an inset box-shadow so the
+                            indicator never bleeds into the parent border. */}
+                        <div className="flex items-center border-b border-border bg-surface/40 shrink-0 h-9">
+                          <div className="flex items-stretch overflow-x-auto h-full">
+                            {shells.map(sh => {
+                              const running = sh.exitCode === undefined && !sh.terminalExited;
+                              const code = sh.terminalExitCode ?? sh.exitCode;
+                              const exited = !running;
+                              const isActive = sh.id === activeShellId;
+                              const procId = sh.procId || sh.id;
+                              const renamed = shellRenames[activeId]?.[procId];
+                              const fallback = sh.terminalName || (sh.terminalCommand ? sh.terminalCommand.slice(0, 24) : 'shell');
+                              const name = renamed || fallback;
+                              const isRenaming = renamingShellId === sh.id;
+                              const dotCls = running
+                                ? 'bg-emerald-400 animate-pulse'
+                                : code === 0 ? 'bg-zinc-600' : 'bg-red-400';
+                              return (
+                                <button
+                                  key={sh.id}
+                                  onClick={() => {
+                                    if (isRenaming) return;
+                                    setActiveShellBySession(prev => ({ ...prev, [activeId]: sh.id }));
                                     setMinimizedShells(prev => {
                                       if (!prev.has(sh.id)) return prev;
-                                      const n = new Set(prev);
-                                      n.delete(sh.id);
-                                      return n;
+                                      const n = new Set(prev); n.delete(sh.id); return n;
                                     });
-                                    setActiveShellBySession(prev => {
-                                      if (prev[activeId] !== sh.id) return prev;
-                                      const { [activeId]: _drop, ...rest } = prev;
-                                      return rest;
+                                  }}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    setTabContextMenu({
+                                      shellId: sh.id,
+                                      procId,
+                                      running,
+                                      x: e.clientX,
+                                      y: e.clientY,
                                     });
-                                  };
-                                  return (
-                                    <span
-                                      role="button"
-                                      tabIndex={0}
-                                      className={`${running ? 'opacity-0 group-hover:opacity-100' : 'opacity-60 hover:opacity-100'} text-zinc-500 hover:text-red-400 shrink-0 transition-opacity`}
-                                      onClick={(e) => { e.stopPropagation(); handleAction(); }}
+                                  }}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    setRenamingShellId(sh.id);
+                                  }}
+                                  className={`group relative inline-flex items-center gap-2 h-full px-3 text-[12px] transition-colors max-w-[220px] ${
+                                    isActive
+                                      ? 'text-zinc-50 bg-violet-500/[0.07]'
+                                      : exited
+                                        ? 'text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.02]'
+                                        : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.02]'
+                                  }`}
+                                  style={isActive ? { boxShadow: 'inset 0 -2px 0 #8b5cf6' } : undefined}
+                                  title={`${name}${sh.terminalCwd ? ' · ' + sh.terminalCwd : ''} — double-click or right-click to rename`}
+                                >
+                                  <span
+                                    className={`w-2 h-2 rounded-full shrink-0 ${dotCls}`}
+                                    style={isActive ? { boxShadow: '0 0 0 3px rgba(139, 92, 246, 0.18)' } : undefined}
+                                  />
+                                  {isRenaming ? (
+                                    <input
+                                      autoFocus
+                                      defaultValue={renamed || fallback}
+                                      onClick={(e) => e.stopPropagation()}
                                       onKeyDown={(e) => {
-                                        if (e.key === 'Enter' || e.key === ' ') {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          handleAction();
+                                        if (e.key === 'Enter') {
+                                          const next = (e.currentTarget.value || '').trim();
+                                          setShellRenames(prev => {
+                                            const sidMap = { ...(prev[activeId] || {}) };
+                                            if (next) sidMap[procId] = next; else delete sidMap[procId];
+                                            const out = { ...prev, [activeId]: sidMap };
+                                            persistPrefs({ shellRenames: out });
+                                            return out;
+                                          });
+                                          setRenamingShellId(null);
+                                        } else if (e.key === 'Escape') {
+                                          setRenamingShellId(null);
                                         }
                                       }}
-                                      title={running ? 'Kill shell' : 'Remove shell'}
+                                      onBlur={(e) => {
+                                        const next = (e.currentTarget.value || '').trim();
+                                        setShellRenames(prev => {
+                                          const sidMap = { ...(prev[activeId] || {}) };
+                                          if (next && next !== fallback) sidMap[procId] = next;
+                                          else delete sidMap[procId];
+                                          const out = { ...prev, [activeId]: sidMap };
+                                          persistPrefs({ shellRenames: out });
+                                          return out;
+                                        });
+                                        setRenamingShellId(null);
+                                      }}
+                                      className="bg-transparent border border-violet-500/50 rounded px-1 py-px font-medium text-[12px] text-zinc-50 outline-none focus:border-violet-400 min-w-[80px] max-w-[140px]"
+                                    />
+                                  ) : (
+                                    <span className="font-medium truncate">{name}</span>
+                                  )}
+                                  {!isRenaming && (
+                                    <span
+                                      role="button"
+                                      tabIndex={-1}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (running) {
+                                          try { clientRef.current?.killTerminal(activeId, procId); } catch {}
+                                        } else {
+                                          dismissProcId(procId, sh.id);
+                                        }
+                                      }}
+                                      className="opacity-0 group-hover:opacity-100 w-4 h-4 inline-flex items-center justify-center rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 transition-opacity"
+                                      title={running ? 'Kill shell' : 'Remove from chat'}
                                     >
-                                      ×
+                                      <X className="w-3 h-3" />
                                     </span>
-                                  );
-                                })()}
-                              </button>
-                            );
-                          })}
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="ml-auto flex items-center gap-0.5 px-1.5">
+                            <button
+                              type="button"
+                              onClick={spawnNewShellHere}
+                              className="h-6 px-2 inline-flex items-center gap-1 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-surface-light"
+                              title="New shell"
+                            >
+                              <Plus className="w-3 h-3" />
+                              new
+                            </button>
+                            <span className="w-1 h-1 rounded-full bg-zinc-700 mx-1.5" />
+                            <button
+                              type="button"
+                              onClick={() => setTerminalsPanelMaximized(v => !v)}
+                              className="h-6 w-6 rounded inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-surface-light"
+                              title={terminalsPanelMaximized ? 'Restore panel height' : 'Maximize panel'}
+                            >
+                              {terminalsPanelMaximized
+                                ? <Minimize2 className="w-3 h-3" />
+                                : <Maximize2 className="w-3 h-3" />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTerminalsPanelExpanded(false)}
+                              className="h-6 w-6 rounded inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-surface-light"
+                              title="Collapse panel"
+                            >
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
-                        {/* Active xterm panel — always mounted so every shell's xterm state
-                            (scrollback, cursor, running processes) survives switching and
-                            minimize/expand. Wrapper uses display:none when minimized. */}
-                        <div
-                          className="border-t border-border px-3 pt-1 pb-2"
-                          style={activeMinimized ? { display: 'none' } : undefined}
-                        >
+
+                        {/* Status strip for the active terminal — hidden when there are no shells */}
+                        {activeShell && (() => {
+                          const activeProcId = activeShell.procId || activeShell.id;
+                          const injected = injectedEnvByProc[activeProcId];
+                          const injectedCount = injected ? Object.keys(injected).length : 0;
+                          return (
+                          <div className="px-3.5 py-1.5 border-b border-border bg-surface/30 flex items-center gap-3 text-[11px] shrink-0 relative">
+                            <span className="font-mono text-violet-300 font-medium">{shellRenames[activeId]?.[activeProcId] || activeShell.terminalName || 'shell'}</span>
+                            {activeShell.terminalUrl && (
+                              <>
+                                <span className="text-zinc-700">/</span>
+                                <a
+                                  href={activeShell.terminalUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="font-mono text-zinc-400 hover:text-violet-300 truncate"
+                                  title={activeShell.terminalUrl}
+                                >
+                                  {activeShell.terminalUrl.replace(/^https?:\/\//, '')}
+                                </a>
+                              </>
+                            )}
+                            {injectedCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setEnvPopoverProcId(prev => prev === activeProcId ? null : activeProcId)}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-mono text-emerald-300 hover:bg-emerald-500/15"
+                                title={`${injectedCount} env vars injected · click to inspect`}
+                              >
+                                <Check className="w-3 h-3" />
+                                env · {injectedCount}
+                              </button>
+                            )}
+                            {envPopoverProcId === activeProcId && injected && (
+                              <>
+                                <div className="fixed inset-0 z-[9998]" onClick={() => setEnvPopoverProcId(null)} />
+                                <div className="absolute left-0 top-full mt-1 z-[9999] w-[420px] rounded-md border border-border-light bg-surface shadow-2xl overflow-hidden">
+                                  <div className="px-3 py-2 border-b border-border bg-surface-light/40 flex items-center gap-2">
+                                    <Check className="w-3 h-3 text-emerald-400" />
+                                    <span className="text-[11.5px] font-medium text-zinc-200">Injected env</span>
+                                    <span className="text-[10.5px] text-zinc-500 ml-auto">at spawn time</span>
+                                  </div>
+                                  <div className="max-h-[260px] overflow-y-auto py-1">
+                                    {Object.entries(injected).map(([k, v]) => (
+                                      <div key={k} className="px-3 py-1 grid grid-cols-[1fr_auto] gap-2 items-center hover:bg-surface-light">
+                                        <span className="font-mono text-[11px] text-violet-300 truncate" title={k}>{k}</span>
+                                        <span className="font-mono text-[11px] text-emerald-300 truncate" title={v}>{v}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="px-3 py-1.5 border-t border-border text-[10.5px] text-zinc-500 leading-snug">
+                                    Restart this shell to pick up changes to the source actions' hostnames.
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                            <span className="ml-auto inline-flex items-center gap-3 text-zinc-500 shrink-0">
+                              {activeShell.terminalCwd && (
+                                <span className="font-mono text-[10.5px] truncate max-w-[280px]" title={activeShell.terminalCwd}>
+                                  {(() => {
+                                    const home = (typeof window !== 'undefined' && (window as any).__HOME__) || '';
+                                    const cwd = activeShell.terminalCwd!;
+                                    const s = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
+                                    return s;
+                                  })()}
+                                </span>
+                              )}
+                              {activeShell.exitCode === undefined && !activeShell.terminalExited ? (
+                                <span className="inline-flex items-center gap-1 text-emerald-400">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                  running
+                                </span>
+                              ) : (
+                                <span className={(activeShell.terminalExitCode ?? activeShell.exitCode) === 0 ? 'text-zinc-500' : 'text-red-300'}>
+                                  exit {activeShell.terminalExitCode ?? activeShell.exitCode ?? 0}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          );
+                        })()}
+
+                        {/* xterm body — all shells stay mounted so scrollback/cursor survives tab switching */}
+                        <div className="flex-1 min-h-0 relative">
+                          {!hasShells && (
+                            <div className="absolute inset-0 flex items-center justify-center text-zinc-500 text-[12px] gap-3">
+                              <span>No terminals open.</span>
+                              <button
+                                type="button"
+                                onClick={spawnNewShellHere}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-violet-500/40 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20 text-[11.5px]"
+                              >
+                                <Plus className="w-3 h-3" />
+                                New shell
+                              </button>
+                            </div>
+                          )}
                           {shells.map(sh => (
                             <div
                               key={sh.id}
+                              className="absolute inset-0"
                               style={sh.id === activeShellId ? undefined : { display: 'none' }}
                             >
-                              <MessageBubble
-                                message={sh}
-                                onOpenTerminal={handleOpenTerminal}
-                                sessionId={activeId}
-                                client={clientRef.current || undefined}
-                                interactiveMinimized={false}
-                                onToggleInteractiveMinimize={toggleShellMinimized}
-                              />
+                              {clientRef.current && (
+                                <InteractiveTerminalBubble
+                                  message={sh}
+                                  sessionId={activeId}
+                                  client={clientRef.current}
+                                  hideHeader
+                                  hidden={sh.id !== activeShellId}
+                                />
+                              )}
                             </div>
                           ))}
                         </div>
@@ -5578,6 +5991,12 @@ export function ChatApp() {
             setGlobalEnvVars(next);
             persistPrefs({ globalEnvVars: next });
           }}
+          portlessTld={portlessTld}
+          onChangePortlessTld={(next) => {
+            const v = next.trim() || 'localhost';
+            setPortlessTld(v);
+            persistPrefs({ portlessTld: v });
+          }}
           client={client}
           claudeModels={claudeModels}
           onDeleteGroup={handleDeleteGroup}
@@ -5595,6 +6014,49 @@ export function ChatApp() {
           }}
         />
         <PortlessActionToast />
+        {tabContextMenu && (() => {
+          const menu = tabContextMenu;
+          const closeMenu = () => setTabContextMenu(null);
+          return (
+            <>
+              <div className="fixed inset-0 z-[9998]" onClick={closeMenu} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }} />
+              <div
+                role="menu"
+                className="fixed z-[9999] min-w-[180px] rounded-md border border-border-light bg-surface shadow-2xl overflow-hidden text-[12px]"
+                style={{ left: menu.x, top: menu.y }}
+              >
+                <button
+                  type="button"
+                  onClick={() => { setRenamingShellId(menu.shellId); closeMenu(); }}
+                  className="w-full text-left px-3 py-1.5 text-zinc-200 hover:bg-surface-light flex items-center gap-2"
+                >
+                  <span className="w-3 h-3 inline-flex items-center justify-center text-zinc-400">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  </span>
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!activeId) { closeMenu(); return; }
+                    if (menu.running) {
+                      try { clientRef.current?.killTerminal(activeId, menu.procId); } catch {}
+                    } else {
+                      dismissShellPersistent(menu.procId, menu.shellId);
+                    }
+                    closeMenu();
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-zinc-200 hover:bg-surface-light flex items-center gap-2"
+                >
+                  <span className="w-3 h-3 inline-flex items-center justify-center text-zinc-400">
+                    <X className="w-3 h-3" />
+                  </span>
+                  {menu.running ? 'Kill shell' : 'Remove from chat'}
+                </button>
+              </div>
+            </>
+          );
+        })()}
         <BypassWarningModal
           open={pendingBypassSessionId !== null}
           onCancel={() => setPendingBypassSessionId(null)}

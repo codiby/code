@@ -92,6 +92,7 @@ import {
   snapshotAll as portlessSnapshotAll,
   onPortlessStatus,
   onPortlessActionFired,
+import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './action-env';
   onPortlessUrlResolved,
   type PortlessActionStatus,
   type PortlessUrlResolvedDetail,
@@ -102,6 +103,11 @@ import {
 // ---------------------------------------------------------------------------
 
 // Register provider adapters before loading sessions (so default provider exists)
+  getProxyStatus as getPortlessProxyStatus,
+  startProxy as startPortlessProxy,
+  stopProxy as stopPortlessProxy,
+  trustCA as trustPortlessCA,
+  type ProxyMode,
 registerProvider(ClaudeAdapter);
 registerProvider(CodexAdapter);
 registerProvider(OpenCodeAdapter);
@@ -758,6 +764,11 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: -1 });
       log(`[exec_shell] declined respawn for tombed procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)}`);
       return;
+      /** Set by InteractiveTerminalBubble when respawning a bubble whose
+       *  original PTY died with the bridge — lets the new TrackedProcess
+       *  reclaim the action's identity so MCP lookups by name still find it. */
+      label?: string;
+      command?: string;
     }
 
     // Re-attach path: if the client already sent us this procId and the PTY
@@ -789,7 +800,15 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       return;
     }
 
-    const pty = spawnPty({ cwd: execCwd, cols: execCols, rows: execRows, sessionId });
+    // Cross-action env injection for /terminal slash shells. The user
+    // might run `npm run dev` manually here, so the shell needs the
+    // same `API_URL` / `WEB_URL` env vars an action-spawned shell gets.
+    // No source-action exclusion — this isn't tied to a specific action.
+    const execShellPrefs = loadPreferences();
+    const execShellGroup = resolveGroupForSession(execShellPrefs, sessionId);
+    const execShellEnv = buildInjectedActionEnv(execShellGroup, getGlobalTld(execShellPrefs));
+
+    const pty = spawnPty({ cwd: execCwd, cols: execCols, rows: execRows, sessionId, extraEnv: execShellEnv });
     if (!pty) {
       broadcastToSession(sessionId, {
         type: 'terminal_data', sessionId, procId,
@@ -831,6 +850,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
       appendProcessOutput(procId, text);
       broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
+      injectedEnv: Object.keys(execShellEnv).length > 0 ? execShellEnv : undefined,
     });
     pty.onExit((code) => {
       if (tp.exitCode !== null) return; // already handled
@@ -1970,6 +1990,28 @@ const server = Bun.serve({
     if (url.pathname === '/pr-detail' && req.method === 'GET') {
       const prNumber = url.searchParams.get('number');
       const cwd = url.searchParams.get('cwd') || CWD;
+    if (url.pathname === '/portless/proxy/status' && req.method === 'GET') {
+      const status = await getPortlessProxyStatus();
+      return Response.json(status, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/proxy/start' && req.method === 'POST') {
+      const body = await req.json().catch(() => ({})) as { mode?: ProxyMode };
+      const mode: ProxyMode = body.mode === 'http80' || body.mode === 'https443' ? body.mode : 'default';
+      const result = await startPortlessProxy(mode);
+      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/proxy/stop' && req.method === 'POST') {
+      const result = await stopPortlessProxy();
+      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/trust' && req.method === 'POST') {
+      const result = await trustPortlessCA();
+      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+    }
+
       if (!prNumber) return Response.json({ error: 'missing number' }, { status: 400, headers: corsHeaders });
       try {
         const prJson = execSync(
@@ -2021,6 +2063,79 @@ const server = Bun.serve({
 
     if (url.pathname === '/lsp/languages' && req.method === 'GET') {
       return Response.json(supportedLanguages(), { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/scan-env' && req.method === 'GET') {
+      const cwd = url.searchParams.get('cwd');
+      const actionNamesRaw = url.searchParams.get('actionNames') || '';
+      if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
+      const actionNames = actionNamesRaw.split(',').map(s => s.trim()).filter(Boolean);
+      try {
+        const { readFileSync: rf, readdirSync: rd, statSync: st } = require('fs') as typeof import('fs');
+        const { join: jp } = require('path') as typeof import('path');
+        const found: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean }[] = [];
+        // Walk top-level + apps/*/ for .env* files. Two levels is plenty for
+        // nx/turborepo layouts without going wild on huge monorepos.
+        const candidates: string[] = [];
+        try {
+          for (const f of rd(cwd)) {
+            if (f.startsWith('.env')) candidates.push(jp(cwd, f));
+          }
+        } catch {}
+        try {
+          const appsDir = jp(cwd, 'apps');
+          if (st(appsDir).isDirectory()) {
+            for (const sub of rd(appsDir)) {
+              const dir = jp(appsDir, sub);
+              try {
+                if (!st(dir).isDirectory()) continue;
+                for (const f of rd(dir)) {
+                  if (f.startsWith('.env')) candidates.push(jp(dir, f));
+                }
+              } catch {}
+            }
+          }
+        } catch {}
+        const urlish = /^(?:https?:\/\/|localhost|127\.0\.0\.1|0\.0\.0\.0)/i;
+        for (const file of candidates) {
+          let content = '';
+          try { content = rf(file, 'utf-8'); } catch { continue; }
+          const lines = content.split('\n');
+          lines.forEach((raw, idx) => {
+            const line = raw.replace(/^export\s+/, '').trim();
+            if (!line || line.startsWith('#')) return;
+            const m = line.match(/^([A-Z][A-Z0-9_]*)\s*=\s*(.+)$/);
+            if (!m) return;
+            const key = m[1]!;
+            let val = m[2]!.trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+              val = val.slice(1, -1);
+            }
+            if (!urlish.test(val)) return;
+            // Heuristic: pull all action names whose slug is a substring of
+            // the env key. e.g. `API_URL` matches action `api`; `WEB_URL`
+            // matches `web` AND `web-renter`.
+            const keyLow = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
+            const matches = actionNames.filter(n => {
+              const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, '');
+              return slug && keyLow.includes(slug);
+            });
+            // Prefer the longest matching action name when ambiguous.
+            matches.sort((a, b) => b.length - a.length);
+            found.push({
+              var: key,
+              value: val,
+              file: file.startsWith(cwd) ? file.slice(cwd.length + 1) : file,
+              line: idx + 1,
+              suggestedAction: matches[0] || null,
+              ambiguous: matches.length > 1,
+            });
+          });
+        }
+        return Response.json({ candidates: found, scanned: candidates }, { headers: corsHeaders });
+      } catch (e: any) {
+        return Response.json({ error: e?.message || 'scan failed' }, { status: 500, headers: corsHeaders });
+      }
     }
 
     // ── Debug (CDP) ──────────────────────────────────────────────────────
