@@ -22,6 +22,33 @@ export interface ProjectMcpOverrides {
   disabled?: string[];
 }
 
+/** A named dev-server command this project can run through Portless. The
+ *  `name` is the slug Portless uses to identify the app (and the default
+ *  subdomain prefix when worktree subdomains are off). The `hostname` is
+ *  the full local URL host (e.g. "api.localhost") — when undefined we
+ *  derive it from `name` + the project's TLD default. */
+export interface PortlessAction {
+  id: string;
+  name: string;
+  command: string;
+  hostname?: string;
+}
+
+export interface PortlessConfig {
+  /** Master switch. When false the actions are still listed in the UI but
+   *  taskr won't spawn portless — useful for temporarily falling back to
+   *  raw `bun run dev`. Defaults to true when at least one action exists. */
+  enabled?: boolean;
+  /** Top-level domain used when an action's hostname is left blank. */
+  tld?: 'localhost' | 'test';
+  /** HTTPS via the portless local CA. Defaults to true. */
+  tls?: boolean;
+  /** Prefix the active worktree's branch onto each action's hostname so
+   *  every worktree gets its own subdomain. */
+  worktreeSubdomains?: boolean;
+  actions?: PortlessAction[];
+}
+
 export interface TabGroupInfo {
   id: string;
   name: string;
@@ -51,6 +78,9 @@ export interface TabGroupInfo {
    *  before they run, so the user sees the action happen even when another
    *  preview was active. */
   autoFocusBrowserOnAction?: boolean;
+
+  /** Portless config + named dev-server actions for this project. */
+  portless?: PortlessConfig;
 }
 
 export const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'] as const;

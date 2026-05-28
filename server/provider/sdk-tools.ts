@@ -23,6 +23,13 @@ import { cdpRequest } from './browser-cdp';
 import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProcessOutput } from '../handlers/processes';
 import { spawnPty } from '../pty';
 import type { TrackedProcess } from '../types';
+import {
+  runAction as portlessRunAction,
+  stopAction as portlessStopAction,
+  snapshotAction as portlessSnapshotAction,
+  snapshotAll as portlessSnapshotAll,
+  getPortlessCliStatus,
+} from '../portless';
 
 /** Resolve a tracked process for the current session by procId OR name. */
 function resolveTrackedProcess(
@@ -226,6 +233,20 @@ export type SdkToolDeps = {
    *  override on the session's tab group). */
   loadPreferences: () => Record<string, unknown>;
 };
+
+/** Resolve the tab group the session belongs to (so portless tools can
+ *  look up the project's configured actions). Returns null when the
+ *  session isn't in any group. */
+function resolveSessionGroup(sessionId: string, deps: SdkToolDeps): { groupId: string; group: any } | null {
+  const prefs = deps.loadPreferences();
+  const map = (prefs.tabGroupMap as Record<string, string> | undefined) || {};
+  const groupId = map[sessionId];
+  if (!groupId) return null;
+  const groups = (prefs.tabGroups as Record<string, any> | undefined) || {};
+  const group = groups[groupId];
+  if (!group) return null;
+  return { groupId, group };
+}
 
 /** Resolve whether action-style browser_* tools should bring the targeted
  *  preview to the front for this session. Per-project override (on the
@@ -1126,6 +1147,124 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           }
           const preview = args.input.length > 80 ? args.input.slice(0, 77) + '…' : args.input;
           return { content: [{ type: 'text', text: `Wrote ${payload.length} byte${payload.length === 1 ? '' : 's'} to stdin of "${tp.label || '(no name)'}" (procId=${tp.id}). Input: ${JSON.stringify(preview)}` }] };
+        },
+      ),
+      tool(
+        'portless_list',
+        [
+          'List the Portless actions configured for the current project (named dev-server commands routed through portless.sh).',
+          '',
+          'Returns the configured actions for the session\'s project plus the current runtime state (idle/running/failed) for each one. Use this before `portless_run` to discover the available action names, or to check which dev servers are already up.',
+        ].join('\n'),
+        {},
+        async () => {
+          const ctx = resolveSessionGroup(sessionId, deps);
+          if (!ctx) {
+            return { content: [{ type: 'text', text: 'This session is not associated with a project. Open Project Settings → Portless and add this session to a project to configure actions.' }] };
+          }
+          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string }[]; tld?: string };
+          const actions = cfg.actions || [];
+          if (actions.length === 0) {
+            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no Portless actions configured yet. Add some in Project Settings → Portless.` }] };
+          }
+          const liveByAction = new Map<string, ReturnType<typeof portlessSnapshotAction>>();
+          for (const a of actions) {
+            liveByAction.set(a.id, portlessSnapshotAction(ctx.groupId, a.id));
+          }
+          const lines = actions.map(a => {
+            const live = liveByAction.get(a.id);
+            const state = live ? live.state : 'idle';
+            const url = live ? live.url : '';
+            return `- ${a.name} · ${a.command} · ${a.hostname || ''}${url ? ` → ${url}` : ''} [${state}]`;
+          });
+          return { content: [{ type: 'text', text: `Portless actions for "${ctx.group.name}":\n${lines.join('\n')}` }] };
+        },
+      ),
+      tool(
+        'portless_run',
+        [
+          'Start a Portless action in the current project — spawns the action\'s command via the portless CLI so the dev server is reachable at a stable hostname (e.g. `https://api.localhost`) instead of `localhost:<port>`.',
+          '',
+          'The user sees a toast in the corner of the app announcing the run, with the URL surfaced as a clickable link. Use this when the user asks you to "start the api", "boot the web server", "run my dev server", etc. — and an action with that name is already configured in their Project Settings → Portless. Call `portless_list` first if you\'re unsure of the action names.',
+          '',
+          'Idempotent: starting an already-running action returns the existing status without restarting it.',
+        ].join('\n'),
+        {
+          name: z.string().min(1).describe('The action name (slug) as configured in Project Settings → Portless. Case-sensitive — use `portless_list` to discover available names.'),
+        },
+        async (args) => {
+          const cli = getPortlessCliStatus();
+          if (!cli.available) {
+            return { content: [{ type: 'text', text: 'Portless CLI is not installed. Ask the user to run `npm install -g portless` and restart taskr.' }], isError: true };
+          }
+          const ctx = resolveSessionGroup(sessionId, deps);
+          if (!ctx) {
+            return { content: [{ type: 'text', text: 'This session is not associated with a project — cannot resolve which Portless actions to run.' }], isError: true };
+          }
+          if (!ctx.group.cwd) {
+            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no working directory set; cannot spawn portless.` }], isError: true };
+          }
+          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string; command: string; hostname?: string }[]; tld?: 'localhost' | 'test'; tls?: boolean };
+          const actions = cfg.actions || [];
+          const match = actions.find(a => a.name === args.name) || actions.find(a => a.name.toLowerCase() === args.name.toLowerCase());
+          if (!match) {
+            const known = actions.map(a => a.name).join(', ') || '(none configured)';
+            return { content: [{ type: 'text', text: `No Portless action named "${args.name}" in project "${ctx.group.name}". Known: ${known}.` }], isError: true };
+          }
+          const tld = cfg.tld || 'localhost';
+          const slug = match.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+          const hostname = match.hostname && match.hostname.includes('.') ? match.hostname : `${slug}.${tld}`;
+          const result = portlessRunAction({
+            groupId: ctx.groupId,
+            actionId: match.id,
+            name: match.name,
+            command: match.command,
+            hostname,
+            cwd: ctx.group.cwd,
+            noTls: cfg.tls === false,
+            source: 'agent',
+            sessionId,
+          });
+          if (!result.ok) {
+            return { content: [{ type: 'text', text: `Failed to start "${match.name}": ${result.error}` }], isError: true };
+          }
+          const s = result.status;
+          return { content: [{ type: 'text', text: `Started "${match.name}" → ${s.url} (state: ${s.state}, pid ${s.pid ?? '?'}). Command: ${s.command}` }] };
+        },
+      ),
+      tool(
+        'portless_stop',
+        [
+          'Stop a Portless action previously started in the current project. Sends SIGTERM to the portless process (with SIGKILL fallback after 2s).',
+          '',
+          'Use when the user asks to stop a dev server, free a port, or "kill the api". With no `name`, every running action in the project is stopped.',
+        ].join('\n'),
+        {
+          name: z.string().optional().describe('Action name to stop. Omit to stop every running action in the current project.'),
+        },
+        async (args) => {
+          const ctx = resolveSessionGroup(sessionId, deps);
+          if (!ctx) {
+            return { content: [{ type: 'text', text: 'This session is not associated with a project.' }], isError: true };
+          }
+          const cfg = (ctx.group.portless || {}) as { actions?: { id: string; name: string }[] };
+          const actions = cfg.actions || [];
+          if (args.name) {
+            const match = actions.find(a => a.name === args.name) || actions.find(a => a.name.toLowerCase() === args.name!.toLowerCase());
+            if (!match) {
+              const known = actions.map(a => a.name).join(', ') || '(none configured)';
+              return { content: [{ type: 'text', text: `No Portless action named "${args.name}". Known: ${known}.` }], isError: true };
+            }
+            const stopped = portlessStopAction(ctx.groupId, match.id);
+            return { content: [{ type: 'text', text: stopped ? `Stopping "${match.name}".` : `"${match.name}" was not running.` }] };
+          }
+          // Stop all in this group.
+          const live = portlessSnapshotAll().filter(s => s.groupId === ctx.groupId && (s.state === 'running' || s.state === 'starting'));
+          let stoppedCount = 0;
+          for (const s of live) {
+            if (portlessStopAction(ctx.groupId, s.actionId)) stoppedCount++;
+          }
+          return { content: [{ type: 'text', text: stoppedCount === 0 ? 'No running Portless actions to stop.' : `Stopping ${stoppedCount} action${stoppedCount === 1 ? '' : 's'} in "${ctx.group.name}".` }] };
         },
       ),
       // Plugin-contributed SDK tools — already prefixed with `<pluginId>_`

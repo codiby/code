@@ -2,6 +2,7 @@ import { log } from './logger';
 import { sessions } from './sessions';
 import { stopTelegramBot } from './telegram';
 import { closeAllTunnels } from './ssh-tunnel';
+import { stopAll as stopAllPortless } from './portless';
 
 export function closeAllProviderSessions() {
   let closed = 0;
@@ -16,7 +17,7 @@ export function closeAllProviderSessions() {
 }
 
 export function registerShutdownHandlers() {
-  const cleanup = () => { closeAllProviderSessions(); stopTelegramBot(); closeAllTunnels(); };
+  const cleanup = () => { closeAllProviderSessions(); stopTelegramBot(); stopAllPortless(); closeAllTunnels(); };
   process.on('SIGINT', () => { cleanup(); process.exit(0); });
   process.on('SIGTERM', () => { cleanup(); process.exit(0); });
   process.on('exit', () => { cleanup(); });

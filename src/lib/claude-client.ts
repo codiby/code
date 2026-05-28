@@ -314,8 +314,49 @@ type ClientCallbacks = {
    *  starts from an empty log. */
   onSessionCleared?: (sessionId: string) => void;
   onWelcome: (info: { spawnMode: SpawnMode }) => void;
+  /** A Portless action's runtime status changed. Optional — viewers that
+   *  don't surface Portless UI can omit it. */
+  onPortlessStatus?: (status: PortlessActionStatus) => void;
+  /** A Portless action was just started. Drives the action-fired toast,
+   *  separate from status transitions. */
+  onPortlessFired?: (info: { action: PortlessActionStatus; source: 'user' | 'agent'; sessionId?: string }) => void;
   onConnectionChange: (status: ConnectionStatus) => void;
 };
+
+// ---------------------------------------------------------------------------
+// Portless types — kept in lock-step with server/portless.ts.
+// ---------------------------------------------------------------------------
+
+export type PortlessActionState =
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'exited'
+  | 'failed';
+
+export interface PortlessActionStatus {
+  key: string;
+  groupId: string;
+  actionId: string;
+  name: string;
+  command: string;
+  hostname: string;
+  url: string;
+  cwd: string;
+  pid: number | null;
+  state: PortlessActionState;
+  startedAt: number | null;
+  exitedAt: number | null;
+  exitCode: number | null;
+  lastError: string | null;
+  logTail: string[];
+}
+
+export interface PortlessCliStatus {
+  available: boolean;
+  bin: string | null;
+  version: string | null;
+}
 
 export class ClaudeClient {
   private ws: WebSocket | null = null;
@@ -558,6 +599,16 @@ export class ClaudeClient {
         break;
       case 'welcome':
         this.callbacks.onWelcome({ spawnMode: (msg.spawnMode as SpawnMode) || 'service' });
+        break;
+      case 'portless_status':
+        this.callbacks.onPortlessStatus?.(msg.status as PortlessActionStatus);
+        break;
+      case 'portless_fired':
+        this.callbacks.onPortlessFired?.({
+          action: msg.action as PortlessActionStatus,
+          source: (msg.source as 'user' | 'agent') || 'user',
+          sessionId: msg.sessionId as string | undefined,
+        });
         break;
     }
   }
@@ -1050,6 +1101,65 @@ export class ClaudeClient {
 
   async removePortForward(sessionId: string, localPort: number, remotePort: number): Promise<void> {
     await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards/${localPort}/${remotePort}`, { method: 'DELETE' });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Portless — named dev-server actions per project. The bridge spawns
+  // `portless <name> -- <command>` in the project's cwd and tracks lifetime.
+  // ---------------------------------------------------------------------------
+
+  async getPortlessCliStatus(): Promise<PortlessCliStatus> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/cli-status`);
+    if (!resp.ok) return { available: false, bin: null, version: null };
+    return resp.json();
+  }
+
+  async listPortlessRunning(): Promise<PortlessActionStatus[]> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/status`);
+    if (!resp.ok) return [];
+    const data = await resp.json() as { actions?: PortlessActionStatus[] };
+    return data.actions || [];
+  }
+
+  async runPortlessAction(body: {
+    groupId: string; actionId: string; name: string; command: string;
+    hostname: string; cwd: string; noTls?: boolean;
+    source?: 'user' | 'agent'; sessionId?: string;
+  }): Promise<PortlessActionStatus> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({})) as { status?: PortlessActionStatus; error?: string };
+    if (!resp.ok || !data.status) throw new Error(data.error || `HTTP ${resp.status}`);
+    return data.status;
+  }
+
+  async stopPortlessAction(groupId: string, actionId: string): Promise<void> {
+    await authedFetch(`${this.serverUrl}/portless/stop`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ groupId, actionId }),
+    });
+  }
+
+  async stopAllPortlessActions(): Promise<void> {
+    await authedFetch(`${this.serverUrl}/portless/stop-all`, { method: 'POST' });
+  }
+
+  async forgetPortlessAction(groupId: string, actionId: string): Promise<void> {
+    await authedFetch(`${this.serverUrl}/portless/forget`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ groupId, actionId }),
+    });
+  }
+
+  async detectPortlessScripts(cwd: string): Promise<{ projectName: string | null; suggested: { name: string; command: string }[] }> {
+    const resp = await authedFetch(`${this.serverUrl}/portless/detect?cwd=${encodeURIComponent(cwd)}`);
+    if (!resp.ok) return { projectName: null, suggested: [] };
+    return resp.json();
   }
 
   // ---------------------------------------------------------------------------

@@ -12,6 +12,8 @@ import {
   type HookEvent,
   type HookEntry,
   type ClaudeHooks,
+  type PortlessActionStatus,
+  type PortlessCliStatus,
 } from '../lib/claude-client';
 import { PairPhoneModal } from './PairPhoneModal';
 import { PluginSettingsSections } from './PluginExtensionPoints';
@@ -22,6 +24,8 @@ import {
   type TabGroupInfo,
   type ProjectEnvVar,
   type ProjectAutoApproveRule,
+  type PortlessAction,
+  type PortlessConfig,
 } from '../lib/tab-groups';
 
 interface ProjectSettingsModalProps {
@@ -659,7 +663,7 @@ function AboutSection() {
  *  Per-project panes
  * ============================================================ */
 
-type ProjectTab = 'general' | 'defaults' | 'permissions' | 'environment' | 'mcp' | 'hooks' | 'sessions';
+type ProjectTab = 'general' | 'defaults' | 'permissions' | 'environment' | 'mcp' | 'hooks' | 'portless' | 'sessions';
 
 const PROJECT_TABS: { id: ProjectTab; label: string }[] = [
   { id: 'general', label: 'General' },
@@ -668,6 +672,7 @@ const PROJECT_TABS: { id: ProjectTab; label: string }[] = [
   { id: 'environment', label: 'Environment' },
   { id: 'mcp', label: 'MCP Servers' },
   { id: 'hooks', label: 'Hooks' },
+  { id: 'portless', label: 'Portless' },
   { id: 'sessions', label: 'Sessions' },
 ];
 
@@ -1378,6 +1383,414 @@ function GlobalEnvironmentSection({ envVars, onChange }: { envVars: ProjectEnvVa
   );
 }
 
+/* ============================================================
+ *  Portless — named dev-server actions, one per row in the 3-col grid.
+ * ============================================================ */
+
+function genActionId(): string {
+  try { return crypto.randomUUID(); } catch { return Math.random().toString(36).slice(2); }
+}
+
+/** Slug the row's name into a hostname prefix. Lowercased,
+ *  non-alphanumeric collapsed to dashes. */
+function slugHost(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+/** Resolve the hostname to use for an action — explicit override, or
+ *  derived from the action name + project TLD. */
+function resolveHost(action: PortlessAction, tld: 'localhost' | 'test'): string {
+  if (action.hostname && action.hostname.includes('.')) return action.hostname;
+  const slug = slugHost(action.name) || 'app';
+  return `${slug}.${tld}`;
+}
+
+function ProjectPortlessPane({ group, onPatch, client }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void; client: ClaudeClient | null }) {
+  const cfg: PortlessConfig = group.portless || {};
+  const tld: 'localhost' | 'test' = cfg.tld || 'localhost';
+  const tls = cfg.tls !== false;
+  const worktreeSubs = cfg.worktreeSubdomains !== false;
+  const actions = cfg.actions || [];
+  const enabled = cfg.enabled !== false;
+
+  const [cli, setCli] = useState<PortlessCliStatus | null>(null);
+  const [running, setRunning] = useState<Map<string, PortlessActionStatus>>(new Map());
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  // Local edit buffer so typing doesn't fire a patch (and a re-render)
+  // on every keystroke — we commit on blur.
+  const [draft, setDraft] = useState<PortlessAction[]>(actions);
+  useEffect(() => { setDraft(actions); }, [group.id]);
+
+  // CLI status + currently-running set on mount.
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    (async () => {
+      const [s, list] = await Promise.all([
+        client.getPortlessCliStatus(),
+        client.listPortlessRunning(),
+      ]);
+      if (cancelled) return;
+      setCli(s);
+      const map = new Map<string, PortlessActionStatus>();
+      for (const a of list) if (a.groupId === group.id) map.set(a.actionId, a);
+      setRunning(map);
+    })();
+    return () => { cancelled = true; };
+  }, [client, group.id]);
+
+  // Subscribe to status updates flowing in over WS by polling the lib hook —
+  // ClaudeClient already routes `portless_status` to onPortlessStatus, which
+  // is wired up at the ChatApp level. Here we listen to a custom window
+  // event the ChatApp re-emits so this pane stays self-contained.
+  useEffect(() => {
+    const onStatus = (e: Event) => {
+      const status = (e as CustomEvent<PortlessActionStatus>).detail;
+      if (!status || status.groupId !== group.id) return;
+      setRunning(prev => {
+        const next = new Map(prev);
+        if (status.state === 'exited' || status.state === 'failed') next.delete(status.actionId);
+        else next.set(status.actionId, status);
+        return next;
+      });
+    };
+    window.addEventListener('portless_status', onStatus);
+    return () => window.removeEventListener('portless_status', onStatus);
+  }, [group.id]);
+
+  const persist = (next: PortlessConfig) => {
+    onPatch({ portless: cleanCfg(next) });
+  };
+  const setActions = (nextActions: PortlessAction[]) => {
+    setDraft(nextActions);
+    persist({ ...cfg, actions: nextActions });
+  };
+
+  const patchAction = (id: string, patch: Partial<PortlessAction>) => {
+    setDraft(prev => prev.map(a => a.id === id ? { ...a, ...patch } : a));
+  };
+  const commitAction = (id: string) => {
+    const merged = draft.map(a => a.id === id ? a : a);
+    setActions(merged);
+  };
+  const addAction = () => {
+    const fresh: PortlessAction = { id: genActionId(), name: '', command: '', hostname: '' };
+    setActions([...draft, fresh]);
+  };
+  const removeAction = (id: string) => {
+    setActions(draft.filter(a => a.id !== id));
+    if (client) void client.forgetPortlessAction(group.id, id);
+  };
+
+  const run = async (a: PortlessAction) => {
+    if (!client || !group.cwd) { setError('Set a working directory on this project first.'); return; }
+    const host = resolveHost(a, tld);
+    const name = (a.name.trim() || slugHost(host.split('.')[0]!) || 'app');
+    if (!a.command.trim()) { setError('Add a command to run.'); return; }
+    setBusy(prev => new Set(prev).add(a.id));
+    setError(null);
+    try {
+      const status = await client.runPortlessAction({
+        groupId: group.id,
+        actionId: a.id,
+        name,
+        command: a.command.trim(),
+        hostname: host,
+        cwd: group.cwd,
+        noTls: !tls,
+        source: 'user',
+      });
+      setRunning(prev => { const m = new Map(prev); m.set(a.id, status); return m; });
+    } catch (e: any) {
+      setError(e?.message || 'Failed to start action');
+    } finally {
+      setBusy(prev => { const s = new Set(prev); s.delete(a.id); return s; });
+    }
+  };
+
+  const stop = async (a: PortlessAction) => {
+    if (!client) return;
+    setBusy(prev => new Set(prev).add(a.id));
+    try { await client.stopPortlessAction(group.id, a.id); }
+    finally { setBusy(prev => { const s = new Set(prev); s.delete(a.id); return s; }); }
+  };
+
+  const startAll = async () => {
+    for (const a of draft) {
+      if (!running.has(a.id) && a.name.trim() && a.command.trim()) {
+        // eslint-disable-next-line no-await-in-loop
+        await run(a);
+      }
+    }
+  };
+  const stopAllLocal = async () => {
+    for (const a of draft) {
+      if (running.has(a.id)) {
+        // eslint-disable-next-line no-await-in-loop
+        await stop(a);
+      }
+    }
+  };
+
+  const detect = async () => {
+    if (!client || !group.cwd) return;
+    setError(null);
+    const res = await client.detectPortlessScripts(group.cwd);
+    if (res.suggested.length === 0) { setError('No dev-server scripts found in package.json.'); return; }
+    const existingNames = new Set(draft.map(a => a.name));
+    const additions: PortlessAction[] = [];
+    for (const s of res.suggested) {
+      if (existingNames.has(s.name)) continue;
+      additions.push({ id: genActionId(), name: s.name, command: s.command, hostname: `${slugHost(s.name)}.${tld}` });
+    }
+    if (additions.length > 0) setActions([...draft, ...additions]);
+    else setError('All detected scripts already have actions.');
+  };
+
+  const runningCount = running.size;
+  const totalRunnable = draft.filter(a => a.name.trim() && a.command.trim()).length;
+
+  return (
+    <>
+      <div className="mb-4 flex items-end justify-between gap-4">
+        <div>
+          <h3 className="text-[13px] font-semibold text-zinc-200">Actions</h3>
+          <p className="mt-1 text-[12px] text-zinc-500 max-w-[68ch]">
+            Named server commands taskr can run through{' '}
+            <a href="https://portless.sh" target="_blank" rel="noreferrer" className="text-zinc-300 underline">Portless</a>.
+            Each row becomes its own URL — no port number, HTTPS by default.
+          </p>
+        </div>
+        {runningCount > 0 && (
+          <span className="inline-flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-emerald-400 shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            {runningCount} of {totalRunnable} running
+          </span>
+        )}
+      </div>
+
+      {cli && !cli.available && (
+        <div className="text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2.5 mb-4">
+          Portless CLI not found. Install with <code className="font-mono text-amber-200">npm install -g portless</code> and restart taskr.
+        </div>
+      )}
+
+      <button
+        onClick={() => persist({ ...cfg, enabled: !enabled })}
+        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border hover:border-border-light text-left mb-5"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="text-[12.5px] text-zinc-100">Use Portless for this project's actions</div>
+          <div className="text-[11px] text-zinc-500 mt-0.5">Off: actions still appear but taskr won't route them through Portless.</div>
+        </div>
+        <span className={`w-8 h-[18px] rounded-full relative transition-colors ${enabled ? 'bg-violet-600' : 'bg-zinc-700'}`}>
+          <span className={`absolute top-[2px] left-[2px] w-3.5 h-3.5 rounded-full bg-white transition-transform ${enabled ? 'translate-x-[14px]' : ''}`} />
+        </span>
+      </button>
+
+      {/* Actions grid */}
+      <div className="rounded-lg border border-border bg-surface-light/30 overflow-hidden">
+        <div className="grid grid-cols-[14px_180px_1.6fr_1fr_32px] gap-2.5 px-3 py-2 bg-surface-light border-b border-border text-[10px] uppercase tracking-[0.12em] text-zinc-500 font-medium items-center">
+          <div />
+          <div>Name</div>
+          <div>Command</div>
+          <div>Portless hostname</div>
+          <div />
+        </div>
+
+        {draft.length === 0 ? (
+          <div className="px-3 py-6 text-center text-[12px] text-zinc-500">
+            No actions yet. Add one below to run a dev server through Portless.
+          </div>
+        ) : (
+          draft.map(a => {
+            const status = running.get(a.id);
+            const live = status && (status.state === 'running' || status.state === 'starting');
+            const failed = status && status.state === 'failed';
+            const isBusy = busy.has(a.id);
+            const dotClass =
+              status?.state === 'running' ? 'bg-emerald-400 animate-pulse' :
+              status?.state === 'starting' ? 'bg-amber-400 animate-pulse' :
+              status?.state === 'stopping' ? 'bg-amber-400' :
+              failed ? 'bg-red-400' :
+              'bg-zinc-700';
+            const title =
+              status?.state === 'running' ? 'Running — click to stop' :
+              status?.state === 'starting' ? 'Starting…' :
+              status?.state === 'stopping' ? 'Stopping…' :
+              failed ? (status?.lastError || 'Failed — click to retry') :
+              'Idle — click to run';
+            return (
+              <div key={a.id} className="grid grid-cols-[14px_180px_1.6fr_1fr_32px] gap-2.5 px-3 py-2 items-center hover:bg-violet-500/[0.04]">
+                <button
+                  type="button"
+                  onClick={() => (live ? stop(a) : run(a))}
+                  disabled={isBusy || !cli?.available || !group.cwd}
+                  title={title}
+                  className="w-3.5 h-3.5 inline-flex items-center justify-center rounded-full disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+                </button>
+                <input
+                  value={a.name}
+                  onChange={e => patchAction(a.id, { name: e.target.value })}
+                  onBlur={() => commitAction(a.id)}
+                  placeholder="action-name"
+                  className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 focus:bg-surface-lighter font-mono text-[12px] text-violet-200 outline-none"
+                />
+                <input
+                  value={a.command}
+                  onChange={e => patchAction(a.id, { command: e.target.value })}
+                  onBlur={() => commitAction(a.id)}
+                  placeholder="bun run dev"
+                  className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 focus:bg-surface-lighter font-mono text-[11.5px] text-zinc-100 outline-none"
+                />
+                <input
+                  value={a.hostname || ''}
+                  onChange={e => patchAction(a.id, { hostname: e.target.value })}
+                  onBlur={() => commitAction(a.id)}
+                  placeholder={`${slugHost(a.name) || 'app'}.${tld}`}
+                  className="w-full px-2.5 py-1.5 rounded bg-surface-light border border-border focus:border-violet-500 focus:bg-surface-lighter font-mono text-[11.5px] text-zinc-100 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeAction(a.id)}
+                  title="Remove"
+                  className="w-7 h-7 inline-flex items-center justify-center rounded-md text-zinc-500 hover:text-red-300 hover:bg-red-500/10"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })
+        )}
+
+        <div className="px-3 py-2 flex items-center gap-2 bg-surface-light/40 border-t border-border">
+          <button
+            type="button"
+            onClick={addAction}
+            className="text-[11.5px] px-2.5 py-1.5 rounded-md text-zinc-200 bg-surface-light hover:bg-surface-lighter border border-border hover:border-border-light inline-flex items-center gap-1.5"
+          >
+            <Plus className="w-3 h-3" />
+            Add action
+          </button>
+          <button
+            type="button"
+            onClick={detect}
+            disabled={!client || !group.cwd}
+            className="text-[11.5px] px-2.5 py-1.5 rounded-md text-zinc-300 bg-surface-light hover:bg-surface-lighter border border-border hover:border-border-light inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ScanLine className="w-3 h-3" />
+            Detect from package.json
+          </button>
+          <div className="ml-auto inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={startAll}
+              disabled={!cli?.available || draft.length === 0}
+              className="text-[11.5px] px-2.5 py-1.5 rounded-md text-white bg-violet-600 hover:bg-violet-500 border border-violet-500/50 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Play className="w-3 h-3" />
+              Start all
+            </button>
+            <button
+              type="button"
+              onClick={stopAllLocal}
+              disabled={runningCount === 0}
+              className="text-[11.5px] px-2.5 py-1.5 rounded-md text-zinc-300 bg-surface-light hover:bg-surface-lighter border border-border inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Square className="w-3 h-3" />
+              Stop all
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-3 text-[11.5px] text-red-300 bg-red-500/10 border border-red-500/25 rounded-md px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {/* Defaults strip */}
+      <div className="mt-6">
+        <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 mb-2.5">Defaults</div>
+        <div className="grid grid-cols-3 gap-2">
+          <div className="flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border">
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] text-zinc-200">TLD</div>
+              <div className="text-[10.5px] text-zinc-500">suffix on new actions</div>
+            </div>
+            <select
+              value={tld}
+              onChange={e => persist({ ...cfg, tld: e.target.value as 'localhost' | 'test' })}
+              className="bg-surface-lighter border border-border rounded px-2 py-1 text-[11.5px] text-zinc-200"
+            >
+              <option value="localhost">.localhost</option>
+              <option value="test">.test</option>
+            </select>
+          </div>
+          <button
+            type="button"
+            onClick={() => persist({ ...cfg, tls: !tls })}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border text-left"
+          >
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] text-zinc-200">HTTPS</div>
+              <div className="text-[10.5px] text-zinc-500">local CA-signed certs</div>
+            </div>
+            <span className={`w-8 h-[18px] rounded-full relative transition-colors ${tls ? 'bg-violet-600' : 'bg-zinc-700'}`}>
+              <span className={`absolute top-[2px] left-[2px] w-3.5 h-3.5 rounded-full bg-white transition-transform ${tls ? 'translate-x-[14px]' : ''}`} />
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => persist({ ...cfg, worktreeSubdomains: !worktreeSubs })}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border text-left"
+          >
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] text-zinc-200">Worktree subdomains</div>
+              <div className="text-[10.5px] text-zinc-500">prefix branch → hostname</div>
+            </div>
+            <span className={`w-8 h-[18px] rounded-full relative transition-colors ${worktreeSubs ? 'bg-violet-600' : 'bg-zinc-700'}`}>
+              <span className={`absolute top-[2px] left-[2px] w-3.5 h-3.5 rounded-full bg-white transition-transform ${worktreeSubs ? 'translate-x-[14px]' : ''}`} />
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* CLI status footer */}
+      <div className="mt-5 text-[11px] text-zinc-500 inline-flex items-center gap-2">
+        {cli?.available ? (
+          <>
+            <Check className="w-3 h-3 text-emerald-400" />
+            portless {cli.version} · <span className="font-mono">{cli.bin}</span>
+          </>
+        ) : (
+          <>
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" />
+            Portless CLI not detected
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** Strip undefined-equivalent fields so the persisted blob stays small.
+ *  Keeps `actions` even when empty so removal of the last row sticks. */
+function cleanCfg(cfg: PortlessConfig): PortlessConfig | undefined {
+  const out: PortlessConfig = {};
+  if (cfg.enabled === false) out.enabled = false;
+  if (cfg.tld && cfg.tld !== 'localhost') out.tld = cfg.tld;
+  if (cfg.tls === false) out.tls = false;
+  if (cfg.worktreeSubdomains === false) out.worktreeSubdomains = false;
+  if (cfg.actions && cfg.actions.length > 0) out.actions = cfg.actions;
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
 function ProjectSessionsPane({ group, tabGroupMap }: { group: TabGroupInfo; tabGroupMap: Record<string, string> }) {
   const memberIds = useMemo(
     () => Object.entries(tabGroupMap).filter(([, gid]) => gid === group.id).map(([sid]) => sid),
@@ -1751,6 +2164,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
       {tab === 'environment' && <ProjectEnvironmentPane group={group} onPatch={onPatch} />}
       {tab === 'mcp'         && <ProjectMcpPane group={group} onPatch={onPatch} />}
       {tab === 'hooks'       && <ProjectHooksPane group={group} client={client} />}
+      {tab === 'portless'    && <ProjectPortlessPane group={group} onPatch={onPatch} client={client} />}
       {tab === 'sessions'    && <ProjectSessionsPane group={group} tabGroupMap={tabGroupMap} />}
 
       {/* Danger zone (always present, at the bottom) */}

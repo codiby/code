@@ -18,6 +18,7 @@ import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { PortlessActionToast } from './PortlessActionToast';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
@@ -1476,6 +1477,16 @@ export function ChatApp() {
         },
 
         onWelcome: () => {},
+
+        onPortlessStatus: (status) => {
+          // Re-emit on a window event so any open Project Settings pane and
+          // the action toast component can react without ChatApp owning a
+          // dedicated piece of state. Lightweight pub/sub.
+          window.dispatchEvent(new CustomEvent('portless_status', { detail: status }));
+        },
+        onPortlessFired: (info) => {
+          window.dispatchEvent(new CustomEvent('portless_fired', { detail: info }));
+        },
 
         onConnectionChange: (status) => {
           if (status === 'connected') {
@@ -5456,6 +5467,7 @@ export function ChatApp() {
             persistPrefs({ tabGroups: newGroups });
           }}
         />
+        <PortlessActionToast />
         <BypassWarningModal
           open={pendingBypassSessionId !== null}
           onCancel={() => setPendingBypassSessionId(null)}

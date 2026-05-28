@@ -83,6 +83,17 @@ import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, save
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
 import { transcribeAudioBuffer } from './deepgram';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './tailscale';
+import {
+  getPortlessCliStatus,
+  runAction as portlessRunAction,
+  stopAction as portlessStopAction,
+  stopAll as portlessStopAll,
+  forgetAction as portlessForgetAction,
+  snapshotAll as portlessSnapshotAll,
+  onPortlessStatus,
+  onPortlessActionFired,
+  type PortlessActionStatus,
+} from './portless';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -216,6 +227,29 @@ function broadcastRemoteStatus(remoteId: string, status: string, lastError: stri
 onTunnelStatus((remoteId, status, lastError) => {
   broadcastRemoteStatus(remoteId, status, lastError);
 });
+
+/** Broadcast a Portless action status update to every frontend client.
+ *  This is a global stream (not per-session) so the Project Settings pane
+ *  can update across windows and the running-actions toast can pop. */
+function broadcastPortlessStatus(status: PortlessActionStatus) {
+  const data = JSON.stringify({ type: 'portless_status', status });
+  for (const ws of frontendClients) {
+    try { ws.send(data); } catch {}
+  }
+}
+
+/** Broadcast a "this action just fired" event — distinct from status so
+ *  the UI can decide to pop a toast only for new launches (not for status
+ *  transitions like running → exited). */
+function broadcastPortlessFired(info: { action: PortlessActionStatus; source: 'user' | 'agent'; sessionId?: string }) {
+  const data = JSON.stringify({ type: 'portless_fired', ...info });
+  for (const ws of frontendClients) {
+    try { ws.send(data); } catch {}
+  }
+}
+
+onPortlessStatus(broadcastPortlessStatus);
+onPortlessActionFired(broadcastPortlessFired);
 
 /** Broadcast the full preferences object so clients stay in sync after a
  *  server-side mutation (e.g. an MCP tool updating tab groups). */
@@ -1762,6 +1796,87 @@ const server = Bun.serve({
         funnelPorts: status.ports,
         funnelUrl: enabled && !error && hostname ? `https://${hostname}` : null,
       }, { status: error ? 400 : 200, headers: corsHeaders });
+    }
+
+    // ── Portless (named local dev servers with stable hostnames) ─────────
+
+    if (url.pathname === '/portless/cli-status' && req.method === 'GET') {
+      return Response.json(getPortlessCliStatus(), { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/status' && req.method === 'GET') {
+      return Response.json({ actions: portlessSnapshotAll() }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/run' && req.method === 'POST') {
+      const body = await req.json().catch(() => ({})) as {
+        groupId?: string; actionId?: string;
+        name?: string; command?: string; hostname?: string; cwd?: string;
+        noTls?: boolean; source?: 'user' | 'agent'; sessionId?: string;
+      };
+      if (!body.groupId || !body.actionId || !body.name || !body.command || !body.hostname || !body.cwd) {
+        return Response.json({ error: 'groupId, actionId, name, command, hostname and cwd are required.' }, { status: 400, headers: corsHeaders });
+      }
+      const res = portlessRunAction({
+        groupId: body.groupId,
+        actionId: body.actionId,
+        name: body.name,
+        command: body.command,
+        hostname: body.hostname,
+        cwd: body.cwd,
+        noTls: body.noTls === true,
+        source: body.source === 'agent' ? 'agent' : 'user',
+        sessionId: body.sessionId,
+      });
+      if (!res.ok) {
+        return Response.json({ error: res.error }, { status: 400, headers: corsHeaders });
+      }
+      return Response.json({ status: res.status }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/stop' && req.method === 'POST') {
+      const body = await req.json().catch(() => ({})) as { groupId?: string; actionId?: string };
+      if (!body.groupId || !body.actionId) {
+        return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
+      }
+      const stopped = portlessStopAction(body.groupId, body.actionId);
+      return Response.json({ stopped }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/stop-all' && req.method === 'POST') {
+      portlessStopAll();
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/forget' && req.method === 'POST') {
+      const body = await req.json().catch(() => ({})) as { groupId?: string; actionId?: string };
+      if (!body.groupId || !body.actionId) {
+        return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
+      }
+      portlessForgetAction(body.groupId, body.actionId);
+      return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    if (url.pathname === '/portless/detect' && req.method === 'GET') {
+      const cwd = url.searchParams.get('cwd');
+      if (!cwd) return Response.json({ error: 'cwd is required.' }, { status: 400, headers: corsHeaders });
+      try {
+        const pkgPath = join(cwd, 'package.json');
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string>; name?: string };
+        const scripts = pkg.scripts || {};
+        const suggested: { name: string; command: string }[] = [];
+        for (const [scriptName, _cmd] of Object.entries(scripts)) {
+          // Surface scripts that look like dev servers — kind enough for a
+          // first pass: keys starting with `start`, `dev`, `serve`, or
+          // `nx run <app>:serve` style scripts.
+          if (/^(start|dev|serve)([:-].+)?$/.test(scriptName)) {
+            suggested.push({ name: scriptName, command: `npm run ${scriptName}` });
+          }
+        }
+        return Response.json({ projectName: pkg.name || null, suggested }, { headers: corsHeaders });
+      } catch (e: any) {
+        return Response.json({ error: e?.message || 'could not read package.json' }, { status: 400, headers: corsHeaders });
+      }
     }
 
     // ── PR Links ─────────────────────────────────────────────────────
