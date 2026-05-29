@@ -1242,6 +1242,66 @@ function HooksEditor({ scope, cwd, client }: { scope: HookScope; cwd?: string; c
                   <div className="text-[12.5px] font-medium text-zinc-100">{evt.label}</div>
                   <div className="text-[11px] text-zinc-500">{evt.hint}</div>
                 </div>
+                <button onClick={() => addRow(evt.id)} className="text-[11.5px] inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-300 hover:text-zinc-100 hover:bg-surface-lighter">
+                  <Plus className="w-3 h-3" />
+                  Add
+                </button>
+              </div>
+
+              {eventRows.length === 0 ? (
+                <div className="text-[11.5px] text-zinc-600 bg-surface-light/40 border border-dashed border-border rounded-md px-3 py-2">
+                  No {evt.label} hooks.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {eventRows.map(row => (
+                    <div key={row.id} className="bg-surface-light border border-border rounded-md p-2.5 space-y-2">
+                      {evt.supportsMatcher && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16">Matcher</span>
+                          <input
+                            value={row.matcher}
+                            onChange={e => updateRow(row.id, { matcher: e.target.value })}
+                            placeholder="Bash, Edit, *  — blank = any"
+                            className="flex-1 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
+                          />
+                        </div>
+                      )}
+                      <div className="flex items-start gap-2">
+                        <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16 pt-2">Command</span>
+                        <textarea
+                          value={row.command}
+                          onChange={e => updateRow(row.id, { command: e.target.value })}
+                          placeholder="e.g. echo hook fired for $TOOL_NAME"
+                          rows={Math.max(1, Math.min(4, row.command.split('\n').length))}
+                          className="flex-1 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500 resize-y leading-relaxed"
+                        />
+                        <button onClick={() => removeRow(row.id)} className="p-1.5 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 mt-1" aria-label="Remove">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16">Timeout</span>
+                        <input
+                          type="number"
+                          value={row.timeout ?? ''}
+                          onChange={e => updateRow(row.id, { timeout: e.target.value ? Number(e.target.value) : undefined })}
+                          placeholder="seconds (optional)"
+                          className="w-40 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 /** Global Portless settings — controls the system proxy (start/stop/mode)
  *  and the local CA trust. The proxy mode determines whether the user can
  *  visit `https://api.localhost` cleanly (HTTPS :443) or has to keep
@@ -1455,66 +1515,6 @@ function PortlessProxySection({ client, tld, onChangeTld }: { client: ClaudeClie
   );
 }
 
-                <button onClick={() => addRow(evt.id)} className="text-[11.5px] inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-300 hover:text-zinc-100 hover:bg-surface-lighter">
-                  <Plus className="w-3 h-3" />
-                  Add
-                </button>
-              </div>
-
-              {eventRows.length === 0 ? (
-                <div className="text-[11.5px] text-zinc-600 bg-surface-light/40 border border-dashed border-border rounded-md px-3 py-2">
-                  No {evt.label} hooks.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {eventRows.map(row => (
-                    <div key={row.id} className="bg-surface-light border border-border rounded-md p-2.5 space-y-2">
-                      {evt.supportsMatcher && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16">Matcher</span>
-                          <input
-                            value={row.matcher}
-                            onChange={e => updateRow(row.id, { matcher: e.target.value })}
-                            placeholder="Bash, Edit, *  — blank = any"
-                            className="flex-1 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
-                          />
-                        </div>
-                      )}
-                      <div className="flex items-start gap-2">
-                        <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16 pt-2">Command</span>
-                        <textarea
-                          value={row.command}
-                          onChange={e => updateRow(row.id, { command: e.target.value })}
-                          placeholder="e.g. echo hook fired for $TOOL_NAME"
-                          rows={Math.max(1, Math.min(4, row.command.split('\n').length))}
-                          className="flex-1 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500 resize-y leading-relaxed"
-                        />
-                        <button onClick={() => removeRow(row.id)} className="p-1.5 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 mt-1" aria-label="Remove">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10.5px] uppercase tracking-wider text-zinc-500 w-16">Timeout</span>
-                        <input
-                          type="number"
-                          value={row.timeout ?? ''}
-                          onChange={e => updateRow(row.id, { timeout: e.target.value ? Number(e.target.value) : undefined })}
-                          placeholder="seconds (optional)"
-                          className="w-40 bg-surface-lighter border border-border rounded px-2.5 py-1.5 text-[12px] font-mono text-zinc-100 focus:outline-none focus:border-violet-500"
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </>
-  );
-}
-
 function ProjectHooksPane({ group, client }: { group: TabGroupInfo; client: ClaudeClient | null }) {
   return (
     <>
@@ -1629,7 +1629,6 @@ function resolveHost(action: PortlessAction, tld: string): string {
 
 function ProjectPortlessPane({ group, onPatch, client, tld }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void; client: ClaudeClient | null; tld: string }) {
   const cfg: PortlessConfig = group.portless || {};
-  const tld: 'localhost' | 'test' = cfg.tld || 'localhost';
   const tls = cfg.tls !== false;
   const worktreeSubs = cfg.worktreeSubdomains !== false;
   const actions = cfg.actions || [];
@@ -2050,6 +2049,7 @@ function cleanCfg(cfg: PortlessConfig): PortlessConfig | undefined {
   if (cfg.tls === false) out.tls = false;
   if (cfg.worktreeSubdomains === false) out.worktreeSubdomains = false;
   if (cfg.actions && cfg.actions.length > 0) out.actions = cfg.actions;
+  if (cfg.exports && cfg.exports.length > 0) out.exports = cfg.exports;
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
@@ -2144,6 +2144,7 @@ export function ProjectSettingsModal({
   interruptOnSend, onToggleInterruptOnSend,
   showTelegramSession, onToggleShowTelegramSession,
   globalEnvVars, onChangeGlobalEnvVars,
+  portlessTld, onChangePortlessTld,
   client, claudeModels,
   onDeleteGroup, onPatchGroup,
 }: ProjectSettingsModalProps) {
@@ -2218,6 +2219,7 @@ export function ProjectSettingsModal({
             <NavItem icon={<Send className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Telegram Bot" active={selected.kind === 'global' && selected.id === 'telegram'} onClick={() => setSelected({ kind: 'global', id: 'telegram' })} />
             <NavItem icon={<Mic className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Deepgram (Voice)" active={selected.kind === 'global' && selected.id === 'deepgram'} onClick={() => setSelected({ kind: 'global', id: 'deepgram' })} />
             <NavItem icon={<Globe className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Tailscale Funnel" active={selected.kind === 'global' && selected.id === 'tailscale'} onClick={() => setSelected({ kind: 'global', id: 'tailscale' })} />
+            <NavItem icon={<Globe className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Portless Proxy" active={selected.kind === 'global' && selected.id === 'portless'} onClick={() => setSelected({ kind: 'global', id: 'portless' })} />
             <NavItem icon={<Smartphone className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Mobile Pairing" active={selected.kind === 'global' && selected.id === 'mobile'} onClick={() => setSelected({ kind: 'global', id: 'mobile' })} />
             <NavItem icon={<ArrowRight className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Remote Workstations" active={selected.kind === 'global' && selected.id === 'remotes'} onClick={() => setSelected({ kind: 'global', id: 'remotes' })} />
             <NavItem icon={<Plug className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Plugins" active={selected.kind === 'global' && selected.id === 'plugins'} onClick={() => setSelected({ kind: 'global', id: 'plugins' })} />
@@ -2262,6 +2264,7 @@ export function ProjectSettingsModal({
                   memberCount={memberCount[activeProject.id] || 0}
                   client={client}
                   claudeModels={claudeModels}
+                  portlessTld={portlessTld}
                 />
               )
               : (
@@ -2280,6 +2283,8 @@ export function ProjectSettingsModal({
                   onToggleShowTelegramSession={onToggleShowTelegramSession}
                   globalEnvVars={globalEnvVars}
                   onChangeGlobalEnvVars={onChangeGlobalEnvVars}
+                  portlessTld={portlessTld}
+                  onChangePortlessTld={onChangePortlessTld}
                   client={client}
                   onDeleteGroup={onDeleteGroup}
                   onSelectGroup={handleSelectProject}
@@ -2320,6 +2325,8 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
   onToggleShowTelegramSession: (v: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
   onChangeGlobalEnvVars: (next: ProjectEnvVar[]) => void;
+  portlessTld: string;
+  onChangePortlessTld: (next: string) => void;
   client: ClaudeClient | null;
   onDeleteGroup: (id: string) => void;
   onSelectGroup: (id: string) => void;
@@ -2330,6 +2337,7 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
       {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
       {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
       {section === 'tailscale'   && <TailscaleSection serverUrl={serverUrl} />}
+      {section === 'portless'    && <PortlessProxySection client={client} tld={portlessTld} onChangeTld={onChangePortlessTld} />}
       {section === 'mobile'      && <MobileSection />}
       {section === 'remotes'     && <RemotesSection serverUrl={serverUrl} />}
       {section === 'plugins'     && <PluginsContent />}
@@ -2363,6 +2371,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
   memberCount: number;
   client: ClaudeClient | null;
   claudeModels: { id: string; label: string }[];
+  portlessTld: string;
 }) {
   const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
   const Icon = group.icon ? ICON_MAP[group.icon] : Folder;
@@ -2876,14 +2885,3 @@ function ScanEnvModal({
     </div>
   );
 }
-
-  if (cfg.exports && cfg.exports.length > 0) out.exports = cfg.exports;
-  portlessTld, onChangePortlessTld,
-            <NavItem icon={<Globe className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Portless Proxy" active={selected.kind === 'global' && selected.id === 'portless'} onClick={() => setSelected({ kind: 'global', id: 'portless' })} />
-                  portlessTld={portlessTld}
-                  portlessTld={portlessTld}
-                  onChangePortlessTld={onChangePortlessTld}
-  portlessTld: string;
-  onChangePortlessTld: (next: string) => void;
-      {section === 'portless'    && <PortlessProxySection client={client} tld={portlessTld} onChangeTld={onChangePortlessTld} />}
-  portlessTld: string;

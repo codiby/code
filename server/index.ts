@@ -92,22 +92,22 @@ import {
   snapshotAll as portlessSnapshotAll,
   onPortlessStatus,
   onPortlessActionFired,
-import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './action-env';
   onPortlessUrlResolved,
   type PortlessActionStatus,
   type PortlessUrlResolvedDetail,
+  getProxyStatus as getPortlessProxyStatus,
+  startProxy as startPortlessProxy,
+  stopProxy as stopPortlessProxy,
+  trustCA as trustPortlessCA,
+  type ProxyMode,
 } from './portless';
+import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './action-env';
 
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
 
 // Register provider adapters before loading sessions (so default provider exists)
-  getProxyStatus as getPortlessProxyStatus,
-  startProxy as startPortlessProxy,
-  stopProxy as stopPortlessProxy,
-  trustCA as trustPortlessCA,
-  type ProxyMode,
 registerProvider(ClaudeAdapter);
 registerProvider(CodexAdapter);
 registerProvider(OpenCodeAdapter);
@@ -746,8 +746,17 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   // Spawn a long-lived interactive PTY shell. Client (xterm.js) streams
   // keystrokes via `terminal_input` and receives output via `terminal_data`.
   if (type === 'exec_shell') {
-    const { sessionId, procId: clientProcId, cwd, cols, rows } = msg as {
-      sessionId: string; procId?: string; cwd?: string; cols?: number; rows?: number;
+    const { sessionId, procId: clientProcId, cwd, cols, rows, label, command } = msg as {
+      sessionId: string;
+      procId?: string;
+      cwd?: string;
+      cols?: number;
+      rows?: number;
+      /** Set by InteractiveTerminalBubble when respawning a bubble whose
+       *  original PTY died with the bridge — lets the new TrackedProcess
+       *  reclaim the action's identity so MCP lookups by name still find it. */
+      label?: string;
+      command?: string;
     };
     if (!sessionId) return;
 
@@ -764,11 +773,6 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: -1 });
       log(`[exec_shell] declined respawn for tombed procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)}`);
       return;
-      /** Set by InteractiveTerminalBubble when respawning a bubble whose
-       *  original PTY died with the bridge — lets the new TrackedProcess
-       *  reclaim the action's identity so MCP lookups by name still find it. */
-      label?: string;
-      command?: string;
     }
 
     // Re-attach path: if the client already sent us this procId and the PTY
@@ -836,6 +840,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       rows: execRows,
       pty,
       label,
+      injectedEnv: Object.keys(execShellEnv).length > 0 ? execShellEnv : undefined,
     };
     trackedProcesses.set(procId, tp);
     saveProcessRegistry();
@@ -852,7 +857,6 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
       appendProcessOutput(procId, text);
       broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
-      injectedEnv: Object.keys(execShellEnv).length > 0 ? execShellEnv : undefined,
     });
     pty.onExit((code) => {
       if (tp.exitCode !== null) return; // already handled
