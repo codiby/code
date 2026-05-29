@@ -5,6 +5,92 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] — 2026-05-28
+
+### Added
+
+- **Project actions with optional Portless wrap.** New Actions tab in
+  Project Settings lets you declare named dev-server commands per
+  project (name · command · hostname). A per-row globe toggle decides
+  whether the action is launched through the `portless` CLI for a
+  stable `https://<name>.<tld>` URL, or run raw. Includes Start all /
+  Stop all, a leading status dot that toggles run/stop, and "Detect
+  from package.json" to seed rows from existing `start` / `dev` /
+  `serve` scripts. Replaces the older `portless_*` MCP tools with
+  generic `actions_list` / `actions_run` / `actions_stop`.
+- **Worktree-prefixed Portless subdomains.** With
+  `worktreeSubdomains` enabled on the project, actions spawned from a
+  worktree session serve at `<branch>.<slug>.<tld>` instead of the
+  bare slug — you can keep two checkouts of the same project live on
+  different URLs at once. The action's cwd now follows the session's
+  worktree rather than always being the project root.
+- **Cross-action env injection.** New `portless.exports` entries map an
+  env var name to a source action with a format preset (`url` / `host`
+  / `port`) or a free-form template (`{host}` / `{url}` / `{port}` /
+  `{scheme}`). The bridge resolves these at spawn time and merges them
+  into every taskr-spawned process — actions, `/terminal` shells,
+  `spawn_terminal` MCP — so a consumer action on branch `feat-x`
+  automatically gets `API_URL=https://feat-x.api.localhost` while one
+  on `main` keeps the bare URL.
+- **MCP-launched terminals are visible and tracked.** `actions_run`
+  (and the legacy `portless_run`) now spawns into a PTY labelled
+  `Action · <name>` so the user sees the full composite command in a
+  live terminal bubble in the chat *and* in the Processes panel —
+  same UX as a user-clicked launch. The launch toast still pops with
+  the resolved URL.
+- **Bundled ripgrep + VS Code-style search panel.** `@vscode/ripgrep`
+  ships in `extraResources` so file search no longer falls back to a
+  recursive `grep` when the host lacks rg. New `Aa` case toggle (off =
+  smart-case, on = case-sensitive), a "files to exclude" input that
+  forwards each comma-separated glob as `rg -g '!<glob>'`, results
+  grouped by file under a collapsible chevron with per-file match
+  counts, and a 150ms debounce with an `AbortController` so stale
+  results don't overwrite fresh ones. On a 3.7 GB monorepo, search
+  returns in ~60ms (previously multi-second via the grep fallback).
+- **Global Portless proxy admin.** New "Portless Proxy" section under
+  Settings shows a live status probe (TCP connect to :443, :80,
+  :1355), a mode picker (default :1355 / HTTP :80 / HTTPS :443) that
+  shells out via `osascript ... with administrator privileges` for
+  privileged ports, plus start / stop / trust-CA. TLD is now a global
+  preference (`portlessTld`) since the proxy serves one TLD at a time.
+- **Dismissable terminals, persisted.** Closing a terminal bubble from
+  the chat or shells dock now persists in
+  `ui-processes/dismissed-shells.json` per session, with the bridge as
+  the source of truth (`GET /sessions/:id/shells/dismissed`, `DELETE
+  /sessions/:id/shells/:procId`, `shell_dismissed` WS event). A closed
+  terminal stays closed across reloads, and a new procId graveyard
+  short-circuits `exec_shell` on tombed procIds so reattached bubbles
+  render as exited instead of resurrecting the action.
+- **Resizable terminals panel.** Drag handle at the top of the panel
+  with `terminalsPanelHeight` persisted in prefs (double-click to
+  reset), an always-on bottom bar with a `+ new` affordance even when
+  the dock is empty, restyled tab strip, right-click rename
+  (`shellRenames`), and an `env · N` pill that popovers the env vars
+  taskr injected at the terminal's spawn time.
+
+### Changed
+
+- **Worktree branch pickers virtualized.** The Source and
+  Existing-branch Autocompletes in the worktree create form now wrap
+  their ListBoxes in `Virtualizer` + `ListLayout` and use the dynamic
+  `items` prop, so opening either popover renders only the visible
+  rows instead of one DOM node per branch.
+
+### Fixed
+
+- **Portless CLI detection.** The bridge no longer caches a null
+  result and walks the user's nvm / fnm / asdf / volta directories
+  before falling back to a login-shell `command -v`, so
+  launchd-spawned bridges find `portless` without a manual PATH
+  override.
+- **Build regressions from the portless merge.** A botched merge had
+  dropped `PortlessProxySection` into the middle of `HooksEditor`'s
+  JSX, broken the `./action-env` import in `server/index.ts`, scattered
+  orphan import / type / JSX fragments across both files, and shadowed
+  `tld` with a per-project local in `ProjectPortlessPane`. All
+  restored so `bun run build-server` + `electron:bundle-resources`
+  pass cleanly.
+
 ## [0.13.0] — 2026-05-23
 
 ### Added
@@ -265,6 +351,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   (electron-builder DMG) instead of Tauri. See git history for the full
   set of changes.
 
+[0.14.0]: https://github.com/jovaz/taskr/releases/tag/v0.14.0
+[0.13.0]: https://github.com/jovaz/taskr/releases/tag/v0.13.0
+[0.12.0]: https://github.com/jovaz/taskr/releases/tag/v0.12.0
+[0.11.1]: https://github.com/jovaz/taskr/releases/tag/v0.11.1
+[0.11.0]: https://github.com/jovaz/taskr/releases/tag/v0.11.0
+[0.10.1]: https://github.com/jovaz/taskr/releases/tag/v0.10.1
+[0.10.0]: https://github.com/jovaz/taskr/releases/tag/v0.10.0
 [0.9.0]: https://github.com/jovaz/taskr/releases/tag/v0.9.0
 [0.8.0]: https://github.com/jovaz/taskr/releases/tag/v0.8.0
 [0.7.0]: https://github.com/jovaz/taskr/releases/tag/v0.7.0
