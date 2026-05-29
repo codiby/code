@@ -56,15 +56,25 @@ process.on('SIGTERM', () => { shutdown(); process.exit(0); });
 process.on('exit', shutdown);
 
 async function main(): Promise<void> {
-  // 1. Bundler + bridge.
-  spawnSub('frontend', 'bash', ['run.sh']);
+  const skipFrontend = process.env.SKIP_DEV_SERVER_START === '1';
+
+  // 1. Bundler + bridge. Skip when the dev server is already running elsewhere
+  //    (e.g. inside WSL) — in that case `dist/` lives on the other filesystem
+  //    and we must not block waiting for it on the Windows side.
+  if (!skipFrontend) {
+    spawnSub('frontend', 'bash', ['run.sh']);
+  } else {
+    console.log('[electron-dev] SKIP_DEV_SERVER_START=1 — attaching to external bridge.');
+  }
 
   // 2. Electron main process (watch).
   spawnSub('electron-tsc', 'bunx', ['tsc', '-p', 'electron/tsconfig.json', '--watch']);
 
   // 3. Wait for first builds.
   console.log('[electron-dev] waiting for first builds…');
-  await waitForFile(join(ROOT, 'dist', 'index.html'));
+  if (!skipFrontend) {
+    await waitForFile(join(ROOT, 'dist', 'index.html'));
+  }
   await waitForFile(join(ROOT, 'electron-dist', 'main.js'));
 
   // 4. Boot electron.
