@@ -1870,6 +1870,10 @@ function ProjectPortlessPane({ group, onPatch, client, tld }: { group: TabGroupI
               status?.state === 'stopping' ? 'Stopping…' :
               failed ? (status?.lastError || 'Failed — click to retry') :
               'Idle — click to run';
+            // Hostname always derives from name + project TLD now — surface the
+            // resolved URL as a sub-line under the name when the action is running.
+            const derivedHost = `${slugHost(a.name) || 'app'}.${tld}`;
+            const liveUrl = resolvedUrls.get(a.id);
             return (
               <div key={a.id} className="grid grid-cols-[14px_180px_1.6fr_22px_1fr_32px] gap-2.5 px-3 py-2 items-center hover:bg-violet-500/[0.04]">
                 <button
@@ -2375,30 +2379,6 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
 }) {
   const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
   const Icon = group.icon ? ICON_MAP[group.icon] : Folder;
-  /** Scan-env modal state — when non-null shows the detect-from-.env UI. */
-  const [scanResults, setScanResults] = useState<null | {
-    candidates: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean; format: PortlessExportFormat }[];
-    scanned: string[];
-  }>(null);
-  const [scanning, setScanning] = useState(false);
-
-  // Local helpers around the project-level `exports` list.
-  const exports = cfg.exports || [];
-  const genExportId = () => { try { return crypto.randomUUID(); } catch { return Math.random().toString(36).slice(2); } };
-  const setExportsList = (next: PortlessExport[]) => persist({ ...cfg, exports: next });
-  const patchExport = (id: string, patch: Partial<PortlessExport>) => {
-    setExportsList(exports.map(e => e.id === id ? { ...e, ...patch } : e));
-  };
-  const removeExport = (id: string) => setExportsList(exports.filter(e => e.id !== id));
-  const addExport = () => {
-    const firstAction = draft.find(a => (a.portless !== false) && a.name.trim());
-    setExportsList([...exports, {
-      id: genExportId(),
-      name: '',
-      sourceActionId: firstAction?.id || '',
-      format: 'url' as const,
-    }]);
-  };
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
@@ -2500,122 +2480,6 @@ function shade(hex: string, amount: number): string {
   b = Math.max(0, Math.min(255, b));
   return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
 }
-  /** Launch the scan-env modal — fetches candidates from the bridge and
-   *  surfaces them for bulk apply. */
-  const openScanModal = async () => {
-    if (!client || !group.cwd) { setError('Set a working directory on this project first.'); return; }
-    setScanning(true);
-    setError(null);
-    try {
-      const actionNames = draft.map(a => a.name).filter(Boolean);
-      const res = await client.scanEnvForActions(group.cwd, actionNames);
-      setScanResults({
-        candidates: res.candidates.map(c => ({ ...c, format: 'url' as const })),
-        scanned: res.scanned,
-      });
-    } catch (e: any) {
-      setError(e?.message || 'Scan failed');
-    } finally {
-      setScanning(false);
-    }
-  };
-
-  /** Apply selected scan candidates as entries in the project's global
-   *  exports list. */
-  const applyScanSelections = (selectedIdxs: Set<number>) => {
-    if (!scanResults) return;
-    const next: PortlessExport[] = [...exports];
-    const existingNames = new Set(next.map(e => e.name));
-    scanResults.candidates.forEach((c, i) => {
-      if (!selectedIdxs.has(i)) return;
-      if (!c.suggestedAction) return;
-      if (existingNames.has(c.var)) return;
-      const sourceAction = draft.find(a => a.name === c.suggestedAction);
-      if (!sourceAction) return;
-      next.push({
-        id: genExportId(),
-        name: c.var,
-        sourceActionId: sourceAction.id,
-        format: c.format,
-      });
-      existingNames.add(c.var);
-    });
-    setExportsList(next);
-    setScanResults(null);
-  };
-
-            // Hostname always derives from name + project TLD now —
-            // surface the resolved URL as a sub-line under the name when
-            // the action is running. Users who need a custom hostname
-            // can rename the action.
-            const derivedHost = `${slugHost(a.name) || 'app'}.${tld}`;
-            const liveUrl = resolvedUrls.get(a.id);
-      {/* Env exports — project-level list of env vars taskr injects into
-          OTHER actions / shells when they spawn. Each row picks a source
-          action and a format; `custom` lets the user write a template with
-          {host} / {url} / {port} / {scheme} placeholders. */}
-      <div className="mt-6">
-        <div className="flex items-end justify-between mb-2.5">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 inline-flex items-center gap-2">
-              Env exports
-              <span className="text-zinc-700 normal-case tracking-normal text-[10.5px]">· {exports.length}</span>
-            </div>
-            <p className="mt-1 text-[11.5px] text-zinc-500 max-w-[68ch]">
-              Injected into every taskr-spawned process (actions, /terminal, spawn_terminal). The source action never receives its own exports.
-            </p>
-          </div>
-          <div className="inline-flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={addExport}
-              disabled={draft.length === 0}
-              className="text-[11.5px] px-2.5 py-1.5 rounded-md text-zinc-200 bg-surface-light hover:bg-surface-lighter border border-border inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Plus className="w-3 h-3" />
-              Add export
-            </button>
-            <button
-              type="button"
-              onClick={openScanModal}
-              disabled={!client || !group.cwd || draft.length === 0}
-              className="text-[11.5px] px-2.5 py-1.5 rounded-md text-violet-200 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Walk .env files in this project and suggest exports"
-            >
-              <ScanLine className="w-3 h-3" />
-              Detect from .env
-            </button>
-          </div>
-        </div>
-
-        {exports.length === 0 ? (
-          <div className="text-[11.5px] text-zinc-500 italic px-3 py-4 rounded-md border border-dashed border-border bg-surface-light/30 text-center">
-            No env vars exported yet. Add one or scan your project's <code className="font-mono text-zinc-400">.env</code> files.
-          </div>
-        ) : (
-          <div className="rounded-md border border-border bg-surface-light/30 overflow-hidden">
-            <div className="grid grid-cols-[1fr_100px_1.4fr_160px_28px] gap-2 px-3 py-2 bg-surface-light border-b border-border text-[9.5px] uppercase tracking-wider text-zinc-500 font-medium">
-              <div>Name</div>
-              <div>Format</div>
-              <div>Template</div>
-              <div>Source action</div>
-              <div />
-            </div>
-            {exports.map(exp => (
-              <ExportRow
-                key={exp.id}
-                exp={exp}
-                actions={draft}
-                tld={tld}
-                tls={tls}
-                onPatch={(patch) => patchExport(exp.id, patch)}
-                onRemove={() => removeExport(exp.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
 /** Render a configured URL/host/port for an action — mirrors the
  *  server-side `renderExportValue` in `server/action-env.ts` so the UI
  *  preview matches what the bridge will inject. */
