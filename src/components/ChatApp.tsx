@@ -27,6 +27,8 @@ import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
 import { tryInvokeNative } from '../lib/native';
+import { PanelsWorkspace } from '../panels/PanelsWorkspace';
+import type { Tab as PanelTab } from '../panels/types';
 // Browser names are validated by the bridge before any open_browser broadcast,
 // but the palette action constructs a label client-side, so keep the same
 // kebab/snake-case pattern in sync here.
@@ -5343,7 +5345,42 @@ export function ChatApp() {
                 )}
 
                 {/* Right panel: editor or terminal */}
-                {openFile && (
+                {/* Unified panel workspace — one PanelsWorkspace per session,
+                    replacing the legacy single-slot editor/mockup/browser/... if-else chain.
+                    Each open* resource becomes a tab; the workspace handles split,
+                    resize, reorder and cross-panel drag. Content is rendered here so
+                    every existing callback/closure stays intact. */}
+                {hasRightPanel && activeId && (() => {
+                  const panelTabs: PanelTab[] = [];
+                  if (openFile) panelTabs.push({ id: 'editor', kind: 'editor', title: openFile.path.split('/').pop() || 'editor', icon: '📄', dirty: editorDirty });
+                  if (openMockup) panelTabs.push({ id: 'mockup', kind: 'mockup', title: openMockup.name, icon: '🎨' });
+                  if (browserOpen && active.activeBrowserName) panelTabs.push({ id: 'browser', kind: 'browser', title: browserLabelFor(activeId, active.activeBrowserName), icon: '🌐' });
+                  if (openPlan) panelTabs.push({ id: 'plan', kind: 'plan', title: 'Plan', icon: '📋' });
+                  if (pluginDetailOpen) panelTabs.push({ id: 'plugin', kind: 'plugin', title: 'Plugin', icon: '🧩' });
+                  if (openPR) panelTabs.push({ id: 'pr', kind: 'pr', title: openPR.number ? ('PR #' + openPR.number) : 'PR', icon: '◧' });
+                  if (openTerminal) panelTabs.push({ id: 'terminal', kind: 'terminal', title: openTerminal.terminalCommand || 'terminal', icon: '▸' });
+                  if (diffView) panelTabs.push({ id: 'diff', kind: 'diff', title: diffView.path.split('/').pop() || 'diff', icon: '±' });
+
+                  const closePanelTab = (tab: PanelTab) => {
+                    if (!activeId) return;
+                    switch (tab.kind) {
+                      case 'editor': setOpenFile(null); break;
+                      case 'mockup': updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false, mockupInspect: false })); break;
+                      case 'browser': if (active.activeBrowserName) closeBrowserFully(activeId, active.activeBrowserName); break;
+                      case 'plan': updateLocalState(activeId, s => ({ ...s, openPlan: null, editorFullWidth: false })); break;
+                      case 'plugin': setPluginDetailOpen(false); break;
+                      case 'pr': setOpenPR(null); break;
+                      case 'terminal': updateLocalState(activeId, s => ({ ...s, openTerminalId: null })); break;
+                      case 'diff': updateLocalState(activeId, s => ({ ...s, diffView: null, editorFullWidth: false })); break;
+                    }
+                  };
+
+                  const renderPanelTab = (tab: PanelTab) => {
+                    switch (tab.kind) {
+                      case 'editor': {
+                        if (!(openFile)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <div className="flex-1 flex flex-col min-w-0">
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
@@ -5416,8 +5453,13 @@ export function ChatApp() {
                       </div>
                     )}
                   </div>
-                )}
-                {!openFile && openMockup && activeId && (
+                          </div>
+                        );
+                      }
+                      case 'mockup': {
+                        if (!(openMockup && activeId)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <MockupPanel
                     name={openMockup.name}
                     html={openMockup.html}
@@ -5482,8 +5524,14 @@ export function ChatApp() {
                     onClose={() => updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false, mockupInspect: false }))}
                     onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
                   />
-                )}
-                {!openFile && !openMockup && browserOpen && activeId && activeBrowser && active.activeBrowserName && (() => {
+                          </div>
+                        );
+                      }
+                      case 'browser': {
+                        if (!(browserOpen && activeId && activeBrowser && active.activeBrowserName)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
+                            {(() => {
                   const activeName = active.activeBrowserName;
                   const label = browserLabelFor(activeId, activeName);
                   // Build the tab strip data once per render so the
@@ -5623,8 +5671,14 @@ export function ChatApp() {
                       }}
                     />
                   );
-                })()}
-                {!openFile && !openMockup && !browserOpen &&openPlan && activeId && (
+                            })()}
+                          </div>
+                        );
+                      }
+                      case 'plan': {
+                        if (!(openPlan && activeId)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <PlanPanel
                     content={openPlan.content}
                     allowedPrompts={openPlan.allowedPrompts}
@@ -5689,14 +5743,29 @@ export function ChatApp() {
                     onClose={() => updateLocalState(activeId, s => ({ ...s, openPlan: null, editorFullWidth: false }))}
                     onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
                   />
-                )}
-                {!openFile && !openMockup && !browserOpen &&!openPlan && pluginDetailOpen && (
+                          </div>
+                        );
+                      }
+                      case 'plugin': {
+                        if (!(pluginDetailOpen)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <PluginDetailView />
-                )}
-                {!openFile && !openMockup && !browserOpen &&!openPlan && !pluginDetailOpen && openPR && (
+                          </div>
+                        );
+                      }
+                      case 'pr': {
+                        if (!(openPR)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <PRDetail pr={openPR} cwd={active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
-                )}
-                {!openFile && !openMockup && !browserOpen &&!openPlan && !pluginDetailOpen && !openPR && openTerminal && (
+                          </div>
+                        );
+                      }
+                      case 'terminal': {
+                        if (!(openTerminal && activeId)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
@@ -5718,8 +5787,13 @@ export function ChatApp() {
                       {openTerminal.exitCode === undefined && <span className="inline-block w-1.5 h-3 bg-zinc-500/60 animate-pulse ml-0.5 align-text-bottom" />}
                     </pre>
                   </div>
-                )}
-                {!openFile && !openMockup && !browserOpen &&!openPlan && !openTerminal && diffView && (
+                          </div>
+                        );
+                      }
+                      case 'diff': {
+                        if (!(diffView)) return null;
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <div className={`flex-1 flex flex-col min-w-0`}>
                     {/* Review status bar */}
                     {reviewMode && (
@@ -5811,7 +5885,22 @@ export function ChatApp() {
                       )}
                     </div>
                   </div>
-                )}
+                          </div>
+                        );
+                      }
+                      default: return null;
+                    }
+                  };
+
+                  return (
+                    <PanelsWorkspace
+                      sessionId={activeId}
+                      tabs={panelTabs}
+                      renderTab={renderPanelTab}
+                      onCloseTab={closePanelTab}
+                    />
+                  );
+                })()}
               </div>
 
               {/* Permission modal removed — shown inline in chat */}
