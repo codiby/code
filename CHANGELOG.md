@@ -5,6 +5,26 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-05-29
+
+### Added
+
+- **Unified panel workspace.** Each session's right side is now a single
+  PanelsWorkspace instead of a one-at-a-time editor/preview slot. Open
+  resources (file editor, browser preview, HTML mockup, plan, diff, PR,
+  terminal) become tabs that can coexist across multiple panels. Panels
+  resize by dragging the divider, tabs reorder within a panel, and a tab
+  can be dragged across panels or split off into a new one (split-right /
+  split-down). The layout is remembered per session.
+
+### Fixed
+
+- **Settings no longer blanks the whole app.** An incomplete earlier
+  Portless merge had left part of the project Env-exports UI evaluating
+  at module load with out-of-scope references, throwing on startup and
+  rendering a blank window on fresh builds. The displaced code was
+  removed and the affected action-row logic restored.
+
 ## [0.14.0] — 2026-05-28
 
 ### Added
