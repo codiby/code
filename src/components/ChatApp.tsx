@@ -1778,6 +1778,12 @@ export function ChatApp() {
   const browserOpen = !!active.activeBrowserName && !!active.browsers[active.activeBrowserName];
   const activeBrowser = browserOpen ? active.browsers[active.activeBrowserName as string] : null;
   const hasRightPanel = !!openFile || !!openMockup || browserOpen || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+  // While the inline GroupComposer is mounted (a group is focused but no
+  // session inside it is selected) the main pane belongs to the composer, so
+  // the per-session PanelsWorkspace must NOT render — otherwise the browser's
+  // native BrowserView / mockup iframe floats over the composer. Gating the
+  // workspace render here also unmounts BrowserPanel, which hides the view.
+  const rightPanelVisible = hasRightPanel && !selectedGroupId;
 
   // Tear down a browser preview completely: destroy the BrowserView and
   // forget it ever existed (no `lastBrowsers` entry means no chip survives
@@ -4551,7 +4557,7 @@ export function ChatApp() {
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></svg>
             </button>
-            {hasRightPanel && editorFullWidth && (
+            {rightPanelVisible && editorFullWidth && (
               <button
                 className="w-8 h-8 flex items-center justify-center rounded-md transition-colors text-violet-400 hover:text-violet-300 bg-violet-500/10 hover:bg-violet-500/20"
                 onClick={() => { if (activeId) updateLocalState(activeId, s => ({ ...s, editorFullWidth: false })); }}
@@ -4796,8 +4802,8 @@ export function ChatApp() {
               <div ref={contentRef} className="flex-1 flex min-h-0">
                 {/* Chat panel */}
                 <div
-                  className={`flex flex-col min-w-0 overflow-hidden relative ${hasRightPanel && editorFullWidth ? 'hidden' : hasRightPanel ? 'shrink-0' : 'flex-1'}`}
-                  style={hasRightPanel && !editorFullWidth ? { width: `${chatSplitPct}%` } : undefined}
+                  className={`flex flex-col min-w-0 overflow-hidden relative ${rightPanelVisible && editorFullWidth ? 'hidden' : rightPanelVisible ? 'shrink-0' : 'flex-1'}`}
+                  style={rightPanelVisible && !editorFullWidth ? { width: `${chatSplitPct}%` } : undefined}
                 >
                   <div className="flex flex-1 min-h-0">
                   {/* When a group is focused (sidebar click) but no session
@@ -5329,7 +5335,7 @@ export function ChatApp() {
                 </div>
 
                 {/* Resize handle between chat and right panel */}
-                {hasRightPanel && !editorFullWidth && (
+                {rightPanelVisible && !editorFullWidth && (
                   <div
                     className="w-1 shrink-0 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors"
                     onMouseDown={onChatResizeStart}
@@ -5350,7 +5356,7 @@ export function ChatApp() {
                     Each open* resource becomes a tab; the workspace handles split,
                     resize, reorder and cross-panel drag. Content is rendered here so
                     every existing callback/closure stays intact. */}
-                {hasRightPanel && activeId && (() => {
+                {rightPanelVisible && activeId && (() => {
                   const panelTabs: PanelTab[] = [];
                   if (openFile) panelTabs.push({ id: 'editor', kind: 'editor', title: openFile.path.split('/').pop() || 'editor', icon: '📄', dirty: editorDirty });
                   if (openMockup) panelTabs.push({ id: 'mockup', kind: 'mockup', title: openMockup.name, icon: '🎨' });
