@@ -5,6 +5,17 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] — 2026-05-29
+
+### Fixed
+
+- **Browser/mockup no longer floats over the new-session composer.** When you
+  focused a project group (showing the inline new-session composer) while a
+  session had a browser preview or HTML mockup open, the preview kept rendering
+  over the composer and the composer stayed squished. The right-side panel
+  workspace is now hidden in composer mode, and the composer takes the full
+  width.
+
 ## [0.15.0] — 2026-05-29
 
 ### Added
