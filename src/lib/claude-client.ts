@@ -254,7 +254,18 @@ export interface SessionState {
   // UI state
   input: string;
   inputHistory: string[];
-  openFile: { path: string; content: string; line?: number } | null;
+  /** Open editor tabs (VSCode-style). At most one is a `preview` tab, which is
+   *  replaced when the next file opens unless pinned (double-click) or modified.
+   *  `content` is the on-disk/last-saved baseline; live unsaved edits live in
+   *  Monaco and a host-side buffer. UI-only — preserved across server merges. */
+  editorTabs: { path: string; content: string; line?: number; dirty: boolean; preview: boolean }[];
+  /** Path of the revealed editor tab, or null when none is open. */
+  activeEditorPath: string | null;
+  /** Unified "reveal this tab" signal for the PanelsWorkspace, shared by editor
+   *  and browser tabs. `panelFocusSeq` bumps each time so re-focusing an already
+   *  open tab still surfaces it. */
+  panelFocusTabId: string | null;
+  panelFocusSeq: number;
   openTerminalId: string | null;
   diffView: { path: string; original: string; modified: string } | null;
   editorFullWidth: boolean;

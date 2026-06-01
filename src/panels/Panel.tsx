@@ -20,11 +20,13 @@ export interface PanelProps {
   onClose: (tab: Tab) => void;
   onFocus: () => void;
   onSplit: (dir: 'row' | 'col') => void;
+  /** Double-click a tab pill — used to pin a preview tab. */
+  onPin?: (tabId: string) => void;
 }
 
 function TabPill({
-  tab, active, onActivate, onClose,
-}: { tab: Tab; active: boolean; onActivate: () => void; onClose: () => void }) {
+  tab, active, onActivate, onClose, onPin,
+}: { tab: Tab; active: boolean; onActivate: () => void; onClose: () => void; onPin?: () => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: tab.id,
     data: { type: 'tab', tabId: tab.id },
@@ -41,6 +43,7 @@ function TabPill({
       {...attributes}
       {...listeners}
       onMouseDown={onActivate}
+      onDoubleClick={onPin}
       className={`group flex items-center gap-1.5 h-full px-2.5 rounded-t-md text-[12px] whitespace-nowrap cursor-grab select-none border-b-0 ${
         active
           ? 'bg-surface text-zinc-100 border border-border'
@@ -49,7 +52,7 @@ function TabPill({
       title={tab.title}
     >
       {tab.icon && <span className="text-[11px] leading-none opacity-80">{tab.icon}</span>}
-      <span className="truncate max-w-[160px]">{tab.title}</span>
+      <span className={`truncate max-w-[160px] ${tab.preview ? 'italic' : ''}`}>{tab.title}</span>
       {tab.dirty && <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 shrink-0" />}
       {tab.closable !== false && (
         <span
@@ -66,7 +69,7 @@ function TabPill({
   );
 }
 
-export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit }: PanelProps) {
+export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit, onPin }: PanelProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `strip:${node.id}`, data: { type: 'strip', panelId: node.id } });
   const orderedTabs = node.tabIds.map((id) => tabs.get(id)).filter((t): t is Tab => !!t);
   const activeTab = node.activeTabId ? tabs.get(node.activeTabId) : undefined;
@@ -94,6 +97,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
                 active={t.id === node.activeTabId}
                 onActivate={() => onActivate(t.id)}
                 onClose={() => onClose(t)}
+                onPin={onPin ? () => onPin(t.id) : undefined}
               />
             ))}
           </div>

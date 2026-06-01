@@ -129,6 +129,7 @@ class PanelsStore {
    * it. Idempotent — re-running with the same id set is a no-op.
    */
   reconcileTabs(tabs: Tab[]) {
+    const zoneOf = new Map(tabs.map((t) => [t.id, t.zone || 'main']));
     const desired = tabs.map((t) => t.id);
     const desiredSet = new Set(desired);
     let root = this.state.root ? cloneNode(this.state.root) : null;
@@ -140,21 +141,30 @@ class PanelsStore {
     }
     root = prune(root);
 
-    // 2. find new ids (preserve host order)
+    // 2. place new ids by zone (preserve host order). A new tab joins the
+    // panel that already owns its zone; if no panel owns it yet, it spawns a
+    // fresh panel split to the RIGHT of the current tree. Because the host
+    // lists the chat tab (zone 'chat') first and resources (zone 'main')
+    // after, this yields the chat-left / resources-right default automatically.
     const present = new Set(allTabIds(root));
     const newIds = desired.filter((id) => !present.has(id));
 
-    if (newIds.length > 0) {
-      if (!root) {
-        // seed a single panel with all current tabs
-        const panel: PanelNode = { id: uid('panel'), type: 'panel', tabIds: [...newIds], activeTabId: newIds[newIds.length - 1] };
-        root = panel;
-        focusedPanelId = panel.id;
+    for (const id of newIds) {
+      const zone = zoneOf.get(id) || 'main';
+      const owner = panels(root).find((p) => p.tabIds.some((tid) => (zoneOf.get(tid) || 'main') === zone));
+      if (owner) {
+        owner.tabIds.push(id);
+        owner.activeTabId = id;
+        focusedPanelId = owner.id;
       } else {
-        const target = (focusedPanelId && findPanel(root, focusedPanelId)) || panels(root)[0];
-        target.tabIds.push(...newIds);
-        target.activeTabId = newIds[newIds.length - 1];
-        focusedPanelId = target.id;
+        const panel: PanelNode = { id: uid('panel'), type: 'panel', tabIds: [id], activeTabId: id };
+        if (!root) {
+          root = panel;
+        } else {
+          // New zone → split right. Chat (created first) stays left.
+          root = { id: uid('split'), type: 'split', direction: 'row', children: [root, panel], sizes: [1, 1.35] };
+        }
+        focusedPanelId = panel.id;
       }
     }
 

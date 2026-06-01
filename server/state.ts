@@ -196,6 +196,14 @@ export function getSessionState(sessionId: string): SessionState {
 }
 
 /**
+ * Tools that drive the dedicated todo panel rather than the chat transcript.
+ * The legacy snapshot tool (`TodoWrite`) and the Claude Code preset's
+ * incremental Task tools all surface as todo state, never as paired
+ * tool_use/tool_result chat messages.
+ */
+const TODO_PANEL_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList']);
+
+/**
  * Append a synthetic error tool_result for every tool_use in this session
  * that doesn't already have a matching tool_result. Safe to call repeatedly:
  * once a tool_use is paired, it's skipped on subsequent calls.
@@ -214,10 +222,10 @@ export function healOrphanedToolUses(sessionId: string, reason: string): ChatMes
   }
   const orphans: ChatMessage[] = [];
   for (const m of state.messages) {
-    // Skip TodoWrite — it's tracked via the todos UI state, not chat
-    // tool_results, so it never has a paired result by design.
+    // Skip the todo-panel tools — they're tracked via the todos UI state, not
+    // chat tool_results, so they never have a paired result by design.
     if (!m.toolName || m.isToolResult) continue;
-    if (m.toolName === 'TodoWrite') continue;
+    if (TODO_PANEL_TOOLS.has(m.toolName)) continue;
     if (!m.id) continue;
     if (resultIds.has(m.id)) continue;
     orphans.push(m);

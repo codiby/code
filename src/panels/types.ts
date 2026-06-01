@@ -50,6 +50,13 @@ export interface Tab {
   dirty?: boolean;
   /** When false the × is hidden and the tab can't be closed by the user. */
   closable?: boolean;
+  /** Italic "preview" tab (VSCode style): replaced when the next file opens,
+   *  unless the user pins it (double-click) or modifies it. Host-managed. */
+  preview?: boolean;
+  /** Placement hint. Tabs sharing a zone land in the same panel; a new zone
+   *  spawns a new panel split to the right of the existing tree. Defaults to
+   *  'main'. Used to seed the chat-left / resources-right default layout. */
+  zone?: string;
 }
 
 export interface WorkspaceState {

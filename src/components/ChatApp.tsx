@@ -97,7 +97,6 @@ type PendingMessage = {
 
 // Local UI extensions on top of server SessionState
 type LocalSessionState = SessionState & {
-  editorDirty: boolean;
   contextTokens: number;
   pendingMessages: PendingMessage[];
   // Live HTML mockup preview shown in the side panel. UI-only — the bridge
@@ -114,18 +113,16 @@ type LocalSessionState = SessionState & {
   // Live browser previews opened by `browser_open` — UI-only, same caveat
   // as `openMockup` so the `onSessionState` merge has to preserve them.
   // `browsers` is keyed by the model-supplied `name` (e.g. "qa-admin-
-  // workflow"); multiple can coexist in a single session and the user
-  // switches between them via the tab strip in BrowserPanel. `openSeq` per
+  // workflow"); multiple can coexist in a single session, each surfaced as
+  // its own tab in the PanelsWorkspace. `openSeq` per
   // entry is bumped on every `open_browser` broadcast so the panel re-runs
   // its open effect when the same name is re-broadcast (retry after error,
   // reopen from chat-header chip).
   browsers: Record<string, { url: string; title: string; openSeq: number; cookieJar: string }>;
-  /** Which browser name is currently shown in the panel. `null` when none
-   *  is open (panel hidden). Matches a key in `browsers`. */
+  /** Which browser name is currently revealed / focused. Tracks the visible
+   *  browser panel tab and drives the focus-mode anchor + header-chip
+   *  highlight. `null` when no browser is open. Matches a key in `browsers`. */
   activeBrowserName: string | null;
-  /** Per-name "most recently open" snapshot, retained after the user closes
-   *  a tab so the chat-header chip can offer a one-click reopen. */
-  lastBrowsers: Record<string, { url: string; title: string }>;
   /** Inspector comments, keyed by `name` then by URL — same name surviving
    *  navigations + matching the per-page-mounted dot lifecycle. */
   browserComments: Record<string, Record<string, MockupComment[]>>;
@@ -1060,18 +1057,25 @@ export function ChatApp() {
   const [debugLine, setDebugLine] = useState<{ file: string; line: number } | null>(null);
   const debugDecorationsRef = useRef<string[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Live unsaved buffer per editor path, keyed `${sessionId}::${path}`. Written
+  // on every Monaco change (a ref write — no re-render) so switching away from a
+  // pinned-and-modified tab and back restores the in-progress edits (only the
+  // active tab's Monaco is mounted, so the rest rely on this).
+  const liveBuffersRef = useRef<Record<string, string>>({});
+  const liveBufKey = (sid: string, path: string) => `${sid}::${path}`;
 
   const emptyLocalState = (): LocalSessionState => ({
     messages: [], partialText: '', partialThinking: '', isStreaming: false, wasInterrupted: false, initInfo: null, permRequest: null,
     supportedModels: [],
-    openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false,
+    editorTabs: [], activeEditorPath: null, panelFocusTabId: null, panelFocusSeq: 0,
+    openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
     input: '', inputHistory: [],
-    editorDirty: false, contextTokens: 0,
+    contextTokens: 0,
     pendingMessages: [],
     openMockup: null, lastMockup: null,
     mockupComments: {}, mockupInspect: false,
-    browsers: {}, activeBrowserName: null, lastBrowsers: {},
+    browsers: {}, activeBrowserName: null,
     browserComments: {}, browserInspect: {},
     openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
     pastedImages: [],
@@ -1114,31 +1118,115 @@ export function ChatApp() {
     });
   };
 
-  // Panel state setters (local-only UI state that doesn't need server sync)
-  const setOpenFile = (file: { path: string; content: string } | null) => {
-    if (!activeId) return;
-    setSessionStates(prev => {
-      const s = prev[activeId] || emptyLocalState();
-      return {
-        ...prev,
-        [activeId]: {
-          ...s,
-          openFile: file,
-          openTerminalId: file ? null : s.openTerminalId,
-          diffView: file ? null : s.diffView,
-          editorFullWidth: file ? s.editorFullWidth : false,
-          editorDirty: false,
-        },
-      };
-    });
-  };
-
   const updateLocalState = useCallback((id: string, fn: (prev: LocalSessionState) => LocalSessionState) => {
     setSessionStates(prev => {
       const current = prev[id] || emptyLocalState();
       return { ...prev, [id]: fn(current) };
     });
   }, []);
+
+  // --- Editor tab helpers (VSCode-style preview tabs) ----------------------
+  // Each open file is a panel tab. At most one is a `preview` tab; opening
+  // another file replaces it in place. Double-clicking the tab or editing the
+  // file pins it (preview=false). All operate on the given session.
+
+  // Open a file in the editor: activate if already open; else replace the
+  // current preview tab; else append a new (preview) tab. Always reveal it.
+  const openFileInEditor = useCallback((sid: string, path: string, content: string, line?: number, opts?: { pin?: boolean }) => {
+    const pin = opts?.pin ?? false;
+    updateLocalState(sid, s => {
+      const tabs = s.editorTabs;
+      const idx = tabs.findIndex(t => t.path === path);
+      let nextTabs: typeof tabs;
+      if (idx >= 0) {
+        // Already open — keep its dirty/preview state, just update the target
+        // line (and pin if requested).
+        nextTabs = tabs.map((t, i) => i === idx
+          ? { ...t, line, preview: pin ? false : t.preview }
+          : t);
+      } else {
+        const newTab = { path, content, line, dirty: false, preview: !pin };
+        const previewIdx = tabs.findIndex(t => t.preview);
+        if (previewIdx >= 0) {
+          // Replace the existing preview tab in place (keeps strip position).
+          delete liveBuffersRef.current[liveBufKey(sid, tabs[previewIdx].path)];
+          nextTabs = tabs.map((t, i) => i === previewIdx ? newTab : t);
+        } else {
+          nextTabs = [...tabs, newTab];
+        }
+      }
+      return {
+        ...s,
+        editorTabs: nextTabs,
+        activeEditorPath: path,
+        panelFocusTabId: 'editor:' + path,
+        panelFocusSeq: s.panelFocusSeq + 1,
+      };
+    });
+  }, [updateLocalState]);
+
+  // Pin a preview tab (double-click on the pill, or first edit).
+  const pinEditor = useCallback((sid: string, path: string) => {
+    updateLocalState(sid, s => ({
+      ...s,
+      editorTabs: s.editorTabs.map(t => t.path === path && t.preview ? { ...t, preview: false } : t),
+    }));
+  }, [updateLocalState]);
+
+  // Mark a tab dirty/clean. Editing also pins it (a modified tab is never a
+  // preview). Reverting to clean clears dirty but keeps it pinned.
+  const markEditorDirty = useCallback((sid: string, path: string, dirty: boolean) => {
+    updateLocalState(sid, s => ({
+      ...s,
+      editorTabs: s.editorTabs.map(t => t.path === path
+        ? { ...t, dirty, preview: dirty ? false : t.preview }
+        : t),
+    }));
+  }, [updateLocalState]);
+
+  // Reveal an already-open editor tab (no content change).
+  const setActiveEditor = useCallback((sid: string, path: string) => {
+    updateLocalState(sid, s => (
+      s.editorTabs.some(t => t.path === path)
+        ? { ...s, activeEditorPath: path, panelFocusTabId: 'editor:' + path, panelFocusSeq: s.panelFocusSeq + 1 }
+        : s
+    ));
+  }, [updateLocalState]);
+
+  // Close an editor tab; if it was active, fall back to the left neighbour
+  // (else null). Mirrors the browser close fallback.
+  const closeEditor = useCallback((sid: string, path: string) => {
+    delete liveBuffersRef.current[liveBufKey(sid, path)];
+    updateLocalState(sid, s => {
+      const idx = s.editorTabs.findIndex(t => t.path === path);
+      if (idx < 0) return s;
+      const nextTabs = s.editorTabs.filter(t => t.path !== path);
+      let nextActive = s.activeEditorPath;
+      if (s.activeEditorPath === path) {
+        const neighbour = nextTabs[idx - 1] ?? nextTabs[idx] ?? nextTabs[nextTabs.length - 1] ?? null;
+        nextActive = neighbour ? neighbour.path : null;
+      }
+      return {
+        ...s,
+        editorTabs: nextTabs,
+        activeEditorPath: nextActive,
+        editorFullWidth: nextActive == null ? false : s.editorFullWidth,
+        ...(nextActive ? { panelFocusTabId: 'editor:' + nextActive, panelFocusSeq: s.panelFocusSeq + 1 } : {}),
+      };
+    });
+  }, [updateLocalState]);
+
+  // Update a tab's saved baseline + dirty after a successful write.
+  const setEditorSaved = useCallback((sid: string, path: string, content: string, newPath?: string) => {
+    delete liveBuffersRef.current[liveBufKey(sid, path)];
+    updateLocalState(sid, s => ({
+      ...s,
+      editorTabs: s.editorTabs.map(t => t.path === path
+        ? { ...t, path: newPath ?? t.path, content, dirty: false, preview: false }
+        : t),
+      activeEditorPath: s.activeEditorPath === path ? (newPath ?? path) : s.activeEditorPath,
+    }));
+  }, [updateLocalState]);
 
   // Initialize client
   // Request notification permission on mount
@@ -1212,7 +1300,10 @@ export function ChatApp() {
                 // so the spread of `state` would otherwise wipe them every
                 // time we re-subscribe — e.g. switching to another tab and
                 // back).
-                editorDirty: existing?.editorDirty ?? false,
+                editorTabs: existing?.editorTabs ?? [],
+                activeEditorPath: existing?.activeEditorPath ?? null,
+                panelFocusTabId: existing?.panelFocusTabId ?? null,
+                panelFocusSeq: existing?.panelFocusSeq ?? 0,
                 contextTokens: existing?.contextTokens ?? 0,
                 reviewComments: existing?.reviewComments ?? {},
                 openMockup: existing?.openMockup ?? null,
@@ -1221,7 +1312,6 @@ export function ChatApp() {
                 mockupInspect: false,
                 browsers: existing?.browsers ?? {},
                 activeBrowserName: existing?.activeBrowserName ?? null,
-                lastBrowsers: existing?.lastBrowsers ?? {},
                 browserComments: existing?.browserComments ?? {},
                 browserInspect: existing?.browserInspect ?? {},
                 openPlan: existing?.openPlan ?? null,
@@ -1441,15 +1531,8 @@ export function ChatApp() {
           if (!client) return;
           const file = await client.readFile(path);
           if (!file) return;
-          updateLocalState(sid, s => ({
-            ...s,
-            openFile: line != null ? { ...file, line } : file,
-            openMockup: null,
-            activeBrowserName: null,
-            openTerminalId: null,
-            diffView: null,
-            editorDirty: false,
-          }));
+          // Opens as a preview tab, coexisting with any other open resources.
+          openFileInEditor(sid, file.path, file.content, line ?? undefined);
         },
 
         // Server-initiated "open mockup preview" — triggered by the
@@ -1461,13 +1544,9 @@ export function ChatApp() {
             ...s,
             openMockup: { name, html },
             lastMockup: { name, html },
-            openFile: null,
             openTerminalId: null,
             diffView: null,
-            editorDirty: false,
-            // Hide any open browser panel (don't destroy state — the user
-            // can switch back via the lastBrowsers chip).
-            activeBrowserName: null,
+            // Resources coexist as tabs now: editor/browser tabs stay open.
           }));
         },
 
@@ -1480,22 +1559,18 @@ export function ChatApp() {
           if (!name || !url) return;
           const t = title || name;
           const jar = cookieJar || 'default';
+          // The browser opens as its own panel tab and coexists with any
+          // file/mockup/terminal tabs already open — we only bump the focus
+          // seq so the workspace reveals (activates) this browser's tab.
           updateLocalState(sid, s => ({
             ...s,
             browsers: {
               ...s.browsers,
               [name]: { url, title: t, openSeq: Date.now(), cookieJar: jar },
             },
-            lastBrowsers: {
-              ...s.lastBrowsers,
-              [name]: { url, title: t },
-            },
             activeBrowserName: name,
-            openFile: null,
-            openMockup: null,
-            openTerminalId: null,
-            diffView: null,
-            editorDirty: false,
+            panelFocusTabId: 'browser:' + name,
+            panelFocusSeq: s.panelFocusSeq + 1,
           }));
         },
 
@@ -1509,15 +1584,11 @@ export function ChatApp() {
           if (!name) return;
           updateLocalState(sid, s => {
             if (!s.browsers[name]) return s;
-            if (s.activeBrowserName === name && !s.openFile && !s.openMockup && !s.openTerminalId) return s;
             return {
               ...s,
               activeBrowserName: name,
-              openFile: null,
-              openMockup: null,
-              openTerminalId: null,
-              diffView: null,
-              editorDirty: false,
+              panelFocusTabId: 'browser:' + name,
+              panelFocusSeq: s.panelFocusSeq + 1,
             };
           });
         },
@@ -1727,7 +1798,7 @@ export function ChatApp() {
 
   const handleOpenTerminal = useCallback((id: string) => {
     const sid = activeId;
-    if (sid) updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: id, diffView: null, editorDirty: false }));
+    if (sid) updateLocalState(sid, s => ({ ...s, openTerminalId: id, diffView: null }));
   }, [activeId, updateLocalState]);
 
   // Tell the bridge which tab is active so it can lazily boot that session's
@@ -1768,16 +1839,34 @@ export function ChatApp() {
   }, [activeId]);
 
   const active = getState(activeId);
-  const { openFile, openMockup, openPlan, diffView, editorFullWidth, editorDirty, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
+  const { openMockup, openPlan, diffView, editorFullWidth, reviewComments, reviewMode, reviewFiles, reviewIndex, todos, input } = active;
+  // Each open file is its own editor panel tab. `openFile`/`editorDirty` are
+  // derived from the *active* editor tab so the LSP/debugger/save/line-jump
+  // code that reads them keeps working transparently (it always sees the
+  // visible file). `content` is the saved baseline; live edits live in Monaco
+  // + `liveBuffersRef`.
+  const activeEditorTab = active.activeEditorPath
+    ? active.editorTabs.find(t => t.path === active.activeEditorPath) ?? null
+    : null;
+  const openFile = activeEditorTab
+    ? { path: activeEditorTab.path, content: activeEditorTab.content, line: activeEditorTab.line }
+    : null;
+  const editorDirty = activeEditorTab?.dirty ?? false;
+  const anyEditorOpen = active.editorTabs.length > 0;
   const openTerminal = active.openTerminalId ? active.messages.find(m => m.id === active.openTerminalId && m.isTerminal) || null : null;
   // Derived browser-panel state: a tab is "shown" only when there's an active
-  // name AND that name still has an entry. The panel itself is open when any
-  // browser exists AND an active one is selected — the panel-switch logic
-  // (file, mockup, plan, …) clears `activeBrowserName` to hide it without
-  // tearing down the BrowserView state stashed in `browsers`.
+  // name AND that name still has an entry. Each open browser is its own panel
+  // tab, so the right panel exists when ANY browser is open.
   const browserOpen = !!active.activeBrowserName && !!active.browsers[active.activeBrowserName];
   const activeBrowser = browserOpen ? active.browsers[active.activeBrowserName as string] : null;
-  const hasRightPanel = !!openFile || !!openMockup || browserOpen || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+  const anyBrowserOpen = Object.keys(active.browsers).length > 0;
+  // Unified reveal request handed to the PanelsWorkspace: switch its active tab
+  // to whatever was last opened/focused (editor or browser) whenever
+  // `panelFocusSeq` bumps, so re-opening an already-open tab still surfaces it.
+  const panelFocusReq = active.panelFocusTabId
+    ? { tabId: active.panelFocusTabId, nonce: active.panelFocusSeq }
+    : null;
+  const hasRightPanel = anyEditorOpen || !!openMockup || anyBrowserOpen || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
   // While the inline GroupComposer is mounted (a group is focused but no
   // session inside it is selected) the main pane belongs to the composer, so
   // the per-session PanelsWorkspace must NOT render — otherwise the browser's
@@ -1785,16 +1874,13 @@ export function ChatApp() {
   // workspace render here also unmounts BrowserPanel, which hides the view.
   const rightPanelVisible = hasRightPanel && !selectedGroupId;
 
-  // Tear down a browser preview completely: destroy the BrowserView and
-  // forget it ever existed (no `lastBrowsers` entry means no chip survives
-  // either). Differs from `onCloseTab` / `onCloseBrowser` (panel × / agent-
-  // initiated close), which keep the chip around so the user can re-open
-  // the same URL with one click.
+  // Tear down a browser preview completely: destroy the BrowserView and drop
+  // its panel tab + per-name inspect/comment state. If the closed browser was
+  // the focused one, fall back to whichever browser is still open (or null).
   const closeBrowserFully = useCallback((sid: string, name: string) => {
     tryInvokeNative('close_browser_preview', { label: browserLabelFor(sid, name) });
     updateLocalState(sid, s => {
       const { [name]: _alive, ...restBrowsers } = s.browsers;
-      const { [name]: _last, ...restLast } = s.lastBrowsers;
       const { [name]: _ins, ...restInspect } = s.browserInspect;
       const { [name]: _cmt, ...restComments } = s.browserComments;
       const remaining = Object.keys(restBrowsers);
@@ -1804,7 +1890,6 @@ export function ChatApp() {
       return {
         ...s,
         browsers: restBrowsers,
-        lastBrowsers: restLast,
         browserInspect: restInspect,
         browserComments: restComments,
         activeBrowserName: nextActive,
@@ -1812,85 +1897,6 @@ export function ChatApp() {
       };
     });
   }, [updateLocalState]);
-
-  // Render a single header chip for `lastBrowsers[name]`. Clicking the body
-  // toggles visibility (or re-opens from the remembered URL); the × tears
-  // the preview down for good. The chip is scoped to a specific session so
-  // the focus-mode per-pane headers can render each pane's own browsers,
-  // independent of which pane currently has focus.
-  const renderBrowserChip = (sid: string, name: string, last: { url: string; title?: string }) => {
-    const sState = getState(sid);
-    const isOpenAndActive = sState.activeBrowserName === name && !!sState.browsers[name];
-    return (
-      <div
-        key={`hdr-browser-${name}`}
-        className={`group flex items-stretch rounded text-[11px] border transition-colors overflow-hidden ${
-          isOpenAndActive
-            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30 hover:bg-sky-500/25'
-            : 'bg-surface-light text-zinc-400 border-border hover:text-sky-300 hover:border-sky-500/30'
-        }`}
-      >
-        <button
-          type="button"
-          className="flex items-center gap-1.5 pl-2 pr-1 py-0.5"
-          onClick={() => {
-            updateLocalState(sid, s => {
-              if (s.activeBrowserName === name && s.browsers[name]) {
-                return { ...s, activeBrowserName: null, editorFullWidth: false };
-              }
-              if (s.browsers[name]) {
-                return {
-                  ...s,
-                  activeBrowserName: name,
-                  openFile: null,
-                  openMockup: null,
-                  openTerminalId: null,
-                  diffView: null,
-                  editorDirty: false,
-                };
-              }
-              const remembered = s.lastBrowsers[name];
-              if (!remembered) return s;
-              return {
-                ...s,
-                browsers: {
-                  ...s.browsers,
-                  [name]: {
-                    url: remembered.url,
-                    title: remembered.title,
-                    openSeq: Date.now(),
-                    cookieJar: 'default',
-                  },
-                },
-                activeBrowserName: name,
-                openFile: null,
-                openMockup: null,
-                openTerminalId: null,
-                diffView: null,
-                editorDirty: false,
-              };
-            });
-          }}
-          title={isOpenAndActive ? `Hide "${name}" (${last.url})` : `Show "${name}" (${last.url})`}
-        >
-          <span className="text-[10px]">◐</span>
-          <span className="truncate max-w-[12rem]">{name}</span>
-        </button>
-        <button
-          type="button"
-          className="px-1.5 text-zinc-500 hover:text-red-300 leading-none opacity-60 hover:opacity-100 transition-opacity"
-          onClick={(e) => {
-            e.stopPropagation();
-            closeBrowserFully(sid, name);
-          }}
-          aria-label={`Close ${name}`}
-          title={`Close ${name}`}
-        >
-          ×
-        </button>
-      </div>
-    );
-  };
 
   // Snap back to the bottom whenever the active session changes — each tab
   // should open on its latest message, regardless of where the previous tab
@@ -2010,12 +2016,9 @@ export function ChatApp() {
       lastPlan: { content, allowedPrompts },
       planComments: [],
       planRequestId: req.requestId,
-      openFile: null,
       openMockup: null,
-      activeBrowserName: null,
       openTerminalId: null,
       diffView: null,
-      editorDirty: false,
     }));
   }, [activeId, active.permRequest, active.planRequestId]);
 
@@ -2028,14 +2031,23 @@ export function ChatApp() {
     if (!client) return;
     // Debounce: wait a bit for rapid message bursts
     const t = setTimeout(() => {
-      if (active.openFile && activeId) {
+      if (activeId) {
         const sid = activeId;
-        const curFile = active.openFile;
-        client.readFile(curFile.path).then(file => {
-          if (file && file.content !== curFile.content) {
-            updateLocalState(sid, s => ({ ...s, openFile: file }));
-          }
-        }).catch(() => {});
+        // Refresh on-disk content for every open editor tab, but never clobber
+        // a tab with unsaved edits.
+        for (const tab of active.editorTabs) {
+          if (tab.dirty) continue;
+          const curPath = tab.path;
+          const curContent = tab.content;
+          client.readFile(curPath).then(file => {
+            if (file && file.content !== curContent) {
+              updateLocalState(sid, s => ({
+                ...s,
+                editorTabs: s.editorTabs.map(x => x.path === curPath && !x.dirty ? { ...x, content: file.content } : x),
+              }));
+            }
+          }).catch(() => {});
+        }
       }
       refreshGitModified();
     }, 1000);
@@ -2751,23 +2763,11 @@ export function ChatApp() {
     if (!client || !activeId) return;
     const file = await client.readFile(path);
     if (!file) return;
-    // If the content area is too narrow for a split view, open editor fullscreen
+    // Opens as a preview tab. If the content area is too narrow for a split
+    // view, open the editor fullscreen.
     const contentWidth = contentRef.current?.offsetWidth ?? 1200;
-    const needsFullWidth = contentWidth < 800;
-    setSessionStates(prev => {
-      const s = prev[activeId] || emptyLocalState();
-      return {
-        ...prev,
-        [activeId]: {
-          ...s,
-          openFile: line ? { ...file, line } : file,
-          openTerminalId: null,
-          diffView: null,
-          editorFullWidth: needsFullWidth ? true : s.editorFullWidth,
-          editorDirty: false,
-        },
-      };
-    });
+    if (contentWidth < 800) updateLocalState(activeId, s => ({ ...s, editorFullWidth: true }));
+    openFileInEditor(activeId, file.path, file.content, line);
   };
 
   const handleFileDiff = async (path: string) => {
@@ -2778,7 +2778,7 @@ export function ChatApp() {
       client.readFileOriginal(path),
     ]);
     if (file) {
-      updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: null, diffView: { path, original, modified: file.content } }));
+      updateLocalState(sid, s => ({ ...s, openTerminalId: null, diffView: { path, original, modified: file.content } }));
     }
   };
 
@@ -2790,7 +2790,7 @@ export function ChatApp() {
       client.readFileOriginal(path),
     ]);
     if (file) {
-      updateLocalState(sid, s => ({ ...s, openFile: null, openTerminalId: null, diffView: { path, original, modified: file.content }, editorFullWidth: !s.editorFullWidth }));
+      updateLocalState(sid, s => ({ ...s, openTerminalId: null, diffView: { path, original, modified: file.content }, editorFullWidth: !s.editorFullWidth }));
     }
   };
 
@@ -2798,7 +2798,7 @@ export function ChatApp() {
     if (!activeId) return;
     const files = [...new Set([...gitModified.staged, ...gitModified.unstaged])].sort();
     if (files.length === 0) return;
-    updateLocalState(activeId, s => ({ ...s, reviewMode: true, reviewFiles: files, reviewIndex: 0, editorFullWidth: true, openFile: null, openTerminalId: null }));
+    updateLocalState(activeId, s => ({ ...s, reviewMode: true, reviewFiles: files, reviewIndex: 0, editorFullWidth: true, openTerminalId: null }));
     loadReviewFile(files[0]!);
   };
 
@@ -2878,13 +2878,9 @@ export function ChatApp() {
     if (!activeId) return;
     untitledCountRef.current++;
     const name = `untitled-${untitledCountRef.current}`;
-    updateLocalState(activeId, s => ({
-      ...s,
-      openFile: { path: name, content: '' },
-      openTerminalId: null,
-      diffView: null,
-      editorDirty: true,
-    }));
+    // Untitled files are born pinned + dirty (never a preview).
+    openFileInEditor(activeId, name, '', undefined, { pin: true });
+    markEditorDirty(activeId, name, true);
   };
 
   const handleSaveAs = (content: string) => {
@@ -2899,7 +2895,11 @@ export function ChatApp() {
     const path = saveAsPath.trim();
     const ok = await clientRef.current.writeFile(path, saveAsPrompt.content);
     if (ok) {
-      updateLocalState(activeId, s => ({ ...s, openFile: { path, content: saveAsPrompt.content }, editorDirty: false }));
+      // Rename the untitled tab (the active one) to the real path, or open it
+      // fresh if for some reason it's no longer around.
+      const oldPath = getState(activeId).activeEditorPath;
+      if (oldPath) setEditorSaved(activeId, oldPath, saveAsPrompt.content, path);
+      else openFileInEditor(activeId, path, saveAsPrompt.content, undefined, { pin: true });
       refreshGitModified();
     }
     setSaveAsPrompt(null);
@@ -2907,11 +2907,11 @@ export function ChatApp() {
   };
 
   const handleSaveFileWrapped = async () => {
-    if (!active.openFile || !activeId) return;
+    if (!openFile || !activeId) return;
     // Untitled files need Save As
-    if (active.openFile.path.startsWith('untitled-')) {
+    if (openFile.path.startsWith('untitled-')) {
       const editor = editorRef.current;
-      const content = editor?.getValue() || active.openFile.content;
+      const content = editor?.getValue() || openFile.content;
       handleSaveAs(content);
       return;
     }
@@ -2920,11 +2920,11 @@ export function ChatApp() {
     const editor = editorRef.current;
     if (!editor) return;
     const content = editor.getValue();
-    const filePath = active.openFile.path;
+    const filePath = openFile.path;
     try {
       const ok = await clientRef.current.writeFile(filePath, content);
       if (ok) {
-        updateLocalState(activeId, s => ({ ...s, openFile: { path: filePath, content }, editorDirty: false }));
+        setEditorSaved(activeId, filePath, content);
         refreshGitModified();
       }
     } catch {}
@@ -2961,13 +2961,15 @@ export function ChatApp() {
   const handleCloseCurrentPanel = () => {
     if (!activeId) return;
     const s = getState(activeId);
-    const hasPanel = s.openFile || s.openTerminalId || s.diffView;
-    if (hasPanel) {
-      if (s.openFile && s.editorDirty) {
+    const activeTab = s.activeEditorPath ? s.editorTabs.find(t => t.path === s.activeEditorPath) ?? null : null;
+    if (activeTab) {
+      if (activeTab.dirty) {
         setUnsavedClosePrompt(true);
         return;
       }
-      updateLocalState(activeId, st => ({ ...st, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+      closeEditor(activeId, activeTab.path);
+    } else if (s.openTerminalId || s.diffView) {
+      updateLocalState(activeId, st => ({ ...st, openTerminalId: null, diffView: null, editorFullWidth: false }));
     } else {
       handleCloseTab(activeId);
     }
@@ -4158,7 +4160,7 @@ export function ChatApp() {
                         ...s,
                         openPlan: { content: planContent, allowedPrompts },
                         lastPlan: { content: planContent, allowedPrompts },
-                        openFile: null, openMockup: null, activeBrowserName: null, openTerminalId: null, diffView: null,
+                        openMockup: null, openTerminalId: null, diffView: null,
                       }))}
                       title="Reopen plan in the side panel"
                     >
@@ -4266,6 +4268,166 @@ export function ChatApp() {
               onArchive={handleArchiveSession}
             />
           </div>
+
+          {/* Active-session info controls — relocated here from the old
+              per-chat info bar. Sits just after the session controls on the
+              left; opts out of the window drag region so the buttons click. */}
+          {activeId && (
+            <div
+              className="flex items-center gap-2 mr-2 min-w-0 shrink"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            >
+              {explorerCollapsed && (
+                <button
+                  className="text-zinc-600 hover:text-zinc-300 text-sm"
+                  onClick={() => setExplorerCollapsed(false)}
+                  title="Show file explorer"
+                >
+                  &#x2630;
+                </button>
+              )}
+              {activeSession?.provider && (
+                <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-light text-zinc-300 font-semibold">
+                  {activeSession.provider === 'claudeAgent' ? 'Claude'
+                    : activeSession.provider === 'codex' ? 'Codex'
+                    : activeSession.provider === 'opencode' ? 'OpenCode'
+                    : activeSession.provider}
+                </span>
+              )}
+              {active.initInfo && (
+                <span className="text-xs text-zinc-600">
+                  v{active.initInfo.version} · {active.initInfo.tools.length} tools
+                </span>
+              )}
+
+              {/* Plugin-contributed linked-item pickers (e.g. ticket linker) */}
+              <PluginLinkedItemPickers sessionId={activeId} />
+
+              {/* PR badge */}
+              <div className="relative">
+                {prLinks[activeId] ? (
+                  <button
+                    className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const linked = prLinks[activeId!];
+                      setOpenPR({ number: linked.prNumber, title: linked.title, url: linked.url, headRefName: linked.headRefName, state: linked.state });
+                      if (activeId) updateLocalState(activeId, s => ({ ...s, diffView: null }));
+                      // Clear any active plugin detail view so the PR can take the right pane.
+                      window.dispatchEvent(new CustomEvent('codiby-code:linked-item-changed', { detail: { providerId: '', item: null } }));
+                    }}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
+                    title={`PR #${prLinks[activeId].prNumber}: ${prLinks[activeId].title} (right-click to change)`}
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
+                    #{prLinks[activeId].prNumber}
+                  </button>
+                ) : (
+                  <button
+                    className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent transition-colors"
+                    onClick={(e) => { e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
+                    title="Link a PR"
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
+                    Link PR
+                  </button>
+                )}
+
+                {showPrDropdown && (
+                  <div
+                    className="absolute left-0 top-7 z-50 w-80 max-h-64 bg-[#2a2a2a] border border-border-light rounded-lg shadow-xl overflow-hidden"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {prLinks[activeId!] && (
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-surface-light transition-colors border-b border-border text-left"
+                        onClick={() => {
+                          const sid = activeId!;
+                          setPrLinks(prev => { const next = { ...prev }; delete next[sid]; return next; });
+                          setShowPrDropdown(false);
+                          resolveServerUrl().then(base =>
+                            fetch(`${base}/pr-link/${sid}`, { method: 'DELETE' }).catch(() => {})
+                          );
+                        }}
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" /></svg>
+                        Unlink #{prLinks[activeId!].prNumber}
+                      </button>
+                    )}
+                    <div className="overflow-y-auto max-h-52">
+                      {sessionPrs.length === 0 ? (
+                        <div className="px-3 py-3 text-[11px] text-zinc-600">No pull requests found for this repo.</div>
+                      ) : sessionPrs.map(pr => {
+                        const isLinked = prLinks[activeId!]?.prNumber === pr.number;
+                        const stateColor = pr.isDraft ? 'bg-amber-400' : pr.state === 'OPEN' ? 'bg-green-400' : pr.state === 'MERGED' ? 'bg-violet-400' : 'bg-zinc-500';
+                        return (
+                          <button
+                            key={pr.number}
+                            className={`w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-surface-light transition-colors ${isLinked ? 'bg-green-500/10' : ''}`}
+                            onClick={() => {
+                              const sid = activeId!;
+                              const link = { prNumber: pr.number, title: pr.title, url: pr.url, headRefName: pr.headRefName, state: pr.state };
+                              setPrLinks(prev => ({ ...prev, [sid]: link }));
+                              setShowPrDropdown(false);
+                              resolveServerUrl().then(base =>
+                                fetch(`${base}/pr-link/${sid}`, {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify(link),
+                                }).catch(() => {})
+                              );
+                            }}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${stateColor}`} />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px] text-green-400 shrink-0">#{pr.number}</span>
+                                <span className="text-[11px] text-zinc-300 truncate">{pr.title}</span>
+                              </div>
+                              <span className="text-[10px] text-zinc-600 font-mono">{pr.headRefName}</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {active.lastMockup && (
+                <button
+                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
+                    active.openMockup
+                      ? 'bg-violet-500/15 text-violet-300 border-violet-500/30 hover:bg-violet-500/25'
+                      : 'bg-surface-light text-zinc-400 border-border hover:text-violet-300 hover:border-violet-500/30'
+                  }`}
+                  onClick={() => {
+                    if (!activeId) return;
+                    updateLocalState(activeId, s => {
+                      if (s.openMockup) return { ...s, openMockup: null, editorFullWidth: false };
+                      if (!s.lastMockup) return s;
+                      return {
+                        ...s,
+                        openMockup: s.lastMockup,
+                        openTerminalId: null,
+                        diffView: null,
+                      };
+                    });
+                  }}
+                  title={active.openMockup ? `Hide mockup "${active.lastMockup.name}"` : `Reopen mockup "${active.lastMockup.name}"`}
+                >
+                  <span className="text-[10px]">▣</span>
+                  <span className="truncate max-w-[12rem]">{active.lastMockup.name}</span>
+                </button>
+              )}
+
+              {active.initInfo?.cwd && (
+                <span className="text-xs text-zinc-600 font-mono truncate max-w-[220px]">
+                  {active.initInfo.cwd}
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Horizontal mode: session tab strip takes the middle.
               Standard/Focus mode: centered "current session" pill opens
@@ -4459,12 +4621,6 @@ export function ChatApp() {
               onCloseSession={handleRemoveFromActiveWorkspace}
               renderComposer={renderComposer}
               renderBody={renderChatBody}
-              renderPaneHeaderExtras={(sid) => {
-                const s = getState(sid);
-                const entries = Object.entries(s.lastBrowsers);
-                if (entries.length === 0) return null;
-                return entries.map(([name, last]) => renderBrowserChip(sid, name, last));
-              }}
               workspaces={focusWorkspaces}
               setWorkspaces={setFocusWorkspaces}
               activeWorkspaceId={activeWorkspaceId}
@@ -4591,7 +4747,7 @@ export function ChatApp() {
             activeSessionId={activeId}
             onOpenTerminal={(command) => {
               const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
-              if (msg) { if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, openTerminalId: msg.id, diffView: null, editorDirty: false })); }
+              if (msg) { if (activeId) updateLocalState(activeId, s => ({ ...s, openTerminalId: msg.id, diffView: null })); }
             }}
             onStartReview={handleStartReview}
             onRefreshGit={refreshGitModified}
@@ -4638,173 +4794,57 @@ export function ChatApp() {
               />
             ) : (
               <>
-                {/* Info bar */}
-                <div className="border-b border-border px-3 py-1 flex items-center gap-3 shrink-0">
-                  {explorerCollapsed && (
-                    <button
-                      className="text-zinc-600 hover:text-zinc-300 text-sm"
-                      onClick={() => setExplorerCollapsed(false)}
-                      title="Show file explorer"
-                    >
-                      &#x2630;
-                    </button>
-                  )}
-                  {activeSession?.provider && (
-                    <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-light text-zinc-300 font-semibold">
-                      {activeSession.provider === 'claudeAgent' ? 'Claude'
-                        : activeSession.provider === 'codex' ? 'Codex'
-                        : activeSession.provider === 'opencode' ? 'OpenCode'
-                        : activeSession.provider}
-                    </span>
-                  )}
-                  {active.initInfo && (
-                    <span className="text-xs text-zinc-600">
-                      v{active.initInfo.version} · {active.initInfo.tools.length} tools
-                    </span>
-                  )}
-
-                  {/* Plugin-contributed linked-item pickers (e.g. ticket linker) */}
-                  <PluginLinkedItemPickers sessionId={activeId} />
-
-                  {/* PR badge */}
-                  {activeId && (
-                    <div className="relative">
-                      {prLinks[activeId] ? (
-                        <button
-                          className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const linked = prLinks[activeId!];
-                            setOpenPR({ number: linked.prNumber, title: linked.title, url: linked.url, headRefName: linked.headRefName, state: linked.state });
-                            if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, diffView: null }));
-                            // Clear any active plugin detail view so the PR can take the right pane.
-                            window.dispatchEvent(new CustomEvent('codiby-code:linked-item-changed', { detail: { providerId: '', item: null } }));
-                          }}
-                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
-                          title={`PR #${prLinks[activeId].prNumber}: ${prLinks[activeId].title} (right-click to change)`}
-                        >
-                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
-                          #{prLinks[activeId].prNumber}
-                        </button>
-                      ) : (
-                        <button
-                          className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent transition-colors"
-                          onClick={(e) => { e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
-                          title="Link a PR"
-                        >
-                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
-                          Link PR
-                        </button>
-                      )}
-
-                      {showPrDropdown && (
-                        <div
-                          className="absolute left-0 top-7 z-50 w-80 max-h-64 bg-[#2a2a2a] border border-border-light rounded-lg shadow-xl overflow-hidden"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {prLinks[activeId!] && (
-                            <button
-                              className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-surface-light transition-colors border-b border-border text-left"
-                              onClick={() => {
-                                const sid = activeId!;
-                                setPrLinks(prev => { const next = { ...prev }; delete next[sid]; return next; });
-                                setShowPrDropdown(false);
-                                resolveServerUrl().then(base =>
-                                  fetch(`${base}/pr-link/${sid}`, { method: 'DELETE' }).catch(() => {})
-                                );
-                              }}
-                            >
-                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" /></svg>
-                              Unlink #{prLinks[activeId!].prNumber}
-                            </button>
-                          )}
-                          <div className="overflow-y-auto max-h-52">
-                            {sessionPrs.length === 0 ? (
-                              <div className="px-3 py-3 text-[11px] text-zinc-600">No pull requests found for this repo.</div>
-                            ) : sessionPrs.map(pr => {
-                              const isLinked = prLinks[activeId!]?.prNumber === pr.number;
-                              const stateColor = pr.isDraft ? 'bg-amber-400' : pr.state === 'OPEN' ? 'bg-green-400' : pr.state === 'MERGED' ? 'bg-violet-400' : 'bg-zinc-500';
-                              return (
-                                <button
-                                  key={pr.number}
-                                  className={`w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-surface-light transition-colors ${isLinked ? 'bg-green-500/10' : ''}`}
-                                  onClick={() => {
-                                    const sid = activeId!;
-                                    const link = { prNumber: pr.number, title: pr.title, url: pr.url, headRefName: pr.headRefName, state: pr.state };
-                                    setPrLinks(prev => ({ ...prev, [sid]: link }));
-                                    setShowPrDropdown(false);
-                                    resolveServerUrl().then(base =>
-                                      fetch(`${base}/pr-link/${sid}`, {
-                                        method: 'PUT',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(link),
-                                      }).catch(() => {})
-                                    );
-                                  }}
-                                >
-                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${stateColor}`} />
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-1">
-                                      <span className="text-[10px] text-green-400 shrink-0">#{pr.number}</span>
-                                      <span className="text-[11px] text-zinc-300 truncate">{pr.title}</span>
-                                    </div>
-                                    <span className="text-[10px] text-zinc-600 font-mono">{pr.headRefName}</span>
-                                  </div>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {active.lastMockup && (
-                    <button
-                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
-                        active.openMockup
-                          ? 'bg-violet-500/15 text-violet-300 border-violet-500/30 hover:bg-violet-500/25'
-                          : 'bg-surface-light text-zinc-400 border-border hover:text-violet-300 hover:border-violet-500/30'
-                      }`}
-                      onClick={() => {
-                        if (!activeId) return;
-                        updateLocalState(activeId, s => {
-                          if (s.openMockup) return { ...s, openMockup: null, editorFullWidth: false };
-                          if (!s.lastMockup) return s;
-                          return {
-                            ...s,
-                            openMockup: s.lastMockup,
-                            openFile: null,
-                            activeBrowserName: null,
-                            openTerminalId: null,
-                            diffView: null,
-                            editorDirty: false,
-                          };
-                        });
-                      }}
-                      title={active.openMockup ? `Hide mockup "${active.lastMockup.name}"` : `Reopen mockup "${active.lastMockup.name}"`}
-                    >
-                      <span className="text-[10px]">▣</span>
-                      <span className="truncate max-w-[12rem]">{active.lastMockup.name}</span>
-                    </button>
-                  )}
-
-                  {activeId && Object.entries(active.lastBrowsers).map(([name, last]) => renderBrowserChip(activeId, name, last))}
-
-                  <span className="flex-1" />
-                  {active.initInfo?.cwd && (
-                    <span className="text-xs text-zinc-600 font-mono truncate max-w-sm">
-                      {active.initInfo.cwd}
-                    </span>
-                  )}
-                </div>
-
               <div ref={contentRef} className="flex-1 flex min-h-0">
-                {/* Chat panel */}
-                <div
-                  className={`flex flex-col min-w-0 overflow-hidden relative ${rightPanelVisible && editorFullWidth ? 'hidden' : rightPanelVisible ? 'shrink-0' : 'flex-1'}`}
-                  style={rightPanelVisible && !editorFullWidth ? { width: `${chatSplitPct}%` } : undefined}
-                >
+                {/* Unified session workspace — chat (left) + resources (right),
+                    or the group composer, all inside one per-session PanelsWorkspace.
+                    Sidebars stay outside; everything else in the central area is a tab. */}
+                {(activeId || (selectedGroupId && tabGroups[selectedGroupId])) && (() => {
+                  const groupMode = !!(selectedGroupId && tabGroups[selectedGroupId]);
+                  const wsId = groupMode ? ('group:' + (selectedGroupId || 'x')) : (activeId || 'none');
+                  const panelTabs: PanelTab[] = [];
+                  if (groupMode) {
+                    panelTabs.push({ id: 'group-composer', kind: 'group-composer', title: tabGroups[selectedGroupId as string]!.name, icon: '✦', zone: 'chat', closable: false });
+                  } else if (activeId) {
+                    panelTabs.push({ id: 'chat', kind: 'chat', title: 'Chat', icon: '💬', zone: 'chat', closable: false });
+                    // One panel tab per open file (VSCode-style). At most one
+                    // is an italic `preview` tab, replaced when the next file
+                    // opens unless pinned (double-click) or modified.
+                    for (const t of active.editorTabs) {
+                      panelTabs.push({ id: 'editor:' + t.path, kind: 'editor', title: t.path.split('/').pop() || 'editor', icon: '📄', dirty: t.dirty, preview: t.preview, zone: 'main' });
+                    }
+                    if (openMockup) panelTabs.push({ id: 'mockup', kind: 'mockup', title: openMockup.name, icon: '🎨', zone: 'main' });
+                    // One panel tab per open browser — the previews live
+                    // side-by-side in the panel strip instead of behind an
+                    // in-component tab bar. Tab id encodes the browser name.
+                    for (const [bName, b] of Object.entries(active.browsers)) {
+                      panelTabs.push({ id: 'browser:' + bName, kind: 'browser', title: b.title || bName, icon: '🌐', zone: 'main' });
+                    }
+                    if (openPlan) panelTabs.push({ id: 'plan', kind: 'plan', title: 'Plan', icon: '📋', zone: 'main' });
+                    if (pluginDetailOpen) panelTabs.push({ id: 'plugin', kind: 'plugin', title: 'Plugin', icon: '🧩', zone: 'main' });
+                    if (openPR) panelTabs.push({ id: 'pr', kind: 'pr', title: openPR.number ? ('PR #' + openPR.number) : 'PR', icon: '◧', zone: 'main' });
+                    if (openTerminal) panelTabs.push({ id: 'terminal', kind: 'terminal', title: openTerminal.terminalCommand || 'terminal', icon: '▸', zone: 'main' });
+                    if (diffView) panelTabs.push({ id: 'diff', kind: 'diff', title: diffView.path.split('/').pop() || 'diff', icon: '±', zone: 'main' });
+                  }
+
+                  const closePanelTab = (tab: PanelTab) => {
+                    if (!activeId) return;
+                    switch (tab.kind) {
+                      case 'editor': closeEditor(activeId, tab.id.slice('editor:'.length)); break;
+                      case 'mockup': updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false, mockupInspect: false })); break;
+                      case 'browser': closeBrowserFully(activeId, tab.id.slice('browser:'.length)); break;
+                      case 'plan': updateLocalState(activeId, s => ({ ...s, openPlan: null, editorFullWidth: false })); break;
+                      case 'plugin': setPluginDetailOpen(false); break;
+                      case 'pr': setOpenPR(null); break;
+                      case 'terminal': updateLocalState(activeId, s => ({ ...s, openTerminalId: null })); break;
+                      case 'diff': updateLocalState(activeId, s => ({ ...s, diffView: null, editorFullWidth: false })); break;
+                    }
+                  };
+
+                  const renderPanelTab = (tab: PanelTab) => {
+                    switch (tab.kind) {
+                      case 'chat': {
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden relative">
                   <div className="flex flex-1 min-h-0">
                   {/* When a group is focused (sidebar click) but no session
                       inside it is selected, render the inline new-session
@@ -5332,71 +5372,55 @@ export function ChatApp() {
                   {/* Input — hidden while the inline GroupComposer is mounted,
                       since the composer renders its own send affordance. */}
                   {!selectedGroupId && composerNode}
-                </div>
-
-                {/* Resize handle between chat and right panel */}
-                {rightPanelVisible && !editorFullWidth && (
-                  <div
-                    className="w-1 shrink-0 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors"
-                    onMouseDown={onChatResizeStart}
-                  />
-                )}
-
-                {/* While dragging the chat/preview split, this overlay sits
-                    above any iframe in the right panel. Without it the
-                    cursor entering the iframe (a separate browsing context)
-                    eats the mousemove/mouseup and the drag never ends. */}
-                {chatResizing && (
-                  <div className="fixed inset-0 z-[9999] cursor-col-resize" />
-                )}
-
-                {/* Right panel: editor or terminal */}
-                {/* Unified panel workspace — one PanelsWorkspace per session,
-                    replacing the legacy single-slot editor/mockup/browser/... if-else chain.
-                    Each open* resource becomes a tab; the workspace handles split,
-                    resize, reorder and cross-panel drag. Content is rendered here so
-                    every existing callback/closure stays intact. */}
-                {rightPanelVisible && activeId && (() => {
-                  const panelTabs: PanelTab[] = [];
-                  if (openFile) panelTabs.push({ id: 'editor', kind: 'editor', title: openFile.path.split('/').pop() || 'editor', icon: '📄', dirty: editorDirty });
-                  if (openMockup) panelTabs.push({ id: 'mockup', kind: 'mockup', title: openMockup.name, icon: '🎨' });
-                  if (browserOpen && active.activeBrowserName) panelTabs.push({ id: 'browser', kind: 'browser', title: browserLabelFor(activeId, active.activeBrowserName), icon: '🌐' });
-                  if (openPlan) panelTabs.push({ id: 'plan', kind: 'plan', title: 'Plan', icon: '📋' });
-                  if (pluginDetailOpen) panelTabs.push({ id: 'plugin', kind: 'plugin', title: 'Plugin', icon: '🧩' });
-                  if (openPR) panelTabs.push({ id: 'pr', kind: 'pr', title: openPR.number ? ('PR #' + openPR.number) : 'PR', icon: '◧' });
-                  if (openTerminal) panelTabs.push({ id: 'terminal', kind: 'terminal', title: openTerminal.terminalCommand || 'terminal', icon: '▸' });
-                  if (diffView) panelTabs.push({ id: 'diff', kind: 'diff', title: diffView.path.split('/').pop() || 'diff', icon: '±' });
-
-                  const closePanelTab = (tab: PanelTab) => {
-                    if (!activeId) return;
-                    switch (tab.kind) {
-                      case 'editor': setOpenFile(null); break;
-                      case 'mockup': updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false, mockupInspect: false })); break;
-                      case 'browser': if (active.activeBrowserName) closeBrowserFully(activeId, active.activeBrowserName); break;
-                      case 'plan': updateLocalState(activeId, s => ({ ...s, openPlan: null, editorFullWidth: false })); break;
-                      case 'plugin': setPluginDetailOpen(false); break;
-                      case 'pr': setOpenPR(null); break;
-                      case 'terminal': updateLocalState(activeId, s => ({ ...s, openTerminalId: null })); break;
-                      case 'diff': updateLocalState(activeId, s => ({ ...s, diffView: null, editorFullWidth: false })); break;
-                    }
-                  };
-
-                  const renderPanelTab = (tab: PanelTab) => {
-                    switch (tab.kind) {
+                          </div>
+                        );
+                      }
+                      case 'group-composer': {
+                        return (
+                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-y-auto">
+                    <GroupComposer
+                      groupName={tabGroups[selectedGroupId]!.name}
+                      groupCwd={
+                        tabGroups[selectedGroupId]!.cwd
+                          || sessions.find(s => tabGroupMap[s.id] === selectedGroupId)?.cwd
+                          || ''
+                      }
+                      client={client}
+                      opencodeInfo={opencodeInfo}
+                      claudeModels={claudeModels}
+                      remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
+                      remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
+                      remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
+                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId)
+                      }
+                      onBrowseFolder={() => setShowNewSession(true)}
+                    />
+                          </div>
+                        );
+                      }
                       case 'editor': {
-                        if (!(openFile)) return null;
+                        if (!activeId) return null;
+                        // Each open file is its own panel tab; the path is in
+                        // the tab id. Only the active tab mounts (Panel renders
+                        // the active tab only), so there's exactly one Monaco.
+                        const ePath = tab.id.slice('editor:'.length);
+                        const eTab = active.editorTabs.find(t => t.path === ePath);
+                        if (!eTab) return null;
+                        const eDirty = eTab.dirty;
+                        const liveKey = liveBufKey(activeId, ePath);
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <div className="flex-1 flex flex-col min-w-0">
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
-                        <span className={`text-[12px] font-mono truncate ${gitModified.staged.has(openFile.path) ? 'text-green-400' : gitModified.unstaged.has(openFile.path) ? 'text-amber-400' : 'text-zinc-400'}`}>
-                          {openFile.path.split('/').pop()}
+                        <span className={`text-[12px] font-mono truncate ${gitModified.staged.has(ePath) ? 'text-green-400' : gitModified.unstaged.has(ePath) ? 'text-amber-400' : 'text-zinc-400'}`}>
+                          {ePath.split('/').pop()}
                         </span>
-                        {editorDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}
+                        {eDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
-                        {editorDirty && (
+                        {eDirty && (
                           <button
                             className="text-[11px] text-zinc-500 hover:text-zinc-200 px-1.5"
                             onClick={handleSaveFileWrapped}
@@ -5414,7 +5438,7 @@ export function ChatApp() {
                         </button>
                         <button
                           className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
-                          onClick={() => { setOpenFile(null); }}
+                          onClick={() => { closeEditor(activeId, ePath); }}
                         >
                           &times;
                         </button>
@@ -5422,13 +5446,22 @@ export function ChatApp() {
                     </div>
                     <div className={showDebugPanel ? 'flex-1 min-h-0' : 'flex-1'} style={showDebugPanel ? { flex: '1 1 60%' } : undefined}>
                       <Editor
-                        key={openFile.path}
-                        path={openFile.path}
-                        defaultValue={openFile.content}
+                        key={ePath}
+                        path={ePath}
+                        defaultValue={liveBuffersRef.current[liveKey] ?? eTab.content}
                         theme="vs-dark"
-                        onMount={handleEditorMount}
+                        onMount={(editor, monaco) => {
+                          // This tab just became the visible one — keep the
+                          // active-editor pointer in sync (drives LSP/debugger
+                          // and the focus-mode/anchor logic via derived openFile).
+                          if (active.activeEditorPath !== ePath) setActiveEditor(activeId, ePath);
+                          handleEditorMount(editor, monaco);
+                        }}
                         onChange={(value) => {
-                          if (activeId) updateLocalState(activeId, s => ({ ...s, editorDirty: value !== s.openFile?.content }));
+                          // Ref write (no re-render) preserves unsaved edits
+                          // across tab switches; dirty/pin go through state.
+                          liveBuffersRef.current[liveKey] = value ?? '';
+                          markEditorDirty(activeId, ePath, (value ?? '') !== eTab.content);
                         }}
                         options={{
                           minimap: { enabled: false },
@@ -5534,49 +5567,37 @@ export function ChatApp() {
                         );
                       }
                       case 'browser': {
-                        if (!(browserOpen && activeId && activeBrowser && active.activeBrowserName)) return null;
+                        if (!activeId) return null;
+                        // Each browser is its own panel tab — the name is
+                        // encoded in the tab id. Render that one preview; the
+                        // panel chrome owns tab switching, so there's no
+                        // in-component strip.
+                        const name = tab.id.slice('browser:'.length);
+                        const b = active.browsers[name];
+                        if (!b) return null;
+                        const label = browserLabelFor(activeId, name);
+                        const commentsForActive = (active.browserComments[name]?.[b.url]) ?? NO_BROWSER_COMMENTS;
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
-                            {(() => {
-                  const activeName = active.activeBrowserName;
-                  const label = browserLabelFor(activeId, activeName);
-                  // Build the tab strip data once per render so the
-                  // BrowserPanel just paints what's given.
-                  const tabs = Object.entries(active.browsers).map(([n, b]) => ({
-                    name: n,
-                    label: b.title || n,
-                    active: n === activeName,
-                  }));
-                  const commentsForActive = (active.browserComments[activeName]?.[activeBrowser.url]) ?? NO_BROWSER_COMMENTS;
-                  return (
                     <BrowserPanel
                       label={label}
-                      url={activeBrowser.url}
-                      title={activeBrowser.title}
-                      openSeq={activeBrowser.openSeq}
-                      cookieJar={activeBrowser.cookieJar}
+                      url={b.url}
+                      title={b.title}
+                      openSeq={b.openSeq}
+                      cookieJar={b.cookieJar}
                       obscured={showPalette || projectSettings.open || switcher.open}
-                      inspect={!!active.browserInspect[activeName]}
+                      inspect={!!active.browserInspect[name]}
                       comments={commentsForActive}
-                      tabs={tabs}
-                      onSelectTab={(nextName) => updateLocalState(activeId, s => (
-                        s.browsers[nextName] ? { ...s, activeBrowserName: nextName } : s
+                      // Mounting means this browser's tab is the active one —
+                      // keep `activeBrowserName` (focus-mode anchor + chip
+                      // highlight) in sync with what's actually visible.
+                      onMountFocus={() => updateLocalState(activeId, s => (
+                        s.activeBrowserName === name || !s.browsers[name]
+                          ? s
+                          : { ...s, activeBrowserName: name }
                       ))}
-                      onCloseTab={(closeName) => {
-                        tryInvokeNative('close_browser_preview', { label: browserLabelFor(activeId, closeName) });
-                        updateLocalState(activeId, s => {
-                          if (!s.browsers[closeName]) return s;
-                          const { [closeName]: _gone, ...rest } = s.browsers;
-                          const { [closeName]: _gi, ...nextInspect } = s.browserInspect;
-                          const remaining = Object.keys(rest);
-                          const nextActive = s.activeBrowserName === closeName
-                            ? (remaining[0] ?? null)
-                            : s.activeBrowserName;
-                          return { ...s, browsers: rest, activeBrowserName: nextActive, browserInspect: nextInspect };
-                        });
-                      }}
                       onUrlChanged={(nextUrl) => updateLocalState(activeId, s => {
-                        const cur = s.browsers[activeName];
+                        const cur = s.browsers[name];
                         if (!cur || cur.url === nextUrl) return s;
                         // Mirror in-page navigation into session state, but
                         // do NOT bump `openSeq` — that signal is reserved for
@@ -5585,28 +5606,28 @@ export function ChatApp() {
                         // to re-fire on every link click.
                         return {
                           ...s,
-                          browsers: { ...s.browsers, [activeName]: { ...cur, url: nextUrl } },
+                          browsers: { ...s.browsers, [name]: { ...cur, url: nextUrl } },
                         };
                       })}
                       onSetInspect={(next) => updateLocalState(activeId, s => ({
                         ...s,
-                        browserInspect: { ...s.browserInspect, [activeName]: next },
+                        browserInspect: { ...s.browserInspect, [name]: next },
                       }))}
                       onSetComments={(next) => updateLocalState(activeId, s => ({
                         ...s,
                         browserComments: {
                           ...s.browserComments,
-                          [activeName]: {
-                            ...(s.browserComments[activeName] ?? {}),
-                            [activeBrowser.url]: next,
+                          [name]: {
+                            ...(s.browserComments[name] ?? {}),
+                            [b.url]: next,
                           },
                         },
                       }))}
                       onSendToChat={(md) => {
                         if (!clientRef.current) return;
-                        const browserUrl = activeBrowser.url;
+                        const browserUrl = b.url;
                         const clearedCommentsForName = {
-                          ...(active.browserComments[activeName] ?? {}),
+                          ...(active.browserComments[name] ?? {}),
                           [browserUrl]: [],
                         };
                         const streamingNow = active.isStreaming;
@@ -5623,8 +5644,8 @@ export function ChatApp() {
                             ...s,
                             messages: [...s.messages, pendingMsg],
                             pendingMessages: [...s.pendingMessages, { id: pendingId, text: md }],
-                            browserInspect: { ...s.browserInspect, [activeName]: false },
-                            browserComments: { ...s.browserComments, [activeName]: clearedCommentsForName },
+                            browserInspect: { ...s.browserInspect, [name]: false },
+                            browserComments: { ...s.browserComments, [name]: clearedCommentsForName },
                           }));
                         } else {
                           const userMsg = {
@@ -5640,8 +5661,8 @@ export function ChatApp() {
                             wasInterrupted: false,
                             partialText: '',
                             partialThinking: '',
-                            browserInspect: { ...s.browserInspect, [activeName]: false },
-                            browserComments: { ...s.browserComments, [activeName]: clearedCommentsForName },
+                            browserInspect: { ...s.browserInspect, [name]: false },
+                            browserComments: { ...s.browserComments, [name]: clearedCommentsForName },
                           }));
                           clientRef.current.sendMessage(activeId, md);
                         }
@@ -5650,34 +5671,12 @@ export function ChatApp() {
                         setInput(prev => prev ? prev + (prev.endsWith('\n') ? '' : '\n\n') + md : md);
                         updateLocalState(activeId, s => ({
                           ...s,
-                          browserInspect: { ...s.browserInspect, [activeName]: false },
+                          browserInspect: { ...s.browserInspect, [name]: false },
                         }));
                         inputRef.current?.focus();
                       }}
-                      onClose={() => {
-                        // Explicit close from the × button: destroy the
-                        // underlying BrowserView for the active tab. The
-                        // BrowserPanel unmount path only hides — without
-                        // this an orphan view would leak until app shutdown.
-                        tryInvokeNative('close_browser_preview', { label });
-                        updateLocalState(activeId, s => {
-                          if (!s.browsers[activeName]) return s;
-                          const { [activeName]: _gone, ...rest } = s.browsers;
-                          const { [activeName]: _gi, ...nextInspect } = s.browserInspect;
-                          const remaining = Object.keys(rest);
-                          const nextActive = remaining[0] ?? null;
-                          return {
-                            ...s,
-                            browsers: rest,
-                            activeBrowserName: nextActive,
-                            browserInspect: nextInspect,
-                            editorFullWidth: nextActive == null ? false : s.editorFullWidth,
-                          };
-                        });
-                      }}
+                      onClose={() => closeBrowserFully(activeId, name)}
                     />
-                  );
-                            })()}
                           </div>
                         );
                       }
@@ -5900,10 +5899,14 @@ export function ChatApp() {
 
                   return (
                     <PanelsWorkspace
-                      sessionId={activeId}
+                      sessionId={wsId}
                       tabs={panelTabs}
                       renderTab={renderPanelTab}
                       onCloseTab={closePanelTab}
+                      activeTabRequest={panelFocusReq}
+                      onTabDoubleClick={(tabId) => {
+                        if (activeId && tabId.startsWith('editor:')) pinEditor(activeId, tabId.slice('editor:'.length));
+                      }}
                     />
                   );
                 })()}
@@ -6194,7 +6197,6 @@ export function ChatApp() {
               next = `${isLoopbackOrPrivate ? 'http' : 'https'}://${bare}`;
             }
             try { new URL(next); } catch { return; }
-            const preview = { url: next, title: trimmedName };
             updateLocalState(activeId, s => ({
               ...s,
               browsers: {
@@ -6206,13 +6208,9 @@ export function ChatApp() {
                   cookieJar: s.browsers[trimmedName]?.cookieJar ?? 'default',
                 },
               },
-              lastBrowsers: { ...s.lastBrowsers, [trimmedName]: preview },
               activeBrowserName: trimmedName,
-              openFile: null,
-              openMockup: null,
-              openTerminalId: null,
-              diffView: null,
-              editorDirty: false,
+              panelFocusTabId: 'browser:' + trimmedName,
+              panelFocusSeq: s.panelFocusSeq + 1,
             }));
           }}
         />
@@ -6258,18 +6256,20 @@ export function ChatApp() {
             <div className="relative bg-surface border border-border-light rounded-xl shadow-2xl p-5 max-w-sm w-full" onClick={e => e.stopPropagation()}>
               <h3 className="text-sm font-semibold text-zinc-200 mb-2">Unsaved Changes</h3>
               <p className="text-[13px] text-zinc-400 mb-4">
-                Do you want to save changes to <span className="text-zinc-200 font-mono">{active.openFile?.path.split('/').pop()}</span> before closing?
+                Do you want to save changes to <span className="text-zinc-200 font-mono">{openFile?.path.split('/').pop()}</span> before closing?
               </p>
               <div className="flex justify-end gap-2">
                 <Button variant="flat" onPress={() => {
                   setUnsavedClosePrompt(false);
-                  if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+                  const p = activeId ? getState(activeId).activeEditorPath : null;
+                  if (activeId && p) closeEditor(activeId, p);
                 }}>Don't Save</Button>
                 <Button variant="flat" onPress={() => setUnsavedClosePrompt(false)}>Cancel</Button>
                 <Button onPress={async () => {
                   setUnsavedClosePrompt(false);
+                  const p = activeId ? getState(activeId).activeEditorPath : null;
                   await handleSaveFileWrapped();
-                  if (activeId) updateLocalState(activeId, s => ({ ...s, openFile: null, openTerminalId: null, diffView: null, editorFullWidth: false, editorDirty: false }));
+                  if (activeId && p) closeEditor(activeId, p);
                 }}>Save</Button>
               </div>
             </div>

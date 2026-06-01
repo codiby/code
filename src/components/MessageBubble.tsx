@@ -701,6 +701,7 @@ export type GroupedItem =
 
 const NEVER_COLLAPSE = new Set([
   'Agent', 'AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode', 'TodoWrite',
+  'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
 ]);
 
 /** Folds runs of ≥ 2 consecutive tool_use messages (any tool names) into a

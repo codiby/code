@@ -72,6 +72,10 @@ export const IMAGE_MEDIA_TYPES: Record<string, string> = {
 // reads and to keep the iframe-broadcast hot path synchronous; on miss we fall
 // back to disk and rehydrate.
 const MOCKUPS_ROOT = join(homedir(), '.codiby', 'mockups');
+// Browser screenshots are written to disk under ~/.codiby/screenshots/<sessionId>/
+// instead of being returned inline as base64 — large data URLs bloat the tool
+// result; callers get a file path they can read or pass to post_image_to_session.
+const SCREENSHOTS_ROOT = join(homedir(), '.codiby', 'screenshots');
 const mockupStore = new Map<string, Map<string, string>>();
 export function mockupsFor(sessionId: string): Map<string, string> {
   let m = mockupStore.get(sessionId);
@@ -604,7 +608,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
       ),
       tool(
         'browser_take_screenshot',
-        'Capture a PNG screenshot of a named browser preview\'s viewport. Returns base64-encoded image data.',
+        "Capture a screenshot of a named browser preview's viewport. Saves it to a PNG file under ~/.codiby/screenshots/<sessionId>/ and returns the absolute file path (not inline base64). Read the file or pass the path to post_image_to_session to surface it to the user.",
         {
           name: NAME_SCHEMA,
         },
@@ -614,10 +618,14 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
             const r = (await cdpRequest(sessionId, name, 'take_screenshot', {}, deps.broadcastToSession)) as { format: string; data: string };
+            const buf = Buffer.from(r.data, 'base64');
+            const ext = (r.format || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+            const file = join(SCREENSHOTS_ROOT, sessionId, `${name}-${Date.now()}.${ext}`);
+            await fs.mkdir(dirname(file), { recursive: true });
+            await fs.writeFile(file, buf);
             return {
               content: [
-                { type: 'text', text: `Captured ${r.format} screenshot of "${name}" (${Math.round(r.data.length / 1024)} KB base64).` },
-                { type: 'image', data: r.data, mimeType: `image/${r.format}` },
+                { type: 'text', text: `Saved ${ext} screenshot of "${name}" (${Math.round(buf.length / 1024)} KB) to ${file}` },
               ],
             };
           } catch (e) {

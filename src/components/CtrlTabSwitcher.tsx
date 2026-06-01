@@ -93,12 +93,16 @@ function statusBadge(status: RowStatus): { label: string; cls: string } {
   }
 }
 
+/** Todo-panel tools (legacy TodoWrite + the Task tools) surface as todo state,
+ *  not chat, so they shouldn't count toward a session's message preview. */
+const TODO_PANEL_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList']);
+
 /** Last N visible messages — skips tool-use bookkeeping that doesn't help
  *  identify the session at a glance. */
 function previewMessages(messages: ChatMessage[]): ChatMessage[] {
   const visible = messages.filter(m => {
     if (m.role === 'system') return false;
-    if (m.toolName === 'TodoWrite') return false;
+    if (m.toolName && TODO_PANEL_TOOLS.has(m.toolName)) return false;
     return true;
   });
   return visible.slice(-PREVIEW_MESSAGE_COUNT);

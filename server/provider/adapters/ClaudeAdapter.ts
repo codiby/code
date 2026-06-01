@@ -159,6 +159,22 @@ class ClaudeSession implements ProviderSession {
    * `assistant` SDK message that finalizes the block.
    */
   private streamingThinkingByIndex = new Map<number, string>();
+  /**
+   * Reconstructed todo list, keyed by the SDK-assigned task id and kept in
+   * insertion order. The Claude Code preset drives the todo panel through the
+   * incremental Task tools (`TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`)
+   * rather than the old snapshot-style `TodoWrite`, so we rebuild the full
+   * list ourselves and re-emit it via `onTodosUpdate` on every mutation.
+   */
+  private tasks = new Map<string, { content: string; status: string; activeForm?: string }>();
+  /**
+   * Task-tool `tool_use` blocks we've swallowed from the chat transcript,
+   * keyed by `tool_use_id`. We hold the originating tool name so the matching
+   * `tool_result` (which carries the server-assigned id for creates, or the
+   * full snapshot for lists) can be folded into `this.tasks` and skipped from
+   * the chat instead of rendering as an orphan result card.
+   */
+  private todoToolUses = new Map<string, { name: string; input: any }>();
 
   constructor(sessionId: string, events: ProviderEvents) {
     this.sessionId = sessionId;
@@ -372,8 +388,11 @@ class ClaudeSession implements ProviderSession {
             parentToolUseId,
           };
           if (tool.name === 'TodoWrite') {
+            // Legacy snapshot tool — still handled for older sessions/presets.
             const todos = (tool.input as any)?.todos ?? [];
             this.events.onTodosUpdate(todos);
+          } else if (this.handleTaskToolUse(tool)) {
+            // Swallowed: drives the todo panel, kept out of the chat transcript.
           } else {
             this.events.onToolUse(tool);
           }
@@ -401,8 +420,21 @@ class ClaudeSession implements ProviderSession {
       const parentToolUseId = (user.parent_tool_use_id as string | null | undefined) ?? null;
       for (const block of content) {
         if (block.type === 'tool_result') {
+          const toolUseId = block.tool_use_id as string | undefined;
+          if (toolUseId && this.todoToolUses.has(toolUseId)) {
+            // Result for a swallowed Task tool — fold it into the todo list
+            // (resolving the server-assigned id for creates) and keep it out
+            // of the chat so it doesn't render as an orphan result card. A
+            // failed call carries no usable payload, so just drop it.
+            const pending = this.todoToolUses.get(toolUseId)!;
+            if (!block.is_error) {
+              this.handleTaskToolResult(pending.name, pending.input, block.content);
+            }
+            this.todoToolUses.delete(toolUseId);
+            continue;
+          }
           this.events.onToolResult({
-            toolUseId: block.tool_use_id as string | undefined,
+            toolUseId,
             content: block.content,
             isError: block.is_error as boolean | undefined,
             parentToolUseId,
@@ -423,6 +455,136 @@ class ClaudeSession implements ProviderSession {
       });
       return;
     }
+  }
+
+  /**
+   * Intercept the Claude Code todo-panel tools. Returns `true` when the block
+   * is one of the Task tools (so the caller swallows it from the chat). State
+   * is applied eagerly here for updates; creates and lists are reconciled once
+   * their `tool_result` lands (see {@link handleTaskToolResult}).
+   */
+  private handleTaskToolUse(tool: AssistantToolUseBlock): boolean {
+    const input = tool.input as any;
+    switch (tool.name) {
+      case 'TaskCreate':
+      case 'TaskGet':
+      case 'TaskList':
+        // Reconciled from the matching tool_result (the create's id, or the
+        // list snapshot). Record it so that result is folded in and hidden.
+        this.todoToolUses.set(tool.id, { name: tool.name, input });
+        return true;
+      case 'TaskUpdate': {
+        const taskId = typeof input?.taskId === 'string' ? input.taskId : undefined;
+        if (taskId) {
+          if (input?.status === 'deleted') {
+            this.tasks.delete(taskId);
+          } else {
+            const cur = this.tasks.get(taskId) ?? { content: '', status: 'pending' };
+            this.tasks.set(taskId, {
+              content: typeof input?.subject === 'string' ? input.subject : cur.content,
+              status: typeof input?.status === 'string' ? input.status : cur.status,
+              activeForm: typeof input?.activeForm === 'string' ? input.activeForm : cur.activeForm,
+            });
+          }
+          this.emitTodos();
+        }
+        // No payload to reconcile, but still swallow its result from the chat.
+        this.todoToolUses.set(tool.id, { name: tool.name, input });
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Fold a Task tool's `tool_result` into the reconstructed todo list. Creates
+   * carry the server-assigned id (`{ task: { id, subject } }`); lists carry a
+   * full snapshot (`{ tasks: [...] }`) we treat as authoritative. Update/get
+   * results are no-ops — updates were already applied at `tool_use` time.
+   */
+  private handleTaskToolResult(name: string, input: any, content: unknown): void {
+    if (name === 'TaskCreate') {
+      const id = this.resolveCreatedTaskId(content);
+      if (!id) return;
+      this.tasks.set(id, {
+        content: typeof input?.subject === 'string' ? input.subject : '',
+        status: 'pending',
+        activeForm: typeof input?.activeForm === 'string' ? input.activeForm : undefined,
+      });
+      this.emitTodos();
+    } else if (name === 'TaskList') {
+      const parsed = this.parseResultJson(content);
+      const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : null;
+      if (!tasks) return;
+      // Authoritative snapshot — rebuild the map, preserving server order.
+      this.tasks.clear();
+      for (const t of tasks) {
+        const id = typeof t?.id === 'string' ? t.id : undefined;
+        if (!id) continue;
+        this.tasks.set(id, {
+          content: typeof t?.subject === 'string' ? t.subject : '',
+          status: typeof t?.status === 'string' ? t.status : 'pending',
+        });
+      }
+      this.emitTodos();
+    }
+  }
+
+  /** Re-emit the full todo snapshot in the shape the UI/bridge expects. */
+  private emitTodos(): void {
+    this.events.onTodosUpdate(
+      [...this.tasks.values()].map((t) => ({
+        content: t.content,
+        status: t.status,
+        ...(t.activeForm ? { activeForm: t.activeForm } : {}),
+      })),
+    );
+  }
+
+  /**
+   * Pull the created task's id out of a `TaskCreate` result. The wire shape of
+   * a built-in tool result varies (structured JSON vs. a rendered string), so
+   * try the structured `{ task: { id } }` first and fall back to the `#<id>`
+   * marker in the human-readable "Task #N created" rendering.
+   */
+  private resolveCreatedTaskId(content: unknown): string | null {
+    const parsed = this.parseResultJson(content);
+    if (parsed && typeof parsed.task?.id === 'string') return parsed.task.id;
+    const text = this.coerceResultText(content);
+    const match = text.match(/#\s*([A-Za-z0-9_-]+)/);
+    return match ? match[1] : null;
+  }
+
+  /** Best-effort JSON parse of a tool_result payload; null when not JSON. */
+  private parseResultJson(content: unknown): any | null {
+    const text = this.coerceResultText(content).trim();
+    if (!text || (text[0] !== '{' && text[0] !== '[')) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Flatten a tool_result `content` (string | block array | object) to text. */
+  private coerceResultText(content: unknown): string {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((b: any) => (typeof b === 'string' ? b : typeof b?.text === 'string' ? b.text : ''))
+        .join('');
+    }
+    if (content && typeof content === 'object') {
+      const maybeText = (content as any).text;
+      if (typeof maybeText === 'string') return maybeText;
+      try {
+        return JSON.stringify(content);
+      } catch {
+        return '';
+      }
+    }
+    return '';
   }
 
   async sendUserMessage(input: { text: string; images?: ImageInput[] }): Promise<void> {
