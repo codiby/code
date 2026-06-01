@@ -5,6 +5,16 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] — 2026-06-01
+
+### Fixed
+
+- **Chat no longer renders blank when switching sessions.** Selecting a session
+  that shared the previous one's tab layout (e.g. moving between two sessions
+  that each had only the chat open) could leave the workspace empty because the
+  layout for the newly-selected session was never seeded. Switching sessions now
+  always reconciles the layout, so the chat pane shows up reliably.
+
 ## [0.16.0] — 2026-06-01
 
 ### Added
