@@ -5,6 +5,41 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] — 2026-06-01
+
+### Added
+
+- **Multiple files open at once, VSCode-style.** The editor is no longer a
+  single-file slot — every file you open becomes its own tab and they coexist.
+  Opening a file from chat or a diff shows it as an italic *preview* tab that
+  the next file replaces in place; double-clicking the tab (or editing the
+  file) pins it so it sticks around. Open tabs and the active one are
+  remembered per session.
+- **Chat-left / resources-right by default.** New tabs now place themselves by
+  zone: the chat stays on the left and editors, browser previews, mockups,
+  diffs, and terminals land in a panel to the right. Opening the first such
+  resource splits a fresh panel automatically; later ones join the panel that
+  already owns their zone.
+
+### Changed
+
+- **Browser previews are first-class workspace tabs.** Each open browser
+  preview is now a regular panel tab that can sit alongside editors and other
+  previews, be reordered, split off, or dragged across panels — replacing the
+  bespoke in-panel browser tab strip. The visible preview drives focus-mode
+  and the header chips automatically.
+- **Todo panel driven by the incremental Task tools.** The Claude Code preset
+  now manages todos through `TaskCreate` / `TaskUpdate` / `TaskList` rather
+  than snapshot-style `TodoWrite`. These are reconstructed into the full todo
+  list and surfaced in the dedicated panel, and are kept out of the chat
+  transcript and session previews (the legacy `TodoWrite` path still works for
+  older sessions).
+- **Browser screenshots are saved to disk.** `browser_take_screenshot` now
+  writes a PNG under `~/.codiby/screenshots/<session>/` and returns its file
+  path instead of inlining a large base64 data URL into the tool result.
+- **Updated the Claude Agent SDK** to 0.3.159 and added the Anthropic SDK and
+  Zod as direct dependencies.
+
 ## [0.15.1] — 2026-05-29
 
 ### Fixed
