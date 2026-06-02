@@ -58,8 +58,6 @@ jobs:
         run: |
           mkdir -p release-artifacts
           cp electron-out/*.dmg release-artifacts/
-          cp electron-out/*.dmg.blockmap release-artifacts/
-          cp electron-out/latest-mac.yml release-artifacts/ 2>/dev/null || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -111,8 +109,6 @@ jobs:
         run: |
           mkdir -p release-artifacts
           cp electron-out/*.exe release-artifacts/
-          cp electron-out/*.exe.blockmap release-artifacts/ 2>/dev/null || true
-          cp electron-out/latest.yml release-artifacts/ 2>/dev/null || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -179,4 +175,6 @@ jobs:
           body: ${{ steps.changelog.outputs.body }}
           draft: false
           prerelease: false
-          files: artifacts/*
+          files: |
+            artifacts/*.dmg
+            artifacts/*.exe
