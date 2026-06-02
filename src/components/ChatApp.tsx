@@ -1132,20 +1132,22 @@ export function ChatApp() {
 
   // Open a file in the editor: activate if already open; else replace the
   // current preview tab; else append a new (preview) tab. Always reveal it.
-  const openFileInEditor = useCallback((sid: string, path: string, content: string, line?: number, opts?: { pin?: boolean }) => {
+  const openFileInEditor = useCallback((sid: string, path: string, content: string, line?: number, opts?: { pin?: boolean; column?: number; readOnly?: boolean }) => {
     const pin = opts?.pin ?? false;
+    const column = opts?.column;
+    const readOnly = opts?.readOnly;
     updateLocalState(sid, s => {
       const tabs = s.editorTabs;
       const idx = tabs.findIndex(t => t.path === path);
       let nextTabs: typeof tabs;
       if (idx >= 0) {
-        // Already open — keep its dirty/preview state, just update the target
-        // line (and pin if requested).
+        // Already open — keep its dirty/preview/read-only state, just update
+        // the target line/column (and pin if requested).
         nextTabs = tabs.map((t, i) => i === idx
-          ? { ...t, line, preview: pin ? false : t.preview }
+          ? { ...t, line, column, preview: pin ? false : t.preview }
           : t);
       } else {
-        const newTab = { path, content, line, dirty: false, preview: !pin };
+        const newTab = { path, content, line, column, dirty: false, preview: !pin, readOnly };
         const previewIdx = tabs.findIndex(t => t.preview);
         if (previewIdx >= 0) {
           // Replace the existing preview tab in place (keeps strip position).
@@ -1849,7 +1851,7 @@ export function ChatApp() {
     ? active.editorTabs.find(t => t.path === active.activeEditorPath) ?? null
     : null;
   const openFile = activeEditorTab
-    ? { path: activeEditorTab.path, content: activeEditorTab.content, line: activeEditorTab.line }
+    ? { path: activeEditorTab.path, content: activeEditorTab.content, line: activeEditorTab.line, column: activeEditorTab.column, readOnly: activeEditorTab.readOnly ?? false }
     : null;
   const editorDirty = activeEditorTab?.dirty ?? false;
   const anyEditorOpen = active.editorTabs.length > 0;
@@ -1970,15 +1972,17 @@ export function ChatApp() {
     });
   }, [activeId, sessionStates]);
 
-  // Jump to line when openFile.line changes (e.g. clicking different search results in same file)
+  // Jump to line/column when they change (clicking search results, or a
+  // go-to-definition landing in the already-active file).
   useEffect(() => {
     if (openFile?.line && editorRef.current) {
       const line = openFile.line;
-      editorRef.current.revealLineInCenter(line);
-      editorRef.current.setPosition({ lineNumber: line, column: 1 });
+      const column = openFile.column ?? 1;
+      editorRef.current.revealPositionInCenter({ lineNumber: line, column });
+      editorRef.current.setPosition({ lineNumber: line, column });
       editorRef.current.focus();
     }
-  }, [openFile?.line, openFile?.path]);
+  }, [openFile?.line, openFile?.column, openFile?.path]);
 
   // Scroll when permission request appears (with delay for Monaco to mount)
   useEffect(() => {
@@ -2908,6 +2912,7 @@ export function ChatApp() {
 
   const handleSaveFileWrapped = async () => {
     if (!openFile || !activeId) return;
+    if (openFile.readOnly) return; // dependency / external file — view only
     // Untitled files need Save As
     if (openFile.path.startsWith('untitled-')) {
       const editor = editorRef.current;
@@ -3323,6 +3328,33 @@ export function ChatApp() {
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
   explorerRootRef.current = explorerRoot;
 
+  // A file is read-only when it lives outside the project (e.g. a TS lib
+  // .d.ts) or inside any node_modules — we open dependency declarations for
+  // navigation, not editing.
+  const isExternalPath = useCallback((path: string) => {
+    if (path.includes('/node_modules/')) return true;
+    if (explorerRoot && !path.startsWith(explorerRoot)) return true;
+    return false;
+  }, [explorerRoot]);
+
+  // Cross-file go-to-definition target. The backend (local or remote tunnel)
+  // serves the file via readFile; externals open read-only. We reveal the
+  // exact line/column the LSP pointed at (first result only).
+  const navigateToDefinition = useCallback(async (rawPath: string, sel?: { startLineNumber?: number; startColumn?: number }) => {
+    if (!clientRef.current || !activeId) return;
+    const file = await clientRef.current.readFile(rawPath);
+    if (!file) return;
+    openFileInEditor(activeId, file.path, file.content, sel?.startLineNumber, {
+      column: sel?.startColumn,
+      readOnly: isExternalPath(file.path),
+    });
+  }, [activeId, isExternalPath, openFileInEditor]);
+
+  // Stable handle so the (once-patched) Monaco editor service always calls the
+  // latest navigate closure without re-patching on every editor mount.
+  const navigateToDefinitionRef = useRef(navigateToDefinition);
+  useEffect(() => { navigateToDefinitionRef.current = navigateToDefinition; }, [navigateToDefinition]);
+
   // Load git modified when root changes — instant from cache, then refresh
   useEffect(() => {
     if (explorerRoot) {
@@ -3484,12 +3516,37 @@ export function ChatApp() {
     editorRef.current = editor;
     monacoRef.current = monaco;
 
-    // Jump to line if specified (e.g. from search results)
+    // Cross-file go-to-definition. A standalone Monaco only knows about the one
+    // model it has mounted, so when F12 / Cmd+Click resolves to another file
+    // its editor service can't open it and returns null. We patch the service
+    // (once — it's shared across editor instances): let Monaco handle same-file
+    // jumps natively, and for a different file route the target through our tab
+    // system instead. Uses the private _codeEditorService — the standard
+    // standalone-Monaco escape hatch.
+    const codeEditorService = (editor as unknown as { _codeEditorService?: any })._codeEditorService;
+    if (codeEditorService && !codeEditorService.__taskrCrossFileNav) {
+      const openCodeEditorBase = codeEditorService.openCodeEditor.bind(codeEditorService);
+      codeEditorService.openCodeEditor = async (input: any, sourceEditor: any, sideBySide?: boolean) => {
+        const handled = await openCodeEditorBase(input, sourceEditor, sideBySide);
+        if (handled === null && input?.resource?.scheme === 'file') {
+          // Different file — Monaco couldn't open it. `resource.path` is the
+          // absolute fs path; `options.selection` is already 1-based Monaco
+          // coords. Jump to the first definition (we ignore extra results).
+          navigateToDefinitionRef.current(input.resource.path, input.options?.selection);
+          return sourceEditor; // signal "handled" so Monaco doesn't warn
+        }
+        return handled;
+      };
+      codeEditorService.__taskrCrossFileNav = true;
+    }
+
+    // Jump to line/column if specified (search results, go-to-definition)
     if (openFile?.line) {
       const line = openFile.line;
+      const column = openFile.column ?? 1;
       setTimeout(() => {
-        editor.revealLineInCenter(line);
-        editor.setPosition({ lineNumber: line, column: 1 });
+        editor.revealPositionInCenter({ lineNumber: line, column });
+        editor.setPosition({ lineNumber: line, column });
         editor.focus();
       }, 50);
     }
@@ -5418,6 +5475,7 @@ export function ChatApp() {
                           {ePath.split('/').pop()}
                         </span>
                         {eDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}
+                        {eTab.readOnly && <span className="text-[10px] uppercase tracking-wide text-zinc-500 border border-border rounded px-1 shrink-0" title="Read-only (outside project / node_modules)">read-only</span>}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {eDirty && (
@@ -5471,6 +5529,7 @@ export function ChatApp() {
                           wordWrap: 'on',
                           padding: { top: 8 },
                           glyphMargin: true,
+                          readOnly: !!eTab.readOnly,
                         }}
                       />
                     </div>

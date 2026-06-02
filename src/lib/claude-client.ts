@@ -258,7 +258,7 @@ export interface SessionState {
    *  replaced when the next file opens unless pinned (double-click) or modified.
    *  `content` is the on-disk/last-saved baseline; live unsaved edits live in
    *  Monaco and a host-side buffer. UI-only — preserved across server merges. */
-  editorTabs: { path: string; content: string; line?: number; dirty: boolean; preview: boolean }[];
+  editorTabs: { path: string; content: string; line?: number; column?: number; dirty: boolean; preview: boolean; readOnly?: boolean }[];
   /** Path of the revealed editor tab, or null when none is open. */
   activeEditorPath: string | null;
   /** Unified "reveal this tab" signal for the PanelsWorkspace, shared by editor
