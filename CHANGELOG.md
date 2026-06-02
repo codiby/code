@@ -5,6 +5,17 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.2] — 2026-06-01
+
+### Added
+
+- **Cross-file Go to Definition.** Cmd+Click (or F12) on a symbol now jumps to
+  its definition even when it lives in another file — the target opens as a
+  preview tab with the cursor placed on the exact line and column. Definitions
+  in dependencies (`node_modules`) or outside the project (TypeScript lib
+  `.d.ts` files) open read-only, and language intelligence stays active on them
+  so you can keep chaining jumps from one declaration to the next.
+
 ## [0.16.1] — 2026-06-01
 
 ### Fixed
