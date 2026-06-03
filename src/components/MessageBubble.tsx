@@ -16,6 +16,10 @@ interface Props {
   // Only required for interactive PTY bubbles (/terminal slash command).
   sessionId?: string;
   client?: ClaudeClient;
+  /** Optional per-session accent (hex) used to tint the user message card so
+   *  panes are visually distinguishable in focus mode. Falls back to the
+   *  default blue when absent. */
+  accent?: string;
   interactiveMinimized?: boolean;
   onToggleInteractiveMinimize?: (msgId: string) => void;
   /** Removes a queued (still-unsent) user message from the local queue.
@@ -954,7 +958,7 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
@@ -1044,8 +1048,14 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
       <div className="flex justify-end py-1">
         <div className="group relative max-w-[75%]">
           <div
-            className={`bg-blue-600/15 rounded-2xl rounded-br-sm px-3.5 py-2 transition-opacity ${
-              pending ? 'opacity-50 border border-dashed border-blue-500/40' : ''
+            style={accent ? {
+              backgroundColor: `${accent}26`,
+              ...(pending ? { borderColor: `${accent}66` } : {}),
+            } : undefined}
+            className={`rounded-2xl rounded-br-sm px-3.5 py-2 transition-opacity ${
+              accent ? '' : 'bg-blue-600/15'
+            } ${
+              pending ? `opacity-50 border border-dashed ${accent ? '' : 'border-blue-500/40'}` : ''
             }`}
           >
             {message.images && message.images.length > 0 && (

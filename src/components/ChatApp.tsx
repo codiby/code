@@ -424,6 +424,13 @@ function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: Claude
 // so the audio cue on permission requests / turn completion is identical.
 import { playChime } from '../lib/chime';
 
+// Accent hues for sessions without an explicit (remote) color. Picked to read
+// well on the dark surface and stay distinct from one another.
+const SESSION_ACCENT_PALETTE = [
+  '#7c5cff', '#22d3ee', '#f59e0b', '#34d399',
+  '#f87171', '#c084fc', '#38bdf8', '#fb7185',
+];
+
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   // Session lifecycle is per-session and persisted server-side (status:
@@ -3805,22 +3812,18 @@ export function ChatApp() {
     };
   }, []);
 
-  // Reconcile focus-mode workspaces with the host's open-sessions list:
-  //   - drop sessions from workspaces that closed externally;
-  //   - assign *newly-opened* sessions to the active workspace.
+  // Reconcile focus-mode workspaces with the host's open-sessions list: drop
+  // sessions from workspaces once they close externally (and collapse their
+  // panes), while preserving empty placeholder slots.
   //
-  // Crucially we only auto-assign sessions that are newly appearing in the
-  // host's open list. A session that was previously assigned and is now
-  // orphan was deliberately removed from its workspace (via the pane × in
-  // focus mode) and must stay homeless until the user re-adds it.
-  const prevOpenSessionsRef = useRef<Set<string>>(new Set());
+  // We deliberately do NOT auto-assign open sessions to a workspace anymore —
+  // workspaces start empty and the user picks which chats fill each slot. A
+  // newly-opened chat therefore stays out of the grid until it's explicitly
+  // assigned (via a slot picker or the title-bar "+chat" picker).
   useEffect(() => {
     const hostIds = new Set(orderedOpenSessions.map(s => s.id));
-    const newlyOpened = orderedOpenSessions
-      .map(s => s.id)
-      .filter(id => !prevOpenSessionsRef.current.has(id));
-    prevOpenSessionsRef.current = hostIds;
     setFocusWorkspaces(prev => {
+      let changed = false;
       const cleaned = prev.map(w => {
         const validIds = w.sessionIds.filter(id => hostIds.has(id));
         const newLayout = reconcileWorkspaceLayout(w.layout, validIds);
@@ -3828,19 +3831,12 @@ export function ChatApp() {
           validIds.length === w.sessionIds.length &&
           sameLayout(newLayout, w.layout)
         ) return w;
+        changed = true;
         return { ...w, sessionIds: validIds, layout: newLayout };
       });
-      const assigned = new Set(cleaned.flatMap(w => w.sessionIds));
-      const toAssign = newlyOpened.filter(id => !assigned.has(id));
-      if (toAssign.length === 0) return cleaned;
-      return cleaned.map(w => {
-        if (w.id !== activeWorkspaceId) return w;
-        const sessionIds = [...w.sessionIds, ...toAssign];
-        const newLayout = reconcileWorkspaceLayout(w.layout, sessionIds);
-        return { ...w, sessionIds, layout: newLayout };
-      });
+      return changed ? cleaned : prev;
     });
-  }, [orderedOpenSessions, activeWorkspaceId]);
+  }, [orderedOpenSessions]);
 
   useEffect(() => {
     persistWorkspaces(focusWorkspaces, activeWorkspaceId);
@@ -3863,18 +3859,6 @@ export function ChatApp() {
     setFocusWorkspaces(prev => prev.map(w => (w.id === id ? { ...w, name: trimmed } : w)));
   }, []);
 
-  /** Remove a session from the currently-active workspace without closing
-   *  the underlying session. The chat remains open in the host's tab list
-   *  and can be re-added via the workspace's "+chat" picker. */
-  const handleRemoveFromActiveWorkspace = useCallback((sid: string) => {
-    setFocusWorkspaces(prev => prev.map(w => {
-      if (w.id !== activeWorkspaceId) return w;
-      if (!w.sessionIds.includes(sid)) return w;
-      const sessionIds = w.sessionIds.filter(id => id !== sid);
-      return { ...w, sessionIds, layout: reconcileWorkspaceLayout(w.layout, sessionIds) };
-    }));
-  }, [activeWorkspaceId]);
-
   const handleReorderWorkspaces = useCallback((fromId: string, toId: string, position: 'above' | 'below') => {
     if (fromId === toId) return;
     setFocusWorkspaces(prev => {
@@ -3890,6 +3874,17 @@ export function ChatApp() {
       return next;
     });
   }, []);
+
+  // A stable accent color per session. Remote sessions keep their assigned
+  // color; local ones get a deterministic hue from a palette so each chat has
+  // a consistent identity across its focus-mode pane header and message cards.
+  const getSessionAccent = useCallback((sid: string): string => {
+    const s = sessions.find(x => x.id === sid);
+    if (s?.remoteColor) return s.remoteColor;
+    let h = 0;
+    for (let i = 0; i < sid.length; i++) h = (h * 31 + sid.charCodeAt(i)) >>> 0;
+    return SESSION_ACCENT_PALETTE[h % SESSION_ACCENT_PALETTE.length]!;
+  }, [sessions]);
 
   // Render a composer for any given session. Used by both layouts: the
   // standard chat tree renders the active session's composer inline; the
@@ -3952,7 +3947,7 @@ export function ChatApp() {
    * pane is the active one. Non-active panes still scroll naturally — they
    * just don't drive the global scroll-to-bottom indicator.
    */
-  const renderChatBody = (sid: string): ReactNode => {
+  const renderChatBody = (sid: string, accent?: string): ReactNode => {
     const cs = getState(sid);
     const status: ConnectionStatus = statuses[sid] || 'disconnected';
     const isActiveSession = sid === activeId;
@@ -4083,6 +4078,7 @@ export function ChatApp() {
                   onAnswerAskUser={answerCb}
                   sessionId={sid}
                   client={clientRef.current || undefined}
+                  accent={accent}
                   interactiveMinimized={item.isInteractiveTerminal ? minimizedShells.has(item.id) : undefined}
                   onToggleInteractiveMinimize={item.isInteractiveTerminal ? toggleShellMinimized : undefined}
                   onCancelPending={(id) => removePendingMessage(sid, id)}
@@ -4675,9 +4671,9 @@ export function ChatApp() {
               sessions={orderedOpenSessions}
               activeSessionId={activeId}
               onSelectSession={handleSelectSession}
-              onCloseSession={handleRemoveFromActiveWorkspace}
+              paneAccent={getSessionAccent}
               renderComposer={renderComposer}
-              renderBody={renderChatBody}
+              renderBody={(sid) => renderChatBody(sid, getSessionAccent(sid))}
               workspaces={focusWorkspaces}
               setWorkspaces={setFocusWorkspaces}
               activeWorkspaceId={activeWorkspaceId}

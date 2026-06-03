@@ -15,9 +15,9 @@
  * by a child component (wired in a follow-up step); this file owns only the
  * grid + drag/resize behavior.
  */
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { X, GripVertical, Plus } from 'lucide-react';
+import { X, GripVertical, Plus, Search } from 'lucide-react';
 import type { SessionInfo } from '../lib/claude-client';
 
 export type Row = {
@@ -52,7 +52,9 @@ interface Props {
   sessions: SessionInfo[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCloseSession: (id: string) => void;
+  /** Per-session accent color used to tint that session's pane header and
+   *  its message cards, so panes are visually distinguishable at a glance. */
+  paneAccent?: (sessionId: string) => string;
   /** Render a composer for a given session id. Each pane in focus mode
    *  calls this so it can show the per-session "agent is thinking" loader
    *  animation and accept input independently of the other panes. */
@@ -111,7 +113,21 @@ function newWorkspaceId(): string {
   return 'ws_' + Math.random().toString(36).slice(2, 8);
 }
 
-export function loadInitialWorkspaces(allSessionIds: string[]): {
+// Empty-slot panes. A workspace no longer auto-fills with every open session;
+// instead it starts with a couple of empty placeholder panes the user clicks
+// to assign a chat. Slot ids carry a reserved prefix so the layout machinery
+// (reconcile, drag, persistence) can tell them apart from real session ids —
+// `sessionById.get(slotId)` is always undefined, which is how the renderer
+// knows to draw the picker placeholder instead of a chat pane.
+const SLOT_PREFIX = 'slot:';
+function newSlotId(): string {
+  return SLOT_PREFIX + Math.random().toString(36).slice(2, 8);
+}
+export function isSlotId(id: string): boolean {
+  return id.startsWith(SLOT_PREFIX);
+}
+
+export function loadInitialWorkspaces(_allSessionIds: string[]): {
   workspaces: Workspace[]; activeId: string;
 } {
   try {
@@ -128,19 +144,20 @@ export function loadInitialWorkspaces(allSessionIds: string[]): {
       }
     }
   } catch {}
-  // Seed with one workspace owning every currently-open session so the user
-  // sees something on first load.
+  // Seed with one empty workspace showing two side-by-side placeholder slots.
+  // The user clicks a slot to choose which chat goes there, rather than the
+  // workspace dumping every open session in at once.
   const ws: Workspace = {
     id: newWorkspaceId(),
     name: 'Default',
-    sessionIds: [...allSessionIds],
+    sessionIds: [],
     layout: {
-      rows: allSessionIds.length > 0 ? [{
+      rows: [{
         id: newRowId(),
         height: 1,
-        widths: allSessionIds.map(() => 1),
-        paneIds: [...allSessionIds],
-      }] : [],
+        widths: [1, 1],
+        paneIds: [newSlotId(), newSlotId()],
+      }],
     },
   };
   return { workspaces: [ws], activeId: ws.id };
@@ -167,7 +184,10 @@ function reconcile(prev: Layout, ids: string[]): Layout {
     const keptPanes: string[] = [];
     const keptWidths: number[] = [];
     row.paneIds.forEach((pid, i) => {
-      if (want.has(pid) && !have.has(pid)) {
+      // Empty slots are always preserved in place — they aren't session ids,
+      // so they'd never be in `want`, but they're meaningful layout the user
+      // arranged deliberately.
+      if ((want.has(pid) || isSlotId(pid)) && !have.has(pid)) {
         keptPanes.push(pid);
         keptWidths.push(row.widths[i] ?? 1);
         have.add(pid);
@@ -203,7 +223,7 @@ export function ChatFocusLayout({
   sessions,
   activeSessionId,
   onSelectSession,
-  onCloseSession,
+  paneAccent,
   renderComposer,
   renderBody,
   renderPaneHeaderExtras,
@@ -229,6 +249,70 @@ export function ChatFocusLayout({
     }));
   };
 
+  // ---------- Slot lifecycle ---------------------------------------------
+  // Session ids currently placed somewhere in the active workspace's grid —
+  // used by the slot picker to grey out chats that are already on screen.
+  const placedSessionIds = useMemo(
+    () => new Set(layout.rows.flatMap(r => r.paneIds).filter(id => !isSlotId(id))),
+    [layout],
+  );
+
+  /** Fill an empty slot with a chat: swap the slot id for the session id in
+   *  place, add the session to this workspace, and pull it out of any other
+   *  workspace (a chat lives in exactly one workspace). */
+  const assignToSlot = (slotId: string, sessionId: string) => {
+    setWorkspaces(prev => prev.map(w => {
+      if (w.id === activeWorkspaceId) {
+        if (w.sessionIds.includes(sessionId)) return w; // already here — no-op
+        const rows = w.layout.rows.map(r => ({
+          ...r,
+          paneIds: r.paneIds.map(p => (p === slotId ? sessionId : p)),
+        }));
+        return { ...w, sessionIds: [...w.sessionIds, sessionId], layout: { rows } };
+      }
+      if (w.sessionIds.includes(sessionId)) {
+        const sessionIds = w.sessionIds.filter(id => id !== sessionId);
+        return { ...w, sessionIds, layout: reconcile(w.layout, sessionIds) };
+      }
+      return w;
+    }));
+  };
+
+  /** Turn a filled pane back into an empty slot in place (keeps grid shape)
+   *  and drop the session from the workspace. The chat stays open in the host
+   *  tab bar — this only removes it from the workspace. */
+  const clearToSlot = (sessionId: string) => {
+    setWorkspaces(prev => prev.map(w => {
+      if (w.id !== activeWorkspaceId) return w;
+      if (!w.sessionIds.includes(sessionId)) return w;
+      const rows = w.layout.rows.map(r => ({
+        ...r,
+        paneIds: r.paneIds.map(p => (p === sessionId ? newSlotId() : p)),
+      }));
+      return { ...w, sessionIds: w.sessionIds.filter(id => id !== sessionId), layout: { rows } };
+    }));
+  };
+
+  /** Append a fresh empty slot to the last row (or seed a row if empty). */
+  const addSlot = () => {
+    setLayout(prev => {
+      const rows = prev.rows.map(r => ({ ...r, paneIds: [...r.paneIds], widths: [...r.widths] }));
+      if (rows.length === 0) {
+        rows.push({ id: newRowId(), height: 1, widths: [1], paneIds: [newSlotId()] });
+      } else {
+        const last = rows[rows.length - 1]!;
+        last.paneIds.push(newSlotId());
+        last.widths.push(1);
+      }
+      return { rows };
+    });
+  };
+
+  /** Drop an empty slot the user no longer wants (collapses its row if last). */
+  const removeSlot = (slotId: string) => {
+    setLayout(prev => removePane(prev, slotId));
+  };
+
   const createWorkspace = () => {
     const id = newWorkspaceId();
     const idx = workspaces.length;
@@ -237,7 +321,8 @@ export function ChatFocusLayout({
       name: `Workspace ${idx + 1}`,
       color: WORKSPACE_COLORS[idx % WORKSPACE_COLORS.length],
       sessionIds: [],
-      layout: { rows: [] },
+      // Start with two empty side-by-side slots, same as a first-run workspace.
+      layout: { rows: [{ id: newRowId(), height: 1, widths: [1, 1], paneIds: [newSlotId(), newSlotId()] }] },
     };
     setWorkspaces(prev => [...prev, ws]);
     setActiveWorkspaceId(id);
@@ -408,6 +493,9 @@ export function ChatFocusLayout({
             sessionById={sessionById}
             activeSessionId={activeSessionId}
             dragging={dragging}
+            paneAccent={paneAccent}
+            sessions={sessions}
+            placedSessionIds={placedSessionIds}
             renderComposer={renderComposer}
             renderBody={renderBody}
             renderPaneHeaderExtras={renderPaneHeaderExtras}
@@ -419,12 +507,21 @@ export function ChatFocusLayout({
             onColResizeStart={onColResizeStart}
             onRowResizeStart={onRowResizeStart}
             onSelectSession={onSelectSession}
-            onCloseSession={onCloseSession}
+            onAssignToSlot={assignToSlot}
+            onClearToSlot={clearToSlot}
+            onRemoveSlot={removeSlot}
+            onAddSlot={addSlot}
           />
         ))}
         {layout.rows.length === 0 && (
-          <div className="flex-1 flex items-center justify-center text-zinc-500 text-sm">
-            No chats open.
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 text-zinc-500">
+            <p className="text-sm">This workspace is empty.</p>
+            <button
+              onClick={addSlot}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-medium text-zinc-300 bg-surface-light border border-border-light hover:border-violet-500/50 hover:text-zinc-100 transition-colors"
+            >
+              <Plus className="w-4 h-4" /> Add a panel
+            </button>
           </div>
         )}
       </div>
@@ -447,6 +544,9 @@ function RowView(props: {
   sessionById: Map<string, SessionInfo>;
   activeSessionId: string | null;
   dragging: string | null;
+  paneAccent?: (sessionId: string) => string;
+  sessions: SessionInfo[];
+  placedSessionIds: Set<string>;
   renderComposer?: (sessionId: string) => ReactNode;
   renderBody?: (sessionId: string) => ReactNode;
   renderPaneHeaderExtras?: (sessionId: string) => ReactNode;
@@ -458,7 +558,10 @@ function RowView(props: {
   onColResizeStart: (rowIdx: number, leftIdx: number) => (e: React.MouseEvent) => void;
   onRowResizeStart: (aboveIdx: number) => (e: React.MouseEvent) => void;
   onSelectSession: (id: string) => void;
-  onCloseSession: (id: string) => void;
+  onAssignToSlot: (slotId: string, sessionId: string) => void;
+  onClearToSlot: (sessionId: string) => void;
+  onRemoveSlot: (slotId: string) => void;
+  onAddSlot: () => void;
 }) {
   const { row, rIdx, isLast, sessionById, activeSessionId, dragging } = props;
   return (
@@ -469,6 +572,23 @@ function RowView(props: {
         style={{ flex: row.height }}
       >
         {row.paneIds.map((pid, cIdx) => {
+          const showRightHandle = cIdx < row.paneIds.length - 1;
+          if (isSlotId(pid)) {
+            return (
+              <EmptySlotPane
+                key={pid}
+                slotId={pid}
+                flex={row.widths[cIdx] ?? 1}
+                showRightHandle={showRightHandle}
+                sessions={props.sessions}
+                placedSessionIds={props.placedSessionIds}
+                paneAccent={props.paneAccent}
+                onAssign={props.onAssignToSlot}
+                onRemoveSlot={props.onRemoveSlot}
+                onColResizeStart={props.onColResizeStart(rIdx, cIdx)}
+              />
+            );
+          }
           const s = sessionById.get(pid);
           return (
             <PaneShell
@@ -476,9 +596,10 @@ function RowView(props: {
               session={s}
               paneId={pid}
               isActive={activeSessionId === pid}
+              accent={props.paneAccent ? props.paneAccent(pid) : undefined}
               flex={row.widths[cIdx] ?? 1}
               dragging={dragging}
-              showRightHandle={cIdx < row.paneIds.length - 1}
+              showRightHandle={showRightHandle}
               composer={props.renderComposer ? props.renderComposer(pid) : null}
               body={props.renderBody ? props.renderBody(pid) : null}
               headerExtras={props.renderPaneHeaderExtras ? props.renderPaneHeaderExtras(pid) : null}
@@ -489,10 +610,20 @@ function RowView(props: {
               onPaneDragLeave={props.onPaneDragLeave}
               onPaneDrop={props.onPaneDrop(pid)}
               onSelect={() => props.onSelectSession(pid)}
-              onClose={() => props.onCloseSession(pid)}
+              onClose={() => props.onClearToSlot(pid)}
             />
           );
         })}
+        {isLast && (
+          <button
+            onClick={props.onAddSlot}
+            title="Add a panel"
+            className="group shrink-0 w-10 m-1 rounded-xl border border-dashed border-border hover:border-violet-500/50 bg-base hover:bg-surface-light/40 flex flex-col items-center justify-center gap-2 text-zinc-600 hover:text-zinc-300 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            <span className="[writing-mode:vertical-rl] rotate-180 text-[11px] font-medium tracking-wide">Add panel</span>
+          </button>
+        )}
       </div>
       {!isLast && (
         <div className="relative" style={{ height: 0 }}>
@@ -513,6 +644,7 @@ function PaneShell(props: {
   session: SessionInfo | undefined;
   paneId: string;
   isActive: boolean;
+  accent?: string;
   flex: number;
   dragging: string | null;
   showRightHandle: boolean;
@@ -529,7 +661,7 @@ function PaneShell(props: {
   onClose: () => void;
 }) {
   const paneRef = useRef<HTMLDivElement | null>(null);
-  const { session, isActive, flex, dragging, showRightHandle } = props;
+  const { session, isActive, accent, flex, dragging, showRightHandle } = props;
   const isMe = dragging === props.paneId;
 
   return (
@@ -546,6 +678,8 @@ function PaneShell(props: {
         onDragLeave={props.onPaneDragLeave}
         onDrop={props.onPaneDrop}
       >
+        {/* Accent strip across the top, tinted with the session color. */}
+        {accent && <div className="h-0.5 shrink-0" style={{ backgroundColor: accent }} />}
         {/* Header */}
         <div
           draggable
@@ -554,6 +688,12 @@ function PaneShell(props: {
           className="flex items-center gap-2 px-2 h-8 border-b border-border bg-base cursor-grab active:cursor-grabbing select-none shrink-0"
         >
           <GripVertical className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+          {accent && (
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: accent }}
+            />
+          )}
           <span className="text-[12px] text-zinc-200 font-medium truncate min-w-0">
             {session?.name ?? <span className="text-zinc-500">missing session</span>}
           </span>
@@ -619,6 +759,136 @@ function PaneShell(props: {
   );
 }
 
+
+/** A placeholder pane the user clicks to choose which chat lives here. Renders
+ *  the dashed "Choose a session" prompt; clicking opens an inline searchable
+ *  picker of open chats. Empty slots persist until filled (or dismissed). */
+function EmptySlotPane(props: {
+  slotId: string;
+  flex: number;
+  showRightHandle: boolean;
+  sessions: SessionInfo[];
+  placedSessionIds: Set<string>;
+  paneAccent?: (sessionId: string) => string;
+  onAssign: (slotId: string, sessionId: string) => void;
+  onRemoveSlot: (slotId: string) => void;
+  onColResizeStart: (e: React.MouseEvent) => void;
+}) {
+  const { sessions, placedSessionIds, paneAccent } = props;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const matches = sessions.filter(s =>
+    !q || s.name.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q),
+  );
+
+  return (
+    <>
+      <div
+        ref={rootRef}
+        data-focus-pane
+        style={{ flex: props.flex }}
+        className="relative flex flex-col min-w-0 m-1"
+      >
+        <button
+          onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+          className={`group flex-1 min-h-0 w-full rounded-xl border border-dashed flex flex-col items-center justify-center gap-3.5 transition-colors ${
+            open
+              ? 'border-violet-500/60 bg-violet-500/[0.04]'
+              : 'border-border hover:border-violet-500/50 hover:bg-surface-light/30'
+          }`}
+        >
+          <span className="w-14 h-14 rounded-2xl bg-surface-light border border-border-light grid place-items-center text-zinc-500 group-hover:text-violet-300 group-hover:border-violet-500/40 transition-colors">
+            <Plus className="w-6 h-6" />
+          </span>
+          <span className="text-center">
+            <span className="block text-[13.5px] font-semibold text-zinc-300">Choose a session</span>
+            <span className="block text-[11.5px] text-zinc-500 mt-0.5">Click to assign a chat to this panel</span>
+          </span>
+        </button>
+
+        {/* Dismiss this empty slot */}
+        <button
+          onClick={(e) => { e.stopPropagation(); props.onRemoveSlot(props.slotId); }}
+          title="Remove this empty panel"
+          className="absolute top-2 right-2 w-6 h-6 rounded-md grid place-items-center text-zinc-600 hover:text-zinc-200 hover:bg-surface-lighter opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+
+        {/* Picker popover */}
+        {open && (
+          <div className="absolute z-50 top-3 left-1/2 -translate-x-1/2 w-[300px] max-w-[calc(100%-1.5rem)] bg-surface border border-border-light rounded-xl shadow-2xl overflow-hidden">
+            <div className="flex items-center gap-2 px-3 h-10 border-b border-border">
+              <Search className="w-4 h-4 text-zinc-500 shrink-0" />
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search sessions…"
+                className="flex-1 bg-transparent text-[13px] text-zinc-200 placeholder:text-zinc-500 outline-none"
+              />
+            </div>
+            <div className="max-h-[280px] overflow-y-auto p-1.5">
+              {matches.length === 0 ? (
+                <div className="px-3 py-6 text-center text-[12px] text-zinc-500">No open chats.</div>
+              ) : (
+                matches.map(s => {
+                  const used = placedSessionIds.has(s.id);
+                  const color = paneAccent ? paneAccent(s.id) : '#7c5cff';
+                  const initials = s.name.replace(/[^a-zA-Z0-9]/g, ' ').trim().slice(0, 2).toUpperCase() || '?';
+                  return (
+                    <button
+                      key={s.id}
+                      disabled={used}
+                      onClick={() => { props.onAssign(props.slotId, s.id); setOpen(false); }}
+                      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left hover:bg-surface-light disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
+                    >
+                      <span
+                        className="w-7 h-7 rounded-lg grid place-items-center text-[10.5px] font-bold shrink-0"
+                        style={{ backgroundColor: `${color}2e`, color }}
+                      >
+                        {initials}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-[12.5px] text-zinc-200 truncate">{s.name}</span>
+                        <span className="block text-[10.5px] text-zinc-500 font-mono truncate">{s.cwd}</span>
+                      </span>
+                      {used && <span className="text-[10px] text-zinc-500 shrink-0">in use</span>}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {props.showRightHandle && (
+        <div
+          onMouseDown={props.onColResizeStart}
+          className="w-1 cursor-col-resize z-10 shrink-0"
+        />
+      )}
+    </>
+  );
+}
 
 function DropIndicator({ rect, zone }: { rect: DOMRect; zone: DropZone }) {
   // Position relative to viewport using fixed positioning.
