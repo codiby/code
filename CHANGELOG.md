@@ -5,6 +5,26 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] — 2026-06-03
+
+### Added
+
+- **Pick which chats fill a workspace.** Entering the Chat Focus layout no
+  longer drops every open session into the grid — a workspace now starts with
+  empty placeholder panes. Click a pane to choose its chat from a searchable
+  picker, add more panels with the side button, and unused slots stay put as
+  placeholders. Newly-opened chats no longer auto-appear, so you decide exactly
+  what goes where.
+- **Per-session and per-group accent colors.** Each chat can carry an accent
+  color that tints its message bubbles in both the standard and Chat Focus
+  layouts. A session inherits its tab group's color or takes an explicit
+  override — picked from the pane header in focus mode or the session tab's
+  right-click menu. Turn it on under Settings → General with a live preview, and
+  optionally extend the tint to the whole chat background.
+- **Open a focus pane in full view.** Every pane in the Chat Focus layout gains
+  a button that selects its session and switches back to the standard layout
+  with the sidebar.
+
 ## [0.16.2] — 2026-06-01
 
 ### Added
