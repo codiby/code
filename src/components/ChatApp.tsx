@@ -22,6 +22,7 @@ import { PortlessActionToast } from './PortlessActionToast';
 import { TerminalLaunchChip } from './TerminalLaunchChip';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
+import { GROUP_HEX_COLOR } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
@@ -475,6 +476,17 @@ export function ChatApp() {
   // current turn finishes. Defaults to true — barging-in is the more
   // common intent than calmly queueing follow-ups.
   const [interruptOnSend, setInterruptOnSend] = useState(true);
+  // When true, each session gets a stable accent color that tints its
+  // focus-mode pane (header, border, chat background) and its message cards
+  // so panes are distinguishable at a glance. Purely cosmetic — some people
+  // prefer the plain look, so it's a toggle. Defaults on.
+  const [colorChatBySession, setColorChatBySession] = useState(true);
+  // When true, the accent also washes the whole chat background (in addition
+  // to the message bubbles). Off by default — the wash reads as heavy for some.
+  const [tintChatBackground, setTintChatBackground] = useState(false);
+  // Per-session accent color overrides (sessionId → hex). Absence means the
+  // color is auto-derived (remote color, else a deterministic palette hue).
+  const [sessionAccents, setSessionAccents] = useState<Record<string, string>>({});
   // Global env vars (apply to every Bash tool call + user terminal, on
   // top of process.env, with per-project envVars layered last). Persisted
   // alongside other prefs in ~/.codiby/ui-preferences.json.
@@ -1661,6 +1673,15 @@ export function ChatApp() {
           if (typeof prefs.interruptOnSend === 'boolean') {
             setInterruptOnSend(prefs.interruptOnSend);
           }
+          if (typeof prefs.colorChatBySession === 'boolean') {
+            setColorChatBySession(prefs.colorChatBySession);
+          }
+          if (typeof prefs.tintChatBackground === 'boolean') {
+            setTintChatBackground(prefs.tintChatBackground);
+          }
+          if (prefs.sessionAccents && typeof prefs.sessionAccents === 'object') {
+            setSessionAccents(prefs.sessionAccents as Record<string, string>);
+          }
           if (Array.isArray(prefs.globalEnvVars)) {
             setGlobalEnvVars(prefs.globalEnvVars as ProjectEnvVar[]);
           }
@@ -2083,6 +2104,16 @@ export function ChatApp() {
   const handleToggleInterruptOnSend = (next: boolean) => {
     setInterruptOnSend(next);
     persistPrefs({ interruptOnSend: next });
+  };
+
+  const handleToggleColorChatBySession = (next: boolean) => {
+    setColorChatBySession(next);
+    persistPrefs({ colorChatBySession: next });
+  };
+
+  const handleToggleTintChatBackground = (next: boolean) => {
+    setTintChatBackground(next);
+    persistPrefs({ tintChatBackground: next });
   };
 
   const handleCreateSession = async (cwd: string, provider?: string, remoteId?: string | null) => {
@@ -3879,12 +3910,31 @@ export function ChatApp() {
   // color; local ones get a deterministic hue from a palette so each chat has
   // a consistent identity across its focus-mode pane header and message cards.
   const getSessionAccent = useCallback((sid: string): string => {
+    // 1. explicit per-session override
+    const override = sessionAccents[sid];
+    if (override) return override;
+    // 2. inherit the session's group accent color, if grouped
+    const gid = tabGroupMap[sid];
+    const groupColor = gid ? tabGroups[gid]?.color : undefined;
+    if (groupColor && GROUP_HEX_COLOR[groupColor]) return GROUP_HEX_COLOR[groupColor]!;
+    // 3. remote color
     const s = sessions.find(x => x.id === sid);
     if (s?.remoteColor) return s.remoteColor;
+    // 4. deterministic palette hue from the id
     let h = 0;
     for (let i = 0; i < sid.length; i++) h = (h * 31 + sid.charCodeAt(i)) >>> 0;
     return SESSION_ACCENT_PALETTE[h % SESSION_ACCENT_PALETTE.length]!;
-  }, [sessions]);
+  }, [sessions, sessionAccents, tabGroupMap, tabGroups]);
+
+  /** Set (or clear, when color is null) a session's accent override. */
+  const handlePickSessionAccent = useCallback((sid: string, color: string | null) => {
+    setSessionAccents(prev => {
+      const next = { ...prev };
+      if (color) next[sid] = color; else delete next[sid];
+      persistPrefs({ sessionAccents: next });
+      return next;
+    });
+  }, []);
 
   // Render a composer for any given session. Used by both layouts: the
   // standard chat tree renders the active session's composer inline; the
@@ -3955,6 +4005,7 @@ export function ChatApp() {
       <div
         ref={isActiveSession ? scrollRef : undefined}
         onScroll={isActiveSession ? handleMessagesScroll : undefined}
+        style={accent && tintChatBackground ? { backgroundColor: `${accent}0d` } : undefined}
         className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1"
       >
         {cs.messages.length === 0 && !cs.partialText && (
@@ -4671,9 +4722,12 @@ export function ChatApp() {
               sessions={orderedOpenSessions}
               activeSessionId={activeId}
               onSelectSession={handleSelectSession}
-              paneAccent={getSessionAccent}
+              paneAccent={colorChatBySession ? getSessionAccent : undefined}
+              accentPalette={SESSION_ACCENT_PALETTE}
+              onPickAccent={handlePickSessionAccent}
+              onExpandSession={(sid) => { handleSelectSession(sid); changeLayoutMode('standard'); }}
               renderComposer={renderComposer}
-              renderBody={(sid) => renderChatBody(sid, getSessionAccent(sid))}
+              renderBody={(sid) => renderChatBody(sid, colorChatBySession ? getSessionAccent(sid) : undefined)}
               workspaces={focusWorkspaces}
               setWorkspaces={setFocusWorkspaces}
               activeWorkspaceId={activeWorkspaceId}
@@ -4721,6 +4775,9 @@ export function ChatApp() {
               onReopen={handleReopenSession}
               onRename={handleRenameSession}
               onReorder={handleReorder}
+              accentPalette={SESSION_ACCENT_PALETTE}
+              getSessionAccent={getSessionAccent}
+              onPickSessionAccent={colorChatBySession ? handlePickSessionAccent : undefined}
               tabGroups={tabGroups}
               tabGroupMap={tabGroupMap}
               groupRemoteInfo={groupRemoteInfo}
@@ -4923,7 +4980,7 @@ export function ChatApp() {
                       onBrowseFolder={() => setShowNewSession(true)}
                     />
                   ) : (
-                    activeId && renderChatBody(activeId)
+                    activeId && renderChatBody(activeId, colorChatBySession ? getSessionAccent(activeId) : undefined)
                   )}
 
                   {/* Task panel */}
@@ -6134,6 +6191,10 @@ export function ChatApp() {
           onToggleAutoFocusBrowserOnAction={handleToggleAutoFocusBrowserOnAction}
           interruptOnSend={interruptOnSend}
           onToggleInterruptOnSend={handleToggleInterruptOnSend}
+          colorChatBySession={colorChatBySession}
+          onToggleColorChatBySession={handleToggleColorChatBySession}
+          tintChatBackground={tintChatBackground}
+          onToggleTintChatBackground={handleToggleTintChatBackground}
           showTelegramSession={showTelegramSession}
           onToggleShowTelegramSession={(next) => {
             setShowTelegramSession(next);

@@ -73,6 +73,12 @@ interface Props {
    *  the group itself plus every session that belongs to it. Host shows the
    *  confirm modal and purges members. */
   onRequestDeleteGroup?: (groupId: string) => void;
+  /** Accent-color controls. `accentPalette` is the swatch set; `getSessionAccent`
+   *  resolves a session's current accent; `onPickSessionAccent` sets/clears an
+   *  override (null = reset to auto). Only wired when chat-coloring is enabled. */
+  accentPalette?: string[];
+  getSessionAccent?: (sessionId: string) => string;
+  onPickSessionAccent?: (sessionId: string, color: string | null) => void;
   /** When true, the session bar collapses to a thin strip showing only the
    *  toggle icon. When false, the full vertical sidebar is rendered. */
   collapsed?: boolean;
@@ -427,6 +433,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onSelectGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
+    accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
@@ -840,6 +847,38 @@ export const TabBar = memo(function TabBar(props: Props) {
                     Copy Session ID
                   </Button>
                 ) : null;
+              })()}
+
+              {/* Accent color — sets a per-session override that tints the
+                  session's chat (and pane in focus mode). */}
+              {onPickSessionAccent && accentPalette && accentPalette.length > 0 && (() => {
+                const current = getSessionAccent?.(tabMenu.tabId);
+                return (
+                  <div className="px-3 py-1.5">
+                    <div className="text-[10px] text-zinc-600 mb-1">Accent color</div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {accentPalette.map(color => {
+                        const selected = current?.toLowerCase() === color.toLowerCase();
+                        return (
+                          <button
+                            key={color}
+                            aria-label={`Color ${color}`}
+                            onClick={() => { onPickSessionAccent(tabMenu.tabId, color); setTabMenu(null); }}
+                            className={`w-4 h-4 rounded-full transition-transform hover:scale-110 ${selected ? 'ring-2 ring-white/60' : 'ring-1 ring-black/20'}`}
+                            style={{ backgroundColor: color }}
+                          />
+                        );
+                      })}
+                      <button
+                        onClick={() => { onPickSessionAccent(tabMenu.tabId, null); setTabMenu(null); }}
+                        className="text-[10px] text-zinc-500 hover:text-zinc-300 ml-0.5"
+                        title="Reset to auto (inherit group color)"
+                      >
+                        Auto
+                      </button>
+                    </div>
+                  </div>
+                );
               })()}
 
               <div className="h-px bg-border mx-2 my-1" />

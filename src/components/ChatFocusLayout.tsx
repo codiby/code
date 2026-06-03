@@ -17,7 +17,7 @@
  */
 import { useState, useRef, useMemo, useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { X, GripVertical, Plus, Search } from 'lucide-react';
+import { X, GripVertical, Plus, Search, ArrowRight } from 'lucide-react';
 import type { SessionInfo } from '../lib/claude-client';
 
 export type Row = {
@@ -55,6 +55,13 @@ interface Props {
   /** Per-session accent color used to tint that session's pane header and
    *  its message cards, so panes are visually distinguishable at a glance. */
   paneAccent?: (sessionId: string) => string;
+  /** Palette of accent swatches offered when picking a session's color. */
+  accentPalette?: string[];
+  /** Override (or reset, when color is null) a session's accent color. */
+  onPickAccent?: (sessionId: string, color: string | null) => void;
+  /** Open this session in the full (standard) layout with the left sidebar,
+   *  leaving focus mode. Wired to the ↳ button in each pane header. */
+  onExpandSession?: (id: string) => void;
   /** Render a composer for a given session id. Each pane in focus mode
    *  calls this so it can show the per-session "agent is thinking" loader
    *  animation and accept input independently of the other panes. */
@@ -224,6 +231,9 @@ export function ChatFocusLayout({
   activeSessionId,
   onSelectSession,
   paneAccent,
+  accentPalette,
+  onPickAccent,
+  onExpandSession,
   renderComposer,
   renderBody,
   renderPaneHeaderExtras,
@@ -494,6 +504,9 @@ export function ChatFocusLayout({
             activeSessionId={activeSessionId}
             dragging={dragging}
             paneAccent={paneAccent}
+            accentPalette={accentPalette}
+            onPickAccent={onPickAccent}
+            onExpandSession={onExpandSession}
             sessions={sessions}
             placedSessionIds={placedSessionIds}
             renderComposer={renderComposer}
@@ -545,6 +558,9 @@ function RowView(props: {
   activeSessionId: string | null;
   dragging: string | null;
   paneAccent?: (sessionId: string) => string;
+  accentPalette?: string[];
+  onPickAccent?: (sessionId: string, color: string | null) => void;
+  onExpandSession?: (id: string) => void;
   sessions: SessionInfo[];
   placedSessionIds: Set<string>;
   renderComposer?: (sessionId: string) => ReactNode;
@@ -597,6 +613,8 @@ function RowView(props: {
               paneId={pid}
               isActive={activeSessionId === pid}
               accent={props.paneAccent ? props.paneAccent(pid) : undefined}
+              accentPalette={props.accentPalette}
+              onPickAccent={props.onPickAccent}
               flex={row.widths[cIdx] ?? 1}
               dragging={dragging}
               showRightHandle={showRightHandle}
@@ -610,6 +628,7 @@ function RowView(props: {
               onPaneDragLeave={props.onPaneDragLeave}
               onPaneDrop={props.onPaneDrop(pid)}
               onSelect={() => props.onSelectSession(pid)}
+              onExpand={props.onExpandSession ? () => props.onExpandSession!(pid) : undefined}
               onClose={() => props.onClearToSlot(pid)}
             />
           );
@@ -645,6 +664,8 @@ function PaneShell(props: {
   paneId: string;
   isActive: boolean;
   accent?: string;
+  accentPalette?: string[];
+  onPickAccent?: (sessionId: string, color: string | null) => void;
   flex: number;
   dragging: string | null;
   showRightHandle: boolean;
@@ -658,6 +679,7 @@ function PaneShell(props: {
   onPaneDragLeave: (e: React.DragEvent) => void;
   onPaneDrop: (e: React.DragEvent) => void;
   onSelect: () => void;
+  onExpand?: () => void;
   onClose: () => void;
 }) {
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -669,9 +691,13 @@ function PaneShell(props: {
       <div
         data-focus-pane
         ref={paneRef}
-        style={{ flex }}
+        style={{
+          flex,
+          ...(accent ? { borderColor: isActive ? accent : `${accent}55` } : {}),
+          ...(accent && isActive ? { boxShadow: `0 0 0 1px ${accent}66` } : {}),
+        }}
         className={`flex flex-col min-w-0 bg-base border m-1 rounded-xl overflow-hidden relative transition-colors ${
-          isActive ? 'border-sky-500/60 ring-1 ring-sky-500/40' : 'border-border'
+          accent ? '' : (isActive ? 'border-sky-500/60 ring-1 ring-sky-500/40' : 'border-border')
         } ${isMe ? 'opacity-40' : ''}`}
         onClick={props.onSelect}
         onDragOver={(e) => paneRef.current && props.onPaneDragOver(paneRef.current)(e)}
@@ -689,10 +715,15 @@ function PaneShell(props: {
         >
           <GripVertical className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
           {accent && (
-            <span
-              className="w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: accent }}
-            />
+            props.onPickAccent && props.session ? (
+              <AccentPicker
+                accent={accent}
+                palette={props.accentPalette ?? []}
+                onPick={(color) => props.onPickAccent!(props.session!.id, color)}
+              />
+            ) : (
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: accent }} />
+            )
           )}
           <span className="text-[12px] text-zinc-200 font-medium truncate min-w-0">
             {session?.name ?? <span className="text-zinc-500">missing session</span>}
@@ -715,6 +746,15 @@ function PaneShell(props: {
             <span className="text-[10.5px] text-zinc-500 font-mono truncate min-w-0 max-w-[40%]">
               {session.cwd}
             </span>
+          )}
+          {props.onExpand && session && (
+            <button
+              onClick={(e) => { e.stopPropagation(); props.onExpand!(); }}
+              className="w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-surface-lighter shrink-0"
+              title="Open in full view"
+            >
+              <ArrowRight className="w-3 h-3" />
+            </button>
           )}
           <button
             onClick={(e) => { e.stopPropagation(); props.onClose(); }}
@@ -759,6 +799,70 @@ function PaneShell(props: {
   );
 }
 
+
+/** The colored dot in a pane header. Click to open a small palette popover and
+ *  override the session's accent color (or reset it to the auto-derived hue).
+ *  Lives in the draggable header, so it suppresses drag on its own clicks. */
+function AccentPicker({ accent, palette, onPick }: {
+  accent: string;
+  palette: string[];
+  onPick: (color: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <span ref={rootRef} className="relative shrink-0" draggable={false} onDragStart={(e) => e.preventDefault()}>
+      <button
+        draggable={false}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        title="Change accent color"
+        className="block w-2.5 h-2.5 rounded-full ring-1 ring-black/20 hover:ring-2 hover:ring-white/30 transition-all"
+        style={{ backgroundColor: accent }}
+      />
+      {open && (
+        <div
+          className="absolute left-0 top-5 z-50 bg-surface border border-border-light rounded-lg shadow-2xl p-2 w-[164px]"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="grid grid-cols-5 gap-1.5">
+            {palette.map(color => {
+              const selected = color.toLowerCase() === accent.toLowerCase();
+              return (
+                <button
+                  key={color}
+                  onClick={(e) => { e.stopPropagation(); onPick(color); setOpen(false); }}
+                  className={`w-6 h-6 rounded-md transition-transform hover:scale-110 ${selected ? 'ring-2 ring-white/80' : 'ring-1 ring-black/20'}`}
+                  style={{ backgroundColor: color }}
+                  title={color}
+                />
+              );
+            })}
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); onPick(null); setOpen(false); }}
+            className="mt-2 w-full text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-surface-light rounded-md py-1 transition-colors"
+          >
+            Reset to auto
+          </button>
+        </div>
+      )}
+    </span>
+  );
+}
 
 /** A placeholder pane the user clicks to choose which chat lives here. Renders
  *  the dashed "Choose a session" prompt; clicking opens an inline searchable

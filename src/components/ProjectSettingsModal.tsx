@@ -42,6 +42,10 @@ interface ProjectSettingsModalProps {
   onToggleAutoFocusBrowserOnAction: (next: boolean) => void;
   interruptOnSend: boolean;
   onToggleInterruptOnSend: (next: boolean) => void;
+  colorChatBySession: boolean;
+  onToggleColorChatBySession: (next: boolean) => void;
+  tintChatBackground: boolean;
+  onToggleTintChatBackground: (next: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (next: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
@@ -589,6 +593,40 @@ function TabGroupsListSection({ tabGroups, tabGroupMap, onDeleteGroup, onSelect 
   );
 }
 
+/** Two-message mock of a focus-mode pane, used to preview the
+ *  "color chat by session" toggle. When `accent` is null it renders the
+ *  default (untinted) look; otherwise it tints the frame, header and the
+ *  user bubble with the accent, mirroring the real panes. */
+function ChatColorPreview({ accent, tintBackground }: { accent: string | null; tintBackground?: boolean }) {
+  return (
+    <div
+      style={accent ? { borderColor: `${accent}55` } : undefined}
+      className={`rounded-lg border overflow-hidden ${accent ? '' : 'border-border bg-base'}`}
+    >
+      {accent && <div className="h-0.5" style={{ backgroundColor: accent }} />}
+      <div className="flex items-center gap-2 px-2.5 h-7 border-b border-border/60">
+        {accent && <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: accent }} />}
+        <span className="text-[11px] text-zinc-300 font-medium">Partner-mapping</span>
+        <span className="ml-auto text-[10px] text-zinc-600 font-mono">~/src/up</span>
+      </div>
+      <div
+        className="px-3 py-2.5 space-y-2"
+        style={accent && tintBackground ? { backgroundColor: `${accent}0d` } : undefined}
+      >
+        <p className="text-[12px] text-zinc-300 leading-relaxed">Sure — I’ll wire up the mapping sync now.</p>
+        <div className="flex justify-end">
+          <div
+            style={accent ? { backgroundColor: `${accent}26` } : undefined}
+            className={`max-w-[80%] rounded-2xl rounded-br-sm px-3 py-1.5 ${accent ? '' : 'bg-blue-600/15'}`}
+          >
+            <span className="text-[12px] text-zinc-200 leading-relaxed">Perfect, go ahead.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GeneralSection({
   autoGroupSessions,
   onToggleAutoGroup,
@@ -596,6 +634,10 @@ function GeneralSection({
   onToggleAutoFocusBrowserOnAction,
   interruptOnSend,
   onToggleInterruptOnSend,
+  colorChatBySession,
+  onToggleColorChatBySession,
+  tintChatBackground,
+  onToggleTintChatBackground,
 }: {
   autoGroupSessions: boolean;
   onToggleAutoGroup: (v: boolean) => void;
@@ -603,6 +645,10 @@ function GeneralSection({
   onToggleAutoFocusBrowserOnAction: (v: boolean) => void;
   interruptOnSend: boolean;
   onToggleInterruptOnSend: (v: boolean) => void;
+  colorChatBySession: boolean;
+  onToggleColorChatBySession: (v: boolean) => void;
+  tintChatBackground: boolean;
+  onToggleTintChatBackground: (v: boolean) => void;
 }) {
   return (
     <>
@@ -647,6 +693,40 @@ function GeneralSection({
             <SwitchThumb />
           </SwitchControl>
         </Switch>
+        <div className="rounded-md bg-surface-light border border-border">
+          <Switch
+            isSelected={colorChatBySession}
+            onChange={onToggleColorChatBySession}
+            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-surface-lighter/40 transition-colors cursor-pointer rounded-t-md"
+          >
+            <div className="flex-1 min-w-0 text-left">
+              <div className="text-[12.5px] text-zinc-100">Color chat by session</div>
+              <div className="text-[11px] text-zinc-500 mt-0.5">Give each session an accent color that tints its chat (message cards + background) in both the standard and Chat Focus layouts. Sessions inherit their group's color; set a per-session or per-group override from the right-click menu (or a pane header in focus mode).</div>
+            </div>
+            <SwitchControl>
+              <SwitchThumb />
+            </SwitchControl>
+          </Switch>
+          {colorChatBySession && (
+            <Switch
+              isSelected={tintChatBackground}
+              onChange={onToggleTintChatBackground}
+              className="w-full flex items-center gap-3 px-3 py-2 border-t border-border hover:bg-surface-lighter/40 transition-colors cursor-pointer"
+            >
+              <div className="flex-1 min-w-0 text-left">
+                <div className="text-[12px] text-zinc-200">Also tint the chat background</div>
+                <div className="text-[11px] text-zinc-500 mt-0.5">Wash the whole chat area with the accent, not just the message cards.</div>
+              </div>
+              <SwitchControl>
+                <SwitchThumb />
+              </SwitchControl>
+            </Switch>
+          )}
+          <div className="px-3 pb-3 pt-2">
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1.5">Preview</div>
+            <ChatColorPreview accent={colorChatBySession ? '#7c5cff' : null} tintBackground={tintChatBackground} />
+          </div>
+        </div>
       </div>
     </>
   );
@@ -2146,6 +2226,8 @@ export function ProjectSettingsModal({
   autoGroupSessions, onToggleAutoGroup,
   autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction,
   interruptOnSend, onToggleInterruptOnSend,
+  colorChatBySession, onToggleColorChatBySession,
+  tintChatBackground, onToggleTintChatBackground,
   showTelegramSession, onToggleShowTelegramSession,
   globalEnvVars, onChangeGlobalEnvVars,
   portlessTld, onChangePortlessTld,
@@ -2283,6 +2365,10 @@ export function ProjectSettingsModal({
                   onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction}
                   interruptOnSend={interruptOnSend}
                   onToggleInterruptOnSend={onToggleInterruptOnSend}
+                  colorChatBySession={colorChatBySession}
+                  onToggleColorChatBySession={onToggleColorChatBySession}
+                  tintChatBackground={tintChatBackground}
+                  onToggleTintChatBackground={onToggleTintChatBackground}
                   showTelegramSession={showTelegramSession}
                   onToggleShowTelegramSession={onToggleShowTelegramSession}
                   globalEnvVars={globalEnvVars}
@@ -2314,7 +2400,7 @@ export function ProjectSettingsModal({
 }
 
 /* Global content router (right pane when no project selected) */
-function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, interruptOnSend, onToggleInterruptOnSend, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, portlessTld, onChangePortlessTld, client, onDeleteGroup, onSelectGroup }: {
+function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, interruptOnSend, onToggleInterruptOnSend, colorChatBySession, onToggleColorChatBySession, tintChatBackground, onToggleTintChatBackground, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, portlessTld, onChangePortlessTld, client, onDeleteGroup, onSelectGroup }: {
   section: GlobalSection;
   serverUrl: string | null;
   tabGroups: Record<string, TabGroupInfo>;
@@ -2325,6 +2411,10 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
   onToggleAutoFocusBrowserOnAction: (v: boolean) => void;
   interruptOnSend: boolean;
   onToggleInterruptOnSend: (v: boolean) => void;
+  colorChatBySession: boolean;
+  onToggleColorChatBySession: (v: boolean) => void;
+  tintChatBackground: boolean;
+  onToggleTintChatBackground: (v: boolean) => void;
   showTelegramSession: boolean;
   onToggleShowTelegramSession: (v: boolean) => void;
   globalEnvVars: ProjectEnvVar[];
@@ -2337,7 +2427,7 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
 }) {
   return (
     <div className="px-8 pt-6 pb-8">
-      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} />}
+      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} colorChatBySession={colorChatBySession} onToggleColorChatBySession={onToggleColorChatBySession} tintChatBackground={tintChatBackground} onToggleTintChatBackground={onToggleTintChatBackground} />}
       {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
       {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
       {section === 'tailscale'   && <TailscaleSection serverUrl={serverUrl} />}
