@@ -72,7 +72,16 @@ function TabPill({
 export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit, onPin }: PanelProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `strip:${node.id}`, data: { type: 'strip', panelId: node.id } });
   const orderedTabs = node.tabIds.map((id) => tabs.get(id)).filter((t): t is Tab => !!t);
-  const activeTab = node.activeTabId ? tabs.get(node.activeTabId) : undefined;
+  // Resolve the active tab against the *live* tab set, falling back to the last
+  // surviving tab. When a tab is closed the host drops it from `tabs` a render
+  // before the store's reconcile effect runs, so `activeTabId` briefly points
+  // at a tab that no longer exists. Without this fallback the panel paints an
+  // "Empty panel" frame (and the pill loses its active highlight) until the
+  // effect settles — a visible flash. The fallback mirrors what `fixActives`
+  // ultimately picks (the last tab id), so the content stays stable.
+  const activeTab = (node.activeTabId ? tabs.get(node.activeTabId) : undefined)
+    ?? orderedTabs[orderedTabs.length - 1];
+  const activeTabId = activeTab?.id ?? null;
   const canSplit = node.tabIds.length > 1;
 
   return (
@@ -94,7 +103,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
               <TabPill
                 key={t.id}
                 tab={t}
-                active={t.id === node.activeTabId}
+                active={t.id === activeTabId}
                 onActivate={() => onActivate(t.id)}
                 onClose={() => onClose(t)}
                 onPin={onPin ? () => onPin(t.id) : undefined}
