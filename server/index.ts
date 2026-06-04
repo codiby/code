@@ -38,6 +38,8 @@ import {
   registerRemoteSession,
   unregisterRemoteSession,
   listAllCachedRemoteSessions,
+  reconcileRemote,
+  setSessionListBroadcaster,
   proxyHttpToRemote,
   startWsProxy,
   relayWsMessage,
@@ -45,6 +47,7 @@ import {
   proxyFrontendWsMessage,
   closeFrontendRemoteSockets,
 } from './gateway';
+import { getMergedRemoteGroups, isRemoteGroupId } from './remote-groups-cache';
 import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
@@ -231,9 +234,27 @@ function broadcastRemoteStatus(remoteId: string, status: string, lastError: stri
   }
 }
 
+// Repaint the local sidebar after the gateway reconciles a remote: the
+// session list AND preferences (which carry the spliced-in remote tab groups).
+function broadcastRemoteReconciled() {
+  broadcastSessionList();
+  broadcastPreferences(loadPreferences());
+}
+
+// Used by the gateway's debounced refresh (fires when a remote spawns).
+setSessionListBroadcaster(broadcastRemoteReconciled);
+
 // Subscribe once at module load — wire status events into the WS bus.
 onTunnelStatus((remoteId, status, lastError) => {
   broadcastRemoteStatus(remoteId, status, lastError);
+  // When a tunnel comes online, reconcile that remote's sessions + groups into
+  // our cache so anything spawned while offline (or by an agent on the remote)
+  // appears — and correctly grouped — without the user touching anything.
+  if (status === 'online') {
+    reconcileRemote(remoteId).then((changed) => {
+      if (changed) broadcastRemoteReconciled();
+    });
+  }
 });
 
 /** Broadcast a Portless action status update to every frontend client.
@@ -271,10 +292,24 @@ onPortlessStatus(broadcastPortlessStatus);
 onPortlessActionFired(broadcastPortlessFired);
 onPortlessUrlResolved(broadcastPortlessUrlResolved);
 
+/** Splice every known remote's cached tab groups into the local preferences
+ *  blob so remote sessions render grouped. Group ids are UUIDs, so a flat
+ *  merge can't collide with local groups. Done only on the wire to the
+ *  frontend — never persisted to the local file (see updatePreferences). */
+function withRemoteGroups(prefs: Record<string, unknown>): Record<string, unknown> {
+  const { tabGroups, tabGroupMap } = getMergedRemoteGroups();
+  if (!Object.keys(tabGroups).length && !Object.keys(tabGroupMap).length) return prefs;
+  return {
+    ...prefs,
+    tabGroups: { ...((prefs.tabGroups as Record<string, unknown>) ?? {}), ...tabGroups },
+    tabGroupMap: { ...((prefs.tabGroupMap as Record<string, unknown>) ?? {}), ...tabGroupMap },
+  };
+}
+
 /** Broadcast the full preferences object so clients stay in sync after a
  *  server-side mutation (e.g. an MCP tool updating tab groups). */
 function broadcastPreferences(prefs: Record<string, unknown>) {
-  const msg = JSON.stringify({ type: 'preferences', preferences: prefs });
+  const msg = JSON.stringify({ type: 'preferences', preferences: withRemoteGroups(prefs) });
   for (const ws of frontendClients) {
     try { ws.send(msg); } catch {}
   }
@@ -295,8 +330,25 @@ function broadcastFocusSession(sessionId: string) {
  * connected frontend. Used by MCP tools that mutate tab groups etc.
  */
 function updatePreferences(partial: Record<string, unknown>): Record<string, unknown> {
+  // The frontend can't tell local groups from the remote groups we splice in
+  // (withRemoteGroups), so when it persists prefs it echoes the remote ones
+  // back. Strip them before saving so the local file never accumulates remote
+  // group definitions / mappings — they're re-merged on every broadcast.
+  const clean = { ...partial };
+  if (clean.tabGroups && typeof clean.tabGroups === 'object') {
+    const g = { ...(clean.tabGroups as Record<string, unknown>) };
+    for (const gid of Object.keys(g)) if (isRemoteGroupId(gid)) delete g[gid];
+    clean.tabGroups = g;
+  }
+  if (clean.tabGroupMap && typeof clean.tabGroupMap === 'object') {
+    const m = { ...(clean.tabGroupMap as Record<string, unknown>) };
+    for (const [sid, gid] of Object.entries(m)) {
+      if (typeof gid === 'string' && isRemoteGroupId(gid)) delete m[sid];
+    }
+    clean.tabGroupMap = m;
+  }
   const prefs = loadPreferences();
-  Object.assign(prefs, partial);
+  Object.assign(prefs, clean);
   savePreferences(prefs);
   broadcastPreferences(prefs);
   return prefs;
@@ -2231,7 +2283,7 @@ const server = Bun.serve({
         // tabOrder/tabGroups/etc to decide which tabs to
         // show, so receiving the session list first would race the prefs and
         // briefly render every persisted session as an open tab.
-        ws.send(JSON.stringify({ type: 'preferences', preferences: loadPreferences() }));
+        ws.send(JSON.stringify({ type: 'preferences', preferences: withRemoteGroups(loadPreferences()) }));
         ws.send(JSON.stringify({ type: 'sessions', sessions: buildFullSessionList() }));
         return;
       }

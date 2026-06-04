@@ -14,6 +14,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { log, logError } from './logger';
 import { clearRemoteCache } from './remote-sessions-cache';
+import { clearRemoteGroups } from './remote-groups-cache';
 import { CODIBY_DIR } from './config';
 import type { Remote } from './types';
 
@@ -153,6 +154,7 @@ export function removeRemote(id: string): Remote | null {
   // Drop the cached session list for this remote — sessions on the remote
   // itself are untouched, but locally we've forgotten about them.
   clearRemoteCache(id);
+  clearRemoteGroups(id);
   log(`[remotes] Removed ${cur.name} (${cur.alias})`);
   return cur;
 }

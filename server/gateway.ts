@@ -19,10 +19,12 @@ import { remotes } from './remotes';
 import {
   REMOTE_SESSIONS_DIR,
   loadRemoteSessions,
+  saveRemoteSessions,
   upsertRemoteSession,
   removeCachedRemoteSession,
   type CachedRemoteSession,
 } from './remote-sessions-cache';
+import { loadRemoteGroups, saveRemoteGroups, type RemoteGroups } from './remote-groups-cache';
 import { acquireTunnel, releaseTunnel, getTunnelLocalPort } from './ssh-tunnel';
 
 // ---------------------------------------------------------------------------
@@ -74,6 +76,139 @@ export function listAllCachedRemoteSessions(): Array<CachedRemoteSession & { rem
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Remote session reconciliation (pull)
+//
+// The remote owns its session list. Sessions spawned *on* the remote (e.g. an
+// agent there calling `ui_spawn_session`) never touch our local cache, so the
+// desktop client never sees them. We reconcile by pulling the remote's
+// authoritative `GET /sessions` and overwriting our cache for that remote —
+// this also reaps sessions deleted remotely, not just adds new ones.
+// ---------------------------------------------------------------------------
+
+/** Pull the remote's session list over the tunnel and overwrite the local
+ *  cache for `remoteId`. Returns true if the cache actually changed. */
+export async function refreshRemoteSessions(remoteId: string): Promise<boolean> {
+  if (!remotes.has(remoteId)) return false;
+  try {
+    const resp = await proxyHttpToRemote(
+      new Request('http://local/sessions', { method: 'GET' }),
+      remoteId,
+      '/sessions',
+    );
+    if (!resp.ok) return false;
+    const list = (await resp.json()) as any[];
+    if (!Array.isArray(list)) return false;
+    // Keep only the remote's own local sessions — ignore its remote-of-remote
+    // rows so we don't mirror a third machine's sessions under this remote.
+    const mapped: CachedRemoteSession[] = list
+      .filter((s) => !s.remoteId)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        cwd: s.cwd,
+        createdAt: s.created_at,
+        status: s.status ?? 'open',
+        runtimeStatus: s.runtime_status ?? 'running',
+        model: s.model ?? null,
+        permissionMode: s.permission_mode ?? 'default',
+        provider: s.provider ?? 'claudeAgent',
+        claudeSessionId: s.claude_session_id ?? null,
+        portForwards: [],
+        cachedAt: Date.now(),
+      }));
+
+    const prev = loadRemoteSessions(remoteId);
+    saveRemoteSessions(remoteId, mapped);
+    // Rebuild this remote's slice of the id→remote index.
+    for (const [sid, rid] of remoteSessionsIndex) {
+      if (rid === remoteId) remoteSessionsIndex.delete(sid);
+    }
+    for (const s of mapped) remoteSessionsIndex.set(s.id, remoteId);
+
+    // Cheap change detection so callers can skip a needless broadcast.
+    const sig = (l: CachedRemoteSession[]) =>
+      l.map((s) => `${s.id}:${s.name}:${s.status}:${s.runtimeStatus}`).sort().join('|');
+    return sig(prev) !== sig(mapped);
+  } catch (e) {
+    logError(`[gateway] refreshRemoteSessions ${remoteId} failed: ${e}`);
+    return false;
+  }
+}
+
+/** Pull the remote's tab-group metadata (`GET /preferences`) and cache the
+ *  subset its own sessions reference, so remote sessions group correctly in
+ *  the local sidebar. Call *after* refreshRemoteSessions so the session list
+ *  it filters against is current. Returns true if the cache changed. */
+export async function refreshRemoteGroups(remoteId: string): Promise<boolean> {
+  if (!remotes.has(remoteId)) return false;
+  try {
+    const resp = await proxyHttpToRemote(
+      new Request('http://local/preferences', { method: 'GET' }),
+      remoteId,
+      '/preferences',
+    );
+    if (!resp.ok) return false;
+    const prefs = (await resp.json()) as any;
+    const allGroups = (prefs?.tabGroups ?? {}) as Record<string, unknown>;
+    const allMap = (prefs?.tabGroupMap ?? {}) as Record<string, unknown>;
+
+    // Restrict to this remote's own sessions — never mirror its remote-of-
+    // remote group rows.
+    const sessionIds = new Set(loadRemoteSessions(remoteId).map((s) => s.id));
+    const tabGroupMap: Record<string, string> = {};
+    const usedGroupIds = new Set<string>();
+    for (const [sid, gid] of Object.entries(allMap)) {
+      if (sessionIds.has(sid) && typeof gid === 'string') {
+        tabGroupMap[sid] = gid;
+        usedGroupIds.add(gid);
+      }
+    }
+    const tabGroups: Record<string, unknown> = {};
+    for (const gid of usedGroupIds) {
+      if (allGroups[gid]) tabGroups[gid] = allGroups[gid];
+    }
+
+    const next: RemoteGroups = { tabGroups, tabGroupMap };
+    const prevSig = JSON.stringify(loadRemoteGroups(remoteId));
+    saveRemoteGroups(remoteId, next);
+    return prevSig !== JSON.stringify(next);
+  } catch (e) {
+    logError(`[gateway] refreshRemoteGroups ${remoteId} failed: ${e}`);
+    return false;
+  }
+}
+
+/** Pull both a remote's session list and its group metadata. Returns true if
+ *  either changed (i.e. the local sidebar should repaint). */
+export async function reconcileRemote(remoteId: string): Promise<boolean> {
+  const sessionsChanged = await refreshRemoteSessions(remoteId);
+  const groupsChanged = await refreshRemoteGroups(remoteId);
+  return sessionsChanged || groupsChanged;
+}
+
+// Local broadcaster, injected by index.ts to avoid a circular import.
+let broadcastSessions: (() => void) | null = null;
+export function setSessionListBroadcaster(fn: () => void) {
+  broadcastSessions = fn;
+}
+
+// Debounced refresh — coalesces the burst of `sessions` frames a remote emits
+// around a single spawn into one pull a few seconds later, then repaints the
+// local sidebar if anything changed.
+const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+export function scheduleRemoteRefresh(remoteId: string, delayMs = 3000) {
+  const existing = refreshTimers.get(remoteId);
+  if (existing) clearTimeout(existing);
+  refreshTimers.set(
+    remoteId,
+    setTimeout(async () => {
+      refreshTimers.delete(remoteId);
+      if (await reconcileRemote(remoteId)) broadcastSessions?.();
+    }, delayMs),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +433,13 @@ async function getOrOpenRemoteFrontendWs(
       if (typeof sid === 'string' && subs?.has(sid)) {
         try { ws.send(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer)); }
         catch {}
+      } else if (msg?.type === 'sessions') {
+        // The remote re-broadcasts its full session list whenever it changes
+        // (e.g. an agent there spawned a session). We don't forward the frame
+        // — the local app's state is owned by *our* broadcastSessionList — but
+        // we use it as a trigger to pull the remote's list into our cache a
+        // few seconds later, so remote-spawned sessions surface in the sidebar.
+        scheduleRemoteRefresh(remoteId);
       }
     });
 
