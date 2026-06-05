@@ -5,6 +5,31 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] — 2026-06-05
+
+### Added
+
+- **Manage MCP servers from the panel.** A new MCP card in the file sidebar's
+  icon rail lists every configured server — the built-in bridge servers (shown
+  locked) alongside your own from `~/.claude/settings.json` and the project's
+  `.mcp.json`. Add a `stdio`, `http`, or `sse` server through an inline form
+  (choosing Global or Project scope) or remove one in a click; the changes are
+  written straight to the matching config file.
+- **Restart suggestion when MCP servers change.** Because servers are only read
+  when the session's provider spawns, adding or removing one raises a
+  bottom-right banner listing exactly what changed (`+ added` / `− removed`).
+  Accepting restarts the session in place — the provider re-spawns with the new
+  server set while the conversation history is preserved.
+
+### Fixed
+
+- **Mobile home list ordering counts tool activity.** Sessions in the mobile
+  home list now sort by genuine last activity: a session mid-run streaming
+  Read/Bash/Edit no longer sinks down the list while it waits for a final text
+  reply. Only system bookkeeping notes are ignored.
+- **No accidental text selection in the file panel.** Dragging in the panel no
+  longer selects label text.
+
 ## [0.19.0] — 2026-06-05
 
 ### Added
