@@ -54,6 +54,40 @@ export interface HookEntry {
 export type ClaudeHooks = Partial<Record<HookEvent, HookEntry[]>>;
 
 // ---------------------------------------------------------------------------
+// MCP servers
+// ---------------------------------------------------------------------------
+
+export type McpServerType = 'stdio' | 'http' | 'sse' | 'sdk' | 'unknown';
+export type McpServerScope = 'user' | 'project';
+
+/** One row in the MCP manager. `source` distinguishes bridge built-ins (not
+ *  removable) from user/project config entries. */
+export interface McpServerView {
+  name: string;
+  type: McpServerType;
+  url?: string;
+  command?: string;
+  args?: string[];
+  source: McpServerScope | 'builtin';
+  removable: boolean;
+}
+
+/** Payload for adding a server. Only the fields for the chosen `type` are read
+ *  server-side. */
+export interface McpServerInput {
+  scope: McpServerScope;
+  name: string;
+  type: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  /** Required when scope is 'project' — the session cwd whose .mcp.json to write. */
+  cwd?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Mobile auth token (bearer token used by phones on the LAN)
 // ---------------------------------------------------------------------------
 
@@ -896,6 +930,15 @@ export class ClaudeClient {
     await authedFetch(`${this.serverUrl}/sessions/${sessionId}/stop`, { method: 'POST' });
   }
 
+  /** Restart the provider for a session in place — closes and re-spawns it
+   *  with the same id so conversation history is preserved. Used to pick up
+   *  MCP-config changes (added/removed servers only load at spawn time). */
+  async restartSession(sessionId: string): Promise<SessionInfo> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/restart`, { method: 'POST' });
+    if (!resp.ok) throw new Error(`Failed to restart: ${resp.status}`);
+    return resp.json();
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     await authedFetch(`${this.serverUrl}/sessions/${sessionId}`, { method: 'DELETE' });
   }
@@ -1162,6 +1205,38 @@ export class ClaudeClient {
     const resp = await authedFetch(`${this.serverUrl}/gh-prs?${params}`);
     if (!resp.ok) return [];
     return resp.json();
+  }
+
+  // -------------------------------------------------------------------------
+  // MCP server config (read/write of ~/.claude/settings.json + <cwd>/.mcp.json)
+  // -------------------------------------------------------------------------
+
+  /** Merged view of configured MCP servers (built-ins + user + project). */
+  async listMcpServers(cwd?: string | null): Promise<McpServerView[]> {
+    const params = new URLSearchParams();
+    if (cwd) params.set('cwd', cwd);
+    const qs = params.toString();
+    const resp = await authedFetch(`${this.serverUrl}/mcp-servers${qs ? `?${qs}` : ''}`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  /** Add (or overwrite) a single MCP server entry in the chosen scope. */
+  async addMcpServer(input: McpServerInput): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/mcp-servers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  /** Remove a user/project MCP server by name. Built-ins are rejected. */
+  async removeMcpServer(name: string, scope: 'user' | 'project', cwd?: string | null): Promise<{ ok: boolean; error?: string }> {
+    const params = new URLSearchParams({ scope });
+    if (cwd) params.set('cwd', cwd);
+    const resp = await authedFetch(`${this.serverUrl}/mcp-servers/${encodeURIComponent(name)}?${params}`, { method: 'DELETE' });
+    return resp.json().catch(() => ({ ok: resp.ok }));
   }
 
   async listProcesses(sessionId: string): Promise<{ id: string; pid: number; command: string; cwd: string; startedAt: number; exitCode?: number | null; kind?: 'oneshot' | 'pty'; output?: string; children: { pid: number; command: string }[] }[]> {

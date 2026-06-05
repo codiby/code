@@ -2202,6 +2202,24 @@ export function ChatApp() {
     return () => window.removeEventListener('file_changes', handler);
   }, [activeId, updateLocalState]);
 
+  // Restart-on-MCP-change: RestartSuggestionBanner (rendered at the app root)
+  // asks us to restart a session — we own the connected client, so we run it
+  // here and report the outcome back to the banner.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const sid = (e as CustomEvent<{ sessionId: string | null }>).detail?.sessionId;
+      const client = clientRef.current;
+      const done = (ok: boolean, error?: string) =>
+        window.dispatchEvent(new CustomEvent('session_restart_done', { detail: { sessionId: sid ?? null, ok, error } }));
+      if (!sid || !client) { done(false, 'Sesión no disponible'); return; }
+      client.restartSession(sid)
+        .then(() => done(true))
+        .catch(err => done(false, err instanceof Error ? err.message : 'No se pudo reiniciar'));
+    };
+    window.addEventListener('request_session_restart', handler);
+    return () => window.removeEventListener('request_session_restart', handler);
+  }, []);
+
   const handleNewSession = () => {
     setSelectedGroupId(null);
     setShowNewSession(true);
@@ -3452,16 +3470,16 @@ export function ChatApp() {
       const local = sessionStates[s.id];
       const msgs = local?.messages || [];
       // Walk from the end and pick the most recent timestamped message.
-      // Ignore tool bookkeeping (tool use notifications, tool results) and
-      // system notes — those are appended with Date.now() every time Claude
-      // runs Read/Bash/Edit/etc. and would otherwise make the sort jump
-      // around as tools stream in without a real user/assistant exchange.
+      // Tool use / tool result messages DO count toward recency — a session
+      // grinding through Read/Bash/Edit during a long agentic turn is the most
+      // recently active one, and skipping its tool chatter used to freeze its
+      // "last time" (and sink it in the order) until a final text reply landed.
+      // Only pure UI bookkeeping (system notes: terminal/mockup spawn, etc.) is
+      // ignored, since those aren't really the agent talking.
       let last = 0;
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
         if (m.role === 'system') continue;
-        if (m.toolName) continue;
-        if (m.isToolResult) continue;
         const t = m.timestamp;
         if (typeof t === 'number' && t > last) { last = t; break; }
       }

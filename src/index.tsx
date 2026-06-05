@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { ChatApp } from './components/ChatApp';
 import { PluginHostBootstrap } from './components/PluginExtensionPoints';
 import { UpdateBanner } from './components/UpdateBanner';
+import { RestartSuggestionBanner } from './components/RestartSuggestionBanner';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('Missing #root container');
@@ -13,5 +14,6 @@ createRoot(rootEl).render(
     <PluginHostBootstrap />
     <ChatApp />
     <UpdateBanner />
+    <RestartSuggestionBanner />
   </StrictMode>,
 );

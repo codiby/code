@@ -49,6 +49,7 @@ import {
 } from './gateway';
 import { getMergedRemoteGroups, isRemoteGroupId } from './remote-groups-cache';
 import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
+import { handleListMcpServers, handleAddMcpServer, handleRemoveMcpServer } from './handlers/mcp-servers';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
 import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
@@ -1828,6 +1829,25 @@ const server = Bun.serve({
       const sessionName = url.searchParams.get('session') || '';
       if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
       return handleGhPrs(cwd, sessionName);
+    }
+
+    // -----------------------------------------------------------------------
+    // MCP servers (config CRUD over ~/.claude/settings.json + <cwd>/.mcp.json)
+    // -----------------------------------------------------------------------
+
+    if (url.pathname === '/mcp-servers' && req.method === 'GET') {
+      return handleListMcpServers(url.searchParams.get('cwd'));
+    }
+
+    if (url.pathname === '/mcp-servers' && req.method === 'POST') {
+      return await handleAddMcpServer(req);
+    }
+
+    const mcpRemoveMatch = url.pathname.match(/^\/mcp-servers\/(.+)$/);
+    if (mcpRemoveMatch && req.method === 'DELETE') {
+      const name = decodeURIComponent(mcpRemoveMatch[1]!);
+      const scope = url.searchParams.get('scope') === 'project' ? 'project' : 'user';
+      return handleRemoveMcpServer(name, scope, url.searchParams.get('cwd'));
     }
 
     // -----------------------------------------------------------------------

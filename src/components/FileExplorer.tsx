@@ -13,10 +13,12 @@ import {
   FolderTree,
   GitBranch,
   GitPullRequest,
+  Lock,
   Minus,
   PanelLeftClose,
   PanelLeftOpen,
   Play,
+  Plug,
   Plus,
   RefreshCw,
   Search,
@@ -26,7 +28,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
-import type { ClaudeClient, SessionInfo, ConnectionStatus } from '../lib/claude-client';
+import type { ClaudeClient, SessionInfo, ConnectionStatus, McpServerView, McpServerScope } from '../lib/claude-client';
 
 /** Session-switcher palette — kept inline so this section stays visually
  *  distinct from the rest of the explorer chrome. Mirrors the colors from
@@ -174,6 +176,19 @@ function getExtColor(name: string): string {
 
 // Desaturated amber for "modified" files — softer than tailwind's amber-400.
 const MODIFIED_COLOR = '#d6a85f';
+
+// Teal accent for the MCP Servers card + rail icon. Distinct from the other
+// card hues (gold/green/blue/purple) so the rail stays scannable.
+const MCP_COLOR = '#2dd4bf';
+
+// Per-type dot color in the MCP list.
+const MCP_TYPE_COLOR: Record<string, string> = {
+  stdio: '#a78bfa',
+  http: '#56b6e8',
+  sse: '#56b6e8',
+  sdk: '#2dd4bf',
+  unknown: '#6b6e76',
+};
 
 function NodeNameInput({
   initial, onCommit, onCancel, autoSelect,
@@ -1003,6 +1018,266 @@ function ToolsSection({ tools }: { tools: string[] }) {
   );
 }
 
+/** Notify the rest of the app that the MCP config changed so a session
+ *  restart can be suggested (added/removed servers only load at spawn time).
+ *  RestartSuggestionBanner (rendered in ChatApp) accumulates these. */
+function emitMcpChanged(action: 'added' | 'removed', name: string, sessionId: string | null) {
+  window.dispatchEvent(new CustomEvent('mcp_changed', { detail: { action, name, sessionId } }));
+}
+
+/** Add-server form types kept local to the card. */
+type AddType = 'stdio' | 'http' | 'sse';
+
+/** The MCP Servers card. Lists merged built-in + user + project servers and
+ *  lets the user add (to ~/.claude/settings.json or <cwd>/.mcp.json) or remove
+ *  config-backed ones. Built-ins are shown locked. Every mutation emits
+ *  `mcp_changed` so the host can suggest a restart. */
+function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClient | null; rootPath: string | null; sessionId: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const [servers, setServers] = useState<McpServerView[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Add-form fields
+  const [fType, setFType] = useState<AddType>('stdio');
+  const [fName, setFName] = useState('');
+  const [fCommand, setFCommand] = useState('');
+  const [fArgs, setFArgs] = useState('');
+  const [fUrl, setFUrl] = useState('');
+  const [fScope, setFScope] = useState<McpServerScope>('user');
+
+  const refresh = useCallback(async () => {
+    if (!client) return;
+    try {
+      const list = await client.listMcpServers(rootPath);
+      setServers(list);
+    } catch {
+      setServers([]);
+    } finally {
+      setLoaded(true);
+    }
+  }, [client, rootPath]);
+
+  // Load once the card is first opened (and refresh when the cwd changes while open).
+  useEffect(() => {
+    if (expanded && !loaded) refresh();
+  }, [expanded, loaded, refresh]);
+  useEffect(() => { if (expanded) refresh(); }, [rootPath]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resetForm = useCallback(() => {
+    setFName(''); setFCommand(''); setFArgs(''); setFUrl('');
+    setFType('stdio'); setFScope('user'); setError(null);
+  }, []);
+
+  const closeForm = useCallback(() => { setAdding(false); resetForm(); }, [resetForm]);
+
+  const submitAdd = useCallback(async () => {
+    if (!client) return;
+    const name = fName.trim();
+    if (!name) { setError('Nombre requerido'); return; }
+    if (fScope === 'project' && !rootPath) { setError('Sin carpeta de proyecto'); return; }
+    if (fType === 'stdio' && !fCommand.trim()) { setError('Comando requerido'); return; }
+    if ((fType === 'http' || fType === 'sse') && !fUrl.trim()) { setError('URL requerida'); return; }
+
+    setBusy(true); setError(null);
+    const res = await client.addMcpServer({
+      scope: fScope,
+      name,
+      type: fType,
+      command: fType === 'stdio' ? fCommand.trim() : undefined,
+      args: fType === 'stdio' ? fArgs.trim().split(/\s+/).filter(Boolean) : undefined,
+      url: fType !== 'stdio' ? fUrl.trim() : undefined,
+      cwd: fScope === 'project' ? rootPath ?? undefined : undefined,
+    }).catch(() => ({ ok: false, error: 'Error de red' }));
+    setBusy(false);
+
+    if (!res.ok) { setError(res.error || 'No se pudo añadir'); return; }
+    emitMcpChanged('added', name, sessionId);
+    closeForm();
+    refresh();
+  }, [client, fName, fScope, fType, fCommand, fArgs, fUrl, rootPath, sessionId, closeForm, refresh]);
+
+  const removeServer = useCallback(async (srv: McpServerView) => {
+    if (!client || !srv.removable) return;
+    const scope: McpServerScope = srv.source === 'project' ? 'project' : 'user';
+    setBusy(true);
+    const res = await client.removeMcpServer(srv.name, scope, scope === 'project' ? rootPath : undefined)
+      .catch(() => ({ ok: false, error: 'Error de red' }));
+    setBusy(false);
+    if (!res.ok) { setError(res.error || 'No se pudo eliminar'); return; }
+    emitMcpChanged('removed', srv.name, sessionId);
+    refresh();
+  }, [client, rootPath, sessionId, refresh]);
+
+  const count = servers.length;
+
+  return (
+    <div data-card="mcp" className={CARD_CLS}>
+      <CardHeader
+        icon={<Plug size={13} strokeWidth={1.9} />}
+        iconColor={MCP_COLOR}
+        title="MCP Servers"
+        expanded={expanded}
+        onToggle={() => setExpanded(e => !e)}
+        meta={loaded ? <span className="text-[11px] font-semibold font-mono tabular-nums text-[#6b6e76]">{count}</span> : null}
+      />
+      {expanded && (
+        <>
+          <CardDivider />
+
+          {/* Server list */}
+          <div className="py-[5px]">
+            {servers.map(srv => {
+              const dot = MCP_TYPE_COLOR[srv.type] || '#6b6e76';
+              const sub = srv.type === 'stdio'
+                ? [srv.command, ...(srv.args || [])].filter(Boolean).join(' ')
+                : srv.url || '';
+              return (
+                <div key={`${srv.source}:${srv.name}`} className="group/mcp flex items-center gap-[9px] py-[5px] px-[11px] hover:bg-[#1f2025] transition-colors">
+                  <span className="w-[7px] h-[7px] rounded-full shrink-0" style={{ background: dot, boxShadow: `0 0 6px -1px ${dot}` }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[12px] text-[#c4c6cc] font-medium truncate">{srv.name}</span>
+                      {srv.source === 'project' && <span className="text-[9px] font-semibold text-[#5e6068]">· project</span>}
+                    </div>
+                    {sub && <span className="text-[10px] text-[#5e6068] font-mono truncate block">{sub}</span>}
+                  </div>
+                  <span className={`text-[9px] font-semibold uppercase tracking-[0.04em] font-mono px-1.5 py-px rounded-[6px] border shrink-0 ${srv.source === 'builtin' ? 'text-[#2dd4bf] border-[#2dd4bf33] bg-[#2dd4bf12]' : 'text-[#9aa0a8] border-[#1e1f24] bg-[#191a1f]'}`}>
+                    {srv.source === 'builtin' ? 'built-in' : srv.type}
+                  </span>
+                  <div className="flex items-center opacity-0 group-hover/mcp:opacity-100 transition-opacity shrink-0">
+                    {srv.removable ? (
+                      <button
+                        onClick={() => removeServer(srv)}
+                        disabled={busy}
+                        title="Eliminar servidor"
+                        className="w-[24px] h-[24px] rounded-[6px] flex items-center justify-center text-[#6b6e76] hover:bg-[#ef5b6b22] hover:text-[#ef8a96] transition-colors disabled:opacity-40"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    ) : (
+                      <span title="Servidor del sistema — no editable" className="w-[24px] h-[24px] flex items-center justify-center text-[#4f525a]">
+                        <Lock size={12} />
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {loaded && servers.length === 0 && (
+              <div className="px-[11px] py-2 text-[11px] text-[#5e6068]">No hay servidores MCP configurados.</div>
+            )}
+          </div>
+
+          {/* Add bar / form */}
+          {!adding ? (
+            <button
+              onClick={() => { setAdding(true); setError(null); }}
+              className="w-full flex items-center gap-2 px-[11px] py-2 border-t border-[#1e1f24] text-[11px] font-semibold transition-colors hover:bg-[#2dd4bf]/[0.06]"
+              style={{ color: MCP_COLOR }}
+            >
+              <Plus size={13} strokeWidth={2.2} />
+              Añadir servidor MCP
+            </button>
+          ) : (
+            <div className="px-[11px] py-[9px] border-t border-[#1e1f24] bg-[#101116] flex flex-col gap-[7px]">
+              {/* Type segmented */}
+              <div className="flex bg-[#101116] border border-[#1e1f24] rounded-[9px] p-[3px]">
+                {(['stdio', 'http', 'sse'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setFType(t)}
+                    className={`flex-1 text-[11px] font-semibold py-[5px] rounded-md transition-colors ${fType === t ? 'bg-[#1e1f24] text-[#e6e7ea] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]' : 'text-[#6b6e76] hover:text-[#9aa0a8]'}`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+
+              <McpField label="Nombre">
+                <McpInput value={fName} onChange={setFName} placeholder="my-server" autoFocus />
+              </McpField>
+
+              {fType === 'stdio' ? (
+                <>
+                  <McpField label="Comando">
+                    <McpInput value={fCommand} onChange={setFCommand} placeholder="npx" />
+                  </McpField>
+                  <McpField label="Argumentos" hint="(separados por espacio)">
+                    <McpInput value={fArgs} onChange={setFArgs} placeholder="-y @scope/mcp-server" />
+                  </McpField>
+                </>
+              ) : (
+                <McpField label="URL">
+                  <McpInput value={fUrl} onChange={setFUrl} placeholder="https://host/mcp" />
+                </McpField>
+              )}
+
+              <McpField label="Alcance">
+                <div className="flex bg-[#101116] border border-[#1e1f24] rounded-[9px] p-[3px] mt-px">
+                  {(['user', 'project'] as const).map(s => {
+                    const disabled = s === 'project' && !rootPath;
+                    return (
+                      <button
+                        key={s}
+                        disabled={disabled}
+                        onClick={() => setFScope(s)}
+                        title={disabled ? 'Abre una carpeta de proyecto para usar este alcance' : undefined}
+                        className={`flex-1 text-[10.5px] font-semibold py-[5px] rounded-md transition-colors ${fScope === s ? 'bg-[#1e1f24] text-[#e6e7ea] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]' : 'text-[#6b6e76] hover:text-[#9aa0a8]'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                      >
+                        {s === 'user' ? 'Global' : 'Proyecto'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </McpField>
+
+              {error && <div className="text-[10.5px] text-[#ef8a96]">{error}</div>}
+
+              <div className="flex justify-end gap-[7px] mt-px">
+                <button onClick={closeForm} disabled={busy} className="px-[11px] py-[6px] rounded-[8px] text-[11px] font-semibold text-[#6b6e76] hover:bg-[#1f2025] hover:text-[#c4c6cc] transition-colors disabled:opacity-40">
+                  Cancelar
+                </button>
+                <button onClick={submitAdd} disabled={busy} className="px-[12px] py-[6px] rounded-[8px] text-[11px] font-bold text-[#04201c] transition-[filter] hover:brightness-110 disabled:opacity-50" style={{ background: MCP_COLOR }}>
+                  {busy ? 'Añadiendo…' : 'Añadir servidor'}
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Labeled field wrapper for the MCP add-form. */
+function McpField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-[3px]">
+      <label className="text-[9.5px] font-semibold uppercase tracking-[0.06em] text-[#6b6e76]">
+        {label}{hint && <span className="ml-1 normal-case tracking-normal text-[#3f424a]">{hint}</span>}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+/** Monospace input styled to match the MCP add-form. */
+function McpInput({ value, onChange, placeholder, autoFocus }: { value: string; onChange: (v: string) => void; placeholder?: string; autoFocus?: boolean }) {
+  return (
+    <input
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      autoFocus={autoFocus}
+      spellCheck={false}
+      className="h-[30px] px-[9px] rounded-[8px] bg-[#0d0e12] border border-[#1e1f24] text-[12px] text-[#e6e7ea] font-mono outline-none focus:border-[#2dd4bf] placeholder:text-[#3f424a]"
+    />
+  );
+}
+
 /** Session-switcher header + inline collapsible session tree. Lives at the
  *  top of the explorer so the sidebar carries both "what session am I in"
  *  and "what files are in this session" — replacing the standalone session
@@ -1423,6 +1698,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
     if (processCount > 0) items.push({ key: 'processes', title: 'Processes', color: '#5cc98c', icon: <Terminal size={15} />, badge: processCount });
     if (prCount > 0) items.push({ key: 'prs', title: 'Pull Requests', color: '#56b6e8', icon: <GitPullRequest size={15} />, badge: prCount });
     if ((tools?.length ?? 0) > 0) items.push({ key: 'tools', title: 'Tools', color: '#a78bfa', icon: <Wrench size={15} /> });
+    items.push({ key: 'mcp', title: 'MCP Servers', color: MCP_COLOR, icon: <Plug size={15} /> });
     items.push({ key: 'files', title: 'Files', color: '#5aa6f0', icon: <FolderTree size={15} /> });
     return items;
   }, [gitModified.staged, gitModified.unstaged, processCount, prCount, tools]);
@@ -1656,6 +1932,9 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
 
             {/* Tools */}
             <ToolsSection tools={tools || []} />
+
+            {/* MCP Servers */}
+            <McpServersSection client={client} rootPath={rootPath} sessionId={activeSessionId} />
 
             {/* File tree (collapsible) — grows to fill remaining panel height */}
             <FileTreeSection rootPath={rootPath} entries={entries} onNewAtRoot={handleNewAtRoot} />
