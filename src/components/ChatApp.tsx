@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
@@ -57,6 +58,7 @@ import {
   setActiveRemoteId,
   type ChatMessage,
   type ConnectionStatus,
+  type FileChange,
   type PermissionRequest,
   type SessionInfo,
   type SessionInitInfo,
@@ -883,9 +885,13 @@ export function ChatApp() {
   // each entry is a Set of procIds the user has closed.
   const [dismissedShells, setDismissedShells] = useState<Record<string, Set<string>>>({});
   // Bottom Terminals panel — collapsed means the panel is a single status
-  // strip with no xterm body shown; expanded means full tabbed UI. Persists
-  // across reloads via ui-preferences.
-  const [terminalsPanelExpanded, setTerminalsPanelExpanded] = useState<boolean>(true);
+  // strip with no xterm body shown; expanded means full tabbed UI. Starts
+  // collapsed (VSCode-style); opening/spawning a shell auto-expands it.
+  const [terminalsPanelExpanded, setTerminalsPanelExpanded] = useState<boolean>(false);
+  // The terminals dock is authored inside the chat panel (so it keeps all its
+  // closures) but portaled into this host, which sits below the panels and
+  // spans the full content width — VSCode-style, outside the file panels.
+  const [termDockHost, setTermDockHost] = useState<HTMLDivElement | null>(null);
   /** Maximize toggles the panel height between the default ~340px and a
    *  much taller 70vh — handy when watching a noisy dev server. */
   const [terminalsPanelMaximized, setTerminalsPanelMaximized] = useState<boolean>(false);
@@ -971,6 +977,17 @@ export function ChatApp() {
 
   const gitModifiedCacheRef = useRef<Record<string, { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>>({});
   const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
+  // Changes-section comparison mode: 'vs-main' lists everything this branch
+  // changed relative to the base branch (merge-base); 'uncommitted' is the
+  // classic staged/unstaged/untracked working-tree view. The resolved base
+  // branch name (main/master/…) is detected per workspace. Refs mirror them so
+  // refreshGitModified / diff handlers read the current value without re-binding.
+  const [changesCompare, setChangesCompare] = useState<'vs-main' | 'uncommitted'>('vs-main');
+  const [baseBranch, setBaseBranch] = useState<string>('main');
+  const changesCompareRef = useRef(changesCompare);
+  changesCompareRef.current = changesCompare;
+  const baseBranchRef = useRef(baseBranch);
+  baseBranchRef.current = baseBranch;
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
   const serverUrlRef = useRef<string>('');
@@ -1243,7 +1260,7 @@ export function ChatApp() {
     updateLocalState(sid, s => ({
       ...s,
       editorTabs: s.editorTabs.map(t => t.path === path
-        ? { ...t, path: newPath ?? t.path, content, dirty: false, preview: false }
+        ? { ...t, path: newPath ?? t.path, content, dirty: false, preview: false, deleted: false }
         : t),
       activeEditorPath: s.activeEditorPath === path ? (newPath ?? path) : s.activeEditorPath,
     }));
@@ -1753,6 +1770,12 @@ export function ChatApp() {
         onTerminalEnvInjected: ({ procId, env }) => {
           setInjectedEnvByProc(prev => ({ ...prev, [procId]: env }));
         },
+        onFileChanges: (sid, changes) => {
+          // Re-emit on a window event so any interested pane (file tree,
+          // activity indicator, …) can react without ChatApp owning a
+          // dedicated piece of state. Mirrors the portless_status pattern.
+          window.dispatchEvent(new CustomEvent('file_changes', { detail: { sessionId: sid, changes } }));
+        },
 
         onConnectionChange: (status) => {
           if (status === 'connected') {
@@ -2086,6 +2109,72 @@ export function ChatApp() {
     return () => clearTimeout(t);
   }, [active.messages.length]);
 
+  // Live editor sync, driven by the session file watcher (real-time, disk-truth):
+  //   • change → reload on-disk content into an open, non-dirty tab for that file
+  //   • unlink → strike through the tab (mark deleted) but KEEP the buffer so the
+  //              user can re-save (Cmd+S) to resurrect the file
+  //   • add    → a previously-deleted open tab reappeared on disk: clear the
+  //              strike and reload its content
+  // Unsaved edits are never clobbered (a dirty tab is left alone until saved).
+  useEffect(() => {
+    const sid = activeId;
+    if (!sid) return;
+
+    // Push fresh on-disk content into a tab. If it's the visible editor, update
+    // the live Monaco model in place (preserving cursor) so the change shows
+    // immediately — Monaco is uncontrolled, so state alone wouldn't repaint it.
+    const reload = (abs: string) => {
+      const client = clientRef.current;
+      if (!client) return;
+      client.readFile(abs).then(file => {
+        if (!file) return;
+        delete liveBuffersRef.current[liveBufKey(sid, abs)];
+        if (activeEditorPathRef.current === abs && editorRef.current) {
+          const ed = editorRef.current;
+          const model = ed.getModel();
+          if (model && model.getValue() !== file.content) {
+            const pos = ed.getPosition();
+            externalEditRef.current = true;
+            try { model.setValue(file.content); } finally { externalEditRef.current = false; }
+            if (pos) ed.setPosition(pos);
+          }
+        }
+        updateLocalState(sid, s => ({
+          ...s,
+          editorTabs: s.editorTabs.map(t => t.path === abs
+            ? { ...t, content: file.content, dirty: false, deleted: false }
+            : t),
+        }));
+      }).catch(() => {});
+    };
+
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionId: string; changes: FileChange[] }>).detail;
+      if (!detail || detail.sessionId !== sid) return;
+      const root = explorerRootRef.current;
+      if (!root) return;
+      const tabs = editorTabsRef.current;
+      for (const c of detail.changes) {
+        if (c.isDir) continue;
+        const abs = root.endsWith('/') ? root + c.path : root + '/' + c.path;
+        const tab = tabs.find(t => t.path === abs);
+        if (!tab) continue;
+        if (c.kind === 'unlink') {
+          updateLocalState(sid, s => ({
+            ...s,
+            editorTabs: s.editorTabs.map(t => t.path === abs ? { ...t, deleted: true } : t),
+          }));
+        } else if (c.kind === 'add' || c.kind === 'change') {
+          // Reload when the file reappeared (was struck through) or when it
+          // changed and the tab has no unsaved edits. Leave dirty tabs alone.
+          if (tab.deleted || !tab.dirty) reload(abs);
+        }
+      }
+    };
+    window.addEventListener('file_changes', handler);
+    return () => window.removeEventListener('file_changes', handler);
+  }, [activeId, updateLocalState]);
+
   const handleNewSession = () => {
     setSelectedGroupId(null);
     setShowNewSession(true);
@@ -2297,7 +2386,12 @@ export function ChatApp() {
       try {
         await c.clearSessionMessages(targetId);
         // Server broadcasts `session_cleared`; the onSessionCleared handler
-        // empties the local state. Nothing else to do here.
+        // empties the local state. The clear also stops the provider, but the
+        // lazy-boot effect only fires when `activeId` changes — which it
+        // doesn't on an in-place clear. Without this nudge the tab sits on
+        // "Waiting for connection..." until the user switches tabs or sends a
+        // message. Re-arm the lazy boot now so it reconnects immediately.
+        c.notifyActiveTab(targetId);
       } catch (err) {
         console.error('[ChatApp] /clear main-session failed:', err);
       }
@@ -2815,9 +2909,10 @@ export function ChatApp() {
   const handleFileDiff = async (path: string) => {
     if (!client || !activeId) return;
     const sid = activeId;
+    const base = changesCompareRef.current === 'vs-main' ? baseBranchRef.current : null;
     const [file, original] = await Promise.all([
       client.readFile(path),
-      client.readFileOriginal(path),
+      client.readFileOriginal(path, base),
     ]);
     if (file) {
       updateLocalState(sid, s => ({ ...s, openTerminalId: null, diffView: { path, original, modified: file.content } }));
@@ -2827,9 +2922,10 @@ export function ChatApp() {
   const handleFileDiffFullView = async (path: string) => {
     if (!client || !activeId) return;
     const sid = activeId;
+    const base = changesCompareRef.current === 'vs-main' ? baseBranchRef.current : null;
     const [file, original] = await Promise.all([
       client.readFile(path),
-      client.readFileOriginal(path),
+      client.readFileOriginal(path, base),
     ]);
     if (file) {
       updateLocalState(sid, s => ({ ...s, openTerminalId: null, diffView: { path, original, modified: file.content }, editorFullWidth: !s.editorFullWidth }));
@@ -2892,11 +2988,19 @@ export function ChatApp() {
   };
 
   const explorerRootRef = useRef<string | null>(null);
+  // Mirrors the active session's open editor tabs so the file-watcher listener
+  // (which runs outside render) can read the current set without re-subscribing.
+  const editorTabsRef = useRef<LocalSessionState['editorTabs']>([]);
+  const activeEditorPathRef = useRef<string | null>(null);
+  // Set true while we push an external (on-disk) reload into Monaco so the
+  // editor's onChange treats it as a disk update, not a user edit.
+  const externalEditRef = useRef(false);
 
   const refreshGitModified = useCallback(async () => {
     const root = explorerRootRef.current;
     if (!client || !root) return;
-    const entries = await client.getGitModified(root);
+    const base = changesCompareRef.current === 'vs-main' ? baseBranchRef.current : null;
+    const entries = await client.getGitModified(root, base);
     const staged = new Set<string>();
     const unstaged = new Set<string>();
     const untracked = new Set<string>();
@@ -3365,6 +3469,8 @@ export function ChatApp() {
 
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
   explorerRootRef.current = explorerRoot;
+  editorTabsRef.current = active.editorTabs;
+  activeEditorPathRef.current = active.activeEditorPath;
 
   // A file is read-only when it lives outside the project (e.g. a TS lib
   // .d.ts) or inside any node_modules — we open dependency declarations for
@@ -3404,6 +3510,23 @@ export function ChatApp() {
     }
     refreshGitModified();
   }, [explorerRoot, refreshGitModified]);
+
+  // Resolve the base branch for the "vs main" comparison, once per workspace.
+  // Prefer the usual trunk names; fall back to the first local branch.
+  useEffect(() => {
+    if (!explorerRoot || !client) return;
+    let cancelled = false;
+    client.listBranches(explorerRoot).then(({ local, remote }) => {
+      if (cancelled) return;
+      const all = [...local, ...remote];
+      const pick = ['main', 'master', 'develop', 'trunk'].find(b => all.includes(b));
+      setBaseBranch(pick || local[0] || 'main');
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [explorerRoot, client]);
+
+  // Re-fetch the changes list when the comparison mode or base branch changes.
+  useEffect(() => { refreshGitModified(); }, [changesCompare, baseBranch, refreshGitModified]);
 
   // Fetch git branch for status bar
   const [gitBranch, setGitBranch] = useState<string | null>(null);
@@ -4854,6 +4977,10 @@ export function ChatApp() {
             onFileDiffFullView={handleFileDiffFullView}
             gitModified={gitModified}
             activeFilePath={openFile?.path ?? null}
+            activeDiffPath={diffView?.path ?? null}
+            changesCompare={changesCompare}
+            onChangesCompareChange={setChangesCompare}
+            baseBranch={baseBranch}
             activeSessionId={activeId}
             onOpenTerminal={(command) => {
               const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
@@ -4920,7 +5047,7 @@ export function ChatApp() {
                     // is an italic `preview` tab, replaced when the next file
                     // opens unless pinned (double-click) or modified.
                     for (const t of active.editorTabs) {
-                      panelTabs.push({ id: 'editor:' + t.path, kind: 'editor', title: t.path.split('/').pop() || 'editor', icon: '📄', dirty: t.dirty, preview: t.preview, zone: 'main' });
+                      panelTabs.push({ id: 'editor:' + t.path, kind: 'editor', title: t.path.split('/').pop() || 'editor', icon: '📄', dirty: t.dirty, preview: t.preview, deleted: t.deleted, zone: 'main' });
                     }
                     if (openMockup) panelTabs.push({ id: 'mockup', kind: 'mockup', title: openMockup.name, icon: '🎨', zone: 'main' });
                     // One panel tab per open browser — the previews live
@@ -5019,7 +5146,7 @@ export function ChatApp() {
                   )}
                   </div>
 
-                  {(() => {
+                  {termDockHost && createPortal((() => {
                     if (!activeId) return null;
                     // Bridge-owned visibility filter (dismissed shells never render).
                     const dismissed = dismissedShells[activeId];
@@ -5459,7 +5586,7 @@ export function ChatApp() {
                         </div>
                       </div>
                     );
-                  })()}
+                  })(), termDockHost)}
 
                   {/* Floating "scroll to latest" — appears when the user has
                       scrolled away from the bottom while the assistant streams.
@@ -5524,20 +5651,21 @@ export function ChatApp() {
                   <div className="flex-1 flex flex-col min-w-0">
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
-                        <span className={`text-[12px] font-mono truncate ${gitModified.staged.has(ePath) ? 'text-green-400' : gitModified.unstaged.has(ePath) ? 'text-amber-400' : 'text-zinc-400'}`}>
+                        <span className={`text-[12px] font-mono truncate ${eTab.deleted ? 'line-through text-red-400/80' : gitModified.staged.has(ePath) ? 'text-green-400' : gitModified.unstaged.has(ePath) ? 'text-amber-400' : 'text-zinc-400'}`}>
                           {ePath.split('/').pop()}
                         </span>
                         {eDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}
+                        {eTab.deleted && <span className="text-[10px] uppercase tracking-wide text-red-400/80 border border-red-500/40 rounded px-1 shrink-0" title="Deleted on disk — press Cmd+S to restore">deleted</span>}
                         {eTab.readOnly && <span className="text-[10px] uppercase tracking-wide text-zinc-500 border border-border rounded px-1 shrink-0" title="Read-only (outside project / node_modules)">read-only</span>}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
-                        {eDirty && (
+                        {(eDirty || eTab.deleted) && (
                           <button
-                            className="text-[11px] text-zinc-500 hover:text-zinc-200 px-1.5"
+                            className={`text-[11px] px-1.5 ${eTab.deleted ? 'text-red-400/80 hover:text-red-300' : 'text-zinc-500 hover:text-zinc-200'}`}
                             onClick={handleSaveFileWrapped}
-                            title="Save (Cmd+S)"
+                            title={eTab.deleted ? 'Restore file (Cmd+S)' : 'Save (Cmd+S)'}
                           >
-                            Save
+                            {eTab.deleted ? 'Restore' : 'Save'}
                           </button>
                         )}
                         <button
@@ -5572,6 +5700,10 @@ export function ChatApp() {
                           // Ref write (no re-render) preserves unsaved edits
                           // across tab switches; dirty/pin go through state.
                           liveBuffersRef.current[liveKey] = value ?? '';
+                          // An external (on-disk) reload sets the model value
+                          // programmatically — that's not a user edit, so skip
+                          // the dirty toggle (reload() updates baseline itself).
+                          if (externalEditRef.current) return;
                           markEditorDirty(activeId, ePath, (value ?? '') !== eTab.content);
                         }}
                         options={{
@@ -5937,8 +6069,8 @@ export function ChatApp() {
                     {/* File header */}
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => !reviewMode && activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
-                        <span className="text-[10px] text-amber-400 shrink-0">M</span>
-                        <span className="text-[12px] font-mono text-amber-400 truncate">{diffView.path.split('/').pop()}</span>
+                        <span className="text-[10px] shrink-0" style={{ color: '#d6a85f' }}>M</span>
+                        <span className="text-[12px] font-mono truncate" style={{ color: '#d6a85f' }}>{diffView.path.split('/').pop()}</span>
                         {explorerRoot && (
                           <span className="text-[10px] text-zinc-600 font-mono truncate ml-1">{diffView.path.slice(explorerRoot.length + 1)}</span>
                         )}
@@ -6023,6 +6155,11 @@ export function ChatApp() {
                   );
                 })()}
               </div>
+
+              {/* Terminals dock — portaled here from the chat panel so it spans
+                  the full content width at the bottom, below all panels and
+                  outside the file explorer (VSCode-style). */}
+              <div ref={setTermDockHost} className="shrink-0 flex flex-col min-w-0" />
 
               {/* Permission modal removed — shown inline in chat */}
             </>

@@ -120,7 +120,7 @@ export function handleFileIndex(root: string): Response {
   }
 }
 
-function invalidateIndexFor(path: string): void {
+export function invalidateIndexFor(path: string): void {
   for (const root of fileIndexCache.keys()) {
     if (path === root || path.startsWith(root + sep) || path.startsWith(root + '/')) {
       fileIndexCache.delete(root);

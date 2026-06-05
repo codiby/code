@@ -16,7 +16,7 @@ import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, loadOrCreateMobileToken, getL
 import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } from './handlers/mobile';
 import { notifyPermissionResolved } from './notify';
 import { log } from './logger';
-import { sessions, loadSessions, saveSessions, sessionToJSON } from './sessions';
+import { sessions, loadSessions, saveSessions, sessionToJSON, setStatusBroadcaster } from './sessions';
 import { loadRemotes, getRemote } from './remotes';
 import { migrateToCodiby } from './migrate-to-codiby';
 import { cleanupStaleControlSockets, onTunnelStatus } from './ssh-tunnel';
@@ -48,7 +48,7 @@ import {
   closeFrontendRemoteSockets,
 } from './gateway';
 import { getMergedRemoteGroups, isRemoteGroupId } from './remote-groups-cache';
-import { handleCreateSession, handleResumeSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
+import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
 import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
@@ -62,7 +62,7 @@ import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, han
 import { handleExecCreate, terminalWsOpen, terminalWsClose, spawnTrackedProcess } from './handlers/exec';
 import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput, addToGraveyard, isInGraveyard, dismissShell, getDismissedShells } from './handlers/processes';
 import type { TrackedProcess } from './types';
-import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout } from './handlers/git';
+import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef } from './handlers/git';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree } from './handlers/worktree';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
@@ -244,6 +244,9 @@ function broadcastRemoteReconciled() {
 // Used by the gateway's debounced refresh (fires when a remote spawns).
 setSessionListBroadcaster(broadcastRemoteReconciled);
 
+// Repaint the sidebar when a session auto-unarchives on an incoming message.
+setStatusBroadcaster(broadcastSessionList);
+
 // Subscribe once at module load — wire status events into the WS bus.
 onTunnelStatus((remoteId, status, lastError) => {
   broadcastRemoteStatus(remoteId, status, lastError);
@@ -360,7 +363,16 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
  *  session-creation entry point: HTTP `POST /sessions` (frontend, mobile,
  *  CLI) and MCP `ui_spawn_session`. No-ops if `autoGroupSessions` is off,
  *  if the cwd is empty, or if the session is already in a group (callers
- *  with an explicit group assignment win). */
+ *  with an explicit group assignment win).
+ *
+ *  Worktree-aware: when the session is spawned under the standard
+ *  `<repo>/.wt/<branch>` layout, the group name is derived from the
+ *  parent repo's folder, not the worktree branch. That way a session
+ *  spawned in a worktree lands in the same group as the source repo
+ *  rather than a freshly-minted "branch" group. Callers that already
+ *  routed the original repo cwd through `group_cwd` are unaffected —
+ *  by the time we get here the cwd is either the source repo or the
+ *  worktree, both of which resolve to the same folder name. */
 const AUTOGROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
 type AutoGroup = { id: string; name: string; color: string; cwd?: string; icon?: string };
 function maybeAutoGroupSession(sessionId: string, cwd: string) {
@@ -369,13 +381,21 @@ function maybeAutoGroupSession(sessionId: string, cwd: string) {
   if (!prefs.autoGroupSessions) return;
   const map: Record<string, string> = { ...((prefs.tabGroupMap as Record<string, string>) || {}) };
   if (map[sessionId]) return;
-  const folder = cwd.split('/').filter(Boolean).pop() || '/';
+  // Treat `<repo>/.wt/<branch>` as the parent repo for grouping purposes.
+  // Match both `/` and `\` separators (Windows-safe), and only when the
+  // worktree segment is the *last* path component — anything more nested
+  // is a normal subdirectory and stays as-is.
+  const wtMatch = cwd.match(/^(.*?)[\\/]\.wt[\\/][^\\/]+$/);
+  const groupingCwd = wtMatch ? wtMatch[1]! : cwd;
+  const folder = groupingCwd.split('/').filter(Boolean).pop()
+    || groupingCwd.split('\\').filter(Boolean).pop()
+    || '/';
   const groups: Record<string, AutoGroup> = { ...((prefs.tabGroups as Record<string, AutoGroup>) || {}) };
   let groupId = Object.keys(groups).find(gid => groups[gid]!.name === folder);
   if (!groupId) {
     groupId = randomUUID();
     const color = AUTOGROUP_COLORS[Object.keys(groups).length % AUTOGROUP_COLORS.length]!;
-    groups[groupId] = { id: groupId, name: folder, color, cwd };
+    groups[groupId] = { id: groupId, name: folder, color, cwd: groupingCwd };
   }
   map[sessionId] = groupId;
   updatePreferences({ tabGroups: groups, tabGroupMap: map });
@@ -1469,6 +1489,21 @@ const server = Bun.serve({
       return resp;
     }
 
+    // Restart = close the current provider (Claude/Codex/OpenCode) and
+    // re-spawn it with the same `claudeSessionId` so the conversation
+    // history is preserved. Exposed as a slash command and command
+    // palette action; UI reflects the transition via the existing
+    // `status: 'connected'` / `init_info` broadcasts from lifecycle.ts.
+    const restartMatch = url.pathname.match(/^\/sessions\/(.+)\/restart$/);
+    if (restartMatch && req.method === 'POST') {
+      const sid = restartMatch[1]!;
+      const remoteId = resolveSessionRemote(sid);
+      if (remoteId) return proxyHttpToRemote(req, remoteId);
+      const resp = await handleRestartSession(sid, server.port);
+      broadcastSessionList();
+      return resp;
+    }
+
     const clearMatch = url.pathname.match(/^\/sessions\/(.+)\/clear$/);
     if (clearMatch && req.method === 'POST') {
       const sid = clearMatch[1]!;
@@ -1731,11 +1766,17 @@ const server = Bun.serve({
     if (url.pathname === '/file-original' && req.method === 'GET') {
       const filePath = url.searchParams.get('path');
       if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+      // When `base` is given, diff against the merge-base of that branch and
+      // HEAD (so a "vs main" diff shows the branch's own changes); otherwise
+      // against the working tree's HEAD.
+      const base = url.searchParams.get('base');
       try {
         const cwd = dirname(filePath);
         const relPath = execSync(`git ls-files --full-name "${filePath}"`, { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
         if (!relPath) return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
-        const content = execSync(`git show HEAD:"${relPath}"`, { cwd, encoding: 'utf-8', timeout: 5000 });
+        let ref = 'HEAD';
+        if (base) ref = baseDiffRef(cwd, base) || 'HEAD';
+        const content = execSync(`git show ${JSON.stringify(ref)}:"${relPath}"`, { cwd, encoding: 'utf-8', timeout: 5000 });
         return Response.json({ path: filePath, content }, { headers: corsHeaders });
       } catch {
         return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
@@ -1745,7 +1786,7 @@ const server = Bun.serve({
     if (url.pathname === '/git-modified' && req.method === 'GET') {
       const root = url.searchParams.get('root');
       if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
-      return handleGitModified(root);
+      return handleGitModified(root, url.searchParams.get('base'));
     }
 
     if (url.pathname === '/git-stage' && req.method === 'POST') {

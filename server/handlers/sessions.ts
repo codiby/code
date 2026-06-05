@@ -11,6 +11,7 @@ import { killSessionLsp } from './lsp';
 import { DEFAULT_PROVIDER } from '../provider/registry';
 import { clearPendingDecisionsForSession } from '../provider/bridge';
 import { deleteSessionData, clearMessages } from '../storage';
+import { stopSessionWatcher } from '../watcher';
 import type { Session } from '../types';
 
 /** True when `cwd` matches the worktree convention `<repo-parent>/.wt/<branch>`
@@ -84,6 +85,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     claudeSessionId: null,
     browserWs: new Set(),
     providerSession: null,
+    providerSessionGen: 0,
     ready: false,
     status: 'open',
     runtimeStatus: 'starting',
@@ -155,6 +157,52 @@ export async function handleRenameSession(sessionId: string, req: Request): Prom
   return Response.json(sessionToJSON(session, PORT), { headers: corsHeaders });
 }
 
+export async function handleRestartSession(sessionId: string, port: number): Promise<Response> {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
+  }
+
+  // Tear down the current provider (if any). The bridge onExit for the
+  // old provider will fire asynchronously — it's now safe to clobber
+  // the new session state because `providerSessionGen` has been bumped
+  // (see lifecycle.ts + bridge.ts onExit), so the late exit will no-op.
+  if (session.providerSession) {
+    try { await session.providerSession.close(); } catch {}
+    session.providerSession = null;
+  }
+  // Resolve any pending permission prompts so nothing hangs while the
+  // new provider is starting.
+  clearPendingDecisionsForSession(sessionId, 'Session restarting');
+
+  // Kill LSP servers for this session — they're tied to the workspace
+  // contents and will be re-spawned lazily by getOrCreateLsp on next use.
+  killSessionLsp(sessionId);
+
+  // Intentionally NOT killing tracked terminal processes — those are the
+  // user's work (e.g. `> npm run dev`), not Claude's. The Claude process
+  // exiting doesn't affect them, and killing them on a restart would
+  // discard state the user cares about. Same for browser WebSocket
+  // previews: they're session-scoped and independent of the provider.
+
+  // Re-spawn the provider, passing the persisted `claudeSessionId` so
+  // the conversation history is preserved (the SDK uses it as the
+  // resume token). If the previous provider never finished initializing
+  // — i.e. we don't have a `claudeSessionId` yet — we start a fresh
+  // conversation.
+  if (session.claudeSessionId) {
+    log(`[${sessionId.slice(0,8)}] Restarting session with provider_session_id=${session.claudeSessionId}`);
+    session.replayDone = false;
+    startProviderSession(session, port, session.claudeSessionId);
+  } else {
+    log(`[${sessionId.slice(0,8)}] Restarting session (no provider_session_id, starting fresh)`);
+    session.replayDone = true;
+    startProviderSession(session, port);
+  }
+  saveSessions();
+  return Response.json(sessionToJSON(session, port), { headers: corsHeaders });
+}
+
 export async function handleStopSession(sessionId: string): Promise<Response> {
   const session = sessions.get(sessionId);
   if (!session) {
@@ -185,6 +233,9 @@ export async function handleStopSession(sessionId: string): Promise<Response> {
 
   // Kill LSP servers for this session
   killSessionLsp(sessionId);
+
+  // Tear down the workspace file watcher.
+  stopSessionWatcher(sessionId);
 
   session.ready = false;
   session.runtimeStatus = 'stopped';
@@ -247,6 +298,7 @@ export async function handleDeleteSession(
     try { ws.close(); } catch {}
   }
   killSessionLsp(sessionId);
+  stopSessionWatcher(sessionId);
   sessions.delete(sessionId);
   saveSessions();
 

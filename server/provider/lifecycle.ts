@@ -8,6 +8,7 @@ import { createBridgeEvents } from './bridge';
 import type { BridgeDeps } from './bridge';
 import { buildSessionSdkMcpServer } from './sdk-tools';
 import { loadPreferences } from '../storage';
+import { startSessionWatcher } from '../watcher';
 import type { Session } from '../types';
 import type { McpServerSpec, PermissionMode, SpawnOptions } from './types';
 
@@ -60,6 +61,14 @@ export function startProviderSession(session: Session, port: number, resumeSessi
 
   session.runtimeStatus = 'starting';
   session.ready = false;
+  // Bump the generation BEFORE creating the bridge so the bridge's
+  // captured `gen` reflects the new provider. A late-firing `onExit`
+  // from a previous provider (e.g. when the user restarts the session
+  // and the old Claude process takes a moment to die) will see a
+  // different `session.providerSessionGen` and skip its state
+  // mutations — preventing it from clobbering the new providerSession
+  // and runtimeStatus. See `createBridgeEvents` in bridge.ts.
+  session.providerSessionGen += 1;
   session.providerSession = adapter.spawn(opts, createBridgeEvents(session, bridgeDeps));
 
   // The claude CLI (via the SDK's stdin/stdout pipe) doesn't emit its `system
@@ -72,4 +81,11 @@ export function startProviderSession(session: Session, port: number, resumeSessi
   session.ready = true;
   bridgeDeps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'connected' });
   bridgeDeps.broadcastSessionList();
+
+  // Watch the session's workspace and stream file/folder changes to the
+  // frontend. Idempotent across restarts; skipped for remote sessions (their
+  // cwd lives on the remote host, not on this machine).
+  if (!session.remoteId) {
+    startSessionWatcher(session.id, session.cwd, bridgeDeps.broadcastToSession);
+  }
 }

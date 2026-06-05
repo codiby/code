@@ -26,6 +26,11 @@ export type BridgeDeps = {
 
 export function createBridgeEvents(session: Session, deps: BridgeDeps): ProviderEvents {
   const sid8 = session.id.slice(0, 8);
+  // Capture the generation of the provider we're bridging. If the session
+  // bumps this (via startProviderSession, e.g. on a restart) before our
+  // onExit fires, we'll know the exit is for a previous provider and skip
+  // the state mutations so they don't clobber the fresh one.
+  const gen = session.providerSessionGen;
 
   const commitText = (text: string, meta?: { model?: string; usage?: any; parentToolUseId?: string | null }) => {
     const trimmed = text.trim();
@@ -332,6 +337,14 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onExit(code) {
+      // A previous provider's exit arriving after a new one was spawned
+      // (typically the case for `handleRestartSession`, where we close
+      // and re-spawn in the same handler). Drop the stale state
+      // mutations so they don't clobber the new session.
+      if (session.providerSessionGen !== gen) {
+        log(`[${sid8}] Ignoring stale provider exit (gen ${gen} != current ${session.providerSessionGen})`);
+        return;
+      }
       log(`[${sid8}] Provider session exited with code ${code}`);
       session.ready = false;
       session.runtimeStatus = 'stopped';

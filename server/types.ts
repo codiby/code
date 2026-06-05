@@ -43,6 +43,13 @@ export type Session = {
   claudeSessionId: string | null;
   browserWs: Set<any>;
   providerSession: ProviderSession | null;
+  /** Bumped every time `startProviderSession` is called. The bridge
+   *  captures the current value when it subscribes; on `onExit` it
+   *  no-ops if the session's gen has moved on, which prevents a
+   *  late-firing exit for a previous provider (e.g. during a restart)
+   *  from clobbering the freshly-spawned one. In-memory only — like
+   *  `providerSession`, meaningless across server restarts. */
+  providerSessionGen: number;
   ready: boolean;
   /** UI lifecycle / visibility — persisted. */
   status: SessionStatus;

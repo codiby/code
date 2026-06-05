@@ -258,7 +258,7 @@ export interface SessionState {
    *  replaced when the next file opens unless pinned (double-click) or modified.
    *  `content` is the on-disk/last-saved baseline; live unsaved edits live in
    *  Monaco and a host-side buffer. UI-only — preserved across server merges. */
-  editorTabs: { path: string; content: string; line?: number; column?: number; dirty: boolean; preview: boolean; readOnly?: boolean }[];
+  editorTabs: { path: string; content: string; line?: number; column?: number; dirty: boolean; preview: boolean; readOnly?: boolean; deleted?: boolean }[];
   /** Path of the revealed editor tab, or null when none is open. */
   activeEditorPath: string | null;
   /** Unified "reveal this tab" signal for the PanelsWorkspace, shared by editor
@@ -283,6 +283,16 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'er
  *  via `notifyActiveTab` or a message arrives for it). Kept on the welcome
  *  message for telemetry / future use. */
 export type SpawnMode = 'app' | 'service';
+
+/** A single filesystem change reported by the server-side session watcher.
+ *  `path` is relative to the session cwd, POSIX-separated. Kept in lock-step
+ *  with `FileChange` in server/watcher.ts. */
+export type FileChangeKind = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
+export type FileChange = {
+  kind: FileChangeKind;
+  path: string;
+  isDir: boolean;
+};
 
 type ClientCallbacks = {
   onSessions: (sessions: SessionInfo[]) => void;
@@ -355,6 +365,10 @@ type ClientCallbacks = {
    *  it (e.g., `API_URL` for a web-renter shell). The frontend stores
    *  these to power the `env · N` badge in the terminals panel. */
   onTerminalEnvInjected?: (info: { sessionId: string; procId: string; env: Record<string, string> }) => void;
+  /** The server-side workspace watcher reported a batch of file/folder changes
+   *  for a session. Optional — viewers that don't surface file activity can
+   *  omit it. */
+  onFileChanges?: (sessionId: string, changes: FileChange[]) => void;
   onConnectionChange: (status: ConnectionStatus) => void;
 };
 
@@ -672,6 +686,9 @@ export class ClaudeClient {
           sessionId: msg.sessionId as string,
           procId: msg.procId as string,
         });
+        break;
+      case 'file_changes':
+        this.callbacks.onFileChanges?.(sessionId, (msg.changes as FileChange[]) || []);
         break;
       case 'terminal_env_injected':
         this.callbacks.onTerminalEnvInjected?.({
@@ -1068,8 +1085,9 @@ export class ClaudeClient {
     return { ok: false, error: data.error || `HTTP ${resp.status}` };
   }
 
-  async readFileOriginal(path: string): Promise<string> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-original?path=${encodeURIComponent(path)}`));
+  async readFileOriginal(path: string, base?: string | null): Promise<string> {
+    const baseParam = base ? `&base=${encodeURIComponent(base)}` : '';
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-original?path=${encodeURIComponent(path)}${baseParam}`));
     if (!resp.ok) return '';
     const data = await resp.json();
     return data.content || '';
@@ -1085,8 +1103,9 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async getGitModified(root: string): Promise<{ path: string; staged: boolean; untracked?: boolean }[]> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}`));
+  async getGitModified(root: string, base?: string | null): Promise<{ path: string; staged: boolean; untracked?: boolean }[]> {
+    const baseParam = base ? `&base=${encodeURIComponent(base)}` : '';
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}${baseParam}`));
     if (!resp.ok) return [];
     return resp.json();
   }

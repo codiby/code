@@ -4,9 +4,63 @@ import { resolve } from 'path';
 import { corsHeaders } from '../config';
 import { detectPackageManager } from './files';
 
-export function handleGitModified(root: string): Response {
+/** Pick a git ref that actually exists for `base`, trying the local branch then
+ *  `origin/<base>`. When HEAD is *on* the base branch, comparing to itself is
+ *  useless, so prefer the remote (`origin/<base>`) — that surfaces local commits
+ *  not yet pushed. Returns null when nothing resolves. */
+function resolveBaseRef(root: string, base: string): string | null {
+  let current = '';
+  try { current = execSync('git branch --show-current', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim(); } catch {}
+  const candidates = current && current === base
+    ? [`origin/${base}`, base]
+    : [base, `origin/${base}`];
+  for (const ref of candidates) {
+    try {
+      execSync(`git rev-parse --verify --quiet ${JSON.stringify(ref + '^{commit}')}`, { cwd: root, stdio: 'pipe', timeout: 5000 });
+      return ref;
+    } catch {}
+  }
+  return null;
+}
+
+/** The commit to diff against for a "vs <base>" comparison: the merge-base of
+ *  the resolved base ref and HEAD, so only what HEAD introduced shows up.
+ *  Returns null when the base can't be resolved. */
+export function baseDiffRef(root: string, base: string): string | null {
+  const ref = resolveBaseRef(root, base);
+  if (!ref) return null;
+  try {
+    return execSync(`git merge-base ${JSON.stringify(ref)} HEAD`, { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim() || ref;
+  } catch {
+    return ref;
+  }
+}
+
+export function handleGitModified(root: string, base?: string | null): Response {
   try {
     const gitTop = execSync('git rev-parse --show-toplevel', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim();
+
+    // "vs main" mode: every path that differs from the merge-base — committed
+    // on this branch plus anything uncommitted — rendered as one flat list.
+    if (base) {
+      const ref = baseDiffRef(root, base) || base;
+      let changed: string[] = [];
+      try {
+        changed = execSync(`git diff --name-only ${JSON.stringify(ref)}`, { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+      } catch {}
+      const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+      const untrackedSet = new Set(untracked.map(f => resolve(gitTop, f)));
+      const result: { path: string; staged: boolean; untracked?: boolean }[] = [];
+      const seen = new Set<string>();
+      for (const f of [...changed, ...untracked]) {
+        const p = resolve(gitTop, f);
+        if (!p.startsWith(root) || seen.has(p)) continue;
+        seen.add(p);
+        result.push({ path: p, staged: false, untracked: untrackedSet.has(p) || undefined });
+      }
+      return Response.json(result, { headers: corsHeaders });
+    }
+
     const unstaged = execSync('git diff --name-only', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
     const staged = execSync('git diff --name-only --cached', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
     const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);

@@ -53,6 +53,9 @@ export interface Tab {
   /** Italic "preview" tab (VSCode style): replaced when the next file opens,
    *  unless the user pins it (double-click) or modifies it. Host-managed. */
   preview?: boolean;
+  /** Strike-through title: the file backing this tab was deleted on disk. The
+   *  buffer is kept so the user can re-save (Cmd+S) to resurrect it. */
+  deleted?: boolean;
   /** Placement hint. Tabs sharing a zone land in the same panel; a new zone
    *  spawns a new panel split to the right of the existing tree. Defaults to
    *  'main'. Used to seed the chat-left / resources-right default layout. */

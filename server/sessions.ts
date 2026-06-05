@@ -78,6 +78,7 @@ export function loadSessions() {
         provider: p.provider || DEFAULT_PROVIDER,
         browserWs: new Set(),
         providerSession: null,
+        providerSessionGen: 0,
         ready: false,
         status,
         runtimeStatus: 'stopped',
@@ -106,6 +107,27 @@ export function touchSession(sessionId: string) {
   if (!s) return;
   s.updatedAt = Date.now();
   saveSessions();
+}
+
+// Local broadcaster injected by index.ts (avoids a circular import) so the
+// sidebar repaints when a session's status flips out from under the user.
+let broadcastSessionList: (() => void) | null = null;
+export function setStatusBroadcaster(fn: () => void) {
+  broadcastSessionList = fn;
+}
+
+/** If the session is archived, flip it back to `open` and repaint the
+ *  sidebar. Called when an archived conversation receives a new incoming
+ *  message so it resurfaces in the session list automatically. Returns true
+ *  if it actually un-archived (and thus already bumped `updatedAt` + persisted). */
+export function unarchiveSession(sessionId: string): boolean {
+  const s = sessions.get(sessionId);
+  if (!s || s.status !== 'archived') return false;
+  s.status = 'open';
+  s.updatedAt = Date.now();
+  saveSessions();
+  broadcastSessionList?.();
+  return true;
 }
 
 export function sessionToJSON(s: Session, port: number) {

@@ -116,6 +116,7 @@ function ensureMainSession(): Session {
       claudeSessionId: null,
       browserWs: new Set(),
       providerSession: null,
+      providerSessionGen: 0,
       ready: false,
       status: 'open',
       runtimeStatus: 'stopped',

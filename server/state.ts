@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'crypto';
 import { loadMessages, loadUIState, saveUIState, appendMessage } from './storage';
-import { touchSession } from './sessions';
+import { touchSession, unarchiveSession } from './sessions';
 import type { ProviderModelInfo } from './provider/types';
 
 export interface ChatMessage {
@@ -275,7 +275,12 @@ export function addMessage(sessionId: string, msg: ChatMessage): boolean {
   // (tool_use notifications + tool_results) — those spam Date.now() on
   // every Read/Bash/Edit and would otherwise drown out real exchanges.
   if (!msg.toolName && !msg.isToolResult) {
-    touchSession(sessionId);
+    // A new incoming user message should pull an archived session back into
+    // the list. unarchiveSession already bumps updatedAt + persists when it
+    // flips the status, so only fall back to a plain touch otherwise.
+    if (!(msg.role === 'user' && unarchiveSession(sessionId))) {
+      touchSession(sessionId);
+    }
   }
   return true;
 }

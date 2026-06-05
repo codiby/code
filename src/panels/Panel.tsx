@@ -52,7 +52,7 @@ function TabPill({
       title={tab.title}
     >
       {tab.icon && <span className="text-[11px] leading-none opacity-80">{tab.icon}</span>}
-      <span className={`truncate max-w-[160px] ${tab.preview ? 'italic' : ''}`}>{tab.title}</span>
+      <span className={`truncate max-w-[160px] ${tab.preview ? 'italic' : ''} ${tab.deleted ? 'line-through opacity-60' : ''}`}>{tab.title}</span>
       {tab.dirty && <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 shrink-0" />}
       {tab.closable !== false && (
         <span

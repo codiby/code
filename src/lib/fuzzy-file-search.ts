@@ -103,5 +103,29 @@ export function useFileIndex(client: ClaudeClient | null, rootPath: string | nul
     client.getFileIndex(rootPath).then(setFiles).catch(() => setFiles([]));
   }, [client, rootPath]);
 
+  // Keep the index live: when the session file watcher reports a structural
+  // change (a file/dir added or removed — content edits don't change the list),
+  // re-fetch the index so palettes reflect new/deleted files. Debounced so a
+  // burst (git checkout, install) triggers a single refetch. The server already
+  // invalidates its index cache on the same signal, so this gets fresh data.
+  useEffect(() => {
+    if (!client || !rootPath) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onChanges = (e: Event) => {
+      const detail = (e as CustomEvent<{ changes?: { kind: string }[] }>).detail;
+      const changes = detail?.changes;
+      if (!changes || !changes.some(c => c.kind !== 'change')) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        client.getFileIndex(rootPath).then(setFiles).catch(() => {});
+      }, 400);
+    };
+    window.addEventListener('file_changes', onChanges as EventListener);
+    return () => {
+      window.removeEventListener('file_changes', onChanges as EventListener);
+      if (timer) clearTimeout(timer);
+    };
+  }, [client, rootPath]);
+
   return files;
 }

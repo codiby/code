@@ -10,7 +10,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { corsHeaders } from './config';
 import { log } from './logger';
 import { sessions, sessionToJSON, saveSessions } from './sessions';
-import { handleCreateSession } from './handlers/sessions';
+import { handleCreateSession, handleRestartSession } from './handlers/sessions';
 import { addMessage, getSessionState } from './state';
 import type { ChatMessage } from './state';
 import { createWorktree } from './handlers/worktree';
@@ -344,6 +344,14 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'ui_restart_session',
+      description: 'Restart the current Codiby Code session — close the underlying Claude/Codex/OpenCode provider and re-spawn it with the same session id, preserving the conversation history. Use when the provider is in a bad state (stuck tool, broken connection, stale context) and a clean respawn is the cheapest fix. The user can trigger this themselves via `/restart`, the command palette, or the provider-chip context menu.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
+    {
       name: 'ui_post_system_note',
       description: "Post a non-model system note into the current session's chat log (separator-style). Use sparingly for status updates the user should see (e.g. \"Deployed commit abc123\"). Not visible to the model in future turns.",
       inputSchema: {
@@ -531,6 +539,11 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
               pullSource,
             });
             body.cwd = worktreeInfo.path;
+            // Hint the autogroup step about the *source* repo so the session
+            // lands under the parent repo's group instead of one named after
+            // the worktree branch. Mirrors what the HTTP route + frontend
+            // client already do (`group_cwd` in `claude-client.ts`).
+            body.group_cwd = cwd;
           } catch (err) {
             return { content: [{ type: 'text', text: `Failed to create worktree: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
           }
@@ -560,7 +573,13 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           map[data.id as string] = args!.group_id as string;
           _deps.updatePreferences({ tabGroupMap: map });
         } else if (typeof data.id === 'string' && typeof data.cwd === 'string') {
-          _deps.maybeAutoGroupSession(data.id, data.cwd);
+          // Prefer the explicit `group_cwd` hint (set when a worktree is
+          // created) over the session's actual cwd so the new tab joins the
+          // parent repo's group instead of one named after the worktree.
+          const groupingCwd = (typeof data.group_cwd === 'string' && data.group_cwd)
+            ? data.group_cwd
+            : data.cwd;
+          _deps.maybeAutoGroupSession(data.id, groupingCwd);
         }
         _deps.broadcastSessionList();
 
@@ -775,6 +794,18 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         saveSessions();
         _deps.broadcastSessionList();
         return { content: [{ type: 'text', text: `Renamed session from "${previous}" to "${next}".` }] };
+      }
+      case 'ui_restart_session': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        if (!sessions.has(uiSessionId)) return { content: [{ type: 'text', text: `Session ${uiSessionId} not found.` }], isError: true };
+        const resp = await handleRestartSession(uiSessionId, _deps.port);
+        _deps.broadcastSessionList();
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => `HTTP ${resp.status}`);
+          return { content: [{ type: 'text', text: `Restart failed: ${errText}` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: `Restarted session ${uiSessionId} — provider re-spawned with the same session id, conversation history preserved.` }] };
       }
       case 'ui_post_system_note': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

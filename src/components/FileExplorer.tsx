@@ -95,6 +95,15 @@ interface Props {
   onFileDiffFullView?: (path: string) => void;
   gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> };
   activeFilePath?: string | null;
+  /** Path of the file currently shown in the diff viewer — highlighted in the
+   *  Changes list so the user can see which change they're looking at. */
+  activeDiffPath?: string | null;
+  /** Changes comparison mode + its base branch, plus the setter for the
+   *  in-section toggle. 'vs-main' shows branch changes vs the base branch;
+   *  'uncommitted' shows the working-tree (staged/unstaged/untracked) view. */
+  changesCompare?: 'vs-main' | 'uncommitted';
+  onChangesCompareChange?: (mode: 'vs-main' | 'uncommitted') => void;
+  baseBranch?: string;
   activeSessionId: string | null;
   onOpenTerminal?: (command: string) => void;
   onStartReview?: () => void;
@@ -138,6 +147,9 @@ function getExtColor(name: string): string {
   const ext = name.split('.').pop()?.toLowerCase() || '';
   return EXT_COLORS[ext] || 'text-[#5e6068]';
 }
+
+// Desaturated amber for "modified" files — softer than tailwind's amber-400.
+const MODIFIED_COLOR = '#d6a85f';
 
 function NodeNameInput({
   initial, onCommit, onCancel, autoSelect,
@@ -309,20 +321,25 @@ function FileNode({ entry, depth, parentPath }: { entry: FileEntry; depth: numbe
   const isUnstaged = gitModified.unstaged.has(entry.path);
   const isUntracked = gitModified.untracked.has(entry.path);
   const isModified = isStaged || isUnstaged;
-  const color = isModified ? (isStaged ? 'text-green-400' : isUntracked ? 'text-green-400' : 'text-amber-400') : getExtColor(entry.name);
+  const greenish = isStaged || isUntracked;
+  // Plain "modified" (tracked, unstaged, not new) gets the softened amber via
+  // inline style; staged/untracked stay green; everything else keeps ext color.
+  const isPlainModified = isModified && !greenish;
+  const color = isModified ? (greenish ? 'text-green-400' : '') : getExtColor(entry.name);
   const isEditing = editingPath === entry.path;
   const isActive = activeFilePath === entry.path;
   const toneCls = isActive
-    ? (isModified ? (isStaged ? 'text-green-300' : isUntracked ? 'text-green-300' : 'text-amber-300') : 'text-white')
-    : (isModified ? (isStaged ? 'text-green-400/80' : isUntracked ? 'text-green-400/80' : 'text-amber-400/80') : 'text-[#8a8c93] hover:text-[#e6e7ea]');
+    ? (isModified ? (greenish ? 'text-green-300' : '') : 'text-white')
+    : (isModified ? (greenish ? 'text-green-400/80' : '') : 'text-[#8a8c93] hover:text-[#e6e7ea]');
+  const modStyle = isPlainModified ? { color: MODIFIED_COLOR } : undefined;
   return (
     <div
       className={`flex items-center gap-1 py-[2px] cursor-pointer transition-colors ${isActive ? 'bg-[#7c5cff22] hover:bg-[#7c5cff33]' : 'hover:bg-[#1f2025]'} ${toneCls}`}
-      style={{ paddingLeft: depth * 12 + 8 }}
+      style={{ paddingLeft: depth * 12 + 8, ...(modStyle || {}) }}
       onClick={isEditing ? undefined : () => onFileOpen(entry.path)}
       onContextMenu={e => { e.preventDefault(); openMenu(e, entry, parentPath); }}
     >
-      <span className={`w-3 flex items-center justify-center shrink-0 ${color}`}>
+      <span className={`w-3 flex items-center justify-center shrink-0 ${color}`} style={modStyle}>
         <FileIcon size={11} />
       </span>
       {isEditing ? (
@@ -339,12 +356,12 @@ function FileNode({ entry, depth, parentPath }: { entry: FileEntry; depth: numbe
   );
 }
 
-function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView, onStartReview, client, onRefresh }: { gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }; rootPath: string | null; onFileDiff: (path: string) => void; onFileDiffFullView?: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void }) {
+function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView, onStartReview, client, onRefresh, activeDiffPath, compareMode, onCompareModeChange, baseBranch }: { gitModified: { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }; rootPath: string | null; onFileDiff: (path: string) => void; onFileDiffFullView?: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void; activeDiffPath?: string | null; compareMode: 'vs-main' | 'uncommitted'; onCompareModeChange?: (mode: 'vs-main' | 'uncommitted') => void; baseBranch?: string }) {
   const [expanded, setExpanded] = useState(true);
+  const vsMain = compareMode === 'vs-main';
   const stagedFiles = [...gitModified.staged].sort();
   const unstagedFiles = [...gitModified.unstaged].sort();
   const totalCount = new Set([...stagedFiles, ...unstagedFiles]).size;
-  if (totalCount === 0) return null;
 
   const toggleStage = async (e: React.MouseEvent, filePath: string, isStaged: boolean) => {
     e.stopPropagation();
@@ -367,25 +384,30 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
       : filePath;
     const name = filePath.split('/').pop() || filePath;
     const isUntracked = gitModified.untracked.has(filePath);
-    const color = isStaged ? 'text-green-400' : isUntracked ? 'text-green-400' : 'text-amber-400';
+    const isActive = activeDiffPath === filePath;
+    const greenish = isStaged || isUntracked;
     const badge = isStaged ? 'S' : isUntracked ? 'U' : 'M';
+    const badgeColor = greenish ? 'text-green-400' : '';
     return (
       <div
         key={`${filePath}-${isStaged ? 's' : 'u'}`}
-        className={`flex items-center gap-1 py-[2px] px-2 ${color}/80 hover:bg-[#1f2025] cursor-pointer transition-colors group/file`}
+        className={`flex items-center gap-1 py-[2px] px-2 cursor-pointer transition-colors group/file ${isActive ? 'bg-[#7c5cff22] hover:bg-[#7c5cff33]' : 'hover:bg-[#1f2025]'}`}
+        style={greenish ? undefined : { color: MODIFIED_COLOR }}
         onClick={() => onFileDiff(filePath)}
         onDoubleClick={() => onFileDiffFullView?.(filePath)}
       >
-        <span className={`text-[10px] w-3 text-center shrink-0 ${color}`}>{badge}</span>
-        <span className="truncate text-[12px]">{name}</span>
+        <span className={`text-[10px] w-3 text-center shrink-0 ${badgeColor}`} style={greenish ? undefined : { color: MODIFIED_COLOR }}>{badge}</span>
+        <span className={`truncate text-[12px] ${greenish ? 'text-green-400/90' : ''}`}>{name}</span>
         <span className="text-[10px] text-[#5e6068] font-mono truncate ml-auto shrink-0 max-w-[45%] text-right">{rel}</span>
-        <span
-          className={`px-1 flex items-center transition-colors opacity-0 group-hover/file:opacity-100 shrink-0 ${isStaged ? 'text-[#5e6068] hover:text-red-400' : 'text-[#5e6068] hover:text-green-400'}`}
-          onClick={(e) => toggleStage(e, filePath, isStaged)}
-          title={isStaged ? 'Unstage file' : 'Stage file'}
-        >
-          {isStaged ? <Minus size={12} /> : <Plus size={12} />}
-        </span>
+        {!vsMain && (
+          <span
+            className={`px-1 flex items-center transition-colors opacity-0 group-hover/file:opacity-100 shrink-0 ${isStaged ? 'text-[#5e6068] hover:text-red-400' : 'text-[#5e6068] hover:text-green-400'}`}
+            onClick={(e) => toggleStage(e, filePath, isStaged)}
+            title={isStaged ? 'Unstage file' : 'Stage file'}
+          >
+            {isStaged ? <Minus size={12} /> : <Plus size={12} />}
+          </span>
+        )}
       </div>
     );
   };
@@ -402,7 +424,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <span className="text-[11px] font-semibold text-[#8a8c93] uppercase tracking-[1.2px]">Changes</span>
-        <span className="text-[10px] text-amber-400/70 ml-auto mr-1">{totalCount}</span>
+        <span className="text-[10px] ml-auto mr-1" style={{ color: MODIFIED_COLOR, opacity: 0.75 }}>{totalCount}</span>
         <span
           className="text-[#5e6068] hover:text-[#e6e7ea] px-1 flex items-center transition-colors opacity-0 group-hover:opacity-100"
           onClick={(e) => { e.stopPropagation(); onRefresh(); }}
@@ -410,7 +432,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
         >
           <RefreshCw size={12} />
         </span>
-        {unstagedFiles.length > 0 && (
+        {!vsMain && unstagedFiles.length > 0 && (
           <span
             className="text-[#5e6068] hover:text-green-400 px-1 flex items-center transition-colors opacity-0 group-hover:opacity-100"
             onClick={stageAll}
@@ -430,20 +452,46 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
         )}
       </Button>
       {expanded && (
-        <div className="pb-1 overflow-y-auto" style={{ maxHeight: '45vh' }}>
-          {stagedFiles.length > 0 && (
-            <div className="px-3 py-0.5">
-              <span className="text-[10px] text-green-400/60 uppercase tracking-wider">Staged</span>
+        <>
+          {/* Comparison mode: working-tree changes vs. everything this branch
+              changed relative to the base branch. */}
+          {onCompareModeChange && (
+            <div className="px-3 pb-1 flex items-center gap-1.5">
+              <select
+                value={compareMode}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => onCompareModeChange(e.target.value as 'vs-main' | 'uncommitted')}
+                className="bg-[#1f1f1f] text-[11px] text-[#c4c6cc] border border-[#2a2b30] rounded px-1.5 py-0.5 outline-none hover:border-[#3a3b40] focus:border-[#7c5cff] cursor-pointer"
+                title="Choose what to compare"
+              >
+                <option value="vs-main">vs {baseBranch || 'main'}</option>
+                <option value="uncommitted">Uncommitted</option>
+              </select>
             </div>
           )}
-          {stagedFiles.map(path => renderFile(path, true))}
-          {unstagedFiles.length > 0 && (
-            <div className="px-3 py-0.5 mt-0.5">
-              <span className="text-[10px] text-amber-400/60 uppercase tracking-wider">Changes</span>
+          {totalCount === 0 ? (
+            <div className="px-3 pb-2 text-[11px] text-[#5e6068]">
+              {vsMain ? `No changes vs ${baseBranch || 'main'}` : 'No uncommitted changes'}
+            </div>
+          ) : (
+            <div className="pb-1 overflow-y-auto" style={{ maxHeight: '45vh' }}>
+              {/* In vs-main mode everything is one flat list; in uncommitted
+                  mode keep the Staged / Changes split. */}
+              {!vsMain && stagedFiles.length > 0 && (
+                <div className="px-3 py-0.5">
+                  <span className="text-[10px] text-green-400/60 uppercase tracking-wider">Staged</span>
+                </div>
+              )}
+              {!vsMain && stagedFiles.map(path => renderFile(path, true))}
+              {!vsMain && unstagedFiles.length > 0 && (
+                <div className="px-3 py-0.5 mt-0.5">
+                  <span className="text-[10px] uppercase tracking-wider" style={{ color: MODIFIED_COLOR, opacity: 0.6 }}>Changes</span>
+                </div>
+              )}
+              {(vsMain ? [...stagedFiles, ...unstagedFiles].sort() : unstagedFiles).map(path => renderFile(path, false))}
             </div>
           )}
-          {unstagedFiles.map(path => renderFile(path, false))}
-        </div>
+        </>
       )}
     </div>
   );
@@ -1064,7 +1112,7 @@ function useSidebarWidth() {
   return [width, setAndPersist] as const;
 }
 
-export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
+export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onToggle, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeDiffPath, changesCompare, onChangesCompareChange, baseBranch, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>(() => (rootPath ? filesCache.get(rootPath) : null) || []);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const dragging = useRef(false);
@@ -1100,6 +1148,29 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
     dirRefreshListeners.add(fn);
     return () => { dirRefreshListeners.delete(fn); };
   }, [rootPath, fetchRoot]);
+
+  // Live tree updates from the session file watcher. Each structural change
+  // (add/remove of a file or dir — content edits don't change the listing)
+  // invalidates the parent directory's cache via refreshDir, which re-fetches
+  // any mounted DirNode (or root) and clears collapsed ones so they re-load
+  // fresh on next expand. Git status is refreshed too so the Changes section
+  // and per-file tints stay in sync.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionId: string; changes: { kind: string; path: string }[] }>).detail;
+      if (!detail || detail.sessionId !== activeSessionId || !rootPath) return;
+      const dirs = new Set<string>();
+      for (const c of detail.changes) {
+        if (c.kind === 'change') continue;
+        dirs.add(pathDirname(pathJoin(rootPath, c.path)));
+      }
+      if (dirs.size === 0) return;
+      dirs.forEach(d => refreshDir(d));
+      onRefreshGit?.();
+    };
+    window.addEventListener('file_changes', handler);
+    return () => window.removeEventListener('file_changes', handler);
+  }, [activeSessionId, rootPath, onRefreshGit]);
 
   const openMenu = useCallback((e: React.MouseEvent, entry: FileEntry, parentPath: string) => {
     setMenu({ entry, parentPath, x: e.clientX, y: e.clientY, confirmingDelete: false });
@@ -1263,7 +1334,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
         <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} />
 
         {/* Changes */}
-        <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} />
+        <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} baseBranch={baseBranch} />
 
         {/* Tools */}
         {/* Pull Requests */}
