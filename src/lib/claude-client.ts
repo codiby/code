@@ -1103,7 +1103,7 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async getGitModified(root: string, base?: string | null): Promise<{ path: string; staged: boolean; untracked?: boolean }[]> {
+  async getGitModified(root: string, base?: string | null): Promise<{ path: string; staged: boolean; untracked?: boolean; additions?: number; deletions?: number }[]> {
     const baseParam = base ? `&base=${encodeURIComponent(base)}` : '';
     const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}${baseParam}`));
     if (!resp.ok) return [];

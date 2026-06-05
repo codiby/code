@@ -5,7 +5,7 @@ import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndica
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
 import { Providers } from './Providers';
-import { FileExplorer } from './FileExplorer';
+import { FileExplorer, type GitModifiedState } from './FileExplorer';
 import { SessionTabStrip } from './SessionTabStrip';
 import { TabBar } from './TabBar';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
@@ -352,11 +352,15 @@ function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: Claude
   };
 
   return (
-    <aside className="w-60 border-r border-border bg-[#131418] flex flex-col shrink-0">
-      <div className="px-3 py-2 flex items-center justify-between border-b border-border shrink-0">
-        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Search</span>
-        <button className="text-zinc-600 hover:text-zinc-300 text-sm" onClick={onClose}>&#x2715;</button>
+    <div className="rounded-[11px] border border-[#1e1f24] bg-[#141519] overflow-hidden flex-1 flex flex-col min-h-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_1px_2px_rgba(0,0,0,0.25)]">
+      <div className="flex items-center gap-[9px] h-[34px] px-[11px] shrink-0">
+        <span className="flex w-[15px] h-[15px] items-center justify-center shrink-0 text-[#7c5cff]">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        </span>
+        <span className="text-[10.5px] font-semibold tracking-[0.07em] uppercase text-[#9aa0a8]">Search</span>
+        <button className="ml-auto w-[22px] h-[22px] rounded-[6px] flex items-center justify-center text-[#4f525a] hover:text-[#9aa0a8] hover:bg-[#191a1f] transition-colors" onClick={onClose} aria-label="Close search">&#x2715;</button>
       </div>
+      <div className="h-px mx-[11px] bg-[linear-gradient(90deg,transparent,#26272d_12%,#26272d_88%,transparent)]" />
       <div className="px-2 py-2 border-b border-border shrink-0 space-y-1.5">
         <div className="relative">
           <input
@@ -419,7 +423,7 @@ function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: Claude
           );
         })}
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -892,6 +896,20 @@ export function ChatApp() {
   // closures) but portaled into this host, which sits below the panels and
   // spans the full content width — VSCode-style, outside the file panels.
   const [termDockHost, setTermDockHost] = useState<HTMLDivElement | null>(null);
+  /** Whether keyboard focus is inside the terminals dock — drives the same
+   *  blue focus ring the workspace panels use. Tracked via a capture-phase
+   *  pointer/focus listener since the xterm canvas doesn't bubble React focus. */
+  const [terminalsFocused, setTerminalsFocused] = useState(false);
+  useEffect(() => {
+    if (!termDockHost) return;
+    const onDown = (e: Event) => setTerminalsFocused(termDockHost.contains(e.target as Node));
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('focusin', onDown, true);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('focusin', onDown, true);
+    };
+  }, [termDockHost]);
   /** Maximize toggles the panel height between the default ~340px and a
    *  much taller 70vh — handy when watching a noisy dev server. */
   const [terminalsPanelMaximized, setTerminalsPanelMaximized] = useState<boolean>(false);
@@ -965,7 +983,9 @@ export function ChatApp() {
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
-  const [sidebarView, setSidebarView] = useState<'explorer' | 'search' | 'plugins'>('explorer');
+  // Search-as-a-card: when true the FileExplorer panel swaps its cards for the
+  // search card. Driven from here so ⌘⇧F can toggle it.
+  const [searchActive, setSearchActive] = useState(false);
   const [projectSettings, setProjectSettings] = useState<{ open: boolean; sectionId?: string }>({ open: false });
   // Tracks whether a plugin's <PluginDetailView /> is currently visible. Updated
   // from the codiby-code:linked-item-changed event so the right panel can claim space.
@@ -975,8 +995,8 @@ export function ChatApp() {
   const [sessionPrs, setSessionPrs] = useState<{ number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[]>([]);
   const [openPR, setOpenPR] = useState<PRInfo | null>(null);
 
-  const gitModifiedCacheRef = useRef<Record<string, { staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>>({});
-  const [gitModified, setGitModified] = useState<{ staged: Set<string>; unstaged: Set<string>; untracked: Set<string> }>({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
+  const gitModifiedCacheRef = useRef<Record<string, GitModifiedState>>({});
+  const [gitModified, setGitModified] = useState<GitModifiedState>({ staged: new Set(), unstaged: new Set(), untracked: new Set(), stats: new Map() });
   // Changes-section comparison mode: 'vs-main' lists everything this branch
   // changed relative to the base branch (merge-base); 'uncommitted' is the
   // classic staged/unstaged/untracked working-tree view. The resolved base
@@ -1338,6 +1358,13 @@ export function ChatApp() {
                 // so the spread of `state` would otherwise wipe them every
                 // time we re-subscribe — e.g. switching to another tab and
                 // back).
+                // Pasted-but-unsent screenshots and queued messages are UI-only
+                // (the server doesn't track them), so the `...state` spread would
+                // otherwise wipe them whenever a session_state lands between paste
+                // and send — which is exactly what happens on a fresh session's
+                // first message as the provider boots.
+                pastedImages: existing?.pastedImages ?? [],
+                pendingMessages: existing?.pendingMessages ?? [],
                 editorTabs: existing?.editorTabs ?? [],
                 activeEditorPath: existing?.activeEditorPath ?? null,
                 panelFocusTabId: existing?.panelFocusTabId ?? null,
@@ -3004,12 +3031,16 @@ export function ChatApp() {
     const staged = new Set<string>();
     const unstaged = new Set<string>();
     const untracked = new Set<string>();
+    const stats = new Map<string, { additions: number; deletions: number }>();
     for (const e of entries) {
       if (e.staged) staged.add(e.path);
       else unstaged.add(e.path);
       if (e.untracked) untracked.add(e.path);
+      if (e.additions != null || e.deletions != null) {
+        stats.set(e.path, { additions: e.additions ?? 0, deletions: e.deletions ?? 0 });
+      }
     }
-    const result = { staged, unstaged, untracked };
+    const result = { staged, unstaged, untracked, stats };
     gitModifiedCacheRef.current[root] = result;
     // Only apply if still on the same root
     if (explorerRootRef.current === root) setGitModified(result);
@@ -3242,7 +3273,7 @@ export function ChatApp() {
         case 'f':
           if (e.shiftKey) {
             e.preventDefault();
-            setSidebarView('search');
+            setSearchActive(true);
             setExplorerCollapsed(false);
           }
           break;
@@ -3504,9 +3535,9 @@ export function ChatApp() {
     if (explorerRoot) {
       const cached = gitModifiedCacheRef.current[explorerRoot];
       if (cached) setGitModified(cached);
-      else setGitModified({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
+      else setGitModified({ staged: new Set(), unstaged: new Set(), untracked: new Set(), stats: new Map() });
     } else {
-      setGitModified({ staged: new Set(), unstaged: new Set(), untracked: new Set() });
+      setGitModified({ staged: new Set(), unstaged: new Set(), untracked: new Set(), stats: new Map() });
     }
     refreshGitModified();
   }, [explorerRoot, refreshGitModified]);
@@ -4799,7 +4830,16 @@ export function ChatApp() {
             </div>
           )}
 
-          {/* Right: layout-mode pill (clickable — opt out of drag) */}
+          {/* Right: settings + layout-mode pill (clickable — opt out of drag) */}
+          <button
+            onClick={() => setProjectSettings(prev => ({ open: !prev.open }))}
+            title="Settings"
+            aria-label="Settings"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            className={`mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border transition-colors ${projectSettings.open ? 'text-zinc-100 ring-1 ring-border-light' : 'text-zinc-500 hover:text-zinc-300'}`}
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
+          </button>
           <div
             className={`${IS_MAC ? 'mr-3' : 'mr-36'} flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5`}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -4923,50 +4963,9 @@ export function ChatApp() {
               onToggleCollapsed={toggleTabsCollapsed}
             />
           )}
-          {/* Activity Bar */}
-          <div className="w-10 bg-[#131418] border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
-            <button
-              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'explorer' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
-              onClick={() => { if (sidebarView === 'explorer' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('explorer'); setExplorerCollapsed(false); } }}
-              title="Explorer (Cmd+B)"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V9C21 7.89543 20.1046 7 19 7H13L11 5H5C3.89543 5 3 5.89543 3 7Z" /></svg>
-            </button>
-            <button
-              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'search' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
-              onClick={() => { if (sidebarView === 'search' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('search'); setExplorerCollapsed(false); } }}
-              title="Search (Cmd+Shift+F)"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="7" /><path d="M16 16L21 21" strokeLinecap="round" /></svg>
-            </button>
-            <button
-              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${sidebarView === 'plugins' && !explorerCollapsed ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
-              onClick={() => { if (sidebarView === 'plugins' && !explorerCollapsed) setExplorerCollapsed(true); else { setSidebarView('plugins'); setExplorerCollapsed(false); } }}
-              title="Plugins"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></svg>
-            </button>
-            {rightPanelVisible && editorFullWidth && (
-              <button
-                className="w-8 h-8 flex items-center justify-center rounded-md transition-colors text-violet-400 hover:text-violet-300 bg-violet-500/10 hover:bg-violet-500/20"
-                onClick={() => { if (activeId) updateLocalState(activeId, s => ({ ...s, editorFullWidth: false })); }}
-                title="Show Chat"
-              >
-                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              </button>
-            )}
-            <div className="flex-1" />
-            <button
-              className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors ${projectSettings.open ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-300'}`}
-              onClick={() => setProjectSettings(prev => ({ open: !prev.open }))}
-              title="Settings"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
-            </button>
-          </div>
-
-          {/* Side Panel: Explorer or Search */}
-          {activeId && sidebarView === 'explorer' && (
+          {/* Side Panel: Explorer (cards) — Search now lives inside it as a card,
+              Settings moved to the titlebar, the old Activity Bar is gone. */}
+          {activeId && (
           <FileExplorer
             client={client}
             rootPath={explorerRoot}
@@ -4990,27 +4989,13 @@ export function ChatApp() {
             onRefreshGit={refreshGitModified}
             tools={active.initInfo?.tools}
             sessionName={activeSession?.name}
+            searchActive={searchActive}
+            onSearchActiveChange={setSearchActive}
+            renderSearchCard={(onClose) => (
+              <SearchPanel client={client} rootPath={explorerRoot} onFileOpen={handleFileOpen} onClose={onClose} />
+            )}
           />
           )}
-
-          {/* Search Panel */}
-          {activeId && sidebarView === 'search' && !explorerCollapsed && (
-            <SearchPanel client={client} rootPath={explorerRoot} onFileOpen={handleFileOpen} onClose={() => setExplorerCollapsed(true)} />
-          )}
-
-          {/* Plugin sidebar panels — populated by sideloaded plugins */}
-          {sidebarView === 'plugins' && !explorerCollapsed && (
-            <div className="h-full flex flex-col bg-surface border-r border-border" style={{ width: 280 }}>
-              <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Plugins</span>
-                <button onClick={() => setExplorerCollapsed(true)} className="text-zinc-600 hover:text-zinc-300 text-sm">×</button>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                <PluginSidebarPanels />
-              </div>
-            </div>
-          )}
-
 
           <div className="flex-1 flex flex-col min-w-0">
             {!activeId ? (
@@ -5216,7 +5201,7 @@ export function ChatApp() {
                     if (!terminalsPanelExpanded) {
                       return (
                         <div
-                          className="order-last shrink-0 border-t border-border bg-surface/40 px-3 py-1.5 flex items-center gap-2.5 transition-colors"
+                          className={`order-last shrink-0 mx-1.5 mb-1.5 rounded-[12px] border ${terminalsFocused ? 'border-blue-500/60' : 'border-[#2a2b30]'} bg-[image:linear-gradient(180deg,#141519,#101113)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_6px_18px_rgba(0,0,0,0.3)] px-3 py-1.5 flex items-center gap-2.5 transition-colors`}
                           title={hasShells ? 'Expand Terminals panel' : 'No terminals yet'}
                         >
                           <button
@@ -5303,19 +5288,20 @@ export function ChatApp() {
                     };
                     return (
                       <div
-                        className="order-last shrink-0 border-t border-border bg-base flex flex-col relative"
+                        className={`order-last shrink-0 mx-1.5 mb-1.5 rounded-[12px] border ${terminalsFocused ? 'border-blue-500/60' : 'border-[#2a2b30]'} bg-base overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_6px_18px_rgba(0,0,0,0.3)] flex flex-col relative transition-colors`}
                         style={{ height: terminalsPanelMaximized ? '70vh' : terminalsPanelHeight }}
                       >
-                        {/* Drag handle — 6px-tall hit zone at the top edge.
-                            Visually a 2px line on hover, dims back when idle. */}
+                        {/* Drag handle — 6px-tall hit zone pinned just inside the
+                            top edge (kept inside so the rounded card's overflow
+                            clip doesn't swallow it). 2px line on hover. */}
                         <div
                           onMouseDown={startResize}
                           onDoubleClick={() => setTerminalsPanelHeight(340)}
                           title="Drag to resize · double-click to reset"
-                          className="absolute top-0 left-0 right-0 h-1.5 -translate-y-[3px] z-20 cursor-row-resize group"
+                          className="absolute top-0 left-0 right-0 h-1.5 z-20 cursor-row-resize group"
                           style={{ touchAction: 'none' }}
                         >
-                          <div className={`absolute inset-x-0 top-[3px] h-[2px] transition-colors ${panelResizing ? 'bg-violet-500' : 'bg-transparent group-hover:bg-violet-500/60'}`} />
+                          <div className={`absolute inset-x-0 top-0 h-[2px] transition-colors ${panelResizing ? 'bg-violet-500' : 'bg-transparent group-hover:bg-violet-500/60'}`} />
                         </div>
                         {/* Fullscreen overlay during resize so xterm / iframes
                             don't swallow the mousemove. */}
@@ -6148,6 +6134,7 @@ export function ChatApp() {
                       renderTab={renderPanelTab}
                       onCloseTab={closePanelTab}
                       activeTabRequest={panelFocusReq}
+                      suppressFocus={terminalsFocused}
                       onTabDoubleClick={(tabId) => {
                         if (activeId && tabId.startsWith('editor:')) pinEditor(activeId, tabId.slice('editor:'.length));
                       }}

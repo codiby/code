@@ -36,6 +36,29 @@ export function baseDiffRef(root: string, base: string): string | null {
   }
 }
 
+/** Per-file added/deleted line counts from `git diff --numstat <args>`, keyed by
+ *  repo-root-relative path. Binary files report `-` and map to 0/0. */
+function numstatMap(root: string, args: string): Map<string, { additions: number; deletions: number }> {
+  const m = new Map<string, { additions: number; deletions: number }>();
+  try {
+    const out = execSync(`git diff --numstat ${args}`.trim(), { cwd: root, encoding: 'utf-8', timeout: 5000 });
+    for (const line of out.split('\n')) {
+      if (!line) continue;
+      const parts = line.split('\t');
+      if (parts.length < 3) continue;
+      const [a, d, ...rest] = parts;
+      const path = rest.join('\t');
+      m.set(path, {
+        additions: a === '-' ? 0 : (parseInt(a, 10) || 0),
+        deletions: d === '-' ? 0 : (parseInt(d, 10) || 0),
+      });
+    }
+  } catch {}
+  return m;
+}
+
+type ModifiedFile = { path: string; staged: boolean; untracked?: boolean; additions?: number; deletions?: number };
+
 export function handleGitModified(root: string, base?: string | null): Response {
   try {
     const gitTop = execSync('git rev-parse --show-toplevel', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim();
@@ -48,15 +71,17 @@ export function handleGitModified(root: string, base?: string | null): Response 
       try {
         changed = execSync(`git diff --name-only ${JSON.stringify(ref)}`, { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
       } catch {}
+      const stats = numstatMap(root, JSON.stringify(ref));
       const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
       const untrackedSet = new Set(untracked.map(f => resolve(gitTop, f)));
-      const result: { path: string; staged: boolean; untracked?: boolean }[] = [];
+      const result: ModifiedFile[] = [];
       const seen = new Set<string>();
       for (const f of [...changed, ...untracked]) {
         const p = resolve(gitTop, f);
         if (!p.startsWith(root) || seen.has(p)) continue;
         seen.add(p);
-        result.push({ path: p, staged: false, untracked: untrackedSet.has(p) || undefined });
+        const st = stats.get(f);
+        result.push({ path: p, staged: false, untracked: untrackedSet.has(p) || undefined, additions: st?.additions, deletions: st?.deletions });
       }
       return Response.json(result, { headers: corsHeaders });
     }
@@ -65,7 +90,10 @@ export function handleGitModified(root: string, base?: string | null): Response 
     const staged = execSync('git diff --name-only --cached', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
     const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
 
-    const result: { path: string; staged: boolean; untracked?: boolean }[] = [];
+    const stagedStats = numstatMap(root, '--cached');
+    const unstagedStats = numstatMap(root, '');
+
+    const result: ModifiedFile[] = [];
     const stagedSet = new Set<string>();
     const untrackedSet = new Set(untracked.map(f => resolve(gitTop, f)));
 
@@ -73,7 +101,8 @@ export function handleGitModified(root: string, base?: string | null): Response 
       const p = resolve(gitTop, f);
       if (!p.startsWith(root)) continue;
       stagedSet.add(p);
-      result.push({ path: p, staged: true });
+      const st = stagedStats.get(f);
+      result.push({ path: p, staged: true, additions: st?.additions, deletions: st?.deletions });
     }
     // Files with unstaged changes (including those also staged — shown in both sections)
     const unstagedSeen = new Set<string>();
@@ -81,7 +110,8 @@ export function handleGitModified(root: string, base?: string | null): Response 
       const p = resolve(gitTop, f);
       if (!p.startsWith(root) || unstagedSeen.has(p)) continue;
       unstagedSeen.add(p);
-      result.push({ path: p, staged: false, untracked: untrackedSet.has(p) || undefined });
+      const st = unstagedStats.get(f);
+      result.push({ path: p, staged: false, untracked: untrackedSet.has(p) || undefined, additions: st?.additions, deletions: st?.deletions });
     }
 
     return Response.json(result, { headers: corsHeaders });
