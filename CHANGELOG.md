@@ -5,6 +5,44 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] — 2026-06-05
+
+### Added
+
+- **The file sidebar is now a column of cards.** Processes, Changes, Pull
+  Requests, Tools, and Files each live in their own independent, collapsible
+  card. A compact icon rail sits at the top — one shortcut per visible card
+  (with live counts) plus a collapse toggle that folds the whole panel down to
+  a slim strip, leaving just that button.
+- **Per-file diff counts in Changes.** Every entry shows its added/removed line
+  totals (`+48 −6`) from `git numstat`, with a footer summarizing the whole set
+  (`12 files · +387 −132`). The Changes card is also vertically resizable —
+  drag the grip to grow or shrink the list, and the size sticks.
+- **Search as a card.** Hitting the rail's search icon (or `Cmd+Shift+F`) swaps
+  the cards for an in-panel search card; closing it brings them back.
+- **Focus ring follows the terminal.** The blue focus border now moves between
+  the chat and the terminals dock depending on where you're working, instead of
+  staying pinned to the chat.
+
+### Changed
+
+- **A more professional card design.** Flat surfaces, hairline borders, and
+  minimal shadow replace the heavy drop-shadow look. Headers are quieter — a
+  thin line-glyph in the accent color, restrained typography, and a calm count
+  in place of the bright candy-dot pill.
+- **Settings moved to the title bar.** The gear now sits next to the layout
+  switcher; the old vertical activity bar is gone.
+- **Compare against the base branch.** The Changes panel gains a segmented
+  "Uncommitted / vs &lt;base&gt;" toggle that lists everything the branch
+  introduced relative to its merge-base, not just working-tree edits.
+- **The terminals dock is a rounded minicard** in both its collapsed and
+  expanded states, aligned to the panel edges.
+
+### Removed
+
+- **Plugins sidebar panel.** The plugins entry point was retired along with the
+  activity bar.
+
 ## [0.17.0] — 2026-06-03
 
 ### Added
