@@ -43,6 +43,7 @@ import {
   handleDialog as cdpHandleDialog,
 } from './cdp';
 import { pluginOauthLogin, type OAuthSpec } from './plugin_oauth';
+import { registerUpdaterIpc, startUpdateChecks } from './updater';
 
 const DEV = process.env.ELECTRON_DEV === '1' || !app.isPackaged;
 const DEV_URL = process.env.CODIBY_DEV_URL || 'http://localhost:3111';
@@ -254,6 +255,9 @@ function registerIpcHandlers(): void {
     await pluginOauthLogin(args.spec, getBridgePort);
   });
 
+  // --- auto-update ----------------------------------------------------------
+  registerUpdaterIpc(() => mainWindow);
+
   // --- notifications (Web Notification API uses this under the hood) -------
   // No handler needed — Electron exposes `new Notification(...)` to the
   // renderer natively. Kept here as a note: don't re-implement; just call the
@@ -272,6 +276,9 @@ app.whenReady().then(async () => {
   registerIpcHandlers();
 
   await loadInitialUrl(mainWindow);
+
+  // Begin polling GitHub releases (packaged macOS builds only).
+  startUpdateChecks(() => mainWindow);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

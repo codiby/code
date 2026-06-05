@@ -57,6 +57,19 @@ contextBridge.exposeInMainWorld('codiby', {
   },
 
   /**
+   * Subscribe to auto-update lifecycle events emitted by the main process
+   * (`available` | `progress` | `installing` | `error`). Returns an unlisten fn.
+   * Wired by `src/components/UpdateBanner.tsx`.
+   */
+  onUpdateEvent(
+    cb: (msg: { type: string; info?: unknown; progress?: number; message?: string }) => void,
+  ): () => void {
+    const handler = (_e: unknown, msg: { type: string; info?: unknown; progress?: number; message?: string }) => cb(msg);
+    ipcRenderer.on('update-event', handler);
+    return () => ipcRenderer.removeListener('update-event', handler);
+  },
+
+  /**
    * Current zoom factor of the host webContents. `BrowserView.setBounds()`
    * takes window-content DIPs while `getBoundingClientRect()` in the renderer
    * returns CSS pixels — these diverge when the user hits Cmd+=/Cmd+-. The

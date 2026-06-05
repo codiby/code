@@ -14,10 +14,19 @@ type BrowserPreviewEventName =
 
 export type RelayPayload = { label: string; payload: string | null };
 
+export type UpdateInfo = { version: string; notes: string; assetUrl: string; assetName: string };
+export type UpdateEvent = {
+  type: 'available' | 'progress' | 'installing' | 'error';
+  info?: UpdateInfo;
+  progress?: number;
+  message?: string;
+};
+
 export interface CodibyNative {
   invoke<T = unknown>(cmd: string, args?: unknown): Promise<T>;
   onBrowserPreviewEvent(name: BrowserPreviewEventName, cb: (p: RelayPayload) => void): Unlisten;
   onCdpRequest(cb: (req: { requestId: string; action: string; args: unknown }) => void): Unlisten;
+  onUpdateEvent(cb: (msg: UpdateEvent) => void): Unlisten;
   /** Host webContents zoom factor (1.0 = no zoom). Sync, no IPC. */
   getZoomFactor(): number;
 }

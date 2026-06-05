@@ -86,6 +86,10 @@
         "to": "scripts/codiby"
       },
       {
+        "from": "scripts/electron-install-update.sh",
+        "to": "scripts/electron-install-update.sh"
+      },
+      {
         "from": "dist",
         "to": "dist"
       }
