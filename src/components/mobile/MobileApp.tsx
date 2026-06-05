@@ -787,10 +787,12 @@ export function MobileApp() {
     for (const [id, r] of Object.entries(runtime)) out[id] = !!r.permRequest;
     return out;
   }, [runtime]);
-  // Per-session "last user/assistant message at" timestamp — used to order
-  // sessions by recency in the home list (mirrors desktop's TabBar). Tool
-  // notifications, results and system notes are skipped so the order doesn't
-  // jump around as Claude streams Read/Bash/Edit chatter mid-turn.
+  // Per-session "last activity at" timestamp — used to order sessions by
+  // recency in the home list (mirrors desktop's TabBar). Tool use / tool
+  // results DO count: a session mid-agentic-run (streaming Read/Bash/Edit) is
+  // genuinely the most recently active, and skipping its tool chatter used to
+  // freeze its "last time" until a final text reply landed. Only system notes
+  // (terminal/mockup bookkeeping) are skipped — those aren't the agent talking.
   const sessionLastMessageAt = useMemo(() => {
     const out: Record<string, number> = {};
     for (const s of sessions) {
@@ -801,8 +803,6 @@ export function MobileApp() {
         const m = msgs[i];
         if (!m) continue;
         if (m.role === 'system') continue;
-        if (m.toolName) continue;
-        if (m.isToolResult) continue;
         const t = m.timestamp;
         if (typeof t === 'number' && t > last) { last = t; break; }
       }
