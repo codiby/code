@@ -5,6 +5,16 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] — 2026-06-05
+
+### Added
+
+- **Automatic updates from GitHub releases.** The app checks for a newer
+  release on launch and every few hours. When one is available, a banner offers
+  to update: it downloads the matching `.dmg`, shows a native authentication
+  prompt, then quits, swaps the bundle in `/Applications`, and relaunches —
+  back on the new version in one click.
+
 ## [0.18.0] — 2026-06-05
 
 ### Added
