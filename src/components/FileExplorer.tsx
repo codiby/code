@@ -1595,7 +1595,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   return (
     <ExplorerCtx.Provider value={ctxValue}>
       <aside
-        className={`relative bg-[#0e0f12] flex flex-col shrink-0 min-h-0 overflow-hidden ${collapsed ? 'w-0' : ''}`}
+        className={`relative bg-[#0e0f12] flex flex-col shrink-0 min-h-0 overflow-hidden select-none ${collapsed ? 'w-0' : ''}`}
         style={collapsed ? undefined : { width: cardsCollapsed ? 50 : sidebarWidth }}
       >
         {/* Resize handle (hidden while collapsed — width is fixed) */}
