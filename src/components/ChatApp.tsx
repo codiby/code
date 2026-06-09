@@ -1841,6 +1841,26 @@ export function ChatApp() {
     return () => window.removeEventListener('codiby-code:linked-item-changed', handler as EventListener);
   }, []);
 
+  // Reopen a mockup from its chat bubble's "Open in preview" bar. The bubble
+  // can't reach the per-session state, so it fires this event; we route it to
+  // the active session (the only one whose chat is visible).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ev = e as CustomEvent<{ name: string; html: string }>;
+      if (!activeId || !ev.detail?.name || ev.detail.html == null) return;
+      const { name, html } = ev.detail;
+      updateLocalState(activeId, s => ({
+        ...s,
+        openMockup: { name, html },
+        lastMockup: { name, html },
+        openTerminalId: null,
+        diffView: null,
+      }));
+    };
+    window.addEventListener('codiby-code:open-mockup', handler as EventListener);
+    return () => window.removeEventListener('codiby-code:open-mockup', handler as EventListener);
+  }, [activeId, updateLocalState]);
+
   // Close PR dropdown on outside click + fetch PRs when opened
   useEffect(() => {
     if (!showPrDropdown) return;
@@ -1858,6 +1878,9 @@ export function ChatApp() {
   // user is already there. If they scrolled up to read history, leave them
   // alone — the floating "scroll to latest" button below re-engages the pin.
   const stickToBottomRef = useRef(true);
+  // Last scroll offset, mirrored on every scroll so we can re-apply it after
+  // the chat pane remounts (e.g. when a right-panel tab opens/closes).
+  const lastScrollTopRef = useRef(0);
   const [showScrollDown, setShowScrollDown] = useState(false);
 
   const scrollToBottom = useCallback(() => {
@@ -1872,8 +1895,23 @@ export function ChatApp() {
     const el = scrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    lastScrollTopRef.current = el.scrollTop;
     stickToBottomRef.current = distanceFromBottom < 80;
     setShowScrollDown(distanceFromBottom > 200);
+  }, []);
+
+  // Callback ref for the active session's scroll container. The PanelsWorkspace
+  // engine remounts this subtree whenever a right-panel tab opens/closes (the
+  // layout tree flips between a single panel and a split), which would reset
+  // the scroll to the top. Restoring here — at attach time, after children are
+  // committed so scrollHeight is valid — survives those remounts: snap to the
+  // latest message if the user was pinned to the bottom, else re-apply their
+  // last offset. useCallback keeps the ref stable so it only fires on real
+  // (un)mounts, not every render.
+  const attachScrollRef = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node;
+    if (!node) return;
+    node.scrollTop = stickToBottomRef.current ? node.scrollHeight : lastScrollTopRef.current;
   }, []);
 
   const handleOpenTerminal = useCallback((id: string) => {
@@ -1993,6 +2031,7 @@ export function ChatApp() {
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [activeId, active.messages.length, active.partialText, active.partialThinking]);
+
 
   // The composer textarea autosizes via inline `style.height` set in its
   // onInput handler. Clearing the value programmatically (after send, /clear,
@@ -4175,7 +4214,7 @@ export function ChatApp() {
     const isActiveSession = sid === activeId;
     return (
       <div
-        ref={isActiveSession ? scrollRef : undefined}
+        ref={isActiveSession ? attachScrollRef : undefined}
         onScroll={isActiveSession ? handleMessagesScroll : undefined}
         style={accent && tintChatBackground ? { backgroundColor: `${accent}0d` } : undefined}
         className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1"
@@ -4670,38 +4709,6 @@ export function ChatApp() {
                 )}
               </div>
 
-              {active.lastMockup && (
-                <button
-                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] border transition-colors ${
-                    active.openMockup
-                      ? 'bg-violet-500/15 text-violet-300 border-violet-500/30 hover:bg-violet-500/25'
-                      : 'bg-surface-light text-zinc-400 border-border hover:text-violet-300 hover:border-violet-500/30'
-                  }`}
-                  onClick={() => {
-                    if (!activeId) return;
-                    updateLocalState(activeId, s => {
-                      if (s.openMockup) return { ...s, openMockup: null, editorFullWidth: false };
-                      if (!s.lastMockup) return s;
-                      return {
-                        ...s,
-                        openMockup: s.lastMockup,
-                        openTerminalId: null,
-                        diffView: null,
-                      };
-                    });
-                  }}
-                  title={active.openMockup ? `Hide mockup "${active.lastMockup.name}"` : `Reopen mockup "${active.lastMockup.name}"`}
-                >
-                  <span className="text-[10px]">▣</span>
-                  <span className="truncate max-w-[12rem]">{active.lastMockup.name}</span>
-                </button>
-              )}
-
-              {active.initInfo?.cwd && (
-                <span className="text-xs text-zinc-600 font-mono truncate max-w-[220px]">
-                  {active.initInfo.cwd}
-                </span>
-              )}
             </div>
           )}
 

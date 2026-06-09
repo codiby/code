@@ -27,6 +27,39 @@ interface Props {
   onCancelPending?: (msgId: string) => void;
 }
 
+/** Short `9:41`-style clock for the hover stamp; null when we have no usable
+ *  timestamp so callers can skip rendering. */
+function formatMsgTime(ts?: number): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** Full date+time shown in the native tooltip on hover. */
+function formatMsgTimeFull(ts: number): string {
+  return new Date(ts).toLocaleString();
+}
+
+/** Timestamp that fades in when the parent `.group` is hovered. `side` picks
+ *  which edge it floats off so it never reflows the bubble's own text:
+ *  user bubbles show it to the left, assistant text to the right. */
+function HoverTime({ ts, side }: { ts?: number; side: 'left' | 'right' }) {
+  const label = formatMsgTime(ts);
+  if (label === null) return null;
+  const pos = side === 'left'
+    ? 'right-full mr-2 top-1/2 -translate-y-1/2'
+    : 'left-full ml-2 top-1/2 -translate-y-1/2';
+  return (
+    <span
+      title={formatMsgTimeFull(ts!)}
+      className={`pointer-events-none absolute ${pos} text-[11px] tabular-nums text-zinc-600 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity`}
+    >
+      {label}
+    </span>
+  );
+}
+
 function parseTableRows(raw: string): { headers: string[]; rows: string[][] } | null {
   const lines = raw.split('\n').filter(l => l.trim());
   if (lines.length < 2) return null;
@@ -242,6 +275,27 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
   // string instead of an option label.
   const unansweredAsk = !!isAskUser && askQuestions.some(q => !askAnswers || !askAnswers[q.question]);
   const summary = toolSummary(message);
+  // mockup_write result: surface a one-line bar to reopen the mockup in the
+  // preview panel. Name + html come straight off the tool input; the size is
+  // lifted from the result text ("… saved (5 KB).") so it matches what the
+  // server reported, falling back to measuring the html.
+  const isMockupWrite = /mockup_write$/.test(message.toolName || '');
+  const mockupName = isMockupWrite && input && typeof input.name === 'string' ? (input.name as string) : null;
+  const mockupHtml = isMockupWrite && input && typeof input.html === 'string' ? (input.html as string) : null;
+  const mockupOk = isMockupWrite && !!message.toolResult && !message.toolResult.isError && !!mockupName && mockupHtml !== null;
+  const mockupSize = (() => {
+    if (!mockupOk) return null;
+    const m = message.toolResult!.content?.match(/\(([\d.]+\s*[KMG]?B)\)/i);
+    if (m) return m[1]!;
+    const bytes = new Blob([mockupHtml!]).size;
+    return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
+  })();
+  const openMockup = () => {
+    if (!mockupOk) return;
+    window.dispatchEvent(
+      new CustomEvent('codiby-code:open-mockup', { detail: { name: mockupName, html: mockupHtml } }),
+    );
+  };
   // AskUserQuestion: always default to expanded when this bubble is last —
   // the user expects to see either the live form (unanswered) or the
   // preserved selection/custom text (answered) without having to click.
@@ -307,6 +361,22 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
           </span>
         )}
       </div>
+      {mockupOk && (
+        <button
+          type="button"
+          onClick={openMockup}
+          title={`Open mockup "${mockupName}" in preview`}
+          className="mt-1.5 w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-dashed border-violet-500/35 bg-violet-500/[0.04] hover:bg-violet-500/10 transition-colors text-left"
+        >
+          <span className="text-[12px] text-violet-400 shrink-0 leading-none">▣</span>
+          <span className="text-[12px] font-medium text-violet-200 font-mono truncate">{mockupName}</span>
+          {mockupSize && <span className="text-[11px] text-zinc-500 shrink-0">· {mockupSize}</span>}
+          <span className="ml-auto flex items-center gap-0.5 text-[11px] text-violet-300 shrink-0">
+            Open in preview
+            <ChevronRight size={12} />
+          </span>
+        </button>
+      )}
       {expanded && (
         <div className="mt-1">
           {filePath && (
@@ -1047,6 +1117,7 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
       <>
       <div className="flex justify-end py-1">
         <div className="group relative max-w-[75%]">
+          <HoverTime ts={message.timestamp} side="left" />
           <div
             style={accent ? {
               backgroundColor: `${accent}26`,
@@ -1103,8 +1174,17 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
   }
 
   // Assistant
+  const assistantTime = formatMsgTime(message.timestamp);
   return (
-    <div className="py-1">
+    <div className="group relative py-1">
+      {assistantTime !== null && (
+        <span
+          title={formatMsgTimeFull(message.timestamp)}
+          className="pointer-events-none absolute top-1 right-0 text-[11px] tabular-nums text-zinc-600 whitespace-nowrap bg-zinc-950/80 px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          {assistantTime}
+        </span>
+      )}
       <Markdown text={message.content} className="text-[13px] text-zinc-300 leading-relaxed" />
     </div>
   );
