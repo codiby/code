@@ -5,6 +5,35 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] — 2026-06-09
+
+### Added
+
+- **Claude Fable 5.** Anthropic's new Fable 5 model now appears in the model
+  picker. The bundled agent SDK was bumped to the first release that lists
+  `claude-fable-5`, so it can be selected per session like any other model.
+- **Built-in API docs.** The bridge now ships a Swagger UI docs server (default
+  port 3112) that publishes a live OpenAPI spec for its HTTP API. It boots
+  automatically alongside the bridge, and `scripts/swagger-docs.sh` runs it
+  standalone, detached from the app.
+- **Message timestamps on hover.** Hovering a chat message reveals a
+  clock-style time (`9:41`), with the full date and time in a tooltip.
+- **Reopen a mockup from its bubble.** The "Open in preview" bar on a mockup
+  message now reopens that mockup in the active session's preview pane.
+
+### Changed
+
+- **The bridge API routes through Hono.** Its HTTP routing moved from a
+  hand-rolled `Bun.serve` handler to the Hono framework — same endpoints and
+  behavior, with a cleaner foundation for the new API docs.
+
+### Fixed
+
+- **One bad request or render error no longer takes the app down.** The Electron
+  main process and the bridge sidecar now log uncaught exceptions and rejected
+  promises instead of crashing, and the desktop and mobile UIs are wrapped in an
+  error boundary that shows a fallback instead of a blank screen.
+
 ## [0.20.0] — 2026-06-05
 
 ### Added
