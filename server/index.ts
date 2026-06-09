@@ -15,7 +15,7 @@ import { spawnPty } from './pty';
 import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, loadOrCreateMobileToken, getLanIp, resolveTls } from './config';
 import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } from './handlers/mobile';
 import { notifyPermissionResolved } from './notify';
-import { log } from './logger';
+import { log, registerGlobalErrorHandlers } from './logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON, setStatusBroadcaster } from './sessions';
 import { loadRemotes, getRemote } from './remotes';
 import { migrateToCodiby } from './migrate-to-codiby';
@@ -85,6 +85,8 @@ import {
 import type { ChatMessage } from './state';
 import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
+import { startSwaggerServer } from './swagger';
+import { Hono } from 'hono';
 import { transcribeAudioBuffer } from './deepgram';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './tailscale';
 import {
@@ -110,6 +112,11 @@ import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
+
+// Install the last-resort error net first, so a throw/rejection during any of
+// the startup steps below (or later, at request time) is logged instead of
+// crashing the sidecar and taking every session down with it.
+registerGlobalErrorHandlers('server');
 
 // Register provider adapters before loading sessions (so default provider exists)
 registerProvider(ClaudeAdapter);
@@ -1191,6 +1198,827 @@ async function serveStaticFromDist(pathname: string): Promise<Response | null> {
 // Auto-enable HTTPS when cert + key are present under ~/.codiby/tls/
 const TLS = resolveTls();
 
+// ===========================================================================
+// HTTP routing (Hono).
+//
+// Cross-cutting concerns — CORS preflight, mobile bearer auth, the `?remoteId`
+// remote proxy, sideloaded plugins, static UI assets, the localhost-only mobile
+// pair endpoints, request logging, and every WebSocket upgrade — stay in the
+// Bun.serve `fetch` handler below (they need the raw `server` and/or must run
+// in a specific order). Everything else is dispatched here.
+//
+// Handlers receive the raw Request via `c.req.raw`, so the original logic
+// (`req.json()`, `url.searchParams`, `proxyHttpToRemote(req, …)`) is preserved
+// verbatim; path params that used regex capture groups now use `c.req.param()`.
+// All handlers close over module state (`server`, `sessions`, broadcasters, …);
+// `server` is assigned just below and only dereferenced at request time.
+// ===========================================================================
+const app = new Hono();
+
+// ── Sessions ───────────────────────────────────────────────────────────────
+app.get('/sessions', () => {
+  return Response.json(buildFullSessionList(), { headers: corsHeaders });
+});
+
+app.post('/sessions', async (c) => {
+  const req = c.req.raw;
+  const url = new URL(req.url);
+  // Sniff the body so we can decide local vs remote without consuming the
+  // original request (handleCreateSession reads it again).
+  let body: { remoteId?: string | null; cwd?: string; name?: string; model?: string | null; provider?: string; permissionMode?: string } = {};
+  try { body = await req.clone().json() as typeof body; } catch {}
+
+  if (body?.remoteId) {
+    // Remote: ask the remote bridge to create the session, then mirror the
+    // metadata in our local cache so the sidebar shows it next time.
+    if (!getRemote(body.remoteId)) {
+      return Response.json({ error: `Remote ${body.remoteId} not found` }, { status: 404, headers: corsHeaders });
+    }
+    // Strip remoteId from the body that gets forwarded — the remote bridge
+    // doesn't know what to do with it.
+    const forwardBody = { ...body };
+    delete (forwardBody as any).remoteId;
+    const fwdReq = new Request(req.url, {
+      method: 'POST',
+      headers: req.headers,
+      body: JSON.stringify(forwardBody),
+    });
+    const resp = await proxyHttpToRemote(fwdReq, body.remoteId, '/sessions');
+    if (resp.ok) {
+      try {
+        const created = await resp.clone().json() as any;
+        registerRemoteSession(body.remoteId, {
+          id: created.id,
+          name: created.name,
+          cwd: created.cwd,
+          createdAt: created.created_at,
+          status: created.status ?? 'open',
+          runtimeStatus: created.runtime_status ?? 'starting',
+          model: created.model ?? null,
+          permissionMode: created.permission_mode ?? 'default',
+          provider: created.provider ?? 'claudeAgent',
+          claudeSessionId: created.claude_session_id ?? null,
+          portForwards: [],
+          cachedAt: Date.now(),
+        });
+        broadcastSessionList();
+        if (url.searchParams.get('focus') === '1') broadcastFocusSession(created.id);
+      } catch {}
+    }
+    return resp;
+  }
+
+  const resp = await handleCreateSession(req, server.port);
+  // Apply the `autoGroupSessions` preference server-side so every entry
+  // point (frontend, mobile, CLI) honors it without each client needing
+  // its own copy of the logic.
+  let createdId: string | null = null;
+  if (resp.ok) {
+    try {
+      const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string };
+      if (created?.id) {
+        createdId = created.id;
+        const groupingCwd = created.group_cwd || created.cwd;
+        if (groupingCwd) maybeAutoGroupSession(created.id, groupingCwd);
+      }
+    } catch {}
+  }
+  broadcastSessionList();
+  if (url.searchParams.get('focus') === '1' && createdId) {
+    broadcastFocusSession(createdId);
+  }
+  return resp;
+});
+
+app.post('/sessions/:id/resume', (c) => {
+  const sid = c.req.param('id');
+  const remoteId = resolveSessionRemote(sid);
+  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
+  const resp = handleResumeSession(sid, server.port);
+  broadcastSessionList();
+  return resp;
+});
+
+app.get('/providers/opencode/info', async () => {
+  const info = await getOpencodeInfo();
+  return Response.json(info, { headers: corsHeaders });
+});
+
+app.get('/providers/claude/info', () => {
+  return Response.json(getClaudeInfo(), { headers: corsHeaders });
+});
+
+app.post('/sessions/:id/stop', (c) => {
+  const sid = c.req.param('id');
+  const remoteId = resolveSessionRemote(sid);
+  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
+  const resp = handleStopSession(sid);
+  broadcastSessionList();
+  return resp;
+});
+
+app.post('/sessions/:id/restart', async (c) => {
+  const sid = c.req.param('id');
+  const remoteId = resolveSessionRemote(sid);
+  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
+  const resp = await handleRestartSession(sid, server.port);
+  broadcastSessionList();
+  return resp;
+});
+
+app.post('/sessions/:id/clear', async (c) => {
+  const sid = c.req.param('id');
+  const remoteId = resolveSessionRemote(sid);
+  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
+  const resp = await handleClearSession(sid);
+  // Tell every connected UI to drop its in-memory chat for this session
+  // before pushing the updated session list.
+  const clearedMsg = JSON.stringify({ type: 'session_cleared', sessionId: sid });
+  for (const ws of frontendClients) { try { ws.send(clearedMsg); } catch {} }
+  broadcastSessionList();
+  return resp;
+});
+
+app.patch('/sessions/:id', async (c) => {
+  const req = c.req.raw;
+  const sid = c.req.param('id');
+  const remoteId = resolveSessionRemote(sid);
+  if (remoteId) {
+    const resp = await proxyHttpToRemote(req, remoteId);
+    // Refresh the cache entry name so the sidebar reflects the rename.
+    if (resp.ok) {
+      try {
+        const updated = await resp.clone().json() as any;
+        if (updated?.id) {
+          registerRemoteSession(remoteId, {
+            id: updated.id,
+            name: updated.name,
+            cwd: updated.cwd,
+            createdAt: updated.created_at,
+            status: updated.status ?? 'open',
+            runtimeStatus: updated.runtime_status ?? 'stopped',
+            model: updated.model ?? null,
+            permissionMode: updated.permission_mode ?? 'default',
+            provider: updated.provider ?? 'claudeAgent',
+            claudeSessionId: updated.claude_session_id ?? null,
+            portForwards: updated.port_forwards ?? [],
+            cachedAt: Date.now(),
+          });
+          broadcastSessionList();
+        }
+      } catch {}
+    }
+    return resp;
+  }
+  const resp = await handleRenameSession(sid, req);
+  broadcastSessionList();
+  return resp;
+});
+
+// Per-session port forwards (only for remote sessions).
+app.get('/sessions/:id/port-forwards', (c) => handleListPortForwards(c.req.param('id')));
+app.post('/sessions/:id/port-forwards', (c) => handleAddPortForward(c.req.param('id'), c.req.raw));
+app.delete('/sessions/:id/port-forwards/:remotePort/:localPort', (c) =>
+  handleRemovePortForward(c.req.param('id'), Number(c.req.param('remotePort')), Number(c.req.param('localPort'))));
+
+// Per-session dismissed shells — the bridge owns terminal-bubble visibility.
+app.get('/sessions/:id/shells/dismissed', (c) => {
+  return Response.json({ dismissed: getDismissedShells(c.req.param('id')) }, { headers: corsHeaders });
+});
+app.delete('/sessions/:id/shells/:procId', (c) => {
+  const sid = c.req.param('id');
+  const procId = c.req.param('procId');
+  const changed = dismissShell(sid, procId);
+  if (changed) {
+    const data = JSON.stringify({ type: 'shell_dismissed', sessionId: sid, procId });
+    for (const ws of frontendClients) {
+      try { ws.send(data); } catch {}
+    }
+  }
+  return Response.json({ ok: true, changed }, { headers: corsHeaders });
+});
+
+// POST /sessions/:id/messages — HTTP path used by the gateway to forward user
+// messages from local frontends into a remote bridge.
+app.post('/sessions/:id/messages', async (c) => {
+  const req = c.req.raw;
+  const sid = c.req.param('id');
+  const remoteId = resolveSessionRemote(sid);
+  if (remoteId) return proxyHttpToRemote(req, remoteId);
+  let body: { text?: string; images?: { media_type: string; data: string }[] } = {};
+  try { body = await req.json() as typeof body; } catch {}
+  if (!body.text) return Response.json({ error: 'text required' }, { status: 400, headers: corsHeaders });
+  const result = await sendMessageToSession(sid, body.text, body.images);
+  return Response.json(result, { headers: corsHeaders });
+});
+
+app.delete('/sessions/:id', async (c) => {
+  const req = c.req.raw;
+  const url = new URL(req.url);
+  const sid = c.req.param('id');
+  const remoteId = resolveSessionRemote(sid);
+  if (remoteId) {
+    const resp = await proxyHttpToRemote(req, remoteId);
+    if (resp.ok) {
+      unregisterRemoteSession(remoteId, sid);
+      broadcastSessionList();
+    }
+    return resp;
+  }
+  // ?purge=1 → also delete the on-disk chat history + UI state.
+  // ?worktree=1 → also remove the git worktree (when cwd looks like one).
+  const purge = url.searchParams.get('purge') === '1';
+  const removeWorktree = url.searchParams.get('worktree') === '1';
+  const resp = handleDeleteSession(sid, purge, removeWorktree);
+  broadcastSessionList();
+  return resp;
+});
+
+app.post('/save-commands', async (c) => {
+  const body = await c.req.raw.json() as { sessionId: string; commands: string[] };
+  if (!body.sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
+  const session = sessions.get(body.sessionId);
+  if (!session) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+  session.savedCommands = body.commands || [];
+  saveSessions();
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// ── Remotes ────────────────────────────────────────────────────────────────
+app.get('/remotes', () => handleListRemotes());
+app.post('/remotes', async (c) => {
+  const resp = await handleAddRemote(c.req.raw);
+  broadcastRemoteList();
+  return resp;
+});
+app.patch('/remotes/:id', async (c) => {
+  const resp = await handleUpdateRemote(c.req.param('id'), c.req.raw);
+  broadcastRemoteList();
+  return resp;
+});
+app.delete('/remotes/:id', async (c) => {
+  const resp = await handleRemoveRemote(c.req.param('id'));
+  broadcastRemoteList();
+  broadcastSessionList();
+  return resp;
+});
+app.post('/remotes/:id/test', (c) => handleTestRemote(c.req.param('id')));
+
+// ── Files ──────────────────────────────────────────────────────────────────
+app.get('/ls', (c) => {
+  const prefix = new URL(c.req.url).searchParams.get('prefix') || '/';
+  return handleListDirs(prefix);
+});
+app.get('/user-home', () => {
+  return Response.json({ home: homedir() }, { headers: corsHeaders });
+});
+app.get('/files', (c) => {
+  const dirPath = new URL(c.req.url).searchParams.get('path') || '/';
+  return handleListFiles(dirPath);
+});
+app.get('/file-index', (c) => {
+  const root = new URL(c.req.url).searchParams.get('root');
+  if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
+  return handleFileIndex(root);
+});
+app.get('/file-content', (c) => {
+  const filePath = new URL(c.req.url).searchParams.get('path');
+  if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    return Response.json({ path: filePath, content }, { headers: corsHeaders });
+  } catch {
+    return Response.json({ error: 'Cannot read file' }, { status: 404, headers: corsHeaders });
+  }
+});
+app.put('/file-content', async (c) => {
+  try {
+    const body = await c.req.raw.json() as { path: string; content: string };
+    if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+    writeFileSync(body.path, body.content, 'utf-8');
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+});
+app.delete('/file-content', (c) => {
+  const filePath = new URL(c.req.url).searchParams.get('path');
+  if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+  return handleDeletePath(filePath);
+});
+app.post('/file-rename', async (c) => {
+  try {
+    const body = await c.req.raw.json() as { from: string; to: string };
+    if (!body.from || !body.to) return Response.json({ error: 'from and to required' }, { status: 400, headers: corsHeaders });
+    return handleRenamePath(body.from, body.to);
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+});
+app.post('/file-new', async (c) => {
+  try {
+    const body = await c.req.raw.json() as { path: string; kind: 'file' | 'dir' };
+    if (!body.path || !body.kind) return Response.json({ error: 'path and kind required' }, { status: 400, headers: corsHeaders });
+    return body.kind === 'dir' ? handleCreateDir(body.path) : handleCreateFile(body.path);
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+});
+app.post('/file-reveal', async (c) => {
+  try {
+    const body = await c.req.raw.json() as { path: string };
+    if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+    return handleRevealInFinder(body.path);
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+});
+
+// ── Exec / Processes ─────────────────────────────────────────────────────────
+app.post('/exec', (c) => handleExecCreate(c.req.raw));
+app.get('/processes', (c) => {
+  const sessionId = new URL(c.req.url).searchParams.get('sessionId');
+  if (!sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
+  return handleListProcesses(sessionId);
+});
+app.post('/kill', async (c) => {
+  const body = await c.req.raw.json() as { processId?: string; pid?: number };
+  if (!body.processId && !body.pid) return Response.json({ error: 'processId or pid required' }, { status: 400, headers: corsHeaders });
+  return handleKillProcess(body.processId || '', body.pid);
+});
+
+// ── Git ──────────────────────────────────────────────────────────────────────
+app.get('/file-original', (c) => {
+  const url = new URL(c.req.url);
+  const filePath = url.searchParams.get('path');
+  if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+  // When `base` is given, diff against the merge-base of that branch and HEAD;
+  // otherwise against the working tree's HEAD.
+  const base = url.searchParams.get('base');
+  try {
+    const cwd = dirname(filePath);
+    const relPath = execSync(`git ls-files --full-name "${filePath}"`, { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+    if (!relPath) return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
+    let ref = 'HEAD';
+    if (base) ref = baseDiffRef(cwd, base) || 'HEAD';
+    const content = execSync(`git show ${JSON.stringify(ref)}:"${relPath}"`, { cwd, encoding: 'utf-8', timeout: 5000 });
+    return Response.json({ path: filePath, content }, { headers: corsHeaders });
+  } catch {
+    return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
+  }
+});
+app.get('/git-modified', (c) => {
+  const url = new URL(c.req.url);
+  const root = url.searchParams.get('root');
+  if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
+  return handleGitModified(root, url.searchParams.get('base'));
+});
+app.post('/git-stage', async (c) => {
+  const body = await c.req.raw.json() as { root: string; files: string[]; unstage?: boolean };
+  if (!body.root || !body.files?.length) return Response.json({ error: 'root and files required' }, { status: 400, headers: corsHeaders });
+  try {
+    const gitTop = execSync('git rev-parse --show-toplevel', { cwd: body.root, encoding: 'utf-8', timeout: 5000 }).trim();
+    const cmd = body.unstage ? 'git reset HEAD --' : 'git add --';
+    execSync(
+      `${cmd} ${body.files.map(f => `'${f.replace(/'/g, "'\\''")}'`).join(' ')}`,
+      { cwd: gitTop, encoding: 'utf-8', timeout: 5000 },
+    );
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+});
+app.get('/git-info', (c) => {
+  const dirPath = new URL(c.req.url).searchParams.get('path');
+  if (!dirPath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+  return handleGitInfo(dirPath);
+});
+app.get('/git-branches', (c) => {
+  const cwd = new URL(c.req.url).searchParams.get('cwd');
+  if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
+  return handleGitBranches(cwd);
+});
+app.post('/git-checkout', async (c) => {
+  const body = await c.req.raw.json() as { cwd: string; branch: string };
+  if (!body.cwd || !body.branch) return Response.json({ error: 'cwd and branch required' }, { status: 400, headers: corsHeaders });
+  return handleGitCheckout(body.cwd, body.branch);
+});
+app.get('/gh-prs', (c) => {
+  const url = new URL(c.req.url);
+  const cwd = url.searchParams.get('cwd');
+  const sessionName = url.searchParams.get('session') || '';
+  if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
+  return handleGhPrs(cwd, sessionName);
+});
+app.get('/pr-detail', (c) => {
+  const url = new URL(c.req.url);
+  const prNumber = url.searchParams.get('number');
+  const cwd = url.searchParams.get('cwd') || CWD;
+  if (!prNumber) return Response.json({ error: 'missing number' }, { status: 400, headers: corsHeaders });
+  try {
+    const prJson = execSync(
+      `gh pr view ${prNumber} --json number,title,body,headRefName,baseRefName,state,url,isDraft,additions,deletions,changedFiles,commits,reviews,comments,labels,author,createdAt,updatedAt,mergedAt,mergeable`,
+      { cwd, encoding: 'utf-8', timeout: 15000 },
+    );
+    return Response.json(JSON.parse(prJson), { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message || String(e) }, { status: 502, headers: corsHeaders });
+  }
+});
+
+// ── PR Links ─────────────────────────────────────────────────────────────────
+app.get('/pr-links', () => Response.json(loadPRLinks(), { headers: corsHeaders }));
+app.get('/pr-link/:sessionId', (c) => {
+  const link = getPRLink(c.req.param('sessionId'));
+  return Response.json({ link }, { headers: corsHeaders });
+});
+app.put('/pr-link/:sessionId', async (c) => {
+  const body = await c.req.raw.json() as { prNumber: number; title: string; url: string; headRefName: string; state: string };
+  savePRLink(c.req.param('sessionId'), body);
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+app.delete('/pr-link/:sessionId', (c) => {
+  removePRLink(c.req.param('sessionId'));
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// ── MCP servers (config CRUD) ────────────────────────────────────────────────
+app.get('/mcp-servers', (c) => handleListMcpServers(new URL(c.req.url).searchParams.get('cwd')));
+app.post('/mcp-servers', (c) => handleAddMcpServer(c.req.raw));
+app.delete('/mcp-servers/:name', (c) => {
+  const url = new URL(c.req.url);
+  const name = c.req.param('name'); // Hono already URL-decodes path params.
+  const scope = url.searchParams.get('scope') === 'project' ? 'project' : 'user';
+  return handleRemoveMcpServer(name, scope, url.searchParams.get('cwd'));
+});
+// The bridge's own MCP server (Streamable HTTP transport) — all methods.
+app.all('/mcp', (c) => handleMcpRequest(c.req.raw));
+
+// ── Search ────────────────────────────────────────────────────────────────────
+app.get('/search', (c) => {
+  const url = new URL(c.req.url);
+  const root = url.searchParams.get('root');
+  const query = url.searchParams.get('q') || '';
+  const caseParam = url.searchParams.get('case');
+  const caseMode = caseParam === 'sensitive' || caseParam === 'insensitive' ? caseParam : 'smart';
+  const ignoreParam = url.searchParams.get('ignore') || '';
+  const ignoreGlobs = ignoreParam
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .slice(0, 32);
+  if (!root || !query) return Response.json({ results: [] }, { headers: corsHeaders });
+  return handleSearch(root, query, caseMode, ignoreGlobs);
+});
+
+// ── Worktree ──────────────────────────────────────────────────────────────────
+app.post('/worktree', (c) => handleCreateWorktree(c.req.raw));
+
+// ── Telegram ──────────────────────────────────────────────────────────────────
+app.get('/telegram/settings', () => {
+  const settings = loadTelegramSettings();
+  return Response.json({
+    botToken: settings.botToken,
+    chatId: settings.chatId,
+    running: isTelegramBotRunning(),
+  }, { headers: corsHeaders });
+});
+app.put('/telegram/settings', async (c) => {
+  const body = await c.req.raw.json() as { botToken?: string; chatId?: string };
+  saveTelegramSettings({
+    botToken: (body.botToken ?? '').trim(),
+    chatId: (body.chatId ?? '').trim(),
+  });
+  restartTelegramBot();
+  return Response.json({ ok: true, running: isTelegramBotRunning() }, { headers: corsHeaders });
+});
+
+// ── Deepgram ──────────────────────────────────────────────────────────────────
+app.get('/deepgram/settings', () => {
+  const settings = loadDeepgramSettings();
+  return Response.json({
+    apiKey: settings.apiKey,
+    model: settings.model,
+    language: settings.language,
+    configured: Boolean(settings.apiKey),
+  }, { headers: corsHeaders });
+});
+app.put('/deepgram/settings', async (c) => {
+  const body = await c.req.raw.json() as { apiKey?: string; model?: string; language?: string };
+  const apiKey = (body.apiKey ?? '').trim();
+  const model = (body.model ?? '').trim() || 'nova-3';
+  const language = (body.language ?? '').trim() || 'multi';
+  saveDeepgramSettings({ apiKey, model, language });
+  return Response.json({ ok: true, configured: Boolean(apiKey) }, { headers: corsHeaders });
+});
+app.post('/deepgram/transcribe', async (c) => {
+  try {
+    const buf = new Uint8Array(await c.req.raw.arrayBuffer());
+    if (buf.byteLength === 0) {
+      return new Response('empty audio body', { status: 400, headers: corsHeaders });
+    }
+    const { transcript, detectedLanguage, durationSec } = await transcribeAudioBuffer(buf);
+    return Response.json({ transcript, detectedLanguage, durationSec }, { headers: corsHeaders });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return new Response(msg, { status: 500, headers: corsHeaders });
+  }
+});
+
+// ── Tailscale Funnel ───────────────────────────────────────────────────────────
+app.get('/tailscale/settings', () => {
+  const settings = loadTailscaleSettings();
+  const available = isTailscaleAvailable();
+  const hostname = available ? getTailscaleHostname() : null;
+  const status = available ? getFunnelStatus() : { active: false, ports: [] };
+  return Response.json({
+    funnelEnabled: settings.funnelEnabled,
+    available,
+    hostname,
+    funnelActive: status.active,
+    funnelPorts: status.ports,
+    funnelUrl: settings.funnelEnabled && hostname ? `https://${hostname}` : null,
+  }, { headers: corsHeaders });
+});
+app.put('/tailscale/settings', async (c) => {
+  const body = await c.req.raw.json() as { funnelEnabled?: boolean };
+  const enabled = !!body.funnelEnabled;
+  let error: string | null = null;
+  if (enabled) {
+    const res = enableFunnel(PORT);
+    if (!res.ok) error = res.error;
+  } else {
+    const res = disableFunnel();
+    if (!res.ok && isTailscaleAvailable()) error = res.error;
+  }
+  // Persist intent even if the CLI call fails so the UI reflects the user's
+  // choice and we can surface the underlying error.
+  saveTailscaleSettings({ funnelEnabled: enabled && !error });
+  const hostname = isTailscaleAvailable() ? getTailscaleHostname() : null;
+  const status = isTailscaleAvailable() ? getFunnelStatus() : { active: false, ports: [] };
+  return Response.json({
+    ok: !error,
+    error,
+    funnelEnabled: enabled && !error,
+    available: isTailscaleAvailable(),
+    hostname,
+    funnelActive: status.active,
+    funnelPorts: status.ports,
+    funnelUrl: enabled && !error && hostname ? `https://${hostname}` : null,
+  }, { status: error ? 400 : 200, headers: corsHeaders });
+});
+
+// ── Portless ────────────────────────────────────────────────────────────────────
+app.get('/portless/cli-status', () => Response.json(getPortlessCliStatus(), { headers: corsHeaders }));
+app.get('/portless/status', () => Response.json({ actions: portlessSnapshotAll() }, { headers: corsHeaders }));
+app.post('/portless/run', async (c) => {
+  const body = await c.req.raw.json().catch(() => ({})) as {
+    groupId?: string; actionId?: string;
+    name?: string; command?: string; hostname?: string; cwd?: string;
+    noTls?: boolean; source?: 'user' | 'agent'; sessionId?: string;
+  };
+  if (!body.groupId || !body.actionId || !body.name || !body.command || !body.hostname || !body.cwd) {
+    return Response.json({ error: 'groupId, actionId, name, command, hostname and cwd are required.' }, { status: 400, headers: corsHeaders });
+  }
+  const res = portlessRunAction({
+    groupId: body.groupId,
+    actionId: body.actionId,
+    name: body.name,
+    command: body.command,
+    hostname: body.hostname,
+    cwd: body.cwd,
+    noTls: body.noTls === true,
+    source: body.source === 'agent' ? 'agent' : 'user',
+    sessionId: body.sessionId,
+  });
+  if (!res.ok) {
+    return Response.json({ error: res.error }, { status: 400, headers: corsHeaders });
+  }
+  return Response.json({ status: res.status }, { headers: corsHeaders });
+});
+app.post('/portless/stop', async (c) => {
+  const body = await c.req.raw.json().catch(() => ({})) as { groupId?: string; actionId?: string };
+  if (!body.groupId || !body.actionId) {
+    return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
+  }
+  const stopped = portlessStopAction(body.groupId, body.actionId);
+  return Response.json({ stopped }, { headers: corsHeaders });
+});
+app.post('/portless/stop-all', () => {
+  portlessStopAll();
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+app.post('/portless/forget', async (c) => {
+  const body = await c.req.raw.json().catch(() => ({})) as { groupId?: string; actionId?: string };
+  if (!body.groupId || !body.actionId) {
+    return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
+  }
+  portlessForgetAction(body.groupId, body.actionId);
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+app.get('/portless/detect', (c) => {
+  const cwd = new URL(c.req.url).searchParams.get('cwd');
+  if (!cwd) return Response.json({ error: 'cwd is required.' }, { status: 400, headers: corsHeaders });
+  try {
+    const pkgPath = join(cwd, 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string>; name?: string };
+    const scripts = pkg.scripts || {};
+    const suggested: { name: string; command: string }[] = [];
+    for (const [scriptName] of Object.entries(scripts)) {
+      // Surface scripts that look like dev servers: keys starting with
+      // `start`, `dev`, `serve`, or `nx run <app>:serve` style scripts.
+      if (/^(start|dev|serve)([:-].+)?$/.test(scriptName)) {
+        suggested.push({ name: scriptName, command: `npm run ${scriptName}` });
+      }
+    }
+    return Response.json({ projectName: pkg.name || null, suggested }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e?.message || 'could not read package.json' }, { status: 400, headers: corsHeaders });
+  }
+});
+app.get('/portless/scan-env', (c) => {
+  const url = new URL(c.req.url);
+  const cwd = url.searchParams.get('cwd');
+  const actionNamesRaw = url.searchParams.get('actionNames') || '';
+  if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
+  const actionNames = actionNamesRaw.split(',').map(s => s.trim()).filter(Boolean);
+  try {
+    const { readFileSync: rf, readdirSync: rd, statSync: st } = require('fs') as typeof import('fs');
+    const { join: jp } = require('path') as typeof import('path');
+    const found: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean }[] = [];
+    // Walk top-level + apps/*/ for .env* files. Two levels is plenty for
+    // nx/turborepo layouts without going wild on huge monorepos.
+    const candidates: string[] = [];
+    try {
+      for (const f of rd(cwd)) {
+        if (f.startsWith('.env')) candidates.push(jp(cwd, f));
+      }
+    } catch {}
+    try {
+      const appsDir = jp(cwd, 'apps');
+      if (st(appsDir).isDirectory()) {
+        for (const sub of rd(appsDir)) {
+          const dir = jp(appsDir, sub);
+          try {
+            if (!st(dir).isDirectory()) continue;
+            for (const f of rd(dir)) {
+              if (f.startsWith('.env')) candidates.push(jp(dir, f));
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+    const urlish = /^(?:https?:\/\/|localhost|127\.0\.0\.1|0\.0\.0\.0)/i;
+    for (const file of candidates) {
+      let content = '';
+      try { content = rf(file, 'utf-8'); } catch { continue; }
+      const lines = content.split('\n');
+      lines.forEach((raw, idx) => {
+        const line = raw.replace(/^export\s+/, '').trim();
+        if (!line || line.startsWith('#')) return;
+        const m = line.match(/^([A-Z][A-Z0-9_]*)\s*=\s*(.+)$/);
+        if (!m) return;
+        const key = m[1]!;
+        let val = m[2]!.trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        if (!urlish.test(val)) return;
+        // Heuristic: pull all action names whose slug is a substring of the
+        // env key. e.g. `API_URL` matches action `api`; `WEB_URL` matches
+        // `web` AND `web-renter`.
+        const keyLow = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
+        const matches = actionNames.filter(n => {
+          const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, '');
+          return slug && keyLow.includes(slug);
+        });
+        // Prefer the longest matching action name when ambiguous.
+        matches.sort((a, b) => b.length - a.length);
+        found.push({
+          var: key,
+          value: val,
+          file: file.startsWith(cwd) ? file.slice(cwd.length + 1) : file,
+          line: idx + 1,
+          suggestedAction: matches[0] || null,
+          ambiguous: matches.length > 1,
+        });
+      });
+    }
+    return Response.json({ candidates: found, scanned: candidates }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e?.message || 'scan failed' }, { status: 500, headers: corsHeaders });
+  }
+});
+// Reverse-proxy controls. NOTE: these four routes were previously unreachable —
+// they had been nested inside the `/pr-detail` handler block (dead code that
+// TypeScript flagged). The Hono migration restores them as real routes.
+app.get('/portless/proxy/status', async () => {
+  const status = await getPortlessProxyStatus();
+  return Response.json(status, { headers: corsHeaders });
+});
+app.post('/portless/proxy/start', async (c) => {
+  const body = await c.req.raw.json().catch(() => ({})) as { mode?: ProxyMode };
+  const mode: ProxyMode = body.mode === 'http80' || body.mode === 'https443' ? body.mode : 'default';
+  const result = await startPortlessProxy(mode);
+  return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+});
+app.post('/portless/proxy/stop', async () => {
+  const result = await stopPortlessProxy();
+  return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+});
+app.post('/portless/trust', async () => {
+  const result = await trustPortlessCA();
+  return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
+});
+
+// ── Preferences ───────────────────────────────────────────────────────────────
+app.get('/preferences', () => Response.json(loadPreferences(), { headers: corsHeaders }));
+app.put('/preferences', async (c) => {
+  const body = await c.req.raw.json() as Record<string, unknown>;
+  updatePreferences(body);
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// ── Claude hooks (read/write ~/.claude/settings.json and project) ──────────────
+app.get('/claude-hooks', (c) => {
+  const url = new URL(c.req.url);
+  const scope = (url.searchParams.get('scope') || 'global') as 'global' | 'project';
+  const cwd = url.searchParams.get('cwd') || undefined;
+  try {
+    const result = readClaudeHooks(scope, cwd);
+    return Response.json(result, { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: String(e) }, { status: 400, headers: corsHeaders });
+  }
+});
+app.put('/claude-hooks', async (c) => {
+  const body = await c.req.raw.json() as { scope?: 'global' | 'project'; cwd?: string; hooks?: ClaudeHooks };
+  try {
+    const result = writeClaudeHooks(body.scope || 'global', body.cwd, body.hooks || {});
+    return Response.json({ ok: true, ...result }, { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: String(e) }, { status: 400, headers: corsHeaders });
+  }
+});
+
+// ── LSP ────────────────────────────────────────────────────────────────────────
+app.get('/lsp/languages', () => Response.json(supportedLanguages(), { headers: corsHeaders }));
+
+// ── Debug (CDP) ──────────────────────────────────────────────────────────────────
+app.get('/debug/targets', async (c) => {
+  const url = new URL(c.req.url);
+  const host = url.searchParams.get('host') || '127.0.0.1';
+  const port = parseInt(url.searchParams.get('port') || '9229', 10);
+  const targets = await discoverTargets(host, port);
+  return Response.json(targets, { headers: corsHeaders });
+});
+app.post('/debug/connect', async (c) => {
+  const body = await c.req.raw.json() as Record<string, unknown>;
+  const host = (body.host as string) || '127.0.0.1';
+  const port = (body.port as number) || 9229;
+  const targetId = body.targetId as string | undefined;
+  const conn = await connectToTarget(host, port, targetId);
+  if (!conn) return Response.json({ error: 'Failed to connect' }, { status: 502, headers: corsHeaders });
+  return Response.json({ connectionId: conn.id, host: conn.host, port: conn.port, targetId: conn.targetId }, { headers: corsHeaders });
+});
+app.post('/debug/disconnect', async (c) => {
+  const body = await c.req.raw.json() as Record<string, unknown>;
+  const connectionId = body.connectionId as string;
+  if (connectionId) disconnectTarget(connectionId);
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// ── Health ──────────────────────────────────────────────────────────────────────
+app.get('/health', () => Response.json({ status: 'ok', sessions: sessions.size }, { headers: corsHeaders }));
+app.post('/ui-log', async (c) => {
+  try {
+    const body = await c.req.raw.json() as { msg: string };
+    log(`[UI] ${body.msg}`);
+  } catch {}
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// Diagnostic snapshot of a session's runtime state. Registered last so the
+// static `/debug/targets` route wins (Hono prefers static over `:param`).
+app.get('/debug/:sessionId', (c) => {
+  const id = c.req.param('sessionId');
+  const s = sessions.get(id);
+  if (!s) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+  return Response.json({
+    id: s.id,
+    status: s.status,
+    runtimeStatus: s.runtimeStatus,
+    ready: s.ready,
+    provider: s.provider,
+    hasProviderSession: !!s.providerSession,
+    browserWsCount: s.browserWs.size,
+    frontendClientsCount: frontendClients.size,
+    subscribedCount: [...subscriptions.values()].filter(subs => subs.has(id)).length,
+  }, { headers: corsHeaders });
+});
+
+app.notFound(() => new Response('Not found', { status: 404 }));
+
 const server = Bun.serve({
   port: PORT,
   hostname: HOST,
@@ -1379,942 +2207,8 @@ const server = Bun.serve({
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
-    // -----------------------------------------------------------------------
-    // Sessions
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/sessions' && req.method === 'GET') {
-      return Response.json(buildFullSessionList(), { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/sessions' && req.method === 'POST') {
-      // Sniff the body so we can decide local vs remote without consuming the
-      // original request (handleCreateSession reads it again).
-      let body: { remoteId?: string | null; cwd?: string; name?: string; model?: string | null; provider?: string; permissionMode?: string } = {};
-      try { body = await req.clone().json() as typeof body; } catch {}
-
-      if (body?.remoteId) {
-        // Remote: ask the remote bridge to create the session, then mirror the
-        // metadata in our local cache so the sidebar shows it next time.
-        if (!getRemote(body.remoteId)) {
-          return Response.json({ error: `Remote ${body.remoteId} not found` }, { status: 404, headers: corsHeaders });
-        }
-        // Strip remoteId from the body that gets forwarded — the remote bridge
-        // doesn't know what to do with it.
-        const forwardBody = { ...body };
-        delete (forwardBody as any).remoteId;
-        const fwdReq = new Request(req.url, {
-          method: 'POST',
-          headers: req.headers,
-          body: JSON.stringify(forwardBody),
-        });
-        const resp = await proxyHttpToRemote(fwdReq, body.remoteId, '/sessions');
-        if (resp.ok) {
-          try {
-            const created = await resp.clone().json() as any;
-            registerRemoteSession(body.remoteId, {
-              id: created.id,
-              name: created.name,
-              cwd: created.cwd,
-              createdAt: created.created_at,
-              status: created.status ?? 'open',
-              runtimeStatus: created.runtime_status ?? 'starting',
-              model: created.model ?? null,
-              permissionMode: created.permission_mode ?? 'default',
-              provider: created.provider ?? 'claudeAgent',
-              claudeSessionId: created.claude_session_id ?? null,
-              portForwards: [],
-              cachedAt: Date.now(),
-            });
-            broadcastSessionList();
-            if (url.searchParams.get('focus') === '1') broadcastFocusSession(created.id);
-          } catch {}
-        }
-        return resp;
-      }
-
-      const resp = await handleCreateSession(req, server.port);
-      // Apply the `autoGroupSessions` preference server-side so every entry
-      // point (frontend, mobile, CLI) honors it without each client needing
-      // its own copy of the logic.
-      let createdId: string | null = null;
-      if (resp.ok) {
-        try {
-          const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string };
-          if (created?.id) {
-            createdId = created.id;
-            // Prefer the explicit group_cwd hint (sent by worktree spawns so
-            // the new session lands under the parent repo's folder name
-            // instead of one named after the worktree branch).
-            const groupingCwd = created.group_cwd || created.cwd;
-            if (groupingCwd) maybeAutoGroupSession(created.id, groupingCwd);
-          }
-        } catch {}
-      }
-      broadcastSessionList();
-      // ?focus=1 → also tell clients to switch their active tab to the new
-      // session. Used by the `codiby` CLI so `codiby .` lands the user on
-      // the freshly created tab instead of leaving them on whatever was open.
-      if (url.searchParams.get('focus') === '1' && createdId) {
-        broadcastFocusSession(createdId);
-      }
-      return resp;
-    }
-
-    const resumeMatch = url.pathname.match(/^\/sessions\/(.+)\/resume$/);
-    if (resumeMatch && req.method === 'POST') {
-      const sid = resumeMatch[1]!;
-      const remoteId = resolveSessionRemote(sid);
-      if (remoteId) return proxyHttpToRemote(req, remoteId);
-      const resp = handleResumeSession(sid, server.port);
-      broadcastSessionList();
-      return resp;
-    }
-
-    if (url.pathname === '/providers/opencode/info' && req.method === 'GET') {
-      const info = await getOpencodeInfo();
-      return Response.json(info, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/providers/claude/info' && req.method === 'GET') {
-      return Response.json(getClaudeInfo(), { headers: corsHeaders });
-    }
-
-    const stopMatch = url.pathname.match(/^\/sessions\/(.+)\/stop$/);
-    if (stopMatch && req.method === 'POST') {
-      const sid = stopMatch[1]!;
-      const remoteId = resolveSessionRemote(sid);
-      if (remoteId) return proxyHttpToRemote(req, remoteId);
-      const resp = handleStopSession(sid);
-      broadcastSessionList();
-      return resp;
-    }
-
-    // Restart = close the current provider (Claude/Codex/OpenCode) and
-    // re-spawn it with the same `claudeSessionId` so the conversation
-    // history is preserved. Exposed as a slash command and command
-    // palette action; UI reflects the transition via the existing
-    // `status: 'connected'` / `init_info` broadcasts from lifecycle.ts.
-    const restartMatch = url.pathname.match(/^\/sessions\/(.+)\/restart$/);
-    if (restartMatch && req.method === 'POST') {
-      const sid = restartMatch[1]!;
-      const remoteId = resolveSessionRemote(sid);
-      if (remoteId) return proxyHttpToRemote(req, remoteId);
-      const resp = await handleRestartSession(sid, server.port);
-      broadcastSessionList();
-      return resp;
-    }
-
-    const clearMatch = url.pathname.match(/^\/sessions\/(.+)\/clear$/);
-    if (clearMatch && req.method === 'POST') {
-      const sid = clearMatch[1]!;
-      const remoteId = resolveSessionRemote(sid);
-      if (remoteId) return proxyHttpToRemote(req, remoteId);
-      const resp = await handleClearSession(sid);
-      // Tell every connected UI to drop its in-memory chat for this session
-      // before pushing the updated session list.
-      const clearedMsg = JSON.stringify({ type: 'session_cleared', sessionId: sid });
-      for (const ws of frontendClients) { try { ws.send(clearedMsg); } catch {} }
-      broadcastSessionList();
-      return resp;
-    }
-
-    const patchMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
-    if (patchMatch && req.method === 'PATCH') {
-      const sid = patchMatch[1]!;
-      const remoteId = resolveSessionRemote(sid);
-      if (remoteId) {
-        const resp = await proxyHttpToRemote(req, remoteId);
-        // Refresh the cache entry name so the sidebar reflects the rename.
-        if (resp.ok) {
-          try {
-            const updated = await resp.clone().json() as any;
-            if (updated?.id) {
-              registerRemoteSession(remoteId, {
-                id: updated.id,
-                name: updated.name,
-                cwd: updated.cwd,
-                createdAt: updated.created_at,
-                status: updated.status ?? 'open',
-                runtimeStatus: updated.runtime_status ?? 'stopped',
-                model: updated.model ?? null,
-                permissionMode: updated.permission_mode ?? 'default',
-                provider: updated.provider ?? 'claudeAgent',
-                claudeSessionId: updated.claude_session_id ?? null,
-                portForwards: updated.port_forwards ?? [],
-                cachedAt: Date.now(),
-              });
-              broadcastSessionList();
-            }
-          } catch {}
-        }
-        return resp;
-      }
-      const resp = await handleRenameSession(sid, req);
-      broadcastSessionList();
-      return resp;
-    }
-
-    // Per-session port forwards (only for remote sessions).
-    const pfListMatch = url.pathname.match(/^\/sessions\/([^/]+)\/port-forwards$/);
-    if (pfListMatch && req.method === 'GET') {
-      return handleListPortForwards(pfListMatch[1]!);
-    }
-    if (pfListMatch && req.method === 'POST') {
-      return handleAddPortForward(pfListMatch[1]!, req);
-    }
-    const pfDelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/port-forwards\/(\d+)\/(\d+)$/);
-    if (pfDelMatch && req.method === 'DELETE') {
-      return handleRemovePortForward(pfDelMatch[1]!, Number(pfDelMatch[2]), Number(pfDelMatch[3]));
-    }
-
-    // Per-session dismissed shells — the bridge owns visibility for
-    // terminal bubbles. Frontend asks `GET /sessions/:id/shells/dismissed`
-    // on session load and filters those procIds out of the rendered chat.
-    // `DELETE /sessions/:id/shells/:procId` marks the bubble as dismissed
-    // (persistent across bridge restarts). A WS `shell_dismissed` event
-    // notifies other viewers so the bubble vanishes everywhere.
-    const shellsListMatch = url.pathname.match(/^\/sessions\/([^/]+)\/shells\/dismissed$/);
-    if (shellsListMatch && req.method === 'GET') {
-      return Response.json({ dismissed: getDismissedShells(shellsListMatch[1]!) }, { headers: corsHeaders });
-    }
-    const shellDismissMatch = url.pathname.match(/^\/sessions\/([^/]+)\/shells\/([^/]+)$/);
-    if (shellDismissMatch && req.method === 'DELETE') {
-      const sid = shellDismissMatch[1]!;
-      const procId = shellDismissMatch[2]!;
-      const changed = dismissShell(sid, procId);
-      if (changed) {
-        const data = JSON.stringify({ type: 'shell_dismissed', sessionId: sid, procId });
-        for (const ws of frontendClients) {
-          try { ws.send(data); } catch {}
-        }
-      }
-      return Response.json({ ok: true, changed }, { headers: corsHeaders });
-    }
-
-    // POST /sessions/:id/messages — HTTP path used by the gateway to forward
-    // user messages from local frontends into a remote bridge. Same payload
-    // shape as the `send_message` WS event.
-    const msgPostMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
-    if (msgPostMatch && req.method === 'POST') {
-      const sid = msgPostMatch[1]!;
-      const remoteId = resolveSessionRemote(sid);
-      if (remoteId) return proxyHttpToRemote(req, remoteId);
-      let body: { text?: string; images?: { media_type: string; data: string }[] } = {};
-      try { body = await req.json() as typeof body; } catch {}
-      if (!body.text) return Response.json({ error: 'text required' }, { status: 400, headers: corsHeaders });
-      const result = await sendMessageToSession(sid, body.text, body.images);
-      return Response.json(result, { headers: corsHeaders });
-    }
-
-    const deleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
-    if (deleteMatch && req.method === 'DELETE') {
-      const sid = deleteMatch[1]!;
-      const remoteId = resolveSessionRemote(sid);
-      if (remoteId) {
-        const resp = await proxyHttpToRemote(req, remoteId);
-        if (resp.ok) {
-          unregisterRemoteSession(remoteId, sid);
-          broadcastSessionList();
-        }
-        return resp;
-      }
-      // ?purge=1     → also delete the on-disk chat history + UI state
-      // ?worktree=1  → also remove the git worktree (when cwd looks like one)
-      // Plain DELETE is the legacy soft-remove (in-memory drop only).
-      const purge = url.searchParams.get('purge') === '1';
-      const removeWorktree = url.searchParams.get('worktree') === '1';
-      const resp = handleDeleteSession(sid, purge, removeWorktree);
-      broadcastSessionList();
-      return resp;
-    }
-
-    // -----------------------------------------------------------------------
-    // Remotes (configured SSH workstations)
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/remotes' && req.method === 'GET') {
-      return handleListRemotes();
-    }
-    if (url.pathname === '/remotes' && req.method === 'POST') {
-      const resp = await handleAddRemote(req);
-      broadcastRemoteList();
-      return resp;
-    }
-    const remotePatchMatch = url.pathname.match(/^\/remotes\/([^/]+)$/);
-    if (remotePatchMatch && req.method === 'PATCH') {
-      const resp = await handleUpdateRemote(remotePatchMatch[1]!, req);
-      broadcastRemoteList();
-      return resp;
-    }
-    if (remotePatchMatch && req.method === 'DELETE') {
-      const resp = await handleRemoveRemote(remotePatchMatch[1]!);
-      broadcastRemoteList();
-      broadcastSessionList();
-      return resp;
-    }
-    const remoteTestMatch = url.pathname.match(/^\/remotes\/([^/]+)\/test$/);
-    if (remoteTestMatch && req.method === 'POST') {
-      return handleTestRemote(remoteTestMatch[1]!);
-    }
-
-    // -----------------------------------------------------------------------
-    // Files
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/ls' && req.method === 'GET') {
-      const prefix = url.searchParams.get('prefix') || '/';
-      return handleListDirs(prefix);
-    }
-
-    if (url.pathname === '/user-home' && req.method === 'GET') {
-      return Response.json({ home: homedir() }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/files' && req.method === 'GET') {
-      const dirPath = url.searchParams.get('path') || '/';
-      return handleListFiles(dirPath);
-    }
-
-    if (url.pathname === '/file-index' && req.method === 'GET') {
-      const root = url.searchParams.get('root');
-      if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
-      return handleFileIndex(root);
-    }
-
-    if (url.pathname === '/file-content' && req.method === 'GET') {
-      const filePath = url.searchParams.get('path');
-      if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-      try {
-        const content = readFileSync(filePath, 'utf-8');
-        return Response.json({ path: filePath, content }, { headers: corsHeaders });
-      } catch {
-        return Response.json({ error: 'Cannot read file' }, { status: 404, headers: corsHeaders });
-      }
-    }
-
-    if (url.pathname === '/file-content' && req.method === 'PUT') {
-      try {
-        const body = await req.json() as { path: string; content: string };
-        if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-        writeFileSync(body.path, body.content, 'utf-8');
-        return Response.json({ ok: true }, { headers: corsHeaders });
-      } catch (e: any) {
-        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    if (url.pathname === '/file-content' && req.method === 'DELETE') {
-      const filePath = url.searchParams.get('path');
-      if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-      return handleDeletePath(filePath);
-    }
-
-    if (url.pathname === '/file-rename' && req.method === 'POST') {
-      try {
-        const body = await req.json() as { from: string; to: string };
-        if (!body.from || !body.to) return Response.json({ error: 'from and to required' }, { status: 400, headers: corsHeaders });
-        return handleRenamePath(body.from, body.to);
-      } catch (e: any) {
-        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    if (url.pathname === '/file-new' && req.method === 'POST') {
-      try {
-        const body = await req.json() as { path: string; kind: 'file' | 'dir' };
-        if (!body.path || !body.kind) return Response.json({ error: 'path and kind required' }, { status: 400, headers: corsHeaders });
-        return body.kind === 'dir' ? handleCreateDir(body.path) : handleCreateFile(body.path);
-      } catch (e: any) {
-        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    if (url.pathname === '/file-reveal' && req.method === 'POST') {
-      try {
-        const body = await req.json() as { path: string };
-        if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-        return handleRevealInFinder(body.path);
-      } catch (e: any) {
-        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    // -----------------------------------------------------------------------
-    // Exec / Processes
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/exec' && req.method === 'POST') {
-      return handleExecCreate(req);
-    }
-
-    if (url.pathname === '/processes' && req.method === 'GET') {
-      const sessionId = url.searchParams.get('sessionId');
-      if (!sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
-      return handleListProcesses(sessionId);
-    }
-
-    if (url.pathname === '/kill' && req.method === 'POST') {
-      const body = await req.json() as { processId?: string; pid?: number };
-      if (!body.processId && !body.pid) return Response.json({ error: 'processId or pid required' }, { status: 400, headers: corsHeaders });
-      return handleKillProcess(body.processId || '', body.pid);
-    }
-
-    // -----------------------------------------------------------------------
-    // Git
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/file-original' && req.method === 'GET') {
-      const filePath = url.searchParams.get('path');
-      if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-      // When `base` is given, diff against the merge-base of that branch and
-      // HEAD (so a "vs main" diff shows the branch's own changes); otherwise
-      // against the working tree's HEAD.
-      const base = url.searchParams.get('base');
-      try {
-        const cwd = dirname(filePath);
-        const relPath = execSync(`git ls-files --full-name "${filePath}"`, { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
-        if (!relPath) return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
-        let ref = 'HEAD';
-        if (base) ref = baseDiffRef(cwd, base) || 'HEAD';
-        const content = execSync(`git show ${JSON.stringify(ref)}:"${relPath}"`, { cwd, encoding: 'utf-8', timeout: 5000 });
-        return Response.json({ path: filePath, content }, { headers: corsHeaders });
-      } catch {
-        return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
-      }
-    }
-
-    if (url.pathname === '/git-modified' && req.method === 'GET') {
-      const root = url.searchParams.get('root');
-      if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
-      return handleGitModified(root, url.searchParams.get('base'));
-    }
-
-    if (url.pathname === '/git-stage' && req.method === 'POST') {
-      const body = await req.json() as { root: string; files: string[]; unstage?: boolean };
-      if (!body.root || !body.files?.length) return Response.json({ error: 'root and files required' }, { status: 400, headers: corsHeaders });
-      try {
-        const gitTop = execSync('git rev-parse --show-toplevel', { cwd: body.root, encoding: 'utf-8', timeout: 5000 }).trim();
-        const cmd = body.unstage ? 'git reset HEAD --' : 'git add --';
-        execSync(
-          `${cmd} ${body.files.map(f => `'${f.replace(/'/g, "'\\''")}'`).join(' ')}`,
-          { cwd: gitTop, encoding: 'utf-8', timeout: 5000 },
-        );
-        return Response.json({ ok: true }, { headers: corsHeaders });
-      } catch (e: any) {
-        return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    if (url.pathname === '/git-info' && req.method === 'GET') {
-      const dirPath = url.searchParams.get('path');
-      if (!dirPath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-      return handleGitInfo(dirPath);
-    }
-
-    if (url.pathname === '/git-branches' && req.method === 'GET') {
-      const cwd = url.searchParams.get('cwd');
-      if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
-      return handleGitBranches(cwd);
-    }
-
-    if (url.pathname === '/git-checkout' && req.method === 'POST') {
-      const body = await req.json() as { cwd: string; branch: string };
-      if (!body.cwd || !body.branch) return Response.json({ error: 'cwd and branch required' }, { status: 400, headers: corsHeaders });
-      return handleGitCheckout(body.cwd, body.branch);
-    }
-
-    if (url.pathname === '/gh-prs' && req.method === 'GET') {
-      const cwd = url.searchParams.get('cwd');
-      const sessionName = url.searchParams.get('session') || '';
-      if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
-      return handleGhPrs(cwd, sessionName);
-    }
-
-    // -----------------------------------------------------------------------
-    // MCP servers (config CRUD over ~/.claude/settings.json + <cwd>/.mcp.json)
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/mcp-servers' && req.method === 'GET') {
-      return handleListMcpServers(url.searchParams.get('cwd'));
-    }
-
-    if (url.pathname === '/mcp-servers' && req.method === 'POST') {
-      return await handleAddMcpServer(req);
-    }
-
-    const mcpRemoveMatch = url.pathname.match(/^\/mcp-servers\/(.+)$/);
-    if (mcpRemoveMatch && req.method === 'DELETE') {
-      const name = decodeURIComponent(mcpRemoveMatch[1]!);
-      const scope = url.searchParams.get('scope') === 'project' ? 'project' : 'user';
-      return handleRemoveMcpServer(name, scope, url.searchParams.get('cwd'));
-    }
-
-    // -----------------------------------------------------------------------
-    // Search
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/search' && req.method === 'GET') {
-      const root = url.searchParams.get('root');
-      const query = url.searchParams.get('q') || '';
-      const caseParam = url.searchParams.get('case');
-      const caseMode = caseParam === 'sensitive' || caseParam === 'insensitive' ? caseParam : 'smart';
-      const ignoreParam = url.searchParams.get('ignore') || '';
-      const ignoreGlobs = ignoreParam
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
-        .slice(0, 32);
-      if (!root || !query) return Response.json({ results: [] }, { headers: corsHeaders });
-      return handleSearch(root, query, caseMode, ignoreGlobs);
-    }
-
-    // -----------------------------------------------------------------------
-    // Worktree
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/worktree' && req.method === 'POST') {
-      return handleCreateWorktree(req);
-    }
-
-    // -----------------------------------------------------------------------
-    // Misc
-    // -----------------------------------------------------------------------
-
-    if (url.pathname === '/save-commands' && req.method === 'POST') {
-      const body = await req.json() as { sessionId: string; commands: string[] };
-      if (!body.sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
-      const session = sessions.get(body.sessionId);
-      if (!session) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
-      session.savedCommands = body.commands || [];
-      saveSessions();
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/mcp') {
-      return handleMcpRequest(req);
-    }
-
-    // ── Telegram ────────────────────────────────────────────────────────
-
-    if (url.pathname === '/telegram/settings' && req.method === 'GET') {
-      const settings = loadTelegramSettings();
-      return Response.json({
-        botToken: settings.botToken,
-        chatId: settings.chatId,
-        running: isTelegramBotRunning(),
-      }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/telegram/settings' && req.method === 'PUT') {
-      const body = await req.json() as { botToken?: string; chatId?: string };
-      saveTelegramSettings({
-        botToken: (body.botToken ?? '').trim(),
-        chatId: (body.chatId ?? '').trim(),
-      });
-      restartTelegramBot();
-      return Response.json({ ok: true, running: isTelegramBotRunning() }, { headers: corsHeaders });
-    }
-
-    // ── Deepgram ────────────────────────────────────────────────────────
-
-    if (url.pathname === '/deepgram/settings' && req.method === 'GET') {
-      const settings = loadDeepgramSettings();
-      return Response.json({
-        apiKey: settings.apiKey,
-        model: settings.model,
-        language: settings.language,
-        configured: Boolean(settings.apiKey),
-      }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/deepgram/settings' && req.method === 'PUT') {
-      const body = await req.json() as { apiKey?: string; model?: string; language?: string };
-      const apiKey = (body.apiKey ?? '').trim();
-      const model = (body.model ?? '').trim() || 'nova-3';
-      const language = (body.language ?? '').trim() || 'multi';
-      saveDeepgramSettings({ apiKey, model, language });
-      return Response.json({ ok: true, configured: Boolean(apiKey) }, { headers: corsHeaders });
-    }
-
-    // Transcribe a one-shot audio blob via Deepgram. The mobile composer
-    // records a short voice note and POSTs the raw audio bytes here; we
-    // stream it to Deepgram (same code path Telegram voice notes use) and
-    // return the joined transcript. Client turns it into a regular chat
-    // message — no TTS, no streaming back.
-    if (url.pathname === '/deepgram/transcribe' && req.method === 'POST') {
-      try {
-        const buf = new Uint8Array(await req.arrayBuffer());
-        if (buf.byteLength === 0) {
-          return new Response('empty audio body', { status: 400, headers: corsHeaders });
-        }
-        const { transcript, detectedLanguage, durationSec } = await transcribeAudioBuffer(buf);
-        return Response.json({ transcript, detectedLanguage, durationSec }, { headers: corsHeaders });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return new Response(msg, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    // ── Tailscale Funnel ────────────────────────────────────────────────
-
-    if (url.pathname === '/tailscale/settings' && req.method === 'GET') {
-      const settings = loadTailscaleSettings();
-      const available = isTailscaleAvailable();
-      const hostname = available ? getTailscaleHostname() : null;
-      const status = available ? getFunnelStatus() : { active: false, ports: [] };
-      return Response.json({
-        funnelEnabled: settings.funnelEnabled,
-        available,
-        hostname,
-        funnelActive: status.active,
-        funnelPorts: status.ports,
-        funnelUrl: settings.funnelEnabled && hostname ? `https://${hostname}` : null,
-      }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/tailscale/settings' && req.method === 'PUT') {
-      const body = await req.json() as { funnelEnabled?: boolean };
-      const enabled = !!body.funnelEnabled;
-      let error: string | null = null;
-      if (enabled) {
-        const res = enableFunnel(PORT);
-        if (!res.ok) error = res.error;
-      } else {
-        const res = disableFunnel();
-        if (!res.ok && isTailscaleAvailable()) error = res.error;
-      }
-      // Persist intent even if the CLI call fails so the UI reflects the
-      // user's choice and we can surface the underlying error.
-      saveTailscaleSettings({ funnelEnabled: enabled && !error });
-      const hostname = isTailscaleAvailable() ? getTailscaleHostname() : null;
-      const status = isTailscaleAvailable() ? getFunnelStatus() : { active: false, ports: [] };
-      return Response.json({
-        ok: !error,
-        error,
-        funnelEnabled: enabled && !error,
-        available: isTailscaleAvailable(),
-        hostname,
-        funnelActive: status.active,
-        funnelPorts: status.ports,
-        funnelUrl: enabled && !error && hostname ? `https://${hostname}` : null,
-      }, { status: error ? 400 : 200, headers: corsHeaders });
-    }
-
-    // ── Portless (named local dev servers with stable hostnames) ─────────
-
-    if (url.pathname === '/portless/cli-status' && req.method === 'GET') {
-      return Response.json(getPortlessCliStatus(), { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/status' && req.method === 'GET') {
-      return Response.json({ actions: portlessSnapshotAll() }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/run' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as {
-        groupId?: string; actionId?: string;
-        name?: string; command?: string; hostname?: string; cwd?: string;
-        noTls?: boolean; source?: 'user' | 'agent'; sessionId?: string;
-      };
-      if (!body.groupId || !body.actionId || !body.name || !body.command || !body.hostname || !body.cwd) {
-        return Response.json({ error: 'groupId, actionId, name, command, hostname and cwd are required.' }, { status: 400, headers: corsHeaders });
-      }
-      const res = portlessRunAction({
-        groupId: body.groupId,
-        actionId: body.actionId,
-        name: body.name,
-        command: body.command,
-        hostname: body.hostname,
-        cwd: body.cwd,
-        noTls: body.noTls === true,
-        source: body.source === 'agent' ? 'agent' : 'user',
-        sessionId: body.sessionId,
-      });
-      if (!res.ok) {
-        return Response.json({ error: res.error }, { status: 400, headers: corsHeaders });
-      }
-      return Response.json({ status: res.status }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/stop' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as { groupId?: string; actionId?: string };
-      if (!body.groupId || !body.actionId) {
-        return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
-      }
-      const stopped = portlessStopAction(body.groupId, body.actionId);
-      return Response.json({ stopped }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/stop-all' && req.method === 'POST') {
-      portlessStopAll();
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/forget' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as { groupId?: string; actionId?: string };
-      if (!body.groupId || !body.actionId) {
-        return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
-      }
-      portlessForgetAction(body.groupId, body.actionId);
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/detect' && req.method === 'GET') {
-      const cwd = url.searchParams.get('cwd');
-      if (!cwd) return Response.json({ error: 'cwd is required.' }, { status: 400, headers: corsHeaders });
-      try {
-        const pkgPath = join(cwd, 'package.json');
-        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string>; name?: string };
-        const scripts = pkg.scripts || {};
-        const suggested: { name: string; command: string }[] = [];
-        for (const [scriptName, _cmd] of Object.entries(scripts)) {
-          // Surface scripts that look like dev servers — kind enough for a
-          // first pass: keys starting with `start`, `dev`, `serve`, or
-          // `nx run <app>:serve` style scripts.
-          if (/^(start|dev|serve)([:-].+)?$/.test(scriptName)) {
-            suggested.push({ name: scriptName, command: `npm run ${scriptName}` });
-          }
-        }
-        return Response.json({ projectName: pkg.name || null, suggested }, { headers: corsHeaders });
-      } catch (e: any) {
-        return Response.json({ error: e?.message || 'could not read package.json' }, { status: 400, headers: corsHeaders });
-      }
-    }
-
-    // ── PR Links ─────────────────────────────────────────────────────
-
-    const prLinkMatch = url.pathname.match(/^\/pr-link\/([^/]+)$/);
-    if (prLinkMatch && req.method === 'GET') {
-      const link = getPRLink(prLinkMatch[1]!);
-      return Response.json({ link }, { headers: corsHeaders });
-    }
-
-    if (prLinkMatch && req.method === 'PUT') {
-      const body = await req.json() as { prNumber: number; title: string; url: string; headRefName: string; state: string };
-      savePRLink(prLinkMatch[1]!, body);
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    if (prLinkMatch && req.method === 'DELETE') {
-      removePRLink(prLinkMatch[1]!);
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/pr-links' && req.method === 'GET') {
-      return Response.json(loadPRLinks(), { headers: corsHeaders });
-    }
-
-    // PR detail via gh CLI
-    if (url.pathname === '/pr-detail' && req.method === 'GET') {
-      const prNumber = url.searchParams.get('number');
-      const cwd = url.searchParams.get('cwd') || CWD;
-    if (url.pathname === '/portless/proxy/status' && req.method === 'GET') {
-      const status = await getPortlessProxyStatus();
-      return Response.json(status, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/proxy/start' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as { mode?: ProxyMode };
-      const mode: ProxyMode = body.mode === 'http80' || body.mode === 'https443' ? body.mode : 'default';
-      const result = await startPortlessProxy(mode);
-      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/proxy/stop' && req.method === 'POST') {
-      const result = await stopPortlessProxy();
-      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/trust' && req.method === 'POST') {
-      const result = await trustPortlessCA();
-      return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
-    }
-
-      if (!prNumber) return Response.json({ error: 'missing number' }, { status: 400, headers: corsHeaders });
-      try {
-        const prJson = execSync(
-          `gh pr view ${prNumber} --json number,title,body,headRefName,baseRefName,state,url,isDraft,additions,deletions,changedFiles,commits,reviews,comments,labels,author,createdAt,updatedAt,mergedAt,mergeable`,
-          { cwd, encoding: 'utf-8', timeout: 15000 },
-        );
-        return Response.json(JSON.parse(prJson), { headers: corsHeaders });
-      } catch (e: any) {
-        return Response.json({ error: e.message || String(e) }, { status: 502, headers: corsHeaders });
-      }
-    }
-
-    // ── Preferences ──────────────────────────────────────────────────
-
-    if (url.pathname === '/preferences' && req.method === 'GET') {
-      return Response.json(loadPreferences(), { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/preferences' && req.method === 'PUT') {
-      const body = await req.json() as Record<string, unknown>;
-      updatePreferences(body);
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    // ── Claude hooks (read/write ~/.claude/settings.json and project) ──
-
-    if (url.pathname === '/claude-hooks' && req.method === 'GET') {
-      const scope = (url.searchParams.get('scope') || 'global') as 'global' | 'project';
-      const cwd = url.searchParams.get('cwd') || undefined;
-      try {
-        const result = readClaudeHooks(scope, cwd);
-        return Response.json(result, { headers: corsHeaders });
-      } catch (e) {
-        return Response.json({ error: String(e) }, { status: 400, headers: corsHeaders });
-      }
-    }
-
-    if (url.pathname === '/claude-hooks' && req.method === 'PUT') {
-      const body = await req.json() as { scope?: 'global' | 'project'; cwd?: string; hooks?: ClaudeHooks };
-      try {
-        const result = writeClaudeHooks(body.scope || 'global', body.cwd, body.hooks || {});
-        return Response.json({ ok: true, ...result }, { headers: corsHeaders });
-      } catch (e) {
-        return Response.json({ error: String(e) }, { status: 400, headers: corsHeaders });
-      }
-    }
-
-    // ── LSP ─────────────────────────────────────────────────────────────
-
-    if (url.pathname === '/lsp/languages' && req.method === 'GET') {
-      return Response.json(supportedLanguages(), { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/portless/scan-env' && req.method === 'GET') {
-      const cwd = url.searchParams.get('cwd');
-      const actionNamesRaw = url.searchParams.get('actionNames') || '';
-      if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
-      const actionNames = actionNamesRaw.split(',').map(s => s.trim()).filter(Boolean);
-      try {
-        const { readFileSync: rf, readdirSync: rd, statSync: st } = require('fs') as typeof import('fs');
-        const { join: jp } = require('path') as typeof import('path');
-        const found: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean }[] = [];
-        // Walk top-level + apps/*/ for .env* files. Two levels is plenty for
-        // nx/turborepo layouts without going wild on huge monorepos.
-        const candidates: string[] = [];
-        try {
-          for (const f of rd(cwd)) {
-            if (f.startsWith('.env')) candidates.push(jp(cwd, f));
-          }
-        } catch {}
-        try {
-          const appsDir = jp(cwd, 'apps');
-          if (st(appsDir).isDirectory()) {
-            for (const sub of rd(appsDir)) {
-              const dir = jp(appsDir, sub);
-              try {
-                if (!st(dir).isDirectory()) continue;
-                for (const f of rd(dir)) {
-                  if (f.startsWith('.env')) candidates.push(jp(dir, f));
-                }
-              } catch {}
-            }
-          }
-        } catch {}
-        const urlish = /^(?:https?:\/\/|localhost|127\.0\.0\.1|0\.0\.0\.0)/i;
-        for (const file of candidates) {
-          let content = '';
-          try { content = rf(file, 'utf-8'); } catch { continue; }
-          const lines = content.split('\n');
-          lines.forEach((raw, idx) => {
-            const line = raw.replace(/^export\s+/, '').trim();
-            if (!line || line.startsWith('#')) return;
-            const m = line.match(/^([A-Z][A-Z0-9_]*)\s*=\s*(.+)$/);
-            if (!m) return;
-            const key = m[1]!;
-            let val = m[2]!.trim();
-            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-              val = val.slice(1, -1);
-            }
-            if (!urlish.test(val)) return;
-            // Heuristic: pull all action names whose slug is a substring of
-            // the env key. e.g. `API_URL` matches action `api`; `WEB_URL`
-            // matches `web` AND `web-renter`.
-            const keyLow = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
-            const matches = actionNames.filter(n => {
-              const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, '');
-              return slug && keyLow.includes(slug);
-            });
-            // Prefer the longest matching action name when ambiguous.
-            matches.sort((a, b) => b.length - a.length);
-            found.push({
-              var: key,
-              value: val,
-              file: file.startsWith(cwd) ? file.slice(cwd.length + 1) : file,
-              line: idx + 1,
-              suggestedAction: matches[0] || null,
-              ambiguous: matches.length > 1,
-            });
-          });
-        }
-        return Response.json({ candidates: found, scanned: candidates }, { headers: corsHeaders });
-      } catch (e: any) {
-        return Response.json({ error: e?.message || 'scan failed' }, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    // ── Debug (CDP) ──────────────────────────────────────────────────────
-
-    if (url.pathname === '/debug/targets' && req.method === 'GET') {
-      const host = url.searchParams.get('host') || '127.0.0.1';
-      const port = parseInt(url.searchParams.get('port') || '9229', 10);
-      const targets = await discoverTargets(host, port);
-      return Response.json(targets, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/debug/connect' && req.method === 'POST') {
-      const body = await req.json() as Record<string, unknown>;
-      const host = (body.host as string) || '127.0.0.1';
-      const port = (body.port as number) || 9229;
-      const targetId = body.targetId as string | undefined;
-      const conn = await connectToTarget(host, port, targetId);
-      if (!conn) return Response.json({ error: 'Failed to connect' }, { status: 502, headers: corsHeaders });
-      return Response.json({ connectionId: conn.id, host: conn.host, port: conn.port, targetId: conn.targetId }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/debug/disconnect' && req.method === 'POST') {
-      const body = await req.json() as Record<string, unknown>;
-      const connectionId = body.connectionId as string;
-      if (connectionId) disconnectTarget(connectionId);
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    // ── Health ──────────────────────────────────────────────────────────
-
-    if (url.pathname === '/health') {
-      return Response.json({ status: 'ok', sessions: sessions.size }, { headers: corsHeaders });
-    }
-
-    if (url.pathname === '/ui-log' && req.method === 'POST') {
-      try {
-        const body = await req.json() as { msg: string };
-        log(`[UI] ${body.msg}`);
-      } catch {}
-      return Response.json({ ok: true }, { headers: corsHeaders });
-    }
-
-    const debugMatch = url.pathname.match(/^\/debug\/(.+)$/);
-    if (debugMatch && req.method === 'GET') {
-      const s = sessions.get(debugMatch[1]!);
-      if (!s) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
-      return Response.json({
-        id: s.id,
-        status: s.status,
-        runtimeStatus: s.runtimeStatus,
-        ready: s.ready,
-        provider: s.provider,
-        hasProviderSession: !!s.providerSession,
-        browserWsCount: s.browserWs.size,
-        frontendClientsCount: frontendClients.size,
-        subscribedCount: [...subscriptions.values()].filter(subs => subs.has(debugMatch[1]!)).length,
-      }, { headers: corsHeaders });
-    }
-
-    return new Response('Not found', { status: 404 });
+    // All HTTP routes are registered on the Hono `app` (defined above).
+    return app.fetch(req);
   },
 
   // -------------------------------------------------------------------------
@@ -2525,6 +2419,7 @@ process.on('SIGTERM', () => { try { unlinkSync(PORT_FILE); } catch {}; process.e
 {
   const scheme = TLS ? 'https' : 'http';
   log(`Bridge server listening on ${scheme}://localhost:${server.port} (host=${HOST}, tls=${!!TLS})`);
+  log(`Swagger docs: http://localhost:${process.env.CODIBY_SWAGGER_PORT || 3112}`);
   log(`Claude binary: ${CLAUDE_BIN}`);
   log(`Working directory: ${CWD}`);
   log(`Spawn mode: ${SPAWN_MODE}`);
@@ -2547,6 +2442,11 @@ setMcpDeps({
 });
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);
+
+// Swagger/OpenAPI docs server — a decoupled bun server on port 3112 (override
+// with CODIBY_SWAGGER_PORT, disable with CODIBY_SWAGGER=0). Boots alongside the
+// bridge so the API docs are always available wherever the API is.
+startSwaggerServer(server.port);
 
 // Lazy spawn: sessions are persisted and shown in the UI immediately, but each
 // provider is only booted (and `claude --resume` is only issued) when the user

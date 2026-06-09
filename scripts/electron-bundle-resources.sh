@@ -58,5 +58,23 @@ else
   echo "-- Skipping rg copy (no @vscode/ripgrep binary for $(uname -s)-$(uname -m))" >&2
 fi
 
+# Swagger UI static assets — the bundled `server.js` ships no node_modules, so
+# copy swagger-ui-dist into resources. The bridge resolves it via
+# CODIBY_SWAGGER_DIST (set by electron/bridge_server.ts), the same pattern as rg.
+SWAGGER_SRC="$PROJECT_DIR/node_modules/swagger-ui-dist"
+SWAGGER_OUT="$OUT_DIR/swagger-ui-dist"
+if [ -f "$SWAGGER_SRC/swagger-ui-bundle.js" ]; then
+  echo "-- Copying swagger-ui-dist -> $SWAGGER_OUT"
+  rm -rf "$SWAGGER_OUT"
+  mkdir -p "$SWAGGER_OUT"
+  # Only the runtime assets the docs server serves — skip source maps / TS defs.
+  for f in swagger-ui-bundle.js swagger-ui-standalone-preset.js swagger-ui.css \
+           favicon-16x16.png favicon-32x32.png oauth2-redirect.html; do
+    [ -f "$SWAGGER_SRC/$f" ] && cp "$SWAGGER_SRC/$f" "$SWAGGER_OUT/"
+  done
+else
+  echo "-- Skipping swagger-ui-dist copy (not installed)" >&2
+fi
+
 echo "-- Done"
 ls -lh "$BUN_OUT" "$SERVER_OUT" "$OUT_DIR/rg" 2>/dev/null || true

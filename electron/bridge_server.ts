@@ -101,6 +101,10 @@ async function spawnSidecar(): Promise<number> {
     ? undefined
     : join(process.resourcesPath, platform() === 'win32' ? 'rg.exe' : 'rg');
 
+  // Swagger UI assets live next to bun/server.js in a packaged build; in dev the
+  // docs server resolves them from node_modules, so leave the var unset.
+  const swaggerDist = dev ? undefined : join(process.resourcesPath, 'swagger-ui-dist');
+
   // `--spawned-by=app` makes the bridge skip the bulk session boot it
   // would do under launchd. The Electron shell drives spawning lazily
   // via the `active_tab_change` WS message instead.
@@ -114,6 +118,7 @@ async function spawnSidecar(): Promise<number> {
         CLAUDE_UI_PORT: '3111',
         CLAUDE_UI_HOST: '127.0.0.1',
         ...(rgPath ? { CODIBY_RG_PATH: rgPath } : {}),
+        ...(swaggerDist ? { CODIBY_SWAGGER_DIST: swaggerDist } : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
