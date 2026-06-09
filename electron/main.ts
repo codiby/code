@@ -89,6 +89,18 @@ app.commandLine.appendSwitch('no-pings');
 
 process.noDeprecation = true;
 
+// Last-resort error net for the Electron main process. Without this, a single
+// unhandled throw or rejected promise (e.g. in an IPC handler, the updater, or
+// a browser-preview callback) bubbles up to Electron's default handler, which
+// pops a crash dialog and can quit the app. We swallow + log instead so the
+// window stays up; the sidecar has its own equivalent net (see server/logger).
+process.on('uncaughtException', (err) => {
+  console.error('[electron-main] Uncaught exception (kept app alive):', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[electron-main] Unhandled promise rejection (kept app alive):', reason);
+});
+
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
