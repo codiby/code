@@ -5,6 +5,7 @@
  */
 
 import { memo, useCallback } from 'react';
+import { highlightCode, normalizeLang } from '../lib/highlight';
 
 const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'strong', 'del', 'sub', 'sup', 'kbd', 'mark', 'abbr']);
 
@@ -12,14 +13,25 @@ const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11
 
 // Renders a fenced code block wrapped with a hover-revealed copy button. The
 // button has no React handler (the parent renders via dangerouslySetInnerHTML);
-// clicks are caught by event delegation on the Markdown container.
-function codeBlockHtml(code: string): string {
-  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// clicks are caught by event delegation on the Markdown container. `lang` is the
+// fence's language tag (e.g. "ts"); when recognised, the code is Prism-tokenized
+// (`highlightCode` escapes its own output) and a `language-*` class is added so
+// the token-color CSS applies and the label shows in the corner.
+function codeBlockHtml(code: string, lang: string): string {
+  const grammar = normalizeLang(lang);
+  const body = highlightCode(code, lang);
+  const langClass = grammar ? ` language-${grammar}` : '';
+  const label = grammar
+    ? `<span class="absolute top-1.5 left-3 z-10 text-[9px] uppercase tracking-wide text-zinc-600 select-none pointer-events-none">${grammar}</span>`
+    : '';
+  // Reserve top space for the language label so it doesn't overlap line 1.
+  const padTop = grammar ? 'pt-6' : 'pt-2';
   return `<div class="relative group/code my-2" data-code-block>`
+    + label
     + `<button type="button" data-copy-code aria-label="Copy code"`
     + ` class="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-light border border-border text-[10px] text-zinc-400 opacity-0 group-hover/code:opacity-100 hover:text-zinc-200 hover:border-border-light transition-opacity">`
     + `${COPY_ICON}<span data-copy-label>Copy</span></button>`
-    + `<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 py-2 font-mono overflow-x-auto leading-snug"><code>${escaped}</code></pre>`
+    + `<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 pb-2 ${padTop} font-mono overflow-x-auto leading-snug${langClass}"><code class="${langClass.trim()}">${body}</code></pre>`
     + `</div>`;
 }
 
@@ -94,6 +106,7 @@ function renderMarkdown(source: string): string {
   const html: string[] = [];
   let inCodeBlock = false;
   let codeLines: string[] = [];
+  let codeLang = '';
   let inList = false;
   let listType = '';
   let tableRows: string[] = [];
@@ -119,14 +132,17 @@ function renderMarkdown(source: string): string {
     // Code blocks
     if (line.trimStart().startsWith('```')) {
       if (inCodeBlock) {
-        html.push(codeBlockHtml(codeLines.join('\n')));
+        html.push(codeBlockHtml(codeLines.join('\n'), codeLang));
         inCodeBlock = false;
         codeLines = [];
+        codeLang = '';
         continue;
       }
       flushTable();
       inCodeBlock = true;
       codeLines = [];
+      // Fence info string: first token after the ``` is the language.
+      codeLang = line.trimStart().replace(/^`+/, '').trim().split(/\s+/)[0].toLowerCase();
       continue;
     }
     if (inCodeBlock) {
@@ -167,12 +183,12 @@ function renderMarkdown(source: string): string {
       closeList();
       const level = headerMatch[1].length;
       const sizes: Record<number, string> = {
-        1: 'text-[14px] font-semibold text-zinc-100 mt-4 mb-2',
-        2: 'text-[13px] font-semibold text-zinc-200 mt-3 mb-1.5',
-        3: 'text-[12px] font-semibold text-zinc-300 mt-2 mb-1',
-        4: 'text-[12px] font-medium text-zinc-400 mt-2 mb-1',
-        5: 'text-[11px] font-medium text-zinc-400 mt-1 mb-0.5',
-        6: 'text-[11px] font-medium text-zinc-500 mt-1 mb-0.5',
+        1: 'text-[19px] font-bold text-zinc-50 mt-5 mb-2.5 pb-1 border-b border-border leading-tight',
+        2: 'text-[16px] font-semibold text-zinc-100 mt-4 mb-2 leading-tight',
+        3: 'text-[14px] font-semibold text-zinc-200 mt-3 mb-1.5 leading-snug',
+        4: 'text-[13px] font-semibold text-zinc-300 mt-2.5 mb-1 leading-snug',
+        5: 'text-[12px] font-semibold text-zinc-400 mt-2 mb-1 uppercase tracking-wide',
+        6: 'text-[11px] font-medium text-zinc-500 mt-1.5 mb-0.5 uppercase tracking-wide',
       };
       html.push(`<div class="${sizes[level] || sizes[3]}">${renderInline(escapeHtml(headerMatch[2]))}</div>`);
       continue;
@@ -217,7 +233,7 @@ function renderMarkdown(source: string): string {
   }
 
   if (inCodeBlock) {
-    html.push(codeBlockHtml(codeLines.join('\n')));
+    html.push(codeBlockHtml(codeLines.join('\n'), codeLang));
   }
   flushTable();
   closeList();

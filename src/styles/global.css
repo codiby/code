@@ -263,3 +263,55 @@ code {
 .plan-block-highlight {
   animation: planBlockHighlight 2.5s ease-out forwards;
 }
+
+/* ---------------------------------------------------------------------------
+   Prism syntax highlighting — dark token theme for markdown code blocks
+   (rendered by src/components/Markdown.tsx via src/lib/highlight.ts). Scoped
+   to `pre code` so it only colors fenced blocks, never inline `code`.
+   Palette follows the One Dark family against the #0d0d0d block background.
+   --------------------------------------------------------------------------- */
+pre code .token.comment,
+pre code .token.prolog,
+pre code .token.doctype,
+pre code .token.cdata { color: #6a737d; font-style: italic; }
+
+pre code .token.punctuation { color: #8b949e; }
+
+pre code .token.property,
+pre code .token.tag,
+pre code .token.constant,
+pre code .token.symbol,
+pre code .token.deleted { color: #e06c75; }
+
+pre code .token.boolean,
+pre code .token.number { color: #d19a66; }
+
+pre code .token.selector,
+pre code .token.attr-name,
+pre code .token.string,
+pre code .token.char,
+pre code .token.builtin,
+pre code .token.inserted { color: #98c379; }
+
+pre code .token.operator,
+pre code .token.entity,
+pre code .token.url,
+pre code .token.variable { color: #56b6c2; }
+
+pre code .token.atrule,
+pre code .token.attr-value,
+pre code .token.keyword { color: #c678dd; }
+
+pre code .token.function,
+pre code .token.class-name { color: #61afef; }
+
+pre code .token.regex,
+pre code .token.important { color: #e5c07b; }
+
+pre code .token.important,
+pre code .token.bold { font-weight: 600; }
+pre code .token.italic { font-style: italic; }
+
+/* diff blocks: tint whole inserted/deleted lines */
+pre code .token.inserted { background: rgba(46, 160, 67, 0.12); }
+pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
