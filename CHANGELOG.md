@@ -5,6 +5,17 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.1] — 2026-06-09
+
+### Fixed
+
+- **Text selection no longer vanishes in the chat.** Selecting message text
+  used to be wiped within a fraction of a second — a background session's
+  streaming update would re-render the whole chat and rebuild each message's
+  HTML, recreating its text nodes and dropping the selection. Message rendering
+  is now memoized, so an unchanged message never touches the DOM and your
+  selection stays put.
+
 ## [0.21.0] — 2026-06-09
 
 ### Added
