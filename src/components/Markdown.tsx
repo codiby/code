@@ -4,6 +4,8 @@
  * links, images, lists, blockquotes, HR, tables, HTML details/summary/br.
  */
 
+import { memo } from 'react';
+
 const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'strong', 'del', 'sub', 'sup', 'kbd', 'mark', 'abbr']);
 
 function escapeHtml(text: string): string {
@@ -208,7 +210,14 @@ function renderMarkdown(source: string): string {
   return html.join('\n');
 }
 
-export function Markdown({ text, className }: { text: string; className?: string }) {
+// Memoized so an unchanged message's rendered HTML is never re-applied. The
+// chat re-renders frequently (any background session's stream updates the
+// shared session-state object in ChatApp), and re-applying
+// `dangerouslySetInnerHTML` — even with byte-identical HTML — tears down and
+// recreates every text node, which silently drops the user's text selection.
+// Skipping the re-render when `text`/`className` are unchanged keeps the DOM
+// (and the live selection) intact.
+export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
   if (!text) return null;
   const html = renderMarkdown(text);
   return (
@@ -217,4 +226,4 @@ export function Markdown({ text, className }: { text: string; className?: string
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
-}
+});
