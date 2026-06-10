@@ -5,6 +5,26 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] — 2026-06-10
+
+### Added
+
+- **Syntax highlighting in code blocks.** Fenced code blocks in agent messages
+  are now color-tokenized by language — TypeScript, Python, Bash, JSON, YAML,
+  Go, Rust, SQL and more — with the language shown in the block's top-left
+  corner. Untagged or unknown blocks fall back to plain, unhighlighted text.
+
+### Changed
+
+- **Clearer markdown heading hierarchy.** Headings in agent messages used to
+  render at nearly identical sizes, making structure hard to see. They now step
+  down through a distinct scale — an underlined top-level title down to small
+  uppercase sub-headings — so longer replies are easier to scan.
+- **Agents structure replies with headings.** The chat now tells the agent it
+  is rendering in a full Markdown UI rather than a terminal, so multi-part
+  answers come back organized with headers, lists and tables whenever the
+  content warrants it, instead of flat prose.
+
 ## [0.21.3] — 2026-06-09
 
 ### Added
