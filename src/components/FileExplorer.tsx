@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, memo, createContext, useContext } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, memo, createContext, useContext } from 'react';
 import {
   ArrowUpRight,
   ChevronDown,
@@ -1656,9 +1656,27 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   const dragging = useRef(false);
 
   const [menu, setMenu] = useState<MenuState>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [creatingIn, setCreatingIn] = useState<CreatingIn>(null);
   const deleteConfirmTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Keep the context menu fully on-screen. It's positioned at the raw cursor
+  // coords, so opening near the bottom/right edge would clip its lower items
+  // with no way to scroll up to them. After it renders, measure it and shift
+  // it back inside the viewport (flipping upward when there's no room below).
+  // Runs before paint, so the corrected position is the only one shown.
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const m = 8; // viewport margin
+    const { width, height } = el.getBoundingClientRect();
+    const left = Math.max(m, Math.min(menu.x, window.innerWidth - width - m));
+    const top = Math.max(m, Math.min(menu.y, window.innerHeight - height - m));
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }, [menu]);
 
   // Rail state: whether the cards are collapsed down to just the rail, plus the
   // live counts the Processes / PRs cards report so the rail can badge them.
@@ -1950,7 +1968,8 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
               onContextMenu={e => { e.preventDefault(); closeMenu(); }}
             />
             <div
-              className="fixed z-50 bg-surface border border-[#2a2b30]-light rounded-lg shadow-xl min-w-[200px] py-1"
+              ref={menuRef}
+              className="fixed z-50 bg-surface border border-[#2a2b30]-light rounded-lg shadow-xl min-w-[200px] py-1 max-h-[calc(100vh-16px)] overflow-y-auto"
               style={{ top: menu.y, left: menu.x }}
             >
               {menu.entry.type === 'file' && (
