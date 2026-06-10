@@ -5,6 +5,33 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] — 2026-06-10
+
+### Added
+
+- **Pick an existing worktree, not just create one.** The worktree panel in
+  the group composer now opens on a list of the repo's existing worktrees —
+  with the main checkout pinned at the top and marked as the default — so you
+  can drop a session straight into one. A "Use existing / New worktree" toggle
+  switches over to the familiar creation form when you do want a fresh branch.
+- **Delete a worktree inline.** Hovering a worktree in that list reveals a
+  trash button; it asks for a one-tap confirmation, then removes the worktree
+  via git and updates the list in place. The main checkout can't be deleted.
+
+### Changed
+
+- **API docs now live on the bridge at `/docs`.** Swagger UI is served from the
+  bridge itself, on the same port as the API (default 3111) at `/docs`, instead
+  of a separate server on port 3112. The standalone docs server remains for dev
+  use, and the spec's server URL still tracks the live bridge port.
+
+### Fixed
+
+- **Branch dropdowns no longer overflow the window.** The Source and Existing
+  Branch autocompletes in the worktree form rendered their popover at the width
+  of the longest branch name, stretching across the whole window; they now
+  match the field's width and truncate long names.
+
 ## [0.22.0] — 2026-06-10
 
 ### Added
