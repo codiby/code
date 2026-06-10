@@ -5,6 +5,14 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.3] — 2026-06-09
+
+### Added
+
+- **Copy button on code blocks.** Hovering an agent code block now reveals a
+  Copy button in its top-right corner; clicking it copies the block's contents
+  to the clipboard and briefly confirms with a "Copied" label.
+
 ## [0.21.2] — 2026-06-09
 
 ### Fixed
