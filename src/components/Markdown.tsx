@@ -4,9 +4,24 @@
  * links, images, lists, blockquotes, HR, tables, HTML details/summary/br.
  */
 
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 
 const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'strong', 'del', 'sub', 'sup', 'kbd', 'mark', 'abbr']);
+
+const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+
+// Renders a fenced code block wrapped with a hover-revealed copy button. The
+// button has no React handler (the parent renders via dangerouslySetInnerHTML);
+// clicks are caught by event delegation on the Markdown container.
+function codeBlockHtml(code: string): string {
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<div class="relative group/code my-2" data-code-block>`
+    + `<button type="button" data-copy-code aria-label="Copy code"`
+    + ` class="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-light border border-border text-[10px] text-zinc-400 opacity-0 group-hover/code:opacity-100 hover:text-zinc-200 hover:border-border-light transition-opacity">`
+    + `${COPY_ICON}<span data-copy-label>Copy</span></button>`
+    + `<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 py-2 font-mono overflow-x-auto leading-snug"><code>${escaped}</code></pre>`
+    + `</div>`;
+}
 
 function escapeHtml(text: string): string {
   // Preserve safe HTML tags, escape everything else
@@ -104,7 +119,7 @@ function renderMarkdown(source: string): string {
     // Code blocks
     if (line.trimStart().startsWith('```')) {
       if (inCodeBlock) {
-        html.push(`<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 py-2 font-mono overflow-x-auto my-2 leading-snug"><code>${codeLines.join('\n').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`);
+        html.push(codeBlockHtml(codeLines.join('\n')));
         inCodeBlock = false;
         codeLines = [];
         continue;
@@ -202,7 +217,7 @@ function renderMarkdown(source: string): string {
   }
 
   if (inCodeBlock) {
-    html.push(`<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 py-2 font-mono overflow-x-auto my-2 leading-snug"><code>${codeLines.join('\n').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`);
+    html.push(codeBlockHtml(codeLines.join('\n')));
   }
   flushTable();
   closeList();
@@ -218,10 +233,29 @@ function renderMarkdown(source: string): string {
 // Skipping the re-render when `text`/`className` are unchanged keeps the DOM
 // (and the live selection) intact.
 export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
+  // Event delegation: copy buttons live inside dangerouslySetInnerHTML, so they
+  // can't carry a React handler. Catch their clicks here, read the sibling
+  // <code>'s textContent, and copy it.
+  const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const btn = (e.target as HTMLElement).closest('[data-copy-code]');
+    if (!btn) return;
+    const code = btn.closest('[data-code-block]')?.querySelector('pre code');
+    const value = code?.textContent;
+    if (!value) return;
+    navigator.clipboard?.writeText(value).then(() => {
+      const label = btn.querySelector('[data-copy-label]');
+      if (!label) return;
+      const prev = label.textContent;
+      label.textContent = 'Copied';
+      window.setTimeout(() => { label.textContent = prev; }, 1500);
+    }).catch(() => {});
+  }, []);
+
   if (!text) return null;
   const html = renderMarkdown(text);
   return (
     <div
+      onClick={handleClick}
       className={`text-[12px] text-zinc-300 leading-relaxed break-words [&_details]:my-2 [&_details]:border [&_details]:border-border [&_details]:rounded-lg [&_details]:overflow-hidden [&_summary]:px-3 [&_summary]:py-1.5 [&_summary]:bg-surface-light [&_summary]:cursor-pointer [&_summary]:text-zinc-300 [&_summary]:text-[12px] [&_summary]:font-medium [&_details>:not(summary)]:px-3 [&_details>:not(summary)]:py-2 ${className || ''}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
