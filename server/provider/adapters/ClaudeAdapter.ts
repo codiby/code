@@ -42,6 +42,11 @@ const PROVIDER_NAME = 'claudeAgent';
  * the `rename_session` tool description.
  */
 const CODIBY_CODE_SYSTEM_PROMPT_APPEND = [
+  'Output formatting (Codiby Code-specific):',
+  '- This interface is a chat UI with a full markdown renderer, not a terminal. Disregard any terminal-oriented guidance to avoid headers.',
+  '- Whenever an answer has multiple parts, sections, or distinct topics, structure it with markdown headers (## and ###), regardless of length. Use lists, tables, and code blocks wherever they aid clarity.',
+  '- Only keep an answer as plain prose when it is genuinely a single point — do not add a header just to introduce one sentence.',
+  '',
   'Session naming (Codiby Code-specific):',
   '- A `rename_session` tool is available via the codiby-code-sdk MCP server. Call it exactly once per session, immediately after the first user message — no exceptions.',
   '- This applies to EVERY first message, including greetings ("hi", "hello"), chitchat, vague questions, or one-word inputs. Do not skip the rename because the message looks low-stakes — derive the best name you can from whatever the user said (e.g. "Greeting", "Quick Question").',
