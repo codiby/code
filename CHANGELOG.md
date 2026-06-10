@@ -5,6 +5,16 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.2] — 2026-06-09
+
+### Fixed
+
+- **File context menu stays on screen.** Right-clicking a file or folder near
+  the bottom or right edge of the window used to open the menu at the cursor
+  with no collision handling, clipping its lower items (Rename, Delete…) off
+  screen with no way to reach them. The menu now measures itself and shifts
+  back into view — flipping upward when there's no room below.
+
 ## [0.21.1] — 2026-06-09
 
 ### Fixed
