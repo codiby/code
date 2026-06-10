@@ -10,6 +10,7 @@ import {
   ListBox, ListBoxItem,
 } from '@heroui/react';
 import { Virtualizer, ListLayout } from 'react-aria-components';
+import { Trash2 } from 'lucide-react';
 import type { ClaudeClient } from '../lib/claude-client';
 
 const PM_OPTIONS = ['bun', 'npm', 'yarn', 'pnpm'] as const;
@@ -29,6 +30,12 @@ interface Props {
    *  from the "Existing branch" picker because git refuses to attach a
    *  branch that's already checked out in another worktree. */
   existingWorktrees?: { path: string; branch: string }[];
+  /** Hide the "Use existing / New worktree" picker and always render just
+   *  the creation form. Hosts that already surface their own existing-
+   *  worktree list (NewSessionModal, WorktreeModal's sub-modal) set this so
+   *  the picker isn't duplicated. Default: false → the picker is shown when
+   *  there are existing worktrees. */
+  hideExistingPicker?: boolean;
   /** Fired once the worktree is created. The host decides what to do
    *  with the absolute path (navigate, spawn session, etc). */
   onCreated: (path: string) => void;
@@ -61,6 +68,7 @@ export function WorktreeCreateForm({
   hasEnv,
   detectedPackageManager,
   existingWorktrees,
+  hideExistingPicker = false,
   onCreated,
   hideConsole = false,
   disabled = false,
@@ -85,6 +93,51 @@ export function WorktreeCreateForm({
   const abortRef = useRef<{ abort: () => void } | null>(null);
   // Guards the auto-fire of onCreated so it only triggers once per run.
   const firedRef = useRef(false);
+
+  // --- existing-worktree picker -------------------------------------
+  // 'existing' → pick an already-checked-out worktree (or the repo root).
+  // 'create'   → the new-worktree form below.
+  // Default to the picker only when there's a non-main worktree to pick.
+  const [view, setView] = useState<'existing' | 'create'>(() =>
+    !hideExistingPicker && (existingWorktrees ?? []).some(w => w.path !== repoPath)
+      ? 'existing'
+      : 'create',
+  );
+  const [wtFilter, setWtFilter] = useState('');
+  // Local mirror of the worktree list so a delete reflects immediately
+  // without waiting for the host to refetch git info.
+  const [localWorktrees, setLocalWorktrees] = useState(existingWorktrees ?? []);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  useEffect(() => { setLocalWorktrees(existingWorktrees ?? []); }, [existingWorktrees]);
+
+  const showPicker = !hideExistingPicker && localWorktrees.length > 0;
+
+  // Filter, then pin the main worktree (the repo root) to the top.
+  const visibleWorktrees = useMemo(() => {
+    const q = wtFilter.trim().toLowerCase();
+    const matched = q
+      ? localWorktrees.filter(w => w.branch.toLowerCase().includes(q) || w.path.toLowerCase().includes(q))
+      : localWorktrees;
+    const main = matched.filter(w => w.path === repoPath);
+    const rest = matched.filter(w => w.path !== repoPath);
+    return [...main, ...rest];
+  }, [localWorktrees, wtFilter, repoPath]);
+
+  const handleDeleteWorktree = async (path: string) => {
+    setDeleting(path);
+    setDeleteError(null);
+    try {
+      await client.removeWorktree(repoPath, path);
+      setLocalWorktrees(prev => prev.filter(w => w.path !== path));
+      setConfirmDelete(null);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   // Sync prefill values when the host swaps repos under us.
   useEffect(() => {
@@ -222,6 +275,92 @@ export function WorktreeCreateForm({
 
   return (
     <div className="space-y-3">
+      {/* Worktree source: pick an already-checked-out worktree (or the repo
+       *  root) vs create a fresh one. Hidden for hosts that already surface
+       *  their own existing-worktree list. */}
+      {showPicker && (
+        <div className={ROW}>
+          <span className={LABEL}>Worktree</span>
+          <div className={TG} role="group" aria-label="Worktree source">
+            <button
+              type="button"
+              className={tgBtn(view === 'existing')}
+              disabled={locked}
+              onClick={() => setView('existing')}
+            >Use existing</button>
+            <button
+              type="button"
+              className={tgBtn(view === 'create')}
+              disabled={locked}
+              onClick={() => setView('create')}
+            >New worktree</button>
+          </div>
+        </div>
+      )}
+
+      {showPicker && view === 'existing' ? (
+        <div className="space-y-2">
+          {/* Filter + count — mirrors WorktreeModal's existing-worktree list. */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Existing</span>
+            <TextField value={wtFilter} onChange={setWtFilter} aria-label="Filter worktrees" autoComplete="off" className="flex-1 min-w-0">
+              <Input placeholder="filter…" className="font-mono text-[11px] py-0.5" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+            </TextField>
+            <span className="text-[10px] text-zinc-600 shrink-0 tabular-nums">
+              {wtFilter ? `${visibleWorktrees.length}/${localWorktrees.length}` : localWorktrees.length}
+            </span>
+          </div>
+          <div className="border border-border rounded-md overflow-hidden max-h-60 overflow-y-auto">
+            {visibleWorktrees.length === 0 ? (
+              <div className="px-3 py-3 text-[11px] text-zinc-600 text-center">No worktrees match.</div>
+            ) : visibleWorktrees.map(wt => {
+              const isMain = wt.path === repoPath;
+              const isConfirming = confirmDelete === wt.path;
+              const isDeleting = deleting === wt.path;
+              return (
+                <div
+                  key={wt.path}
+                  role="button"
+                  aria-label={`Use worktree ${wt.branch || wt.path}`}
+                  className="group/wt flex items-center gap-2 px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light/50 hover:text-zinc-200 transition-colors cursor-pointer"
+                  onClick={() => { if (!isConfirming && !isDeleting) onCreated(wt.path); }}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                  <span className={`font-mono shrink-0 ${isMain ? 'text-zinc-200' : 'text-green-400'}`}>{wt.branch || '(detached)'}</span>
+                  <span className="text-zinc-600 font-mono truncate flex-1 min-w-0">{wt.path}</span>
+                  {isMain ? (
+                    <span className="shrink-0 text-[9px] uppercase tracking-wider text-zinc-500 bg-surface-lighter rounded px-1.5 py-0.5">default</span>
+                  ) : isConfirming ? (
+                    <span className="shrink-0 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        disabled={isDeleting}
+                        className="text-[11px] font-medium text-red-400 hover:text-red-300 disabled:opacity-50"
+                        onClick={() => handleDeleteWorktree(wt.path)}
+                      >{isDeleting ? 'Deleting…' : 'Delete'}</button>
+                      <button
+                        type="button"
+                        disabled={isDeleting}
+                        className="text-[11px] text-zinc-500 hover:text-zinc-300"
+                        onClick={() => setConfirmDelete(null)}
+                      >Cancel</button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`Delete worktree ${wt.branch || wt.path}`}
+                      className="shrink-0 -my-1 p-1 text-zinc-600 opacity-0 group-hover/wt:opacity-100 hover:text-red-400 transition-opacity"
+                      onClick={(e) => { e.stopPropagation(); setDeleteError(null); setConfirmDelete(wt.path); }}
+                    ><Trash2 size={13} /></button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {deleteError && <div className="px-1 text-[11px] text-red-400">{deleteError}</div>}
+        </div>
+      ) : (
+        <>
       {/* Mode: New vs Existing. Reset the branch field on switch so the
        *  input/picker start empty. */}
       <div className={ROW}>
@@ -261,7 +400,7 @@ export function WorktreeCreateForm({
                 <AutocompleteValue className="font-mono truncate" />
                 <AutocompleteIndicator />
               </AutocompleteTrigger>
-              <AutocompletePopover>
+              <AutocompletePopover className="w-[var(--trigger-width)]">
                 <AutocompleteFilter filter={(textValue, inputValue) => textValue.toLowerCase().includes(inputValue.toLowerCase())}>
                   <SearchField aria-label="Filter branches" autoFocus>
                     <SearchFieldInput placeholder="Search branches…" className="font-mono text-xs text-zinc-100" />
@@ -270,7 +409,7 @@ export function WorktreeCreateForm({
                     <ListBox items={attachableBranchItems} className="max-h-60 outline-none">
                       {(item) => (
                         <ListBoxItem id={item.id} textValue={item.id}>
-                          <span className="text-sm font-mono">{item.id}</span>
+                          <span className="text-sm font-mono block truncate">{item.id}</span>
                         </ListBoxItem>
                       )}
                     </ListBox>
@@ -299,7 +438,7 @@ export function WorktreeCreateForm({
                   <AutocompleteValue className="font-mono truncate" />
                   <AutocompleteIndicator />
                 </AutocompleteTrigger>
-                <AutocompletePopover>
+                <AutocompletePopover className="w-[var(--trigger-width)]">
                   <AutocompleteFilter filter={(textValue, inputValue) => textValue.toLowerCase().includes(inputValue.toLowerCase())}>
                     <SearchField aria-label="Filter branches" autoFocus>
                       <SearchFieldInput placeholder="Search branches…" className="font-mono text-xs text-zinc-100" />
@@ -307,9 +446,9 @@ export function WorktreeCreateForm({
                     <Virtualizer layout={ListLayout} layoutOptions={{ rowHeight: 36 }}>
                       <ListBox items={availableBranchItems} className="max-h-60 outline-none">
                         {(item) => (
-                          <ListBoxItem id={item.id} textValue={item.id}>
-                            <span className="text-sm font-mono">{item.id}</span>
-                            {item.id === branchesInfo.current && <span className="text-xs text-zinc-500 ml-1">(current)</span>}
+                          <ListBoxItem id={item.id} textValue={item.id} className="flex items-baseline gap-1 min-w-0">
+                            <span className="text-sm font-mono truncate">{item.id}</span>
+                            {item.id === branchesInfo.current && <span className="text-xs text-zinc-500 shrink-0">(current)</span>}
                           </ListBoxItem>
                         )}
                       </ListBox>
@@ -445,6 +584,8 @@ export function WorktreeCreateForm({
             )}
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

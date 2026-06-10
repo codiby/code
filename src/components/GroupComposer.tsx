@@ -58,6 +58,8 @@ interface Props {
     worktreeOrigin?: string,
     /** Inherited from the group when it's a remote group. */
     remoteId?: string | null,
+    /** Pasted/dropped screenshots to ship with the first message. */
+    images?: { media_type: string; data: string }[],
   ) => void;
   /** Opens the full folder-picker modal (parent-owned). Invoked from the
    *  "Browse for folder…" item at the bottom of the project dropdown. */
@@ -231,7 +233,10 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   const branchLabel = gitInfo?.is_git ? gitInfo.branch : null;
 
   const submit = () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() && pastedImages.length === 0) return;
+    const images = pastedImages.length > 0
+      ? pastedImages.map(({ media_type, data }) => ({ media_type, data }))
+      : undefined;
     onSpawn(
       cwd,
       provider,
@@ -240,7 +245,9 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       permissionMode && permissionMode !== 'default' ? permissionMode : undefined,
       worktreeOrigin || undefined,
       remoteId ?? null,
+      images,
     );
+    setPastedImages([]);
   };
 
   return (

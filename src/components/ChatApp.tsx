@@ -672,6 +672,7 @@ export function ChatApp() {
     permissionMode?: string,
     worktreeOrigin?: string,
     remoteId?: string | null,
+    images?: { media_type: string; data: string }[],
   ) => {
     const c = clientRef.current;
     if (!c) return;
@@ -694,7 +695,7 @@ export function ChatApp() {
       setSelectedGroupId(null);
       setActiveId(session.id);
       persistPrefs({ tabGroupMap: newMap, ...(group.cwd ? {} : { tabGroups: nextGroups }) });
-      if (prompt) c.sendMessage(session.id, prompt);
+      if (prompt || images?.length) c.sendMessage(session.id, prompt || ' ', images);
     } catch (err) {
       console.error('[ChatApp] Failed to spawn session in group:', err);
     }
@@ -711,6 +712,8 @@ export function ChatApp() {
     model?: string,
     permissionMode?: string,
     worktreeOrigin?: string,
+    _remoteId?: string | null,
+    images?: { media_type: string; data: string }[],
   ) => {
     const c = clientRef.current;
     if (!c || !cwd) return;
@@ -723,7 +726,7 @@ export function ChatApp() {
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
       setActiveId(session.id);
-      if (prompt) c.sendMessage(session.id, prompt);
+      if (prompt || images?.length) c.sendMessage(session.id, prompt || ' ', images);
     } catch (err) {
       console.error('[ChatApp] Failed to spawn session from home:', err);
     }
@@ -4183,8 +4186,24 @@ export function ChatApp() {
         onInterrupt={() => handleInterrupt(sid)}
         onSelectModel={(modelId) => {
           if (!clientRef.current) return;
+          const prevModel = sess?.model ?? null;
+          if (prevModel === (modelId || null)) return;
           if (modelId) clientRef.current.setModel(sid, modelId);
           setSessions(prev => prev.map(x => x.id === sid ? { ...x, model: modelId || null } : x));
+          // Log the switch inline so the chat reflects which model handled
+          // which turns. Resolve a friendly label from the session's models
+          // (falling back to the global list, then the raw id).
+          const models = (s.supportedModels && s.supportedModels.length > 0) ? s.supportedModels : claudeModels;
+          const label = modelId ? (models.find(m => m.id === modelId)?.label || modelId) : 'default';
+          updateLocalState(sid, st => ({
+            ...st,
+            messages: [...st.messages, {
+              id: crypto.randomUUID(),
+              role: 'system' as const,
+              content: `Modelo cambiado a ${label}`,
+              timestamp: Date.now(),
+            }],
+          }));
         }}
         onSelectPermissionMode={(mode) => {
           if (!clientRef.current) return;
@@ -5111,8 +5130,8 @@ export function ChatApp() {
                       remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
                       remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
                       remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
-                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId) =>
-                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId)
+                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
                     />
@@ -5639,8 +5658,8 @@ export function ChatApp() {
                       remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
                       remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
                       remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
-                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId) =>
-                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId)
+                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
                     />

@@ -60,6 +60,7 @@ export function WorktreeCreateModal({
             hasEnv={hasEnv}
             detectedPackageManager={detectedPackageManager}
             existingWorktrees={existingWorktrees}
+            hideExistingPicker
             onCreated={(path) => { onCreated(path); onClose(); }}
           />
         </div>

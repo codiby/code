@@ -91,6 +91,46 @@ export function createWorktree(opts: {
 }
 
 /**
+ * Remove a git worktree by path. Refuses to remove the main worktree (the
+ * repo root itself) — git won't, and neither should we. Uses `--force` so a
+ * worktree with uncommitted changes or an open session still detaches; the
+ * caller (UI) gates this behind an explicit confirm.
+ */
+export function removeWorktree(opts: { repoPath: string; worktreePath: string }): { removed: boolean } {
+  const { repoPath, worktreePath } = opts;
+  if (!repoPath) throw new Error('repoPath is required');
+  if (!worktreePath) throw new Error('worktreePath is required');
+  const mainTop = execSync('git rev-parse --show-toplevel', { cwd: repoPath, stdio: 'pipe' }).toString().trim();
+  const resolved = existsSync(worktreePath)
+    ? execSync(`cd "${worktreePath}" && pwd`, { stdio: 'pipe' }).toString().trim()
+    : worktreePath;
+  if (resolved === mainTop) throw new Error('Refusing to remove the main worktree.');
+  execSync(`git worktree remove --force "${resolved}"`, { cwd: repoPath, stdio: 'pipe', timeout: 15_000 });
+  return { removed: true };
+}
+
+/** Plain JSON endpoint for `removeWorktree` — POST /worktree/remove. */
+export async function handleRemoveWorktree(req: Request): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json() as Record<string, unknown>;
+  } catch {
+    return Response.json({ error: 'Invalid JSON' }, { status: 400, headers: corsHeaders });
+  }
+  const repoPath = body.repo_path as string;
+  const worktreePath = body.worktree_path as string;
+  if (!repoPath || !worktreePath) {
+    return Response.json({ error: 'repo_path and worktree_path required' }, { status: 400, headers: corsHeaders });
+  }
+  try {
+    const result = removeWorktree({ repoPath, worktreePath });
+    return Response.json({ ok: true, ...result }, { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500, headers: corsHeaders });
+  }
+}
+
+/**
  * Worktree creation with SSE streaming of setup logs.
  * Returns text/event-stream with log lines, and a final `done` or `error` event.
  */

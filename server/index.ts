@@ -65,7 +65,7 @@ import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTr
 import type { TrackedProcess } from './types';
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef } from './handlers/git';
 import { handleSearch } from './handlers/search';
-import { handleCreateWorktree } from './handlers/worktree';
+import { handleCreateWorktree, handleRemoveWorktree } from './handlers/worktree';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
 import { registerShutdownHandlers } from './shutdown';
@@ -85,7 +85,7 @@ import {
 import type { ChatMessage } from './state';
 import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
-import { startSwaggerServer } from './swagger';
+import { createDocsApp } from './swagger';
 import { Hono } from 'hono';
 import { transcribeAudioBuffer } from './deepgram';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './tailscale';
@@ -1673,6 +1673,7 @@ app.get('/search', (c) => {
 
 // ── Worktree ──────────────────────────────────────────────────────────────────
 app.post('/worktree', (c) => handleCreateWorktree(c.req.raw));
+app.post('/worktree/remove', (c) => handleRemoveWorktree(c.req.raw));
 
 // ── Telegram ──────────────────────────────────────────────────────────────────
 app.get('/telegram/settings', () => {
@@ -1990,6 +1991,13 @@ app.post('/debug/disconnect', async (c) => {
 
 // ── Health ──────────────────────────────────────────────────────────────────────
 app.get('/health', () => Response.json({ status: 'ok', sessions: sessions.size }, { headers: corsHeaders }));
+
+// ── API docs ──────────────────────────────────────────────────────────────────
+// Swagger UI mounted on the bridge itself, so it lives on the same port as the
+// API (default 3111) at `/docs`. The spec's server URL is pinned to the live
+// bridge port at request time. (`server` is initialized further below; the
+// closure only reads it once a request arrives, well after startup.)
+app.route('/docs', createDocsApp(() => server.port));
 app.post('/ui-log', async (c) => {
   try {
     const body = await c.req.raw.json() as { msg: string };
@@ -2419,7 +2427,7 @@ process.on('SIGTERM', () => { try { unlinkSync(PORT_FILE); } catch {}; process.e
 {
   const scheme = TLS ? 'https' : 'http';
   log(`Bridge server listening on ${scheme}://localhost:${server.port} (host=${HOST}, tls=${!!TLS})`);
-  log(`Swagger docs: http://localhost:${process.env.CODIBY_SWAGGER_PORT || 3112}`);
+  log(`Swagger docs: ${scheme}://localhost:${server.port}/docs`);
   log(`Claude binary: ${CLAUDE_BIN}`);
   log(`Working directory: ${CWD}`);
   log(`Spawn mode: ${SPAWN_MODE}`);
@@ -2442,11 +2450,6 @@ setMcpDeps({
 });
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);
-
-// Swagger/OpenAPI docs server — a decoupled bun server on port 3112 (override
-// with CODIBY_SWAGGER_PORT, disable with CODIBY_SWAGGER=0). Boots alongside the
-// bridge so the API docs are always available wherever the API is.
-startSwaggerServer(server.port);
 
 // Lazy spawn: sessions are persisted and shown in the UI immediately, but each
 // provider is only booted (and `claude --resume` is only issued) when the user

@@ -395,6 +395,7 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                     hasEnv={gitInfo.has_env}
                     detectedPackageManager={gitInfo.package_manager}
                     existingWorktrees={gitInfo.worktrees}
+                    hideExistingPicker
                     onCreated={handleWorktreeCreated}
                   />
                 </div>

@@ -1494,6 +1494,22 @@ export class ClaudeClient {
     return { abort: () => ctrl.abort() };
   }
 
+  /** Remove an existing git worktree by path. Rejects (with the server's
+   *  message) when git refuses — e.g. trying to remove the main worktree. */
+  async removeWorktree(repoPath: string, worktreePath: string): Promise<{ ok: boolean; removed?: boolean }> {
+    const resp = await authedFetch(`${this.serverUrl}/worktree/remove`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo_path: repoPath, worktree_path: worktreePath }),
+    });
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`;
+      try { const j = await resp.json(); if (j?.error) msg = j.error; } catch {}
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
   destroy() {
     this.destroyed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
