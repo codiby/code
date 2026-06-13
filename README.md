@@ -106,3 +106,5 @@ bun run electron:build:win
 Copyright (c) 2026 Codiby
 
 Licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE). You may use, modify, and share the software for any noncommercial purpose. Commercial use requires a separate license — contact the maintainers.
+
+<!-- DIFFTEST committed change line -->
