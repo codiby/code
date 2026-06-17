@@ -9,7 +9,6 @@ import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from '
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { execSync } from 'child_process';
 import { spawnPty } from './pty';
 
 import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, loadOrCreateMobileToken, getLanIp, resolveTls } from './config';
@@ -63,7 +62,7 @@ import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, han
 import { handleExecCreate, terminalWsOpen, terminalWsClose, spawnTrackedProcess } from './handlers/exec';
 import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput, addToGraveyard, isInGraveyard, dismissShell, getDismissedShells } from './handlers/processes';
 import type { TrackedProcess } from './types';
-import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef } from './handlers/git';
+import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef, runShell } from './handlers/git';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree } from './handlers/worktree';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
@@ -1548,7 +1547,7 @@ app.post('/kill', async (c) => {
 });
 
 // ── Git ──────────────────────────────────────────────────────────────────────
-app.get('/file-original', (c) => {
+app.get('/file-original', async (c) => {
   const url = new URL(c.req.url);
   const filePath = url.searchParams.get('path');
   if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
@@ -1557,68 +1556,69 @@ app.get('/file-original', (c) => {
   const base = url.searchParams.get('base');
   try {
     const cwd = dirname(filePath);
-    const relPath = execSync(`git ls-files --full-name "${filePath}"`, { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+    const relPath = (await runShell(`git ls-files --full-name "${filePath}"`, cwd)).trim();
     if (!relPath) return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
     let ref = 'HEAD';
-    if (base) ref = baseDiffRef(cwd, base) || 'HEAD';
-    const content = execSync(`git show ${JSON.stringify(ref)}:"${relPath}"`, { cwd, encoding: 'utf-8', timeout: 5000 });
+    if (base) ref = (await baseDiffRef(cwd, base)) || 'HEAD';
+    const content = await runShell(`git show ${JSON.stringify(ref)}:"${relPath}"`, cwd);
     return Response.json({ path: filePath, content }, { headers: corsHeaders });
   } catch {
     return Response.json({ path: filePath, content: '' }, { headers: corsHeaders });
   }
 });
-app.get('/git-modified', (c) => {
+app.get('/git-modified', async (c) => {
   const url = new URL(c.req.url);
   const root = url.searchParams.get('root');
   if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
-  return handleGitModified(root, url.searchParams.get('base'));
+  return await handleGitModified(root, url.searchParams.get('base'));
 });
 app.post('/git-stage', async (c) => {
   const body = await c.req.raw.json() as { root: string; files: string[]; unstage?: boolean };
   if (!body.root || !body.files?.length) return Response.json({ error: 'root and files required' }, { status: 400, headers: corsHeaders });
   try {
-    const gitTop = execSync('git rev-parse --show-toplevel', { cwd: body.root, encoding: 'utf-8', timeout: 5000 }).trim();
+    const gitTop = (await runShell('git rev-parse --show-toplevel', body.root)).trim();
     const cmd = body.unstage ? 'git reset HEAD --' : 'git add --';
-    execSync(
+    await runShell(
       `${cmd} ${body.files.map(f => `'${f.replace(/'/g, "'\\''")}'`).join(' ')}`,
-      { cwd: gitTop, encoding: 'utf-8', timeout: 5000 },
+      gitTop,
     );
     return Response.json({ ok: true }, { headers: corsHeaders });
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
   }
 });
-app.get('/git-info', (c) => {
+app.get('/git-info', async (c) => {
   const dirPath = new URL(c.req.url).searchParams.get('path');
   if (!dirPath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-  return handleGitInfo(dirPath);
+  return await handleGitInfo(dirPath);
 });
-app.get('/git-branches', (c) => {
+app.get('/git-branches', async (c) => {
   const cwd = new URL(c.req.url).searchParams.get('cwd');
   if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
-  return handleGitBranches(cwd);
+  return await handleGitBranches(cwd);
 });
 app.post('/git-checkout', async (c) => {
   const body = await c.req.raw.json() as { cwd: string; branch: string };
   if (!body.cwd || !body.branch) return Response.json({ error: 'cwd and branch required' }, { status: 400, headers: corsHeaders });
-  return handleGitCheckout(body.cwd, body.branch);
+  return await handleGitCheckout(body.cwd, body.branch);
 });
-app.get('/gh-prs', (c) => {
+app.get('/gh-prs', async (c) => {
   const url = new URL(c.req.url);
   const cwd = url.searchParams.get('cwd');
   const sessionName = url.searchParams.get('session') || '';
   if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
-  return handleGhPrs(cwd, sessionName);
+  return await handleGhPrs(cwd, sessionName);
 });
-app.get('/pr-detail', (c) => {
+app.get('/pr-detail', async (c) => {
   const url = new URL(c.req.url);
   const prNumber = url.searchParams.get('number');
   const cwd = url.searchParams.get('cwd') || CWD;
   if (!prNumber) return Response.json({ error: 'missing number' }, { status: 400, headers: corsHeaders });
   try {
-    const prJson = execSync(
+    const prJson = await runShell(
       `gh pr view ${prNumber} --json number,title,body,headRefName,baseRefName,state,url,isDraft,additions,deletions,changedFiles,commits,reviews,comments,labels,author,createdAt,updatedAt,mergedAt,mergeable`,
-      { cwd, encoding: 'utf-8', timeout: 15000 },
+      cwd,
+      15000,
     );
     return Response.json(JSON.parse(prJson), { headers: corsHeaders });
   } catch (e: any) {

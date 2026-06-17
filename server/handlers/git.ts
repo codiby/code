@@ -1,22 +1,41 @@
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { corsHeaders } from '../config';
 import { detectPackageManager } from './files';
 
+const pExec = promisify(exec);
+
+/** Run a git/shell command *off* the event loop. Mirrors the old `execSync`
+ *  calls (shell semantics, cwd, timeout, throws on non-zero exit) but never
+ *  blocks the single-threaded bridge — a slow git invocation (e.g. while a
+ *  `bun install` saturates the disk) no longer freezes every other session.
+ *  On non-zero exit it rejects with an Error carrying `.stdout`/`.stderr`/
+ *  `.code`, exactly like Node's `exec`, so existing catch blocks still work. */
+export async function runShell(cmd: string, cwd?: string, timeout = 5000): Promise<string> {
+  const { stdout } = await pExec(cmd, {
+    cwd,
+    encoding: 'utf-8',
+    timeout,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return stdout as string;
+}
+
 /** Pick a git ref that actually exists for `base`, trying the local branch then
  *  `origin/<base>`. When HEAD is *on* the base branch, comparing to itself is
  *  useless, so prefer the remote (`origin/<base>`) — that surfaces local commits
  *  not yet pushed. Returns null when nothing resolves. */
-function resolveBaseRef(root: string, base: string): string | null {
+async function resolveBaseRef(root: string, base: string): Promise<string | null> {
   let current = '';
-  try { current = execSync('git branch --show-current', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim(); } catch {}
+  try { current = (await runShell('git branch --show-current', root)).trim(); } catch {}
   const candidates = current && current === base
     ? [`origin/${base}`, base]
     : [base, `origin/${base}`];
   for (const ref of candidates) {
     try {
-      execSync(`git rev-parse --verify --quiet ${JSON.stringify(ref + '^{commit}')}`, { cwd: root, stdio: 'pipe', timeout: 5000 });
+      await runShell(`git rev-parse --verify --quiet ${JSON.stringify(ref + '^{commit}')}`, root);
       return ref;
     } catch {}
   }
@@ -26,11 +45,11 @@ function resolveBaseRef(root: string, base: string): string | null {
 /** The commit to diff against for a "vs <base>" comparison: the merge-base of
  *  the resolved base ref and HEAD, so only what HEAD introduced shows up.
  *  Returns null when the base can't be resolved. */
-export function baseDiffRef(root: string, base: string): string | null {
-  const ref = resolveBaseRef(root, base);
+export async function baseDiffRef(root: string, base: string): Promise<string | null> {
+  const ref = await resolveBaseRef(root, base);
   if (!ref) return null;
   try {
-    return execSync(`git merge-base ${JSON.stringify(ref)} HEAD`, { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim() || ref;
+    return (await runShell(`git merge-base ${JSON.stringify(ref)} HEAD`, root)).trim() || ref;
   } catch {
     return ref;
   }
@@ -38,10 +57,10 @@ export function baseDiffRef(root: string, base: string): string | null {
 
 /** Per-file added/deleted line counts from `git diff --numstat <args>`, keyed by
  *  repo-root-relative path. Binary files report `-` and map to 0/0. */
-function numstatMap(root: string, args: string): Map<string, { additions: number; deletions: number }> {
+async function numstatMap(root: string, args: string): Promise<Map<string, { additions: number; deletions: number }>> {
   const m = new Map<string, { additions: number; deletions: number }>();
   try {
-    const out = execSync(`git diff --numstat ${args}`.trim(), { cwd: root, encoding: 'utf-8', timeout: 5000 });
+    const out = await runShell(`git diff --numstat ${args}`.trim(), root);
     for (const line of out.split('\n')) {
       if (!line) continue;
       const parts = line.split('\t');
@@ -59,20 +78,20 @@ function numstatMap(root: string, args: string): Map<string, { additions: number
 
 type ModifiedFile = { path: string; staged: boolean; untracked?: boolean; additions?: number; deletions?: number };
 
-export function handleGitModified(root: string, base?: string | null): Response {
+export async function handleGitModified(root: string, base?: string | null): Promise<Response> {
   try {
-    const gitTop = execSync('git rev-parse --show-toplevel', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim();
+    const gitTop = (await runShell('git rev-parse --show-toplevel', root)).trim();
 
     // "vs main" mode: every path that differs from the merge-base — committed
     // on this branch plus anything uncommitted — rendered as one flat list.
     if (base) {
-      const ref = baseDiffRef(root, base) || base;
+      const ref = (await baseDiffRef(root, base)) || base;
       let changed: string[] = [];
       try {
-        changed = execSync(`git diff --name-only ${JSON.stringify(ref)}`, { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+        changed = (await runShell(`git diff --name-only ${JSON.stringify(ref)}`, root)).split('\n').filter(Boolean);
       } catch {}
-      const stats = numstatMap(root, JSON.stringify(ref));
-      const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+      const stats = await numstatMap(root, JSON.stringify(ref));
+      const untracked = (await runShell('git ls-files --others --exclude-standard', root)).split('\n').filter(Boolean);
       const untrackedSet = new Set(untracked.map(f => resolve(gitTop, f)));
       const result: ModifiedFile[] = [];
       const seen = new Set<string>();
@@ -86,12 +105,12 @@ export function handleGitModified(root: string, base?: string | null): Response 
       return Response.json(result, { headers: corsHeaders });
     }
 
-    const unstaged = execSync('git diff --name-only', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
-    const staged = execSync('git diff --name-only --cached', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
-    const untracked = execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf-8', timeout: 5000 }).split('\n').filter(Boolean);
+    const unstaged = (await runShell('git diff --name-only', root)).split('\n').filter(Boolean);
+    const staged = (await runShell('git diff --name-only --cached', root)).split('\n').filter(Boolean);
+    const untracked = (await runShell('git ls-files --others --exclude-standard', root)).split('\n').filter(Boolean);
 
-    const stagedStats = numstatMap(root, '--cached');
-    const unstagedStats = numstatMap(root, '');
+    const stagedStats = await numstatMap(root, '--cached');
+    const unstagedStats = await numstatMap(root, '');
 
     const result: ModifiedFile[] = [];
     const stagedSet = new Set<string>();
@@ -120,7 +139,7 @@ export function handleGitModified(root: string, base?: string | null): Response 
   }
 }
 
-export function handleGitInfo(dirPath: string): Response {
+export async function handleGitInfo(dirPath: string): Promise<Response> {
   if (!existsSync(dirPath)) {
     return Response.json({ is_git: false, error: 'Path does not exist' }, { headers: corsHeaders });
   }
@@ -129,12 +148,12 @@ export function handleGitInfo(dirPath: string): Response {
   const hasEnv = existsSync(`${dirPath}/.env`);
 
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dirPath, stdio: 'pipe' });
-    const branch = execSync('git branch --show-current', { cwd: dirPath, stdio: 'pipe' }).toString().trim();
-    const topLevel = execSync('git rev-parse --show-toplevel', { cwd: dirPath, stdio: 'pipe' }).toString().trim();
+    await runShell('git rev-parse --is-inside-work-tree', dirPath);
+    const branch = (await runShell('git branch --show-current', dirPath)).trim();
+    const topLevel = (await runShell('git rev-parse --show-toplevel', dirPath)).trim();
     let worktrees: { path: string; branch: string }[] = [];
     try {
-      const wtOut = execSync('git worktree list --porcelain', { cwd: dirPath, stdio: 'pipe' }).toString();
+      const wtOut = await runShell('git worktree list --porcelain', dirPath);
       const blocks = wtOut.split('\n\n').filter(Boolean);
       worktrees = blocks.map(block => {
         const lines = block.split('\n');
@@ -157,11 +176,12 @@ export function handleGitInfo(dirPath: string): Response {
   }
 }
 
-export function handleGhPrs(cwd: string, sessionName: string): Response {
+export async function handleGhPrs(cwd: string, sessionName: string): Promise<Response> {
   try {
-    const output = execSync(
+    const output = await runShell(
       'gh pr list --state all --json number,title,headRefName,state,url,isDraft --limit 20',
-      { cwd, encoding: 'utf-8', timeout: 10000 },
+      cwd,
+      10000,
     );
     let prs = JSON.parse(output) as { number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[];
 
@@ -183,10 +203,10 @@ export function handleGhPrs(cwd: string, sessionName: string): Response {
   }
 }
 
-export function handleGitBranches(cwd: string): Response {
+export async function handleGitBranches(cwd: string): Promise<Response> {
   try {
-    const output = execSync('git branch -a', { cwd, encoding: 'utf-8', timeout: 5000 });
-    const current = execSync('git branch --show-current', { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+    const output = await runShell('git branch -a', cwd);
+    const current = (await runShell('git branch --show-current', cwd)).trim();
     const local: string[] = [];
     const remote: string[] = [];
     const localSet = new Set<string>();
@@ -207,10 +227,10 @@ export function handleGitBranches(cwd: string): Response {
   }
 }
 
-export function handleGitCheckout(cwd: string, branch: string): Response {
+export async function handleGitCheckout(cwd: string, branch: string): Promise<Response> {
   try {
-    execSync(`git checkout ${JSON.stringify(branch)} 2>&1`, { cwd, encoding: 'utf-8', timeout: 10000 });
-    const current = execSync('git branch --show-current', { cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+    await runShell(`git checkout ${JSON.stringify(branch)} 2>&1`, cwd, 10000);
+    const current = (await runShell('git branch --show-current', cwd)).trim();
     return Response.json({ ok: true, branch: current }, { headers: corsHeaders });
   } catch (e: any) {
     // When the branch is already checked out in another worktree, git prints
