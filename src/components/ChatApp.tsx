@@ -4,10 +4,12 @@ import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLe
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
+import { ImagePreview } from './ImagePreview';
 import { Providers } from './Providers';
 import { FileExplorer, type GitModifiedState } from './FileExplorer';
 import { SessionTabStrip } from './SessionTabStrip';
 import { TabBar } from './TabBar';
+import { AutomationsView } from './AutomationsView';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
 import { Markdown } from './Markdown';
@@ -18,6 +20,7 @@ import { BrowserUrlModal } from './BrowserUrlModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
+import { ChatFindWidget } from './ChatFindWidget';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { PortlessActionToast } from './PortlessActionToast';
 import { TerminalLaunchChip } from './TerminalLaunchChip';
@@ -293,6 +296,9 @@ function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 const MOD_KEY = IS_MAC ? '⌘' : 'Ctrl';
 
+// Extensions that open in the image preview tab instead of the text editor.
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg']);
+
 function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: ClaudeClient | null; rootPath: string | null; onFileOpen: (path: string, line?: number) => void; onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [ignore, setIgnore] = useState('');
@@ -466,6 +472,10 @@ export function ChatApp() {
    *  inline new-session composer (GroupComposer) instead of the active
    *  session's chat body. Cleared as soon as a session is selected. */
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  // Active top-level view in the main pane. 'automations' replaces the whole
+  // session workspace with the Automatizaciones screen; selecting any session
+  // or group snaps it back to 'sessions'.
+  const [activeNavView, setActiveNavView] = useState<'sessions' | 'automations'>('sessions');
   const [autoGroupSessions, setAutoGroupSessions] = useState(false);
   // When true, action-style browser_* SDK tools (click/type/scroll/…) bring
   // the targeted preview to the front before they run, so the user actually
@@ -822,6 +832,7 @@ export function ChatApp() {
    *  pane and ensures the group is expanded so the user sees existing
    *  members underneath the composer. */
   const handleSelectGroup = (groupId: string) => {
+    setActiveNavView('sessions');
     setSelectedGroupId(groupId);
     setExpandedGroupIds(prev => {
       if (prev.has(groupId)) return prev;
@@ -985,6 +996,9 @@ export function ChatApp() {
   } | null>(null);
   const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
   const [showPalette, setShowPalette] = useState(false);
+  // ⌘F in-chat find widget (VSCode-style). Searches the active session's
+  // rendered message stream via the CSS Custom Highlight API.
+  const [findOpen, setFindOpen] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   // Search-as-a-card: when true the FileExplorer panel swaps its cards for the
   // search card. Driven from here so ⌘⇧F can toggle it.
@@ -1191,10 +1205,11 @@ export function ChatApp() {
 
   // Open a file in the editor: activate if already open; else replace the
   // current preview tab; else append a new (preview) tab. Always reveal it.
-  const openFileInEditor = useCallback((sid: string, path: string, content: string, line?: number, opts?: { pin?: boolean; column?: number; readOnly?: boolean }) => {
+  const openFileInEditor = useCallback((sid: string, path: string, content: string, line?: number, opts?: { pin?: boolean; column?: number; readOnly?: boolean; image?: boolean }) => {
     const pin = opts?.pin ?? false;
     const column = opts?.column;
     const readOnly = opts?.readOnly;
+    const image = opts?.image;
     updateLocalState(sid, s => {
       const tabs = s.editorTabs;
       const idx = tabs.findIndex(t => t.path === path);
@@ -1206,7 +1221,7 @@ export function ChatApp() {
           ? { ...t, line, column, preview: pin ? false : t.preview }
           : t);
       } else {
-        const newTab = { path, content, line, column, dirty: false, preview: !pin, readOnly };
+        const newTab = { path, content, line, column, dirty: false, preview: !pin, readOnly, image };
         const previewIdx = tabs.findIndex(t => t.preview);
         if (previewIdx >= 0) {
           // Replace the existing preview tab in place (keeps strip position).
@@ -2309,6 +2324,7 @@ export function ChatApp() {
     const prevId = activeId;
     setActiveId(id);
     // Clicking a session tab takes focus away from any group composer.
+    setActiveNavView('sessions');
     setSelectedGroupId(null);
     setVisibleMessageCount(200);
     historyIdxRef.current = -1;
@@ -2847,6 +2863,28 @@ export function ChatApp() {
 
     const effectiveText = text || ' ';
 
+    // Session closed (remote bridge offline / runtime stopped): stage the
+    // message locally with a "sending" loader instead of dropping it. The
+    // flush effect ships it once the session reconnects; a timeout flips it to
+    // "not delivered" with a Retry button if reconnection doesn't happen.
+    const sessionStatus = statuses[sid] || 'disconnected';
+    if (sessionStatus !== 'connected') {
+      const msgId = crypto.randomUUID();
+      const stagedMsg = {
+        id: msgId,
+        role: 'user' as const,
+        content: effectiveText,
+        timestamp: Date.now(),
+        images: images?.map(img => ({ media_type: img.media_type, data: img.data })),
+        deliveryStatus: 'sending' as const,
+      };
+      updateLocalState(sid, s => ({ ...s, messages: [...s.messages, stagedMsg] }));
+      setInputForSession(sid, '');
+      setPastedImagesForSession(sid, []);
+      beginDelivery(sid, msgId);
+      return;
+    }
+
     const streamingNow = state.isStreaming;
     if (streamingNow) {
       const pendingId = crypto.randomUUID();
@@ -2934,6 +2972,50 @@ export function ChatApp() {
     }));
   }, [updateLocalState]);
 
+  // ── Offline message delivery ──────────────────────────────────────────────
+  // Messages composed while a session is closed are staged with
+  // `deliveryStatus: 'sending'`. We nudge the server to (re)establish the
+  // session and arm a timeout that flips the bubble to 'failed' (Retry button)
+  // if it doesn't reconnect in time. The flush effect below ships the message
+  // once the session's status flips to 'connected'.
+  const DELIVERY_TIMEOUT_MS = 20_000;
+  const deliveryTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const beginDelivery = useCallback((sessionId: string, msgId: string) => {
+    // Prompt the server to bring the (remote) session back up. `subscribe` is
+    // idempotent and triggers tunnel acquire + a fresh status broadcast.
+    clientRef.current?.subscribe(sessionId);
+    const existing = deliveryTimersRef.current[msgId];
+    if (existing) clearTimeout(existing);
+    deliveryTimersRef.current[msgId] = setTimeout(() => {
+      delete deliveryTimersRef.current[msgId];
+      updateLocalState(sessionId, s => ({
+        ...s,
+        messages: s.messages.map(m =>
+          m.id === msgId && m.deliveryStatus === 'sending'
+            ? { ...m, deliveryStatus: 'failed' as const }
+            : m
+        ),
+      }));
+    }, DELIVERY_TIMEOUT_MS);
+  }, [updateLocalState]);
+
+  const retryDelivery = useCallback((sessionId: string, msgId: string) => {
+    updateLocalState(sessionId, s => ({
+      ...s,
+      messages: s.messages.map(m =>
+        m.id === msgId ? { ...m, deliveryStatus: 'sending' as const, timestamp: Date.now() } : m
+      ),
+    }));
+    beginDelivery(sessionId, msgId);
+  }, [updateLocalState, beginDelivery]);
+
+  // Clear any armed delivery timers on unmount.
+  useEffect(() => () => {
+    for (const t of Object.values(deliveryTimersRef.current)) clearTimeout(t);
+    deliveryTimersRef.current = {};
+  }, []);
+
   // Drain queued messages on streaming → idle transition. Each session keeps
   // its own queue; when its turn completes we pop the head, flip the
   // matching message bubble out of `isPending`, and ship it. Loop continues
@@ -2969,6 +3051,35 @@ export function ChatApp() {
     }
   }, [sessionStates, updateLocalState]);
 
+  // Flush staged offline messages once a session reconnects. We ship the
+  // earliest `deliveryStatus: 'sending'` message when the session is connected
+  // and idle; the next one flushes after that turn completes (status flips back
+  // to connected with isStreaming false), so a backlog drains one turn at a
+  // time. Also covers the Retry path, which re-marks a failed message as
+  // 'sending' while already connected.
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client) return;
+    for (const [sid, state] of Object.entries(sessionStates)) {
+      if (statuses[sid] !== 'connected' || state.isStreaming) continue;
+      const next = state.messages.find(m => m.deliveryStatus === 'sending');
+      if (!next) continue;
+      const timer = deliveryTimersRef.current[next.id];
+      if (timer) { clearTimeout(timer); delete deliveryTimersRef.current[next.id]; }
+      updateLocalState(sid, s => ({
+        ...s,
+        messages: s.messages.map(m =>
+          m.id === next.id ? { ...m, deliveryStatus: undefined, timestamp: Date.now() } : m
+        ),
+        isStreaming: true,
+        wasInterrupted: false,
+        partialText: '',
+        partialThinking: '',
+      }));
+      client.sendMessage(sid, next.content, next.images);
+    }
+  }, [statuses, sessionStates, updateLocalState]);
+
   const contentRef = useRef<HTMLDivElement>(null);
   const termPanelRef = useRef<HTMLPreElement>(null);
 
@@ -2984,6 +3095,16 @@ export function ChatApp() {
 
   const handleFileOpen = async (path: string, line?: number) => {
     if (!client || !activeId) return;
+    // Image files open in a dedicated preview tab rather than the text editor —
+    // their bytes are binary and Monaco would only show garbage.
+    if (IMAGE_EXTS.has((path.split('.').pop() || '').toLowerCase())) {
+      const dataUrl = await client.readFileDataUrl(path);
+      if (!dataUrl) return;
+      const contentWidth = contentRef.current?.offsetWidth ?? 1200;
+      if (contentWidth < 800) updateLocalState(activeId, s => ({ ...s, editorFullWidth: true }));
+      openFileInEditor(activeId, path, dataUrl, undefined, { image: true, readOnly: true });
+      return;
+    }
     const file = await client.readFile(path);
     if (!file) return;
     // Opens as a preview tab. If the content area is too narrow for a split
@@ -2995,6 +3116,9 @@ export function ChatApp() {
 
   const handleFileDiff = async (path: string) => {
     if (!client || !activeId) return;
+    // A changed image opens in the image preview tab — a text diff is
+    // meaningless for binary, so show the current version visually instead.
+    if (IMAGE_EXTS.has((path.split('.').pop() || '').toLowerCase())) { handleFileOpen(path); return; }
     const sid = activeId;
     const base = changesCompareRef.current === 'vs-main' ? baseBranchRef.current : null;
     const [file, original] = await Promise.all([
@@ -3008,6 +3132,11 @@ export function ChatApp() {
 
   const handleFileDiffFullView = async (path: string) => {
     if (!client || !activeId) return;
+    if (IMAGE_EXTS.has((path.split('.').pop() || '').toLowerCase())) {
+      handleFileOpen(path);
+      updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }));
+      return;
+    }
     const sid = activeId;
     const base = changesCompareRef.current === 'vs-main' ? baseBranchRef.current : null;
     const [file, original] = await Promise.all([
@@ -3335,6 +3464,10 @@ export function ChatApp() {
             e.preventDefault();
             setSearchActive(true);
             setExplorerCollapsed(false);
+          } else {
+            // Plain ⌘F / Ctrl+F opens the in-chat find widget.
+            e.preventDefault();
+            setFindOpen(true);
           }
           break;
       }
@@ -4363,6 +4496,7 @@ export function ChatApp() {
                   interactiveMinimized={item.isInteractiveTerminal ? minimizedShells.has(item.id) : undefined}
                   onToggleInteractiveMinimize={item.isInteractiveTerminal ? toggleShellMinimized : undefined}
                   onCancelPending={(id) => removePendingMessage(sid, id)}
+                  onRetry={(id) => retryDelivery(sid, id)}
                 />
               </div>
             );
@@ -5005,11 +5139,16 @@ export function ChatApp() {
               onNewSessionInWorktreeForGroup={handleNewSessionInWorktreeForGroup}
               collapsed={tabsCollapsed}
               onToggleCollapsed={toggleTabsCollapsed}
+              activeNavView={activeNavView}
+              onSelectNavView={setActiveNavView}
             />
           )}
           {/* Side Panel: Explorer (cards) — Search now lives inside it as a card,
-              Settings moved to the titlebar, the old Activity Bar is gone. */}
-          {activeId && (
+              Settings moved to the titlebar, the old Activity Bar is gone.
+              Hidden in group mode: a group tab is selected to compose a new
+              session, but `activeId` still points at the last opened session,
+              so the tree would show stale files from a possibly-different folder. */}
+          {activeNavView === 'sessions' && activeId && !(selectedGroupId && tabGroups[selectedGroupId]) && (
           <FileExplorer
             client={client}
             rootPath={explorerRoot}
@@ -5042,7 +5181,9 @@ export function ChatApp() {
           )}
 
           <div className="flex-1 flex flex-col min-w-0">
-            {!activeId ? (
+            {activeNavView === 'automations' ? (
+              <AutomationsView />
+            ) : !activeId ? (
               <GroupComposer
                 groupName=""
                 groupCwd={
@@ -5076,7 +5217,7 @@ export function ChatApp() {
                     // is an italic `preview` tab, replaced when the next file
                     // opens unless pinned (double-click) or modified.
                     for (const t of active.editorTabs) {
-                      panelTabs.push({ id: 'editor:' + t.path, kind: 'editor', title: t.path.split('/').pop() || 'editor', icon: '📄', dirty: t.dirty, preview: t.preview, deleted: t.deleted, zone: 'main' });
+                      panelTabs.push({ id: 'editor:' + t.path, kind: t.image ? 'image' : 'editor', title: t.path.split('/').pop() || 'editor', icon: t.image ? '🖼️' : '📄', dirty: t.dirty, preview: t.preview, deleted: t.deleted, zone: 'main' });
                     }
                     if (openMockup) panelTabs.push({ id: 'mockup', kind: 'mockup', title: openMockup.name, icon: '🎨', zone: 'main' });
                     // One panel tab per open browser — the previews live
@@ -5095,7 +5236,7 @@ export function ChatApp() {
                   const closePanelTab = (tab: PanelTab) => {
                     if (!activeId) return;
                     switch (tab.kind) {
-                      case 'editor': closeEditor(activeId, tab.id.slice('editor:'.length)); break;
+                      case 'editor': case 'image': closeEditor(activeId, tab.id.slice('editor:'.length)); break;
                       case 'mockup': updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false, mockupInspect: false })); break;
                       case 'browser': closeBrowserFully(activeId, tab.id.slice('browser:'.length)); break;
                       case 'plan': updateLocalState(activeId, s => ({ ...s, openPlan: null, editorFullWidth: false })); break;
@@ -5111,6 +5252,11 @@ export function ChatApp() {
                       case 'chat': {
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden relative">
+                  <ChatFindWidget
+                    open={findOpen}
+                    onClose={() => setFindOpen(false)}
+                    getContainer={() => scrollRef.current}
+                  />
                   <div className="flex flex-1 min-h-0">
                   {/* When a group is focused (sidebar click) but no session
                       inside it is selected, render the inline new-session
@@ -5664,6 +5810,20 @@ export function ChatApp() {
                       onBrowseFolder={() => setShowNewSession(true)}
                     />
                           </div>
+                        );
+                      }
+                      case 'image': {
+                        if (!activeId) return null;
+                        const iPath = tab.id.slice('editor:'.length);
+                        const iTab = active.editorTabs.find(t => t.path === iPath);
+                        if (!iTab) return null;
+                        return (
+                          <ImagePreview
+                            path={iPath}
+                            src={iTab.content}
+                            onClose={() => closeEditor(activeId, iPath)}
+                            onReveal={() => client?.revealInFinder(iPath)}
+                          />
                         );
                       }
                       case 'editor': {

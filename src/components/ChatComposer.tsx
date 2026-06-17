@@ -155,9 +155,13 @@ export function ChatComposer(props: Props) {
     : (active.supportedModels && active.supportedModels.length > 0
         ? active.supportedModels
         : claudeModels);
+  // Terminal commands can't be queued offline (they run on the live pane), so
+  // they still require a live connection. Chat messages, however, can be
+  // composed while the session is closed — they're staged with a "sending"
+  // loader and delivered when the remote session reconnects.
   const sendDisabled = isTerminalMode
     ? !cmdText.trim() || connectionStatus !== 'connected'
-    : !input.trim() || connectionStatus !== 'connected';
+    : !input.trim();
   const triggerCls =
     'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
 
@@ -270,8 +274,16 @@ export function ChatComposer(props: Props) {
                   }
                 }}
                 onFocus={onFocus}
-                disabled={connectionStatus !== 'connected'}
-                placeholder={isTerminalMode ? 'command...' : (streaming ? 'Queue a follow-up message…' : 'Send a message...')}
+                disabled={isTerminalMode && connectionStatus !== 'connected'}
+                placeholder={
+                  isTerminalMode
+                    ? 'command...'
+                    : connectionStatus !== 'connected'
+                      ? 'Session offline — message will send on reconnect…'
+                      : streaming
+                        ? 'Queue a follow-up message…'
+                        : 'Send a message...'
+                }
                 onKeyDown={(e) => {
                   if (isTerminalMode && e.key === 'Backspace' && !cmdText) {
                     e.preventDefault();

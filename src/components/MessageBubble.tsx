@@ -25,6 +25,9 @@ interface Props {
   /** Removes a queued (still-unsent) user message from the local queue.
    *  Wired by ChatApp; only fires for bubbles where `message.isPending` is true. */
   onCancelPending?: (msgId: string) => void;
+  /** Re-attempts delivery of a message whose offline send timed out.
+   *  Wired by ChatApp; only fires for bubbles where `deliveryStatus === 'failed'`. */
+  onRetry?: (msgId: string) => void;
 }
 
 /** Short `9:41`-style clock for the hover stamp; null when we have no usable
@@ -1028,7 +1031,7 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
@@ -1113,6 +1116,9 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
 
   if (isUser) {
     const pending = !!message.isPending;
+    const sending = message.deliveryStatus === 'sending';
+    const failed = message.deliveryStatus === 'failed';
+    const dim = pending || sending;
     return (
       <>
       <div className="flex justify-end py-1">
@@ -1121,12 +1127,14 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
           <div
             style={accent ? {
               backgroundColor: `${accent}26`,
-              ...(pending ? { borderColor: `${accent}66` } : {}),
+              ...(dim ? { borderColor: `${accent}66` } : {}),
             } : undefined}
             className={`rounded-2xl rounded-br-sm px-3.5 py-2 transition-opacity ${
               accent ? '' : 'bg-blue-600/15'
             } ${
-              pending ? `opacity-50 border border-dashed ${accent ? '' : 'border-blue-500/40'}` : ''
+              dim ? `opacity-50 border border-dashed ${accent ? '' : 'border-blue-500/40'}` : ''
+            } ${
+              failed ? 'border border-red-500/50' : ''
             }`}
           >
             {message.images && message.images.length > 0 && (
@@ -1152,6 +1160,30 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
               <div className="mt-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-blue-300/70">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400/60 animate-pulse" />
                 Queued
+              </div>
+            )}
+            {sending && (
+              <div className="mt-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-blue-300/70">
+                <span className="inline-block w-2.5 h-2.5 rounded-full border border-blue-300/60 border-t-transparent animate-spin" />
+                Sending…
+              </div>
+            )}
+            {failed && (
+              <div className="mt-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-red-300/80">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400/70" />
+                  Not delivered
+                </span>
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={() => onRetry(message.id)}
+                    className="rounded-full px-2 py-0.5 bg-red-500/15 hover:bg-red-500/25 text-red-200 border border-red-500/40 transition-colors normal-case tracking-normal"
+                    title="Retry sending"
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
             )}
           </div>

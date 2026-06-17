@@ -210,6 +210,14 @@ export interface ChatMessage {
    * `false` (or stripped) when the queue drains and the message ships.
    */
   isPending?: boolean;
+  /**
+   * Local-only delivery lifecycle for user messages composed while the session
+   * was not connected (remote bridge offline / runtime stopped). `'sending'`
+   * shows a loader while we wait for the session to reconnect and accept it;
+   * `'failed'` is set when the delivery timeout elapses, surfacing a Retry
+   * button. Undefined once the message ships normally.
+   */
+  deliveryStatus?: 'sending' | 'failed';
 }
 
 export interface PermissionRequest {
@@ -292,7 +300,7 @@ export interface SessionState {
    *  replaced when the next file opens unless pinned (double-click) or modified.
    *  `content` is the on-disk/last-saved baseline; live unsaved edits live in
    *  Monaco and a host-side buffer. UI-only — preserved across server merges. */
-  editorTabs: { path: string; content: string; line?: number; column?: number; dirty: boolean; preview: boolean; readOnly?: boolean; deleted?: boolean }[];
+  editorTabs: { path: string; content: string; line?: number; column?: number; dirty: boolean; preview: boolean; readOnly?: boolean; deleted?: boolean; image?: boolean }[];
   /** Path of the revealed editor tab, or null when none is open. */
   activeEditorPath: string | null;
   /** Unified "reveal this tab" signal for the PanelsWorkspace, shared by editor
@@ -1066,6 +1074,21 @@ export class ClaudeClient {
     const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return null;
     return resp.json();
+  }
+
+  /** Fetch a file's raw bytes (with auth) and return a `data:` URL suitable for
+   *  an <img src>. Used by the image preview tab — an <img> can't carry the
+   *  Authorization header itself, so we read the blob here and inline it. */
+  async readFileDataUrl(path: string): Promise<string | null> {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`));
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
   }
 
   async writeFile(path: string, content: string): Promise<boolean> {
