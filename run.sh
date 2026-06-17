@@ -9,6 +9,21 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"
 
+# Persist stdout+stderr of both the build watcher and the bridge server to
+# timestamped log files. A SIGILL ("illegal instruction") is almost always Bun
+# panicking; Bun prints its native trace + a bun.report URL to stderr, which
+# would otherwise be lost to terminal scrollback. We `tee` so output still
+# shows live in the terminal while being captured for post-mortem analysis.
+LOG_DIR="$DIR/logs"
+mkdir -p "$LOG_DIR"
+RUN_TS="$(date +%Y%m%d-%H%M%S)"
+BUILD_LOG="$LOG_DIR/build.log"
+BRIDGE_LOG="$LOG_DIR/bridge.log"
+{
+  echo ""
+  echo "===== run.sh start $RUN_TS (pid $$) ====="
+} | tee -a "$BUILD_LOG" "$BRIDGE_LOG" >/dev/null
+
 load_env_file() {
   local env_file="$1"
 
@@ -71,9 +86,11 @@ if lsof -iTCP:"$PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
   exit 0
 fi
 
-# Start the frontend watcher in the background.
+# Start the frontend watcher in the background. Its output is teed into
+# logs/build.log so a SIGILL from `--watch` (a known panic on this repo) is
+# captured.
 echo "Starting bun build --watch..."
-"$BUN_BIN" run scripts/build.ts --watch &
+"$BUN_BIN" run scripts/build.ts --watch > >(tee -a "$BUILD_LOG") 2>&1 &
 BUILD_PID=$!
 
 cleanup() {
@@ -100,5 +117,6 @@ echo "==========================================="
 echo ""
 
 # Replace the shell with the bridge server so callers see a single, stable
-# PID serving the frontend + API.
-exec env CLAUDE_UI_PORT="$PORT" "$BUN_BIN" server/index.ts
+# PID serving the frontend + API. stderr/stdout are teed into logs/bridge.log
+# so Bun's native panic trace (the real SIGILL cause) is always persisted.
+exec env CLAUDE_UI_PORT="$PORT" "$BUN_BIN" server/index.ts > >(tee -a "$BRIDGE_LOG") 2>&1

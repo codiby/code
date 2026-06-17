@@ -34,3 +34,5 @@ electron/resources/
 
 # Claude Code local settings
 .claude/
+logs/
+crash.log
