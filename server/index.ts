@@ -6,12 +6,12 @@
  */
 
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, extname } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { spawnPty } from './pty';
 
-import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, loadOrCreateMobileToken, getLanIp, resolveTls } from './config';
+import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, CODIBY_DIR, loadOrCreateMobileToken, getLanIp, resolveTls } from './config';
 import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } from './handlers/mobile';
 import { notifyPermissionResolved } from './notify';
 import { log, registerGlobalErrorHandlers } from './logger';
@@ -60,6 +60,7 @@ import { resolvePermissionDecision } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleExecCreate, terminalWsOpen, terminalWsClose, spawnTrackedProcess } from './handlers/exec';
+import { startProcessMonitor, pokeProcessMonitor } from './process-monitor';
 import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput, addToGraveyard, isInGraveyard, dismissShell, getDismissedShells } from './handlers/processes';
 import type { TrackedProcess } from './types';
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef, runShell } from './handlers/git';
@@ -82,7 +83,7 @@ import {
   clearSessionState,
 } from './state';
 import type { ChatMessage } from './state';
-import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
+import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
 import { createDocsApp } from './swagger';
 import { Hono } from 'hono';
@@ -210,6 +211,16 @@ function buildFullSessionList(): any[] {
   return [...localList, ...remoteList];
 }
 
+/** Broadcast a message to *every* connected frontend client, regardless of
+ *  session subscription. Used for sidebar-wide signals like `session_activity`,
+ *  which must reach a client even for sessions it isn't actively viewing. */
+function broadcastToAllClients(msg: object) {
+  const data = JSON.stringify(msg);
+  for (const ws of frontendClients) {
+    try { ws.send(data); } catch {}
+  }
+}
+
 /** Broadcast the full session list to all connected frontend clients */
 function broadcastSessionList() {
   const msg = JSON.stringify({ type: 'sessions', sessions: buildFullSessionList() });
@@ -253,6 +264,12 @@ setSessionListBroadcaster(broadcastRemoteReconciled);
 
 // Repaint the sidebar when a session auto-unarchives on an incoming message.
 setStatusBroadcaster(broadcastSessionList);
+
+// Poll each session's process subtree for running children + listening ports,
+// pushing `session_activity` to the frontend's sidebar badges on change. Sent
+// to all clients (not subscription-scoped) so badges stay live for every
+// session in the sidebar, not just the one the user is viewing.
+startProcessMonitor((_sessionId, msg) => broadcastToAllClients(msg));
 
 // Subscribe once at module load — wire status events into the WS bus.
 onTunnelStatus((remoteId, status, lastError) => {
@@ -309,9 +326,21 @@ onPortlessUrlResolved(broadcastPortlessUrlResolved);
 function withRemoteGroups(prefs: Record<string, unknown>): Record<string, unknown> {
   const { tabGroups, tabGroupMap } = getMergedRemoteGroups();
   if (!Object.keys(tabGroups).length && !Object.keys(tabGroupMap).length) return prefs;
+  // A remote group's definition is owned by the remote, but the user can tweak
+  // cosmetic fields locally (e.g. recolour it). Those edits live in
+  // `remoteGroupOverrides` (see updatePreferences) and are layered on top here
+  // so they survive every re-merge instead of being clobbered by the remote's
+  // original value.
+  const overrides = (prefs.remoteGroupOverrides as Record<string, Record<string, unknown>>) ?? {};
+  const remoteGroups: Record<string, unknown> = { ...tabGroups };
+  for (const [gid, ov] of Object.entries(overrides)) {
+    if (remoteGroups[gid] && ov && typeof ov === 'object') {
+      remoteGroups[gid] = { ...(remoteGroups[gid] as Record<string, unknown>), ...ov };
+    }
+  }
   return {
     ...prefs,
-    tabGroups: { ...((prefs.tabGroups as Record<string, unknown>) ?? {}), ...tabGroups },
+    tabGroups: { ...((prefs.tabGroups as Record<string, unknown>) ?? {}), ...remoteGroups },
     tabGroupMap: { ...((prefs.tabGroupMap as Record<string, unknown>) ?? {}), ...tabGroupMap },
   };
 }
@@ -320,6 +349,15 @@ function withRemoteGroups(prefs: Record<string, unknown>): Record<string, unknow
  *  server-side mutation (e.g. an MCP tool updating tab groups). */
 function broadcastPreferences(prefs: Record<string, unknown>) {
   const msg = JSON.stringify({ type: 'preferences', preferences: withRemoteGroups(prefs) });
+  for (const ws of frontendClients) {
+    try { ws.send(msg); } catch {}
+  }
+}
+
+/** Broadcast the keybinding override map so every window stays in sync after
+ *  the shortcuts editor saves a change. */
+function broadcastKeybindings(overrides: Record<string, string | null>) {
+  const msg = JSON.stringify({ type: 'keybindings', keybindings: overrides });
   for (const ws of frontendClients) {
     try { ws.send(msg); } catch {}
   }
@@ -340,15 +378,38 @@ function broadcastFocusSession(sessionId: string) {
  * connected frontend. Used by MCP tools that mutate tab groups etc.
  */
 function updatePreferences(partial: Record<string, unknown>): Record<string, unknown> {
+  const prefs = loadPreferences();
   // The frontend can't tell local groups from the remote groups we splice in
   // (withRemoteGroups), so when it persists prefs it echoes the remote ones
   // back. Strip them before saving so the local file never accumulates remote
   // group definitions / mappings — they're re-merged on every broadcast.
   const clean = { ...partial };
   if (clean.tabGroups && typeof clean.tabGroups === 'object') {
+    const remoteDefs = getMergedRemoteGroups().tabGroups as Record<string, Record<string, unknown>>;
+    const overrides: Record<string, Record<string, unknown>> = {
+      ...((prefs.remoteGroupOverrides as Record<string, Record<string, unknown>>) ?? {}),
+    };
     const g = { ...(clean.tabGroups as Record<string, unknown>) };
-    for (const gid of Object.keys(g)) if (isRemoteGroupId(gid)) delete g[gid];
+    for (const gid of Object.keys(g)) {
+      if (!isRemoteGroupId(gid)) continue;
+      // The remote owns the group definition, so it can't be persisted into the
+      // local file. But capture the fields the user changed relative to the
+      // remote's definition (e.g. color) as a local override so the tweak
+      // sticks — matching the remote again clears it.
+      const incoming = g[gid] as Record<string, unknown> | undefined;
+      const remoteDef = remoteDefs[gid];
+      if (incoming && remoteDef) {
+        const diff: Record<string, unknown> = {};
+        for (const k of Object.keys(incoming)) {
+          if (JSON.stringify(incoming[k]) !== JSON.stringify(remoteDef[k])) diff[k] = incoming[k];
+        }
+        if (Object.keys(diff).length) overrides[gid] = diff;
+        else delete overrides[gid];
+      }
+      delete g[gid];
+    }
     clean.tabGroups = g;
+    clean.remoteGroupOverrides = overrides;
   }
   if (clean.tabGroupMap && typeof clean.tabGroupMap === 'object') {
     const m = { ...(clean.tabGroupMap as Record<string, unknown>) };
@@ -357,7 +418,6 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
     }
     clean.tabGroupMap = m;
   }
-  const prefs = loadPreferences();
   Object.assign(prefs, clean);
   savePreferences(prefs);
   broadcastPreferences(prefs);
@@ -923,6 +983,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     };
     trackedProcesses.set(procId, tp);
     saveProcessRegistry();
+    pokeProcessMonitor();
     log(`[exec_shell] spawned pty procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)} pid=${pty.pid} cwd=${execCwd}${label ? ` label="${label}"` : ''}`);
 
     // NOTE: We deliberately do NOT auto-type `command` here even when the
@@ -943,6 +1004,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       log(`[exec_shell] pty exited procId=${procId.slice(0, 8)} code=${code}`);
       broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
       addToGraveyard(procId);
+      pokeProcessMonitor();
       setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
     });
 
@@ -1002,6 +1064,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     } else if (processId) {
       killTrackedProcess(processId);
     }
+    pokeProcessMonitor();
     return;
   }
 
@@ -1490,6 +1553,25 @@ app.get('/file-content', (c) => {
     return Response.json({ error: 'Cannot read file' }, { status: 404, headers: corsHeaders });
   }
 });
+// Serve a file's raw bytes with a best-effort content-type. Used by the image
+// preview tab, which needs binary (png/jpg/gif/…) that `/file-content` would
+// corrupt by decoding as utf-8.
+const RAW_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon', '.avif': 'image/avif', '.svg': 'image/svg+xml',
+};
+app.get('/file-raw', (c) => {
+  const filePath = new URL(c.req.url).searchParams.get('path');
+  if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+  try {
+    const bytes = readFileSync(filePath);
+    const mime = RAW_MIME[extname(filePath).toLowerCase()] || 'application/octet-stream';
+    return new Response(bytes, { headers: { ...corsHeaders, 'content-type': mime } });
+  } catch {
+    return Response.json({ error: 'Cannot read file' }, { status: 404, headers: corsHeaders });
+  }
+});
 app.put('/file-content', async (c) => {
   try {
     const body = await c.req.raw.json() as { path: string; content: string };
@@ -1504,6 +1586,28 @@ app.delete('/file-content', (c) => {
   const filePath = new URL(c.req.url).searchParams.get('path');
   if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
   return handleDeletePath(filePath);
+});
+// Persist a pasted code snippet under ~/.codiby/<sessionId>/<uuid><ext>. The
+// composer calls this when a paste is too large to inline; the returned path
+// is referenced from the chat message as a clickable badge.
+app.post('/snippet', async (c) => {
+  try {
+    const body = await c.req.raw.json() as { sessionId: string; content: string; ext?: string };
+    if (!body.sessionId || body.content == null) {
+      return Response.json({ error: 'sessionId and content required' }, { status: 400, headers: corsHeaders });
+    }
+    // Sanitize the extension to a short alnum token so we never build a weird path.
+    const ext = (body.ext || '').replace(/[^a-z0-9]/gi, '').slice(0, 12);
+    const uuid = randomUUID();
+    const name = ext ? `${uuid}.${ext}` : uuid;
+    const dir = join(CODIBY_DIR, body.sessionId);
+    mkdirSync(dir, { recursive: true });
+    const filePath = join(dir, name);
+    writeFileSync(filePath, body.content, 'utf-8');
+    return Response.json({ path: filePath, name, uuid }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
 });
 app.post('/file-rename', async (c) => {
   try {
@@ -1543,7 +1647,9 @@ app.get('/processes', (c) => {
 app.post('/kill', async (c) => {
   const body = await c.req.raw.json() as { processId?: string; pid?: number };
   if (!body.processId && !body.pid) return Response.json({ error: 'processId or pid required' }, { status: 400, headers: corsHeaders });
-  return handleKillProcess(body.processId || '', body.pid);
+  const killed = handleKillProcess(body.processId || '', body.pid);
+  pokeProcessMonitor();
+  return killed;
 });
 
 // ── Git ──────────────────────────────────────────────────────────────────────
@@ -1937,6 +2043,18 @@ app.get('/preferences', () => Response.json(loadPreferences(), { headers: corsHe
 app.put('/preferences', async (c) => {
   const body = await c.req.raw.json() as Record<string, unknown>;
   updatePreferences(body);
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// ── Keyboard shortcuts (user overrides; defaults live in the frontend) ──────────
+app.get('/keybindings', () => Response.json(loadKeybindings(), { headers: corsHeaders }));
+app.put('/keybindings', async (c) => {
+  // PUT replaces the whole overrides map (not a merge) so removing a key on the
+  // client genuinely deletes the override. The body is the full overrides
+  // object: command id → chord, or null to force-unbind.
+  const body = await c.req.raw.json() as Record<string, string | null>;
+  saveKeybindings(body);
+  broadcastKeybindings(body);
   return Response.json({ ok: true }, { headers: corsHeaders });
 });
 

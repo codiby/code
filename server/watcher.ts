@@ -17,6 +17,7 @@ import { watch, statSync, existsSync, type FSWatcher } from 'fs';
 import { join, sep } from 'path';
 import { log, logError } from './logger';
 import { invalidateIndexFor } from './handlers/files';
+import { runShell } from './handlers/git';
 
 export type FileChangeKind = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
 
@@ -40,12 +41,24 @@ type Entry = {
    *  gone, so we can't `stat` it — this set lets us tell unlinkDir from
    *  unlink. */
   knownDirs: Set<string>;
+  /** Watches the repo's git dir so branch switches (checkout, worktree HEAD
+   *  moves) are surfaced even though `.git` is ignored by the file watcher
+   *  above. Null until resolved, or when the cwd isn't a git repo. */
+  headWatcher: FSWatcher | null;
+  /** Last branch we broadcast, used to suppress duplicate HEAD writes. */
+  branch: string | null;
+  /** Debounce timer for coalescing a burst of HEAD writes into one read. */
+  headTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const watchers = new Map<string, Entry>();
 
 /** Debounce window for coalescing a burst of raw fs events into one message. */
 const FLUSH_MS = 120;
+
+/** Debounce window for HEAD writes — git rewrites HEAD via a lock-file rename,
+ *  which can surface as a couple of events in quick succession. */
+const HEAD_FLUSH_MS = 150;
 
 /** Path segments that produce overwhelming churn and are never worth
  *  surfacing. Any change whose relative path crosses one of these is dropped. */
@@ -105,6 +118,9 @@ export function startSessionWatcher(sessionId: string, cwd: string, broadcast: B
     pending: new Map(),
     flushTimer: null,
     knownDirs: new Set(),
+    headWatcher: null,
+    branch: null,
+    headTimer: null,
   };
 
   watcher.on('change', (eventType, filename) => {
@@ -119,6 +135,10 @@ export function startSessionWatcher(sessionId: string, cwd: string, broadcast: B
 
   watchers.set(sessionId, entry);
   log(`[watch] started for ${sessionId.slice(0, 8)} at ${cwd}`);
+
+  // Resolve the git dir and start watching HEAD asynchronously — the file
+  // watcher above is live regardless of whether this is a git repo.
+  void startBranchWatcher(entry, sessionId);
 }
 
 /** Stop and dispose the watcher for a session (no-op if none is running). */
@@ -130,8 +150,15 @@ export function stopSessionWatcher(sessionId: string): void {
     clearTimeout(entry.flushTimer);
     entry.flushTimer = null;
   }
+  if (entry.headTimer) {
+    clearTimeout(entry.headTimer);
+    entry.headTimer = null;
+  }
   try {
     entry.watcher.close();
+  } catch {}
+  try {
+    entry.headWatcher?.close();
   } catch {}
   log(`[watch] stopped for ${sessionId.slice(0, 8)}`);
 }
@@ -216,5 +243,67 @@ function flush(entry: Entry, sessionId: string): void {
     entry.broadcast(sessionId, { type: 'file_changes', sessionId, changes });
   } catch (err) {
     logError(`[watch] broadcast failed for ${sessionId.slice(0, 8)}: ${err}`);
+  }
+}
+
+/** Read the currently checked-out branch for `cwd`. Empty when detached. */
+async function readBranch(cwd: string): Promise<string> {
+  return (await runShell('git branch --show-current', cwd)).trim();
+}
+
+/**
+ * Watch the session repo's HEAD and broadcast `branch_changed` whenever the
+ * checked-out branch changes (e.g. `git checkout`, switching worktrees).
+ *
+ * We resolve the *absolute* git dir so this works for linked worktrees too,
+ * whose HEAD lives under the main repo's `.git/worktrees/<name>/HEAD` —
+ * outside the recursive cwd watch. We watch the git dir non-recursively (not
+ * the HEAD file directly) because git rewrites HEAD via a lock-file rename,
+ * which would invalidate an inode-bound watch on the file itself on Linux.
+ */
+async function startBranchWatcher(entry: Entry, sessionId: string): Promise<void> {
+  let gitDir: string;
+  try {
+    gitDir = (await runShell('git rev-parse --absolute-git-dir', entry.cwd)).trim();
+  } catch {
+    return; // not a git repo (or git unavailable) — nothing to watch
+  }
+  if (!gitDir) return;
+  // The watcher may have been stopped (or restarted onto a new cwd) while we
+  // were awaiting git — bail unless we're still the live entry.
+  if (watchers.get(sessionId) !== entry) return;
+
+  try { entry.branch = await readBranch(entry.cwd); } catch {}
+
+  try {
+    entry.headWatcher = watch(gitDir, (_event, filename) => {
+      if (!filename || String(filename) !== 'HEAD') return;
+      if (entry.headTimer) return;
+      entry.headTimer = setTimeout(() => {
+        entry.headTimer = null;
+        void flushBranch(entry, sessionId);
+      }, HEAD_FLUSH_MS);
+    });
+    entry.headWatcher.on('error', (err) => {
+      logError(`[watch] HEAD watcher error for ${sessionId.slice(0, 8)}: ${err}`);
+    });
+    log(`[watch] HEAD watch started for ${sessionId.slice(0, 8)} at ${gitDir}`);
+  } catch (err) {
+    logError(`[watch] could not watch HEAD for ${sessionId.slice(0, 8)}: ${err}`);
+  }
+}
+
+/** Re-read the branch and broadcast only when it actually changed — a commit
+ *  or other ref update doesn't move HEAD's content, and we dedupe so repeated
+ *  HEAD rewrites for the same branch stay quiet. */
+async function flushBranch(entry: Entry, sessionId: string): Promise<void> {
+  let branch: string;
+  try { branch = await readBranch(entry.cwd); } catch { return; }
+  if (branch === entry.branch) return;
+  entry.branch = branch;
+  try {
+    entry.broadcast(sessionId, { type: 'branch_changed', sessionId, branch });
+  } catch (err) {
+    logError(`[watch] branch broadcast failed for ${sessionId.slice(0, 8)}: ${err}`);
   }
 }

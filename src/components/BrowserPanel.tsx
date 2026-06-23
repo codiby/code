@@ -206,7 +206,7 @@ export function useBrowserPreviewBounds(args: {
       const rect = readBounds(hostRef.current, zoom) || { x: 0, y: 0, width: 800, height: 600 };
       lastBoundsRef.current = rect;
       native.invoke<void>('open_browser_preview', {
-        label, url: urlRef.current, title: titleRef.current, cookieJar, ...rect,
+        label, url: urlRef.current, title: titleRef.current, cookieJar, openSeq, ...rect,
       })
         .then(() => { if (!cancelled) setWindowOpen(true); })
         .catch((e: unknown) => { if (!cancelled) setOpenError(String(e)); });

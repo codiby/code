@@ -23,6 +23,20 @@ html {
   color-scheme: dark;
 }
 
+/* In-chat find widget (⌘F) match highlighting. Painted via the CSS Custom
+ * Highlight API so matches light up without mutating the rendered markdown
+ * DOM — no React reconciliation fights, no broken streaming. `chat-find`
+ * tints every match; `chat-find-current` is the active one (orange, VSCode-
+ * style). `color: inherit` keeps the underlying text legible. */
+::highlight(chat-find) {
+  background-color: rgba(234, 179, 8, 0.30);
+  color: inherit;
+}
+::highlight(chat-find-current) {
+  background-color: rgba(249, 115, 22, 0.9);
+  color: #0f1012;
+}
+
 @keyframes tabDotPulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.35; }
@@ -315,3 +329,69 @@ pre code .token.italic { font-style: italic; }
 /* diff blocks: tint whole inserted/deleted lines */
 pre code .token.inserted { background: rgba(46, 160, 67, 0.12); }
 pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
+
+/* Clipped long code blocks (Markdown.tsx) — first ~30 lines visible, with a
+   fade + "show more" control that reveals the rest in place. */
+.cm-code-clip { max-height: 460px; overflow: hidden; }
+.cm-code-clip.cm-expanded { max-height: none; overflow: visible; }
+.cm-code-fade { position: absolute; left: 1px; right: 1px; bottom: 0; height: 56px; background: linear-gradient(transparent, #0d0d0d); pointer-events: none; z-index: 2; border-radius: 0 0 4px 4px; }
+.cm-code-clip.cm-expanded .cm-code-fade { display: none; }
+.cm-code-more { display: block; width: 100%; text-align: center; font-size: 11px; color: #a1a1aa; background: rgba(255,255,255,.02); border: 1px solid var(--border, rgba(255,255,255,.08)); border-top: 0; border-radius: 0 0 6px 6px; padding: 6px; margin-top: -7px; cursor: pointer; transition: background .12s, color .12s; }
+.cm-code-more:hover { background: rgba(255,255,255,.05); color: #e4e4e7; }
+
+/* ---------------------------------------------------------------------------
+   Contenteditable composer (src/components/RichInput.tsx). The editable layer
+   IS the styled layer, so a fenced block can be a real bordered card with
+   padding (Slack-style) — the caret flows through it naturally. Token colours
+   come from the `.cm-highlight` palette above (colour only).
+   --------------------------------------------------------------------------- */
+.rc-editor { min-height: 24px; max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; cursor: text; }
+.rc-editor:focus { outline: none; }
+.rc-editor[data-empty="true"]::before { content: attr(data-placeholder); color: #71717a; pointer-events: none; position: absolute; }
+.rc-line { white-space: pre-wrap; min-height: 1.5em; }
+.rc-card { position: relative; margin: 6px 0; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: 10px; background: #0d0d0d; padding: 9px 12px; }
+.rc-card[data-lang]::before { content: attr(data-lang); position: absolute; top: 6px; right: 10px; font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: #52525b; pointer-events: none; user-select: none; }
+.rc-card .rc-cl { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.6; }
+.rc-card .rc-fence { color: #52525b; }
+
+/* ---------------------------------------------------------------------------
+   Composer in-place highlighting (src/components/ChatComposer.tsx). A
+   transparent <textarea> sits over this `.cm-highlight` backdrop, so the two
+   layers MUST render glyphs at identical positions. That means token styling
+   here may only change COLOUR / background — never font-weight, font-style,
+   letter-spacing, or anything that alters glyph advance — or the caret would
+   drift away from the visible text. Colours mirror the Markdown block theme.
+   --------------------------------------------------------------------------- */
+.cm-highlight .cm-inline-code { color: #a5b4fc; background: rgba(99, 102, 241, 0.14); border-radius: 3px; }
+.cm-highlight .cm-fence { color: #6a737d; }
+.cm-highlight .cm-code-block { color: #c9d1d9; background: rgba(110, 118, 129, 0.08); }
+
+.cm-highlight .token.comment,
+.cm-highlight .token.prolog,
+.cm-highlight .token.doctype,
+.cm-highlight .token.cdata { color: #6a737d; }
+.cm-highlight .token.punctuation { color: #8b949e; }
+.cm-highlight .token.property,
+.cm-highlight .token.tag,
+.cm-highlight .token.constant,
+.cm-highlight .token.symbol,
+.cm-highlight .token.deleted { color: #e06c75; }
+.cm-highlight .token.boolean,
+.cm-highlight .token.number { color: #d19a66; }
+.cm-highlight .token.selector,
+.cm-highlight .token.attr-name,
+.cm-highlight .token.string,
+.cm-highlight .token.char,
+.cm-highlight .token.builtin,
+.cm-highlight .token.inserted { color: #98c379; }
+.cm-highlight .token.operator,
+.cm-highlight .token.entity,
+.cm-highlight .token.url,
+.cm-highlight .token.variable { color: #56b6c2; }
+.cm-highlight .token.atrule,
+.cm-highlight .token.attr-value,
+.cm-highlight .token.keyword { color: #c678dd; }
+.cm-highlight .token.function,
+.cm-highlight .token.class-name { color: #61afef; }
+.cm-highlight .token.regex,
+.cm-highlight .token.important { color: #e5c07b; }

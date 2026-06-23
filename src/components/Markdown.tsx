@@ -6,8 +6,13 @@
 
 import { memo, useCallback } from 'react';
 import { highlightCode, normalizeLang } from '../lib/highlight';
+import { detectLanguage } from '../lib/detect-language';
 
 const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'strong', 'del', 'sub', 'sup', 'kbd', 'mark', 'abbr']);
+
+// Fenced blocks longer than this are clipped with a "show more" control so a
+// big paste doesn't overwhelm the thread (matches the composer's 30-line cap).
+const MAX_CODE_LINES = 30;
 
 const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 
@@ -18,21 +23,58 @@ const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11
 // (`highlightCode` escapes its own output) and a `language-*` class is added so
 // the token-color CSS applies and the label shows in the corner.
 function codeBlockHtml(code: string, lang: string): string {
-  const grammar = normalizeLang(lang);
-  const body = highlightCode(code, lang);
+  // Honour the fence's explicit language; otherwise sniff it from the content
+  // so unlabelled ``` blocks still get a label + syntax colours.
+  const grammar = normalizeLang(lang) || normalizeLang(detectLanguage(code));
+  const body = highlightCode(code, grammar);
   const langClass = grammar ? ` language-${grammar}` : '';
   const label = grammar
     ? `<span class="absolute top-1.5 left-3 z-10 text-[9px] uppercase tracking-wide text-zinc-600 select-none pointer-events-none">${grammar}</span>`
     : '';
   // Reserve top space for the language label so it doesn't overlap line 1.
   const padTop = grammar ? 'pt-6' : 'pt-2';
+
+  const lineCount = code.split('\n').length;
+  const clipped = lineCount > MAX_CODE_LINES;
+  // When clipped, the full code still lives in the DOM — a CSS max-height hides
+  // the overflow and the "show more" button (handled by event delegation in
+  // the Markdown container) toggles `cm-expanded` to reveal the rest in place.
+  const scrollOpen = `<div class="relative${clipped ? ' cm-code-clip' : ''}" data-code-scroll>`;
+  const fade = clipped ? `<div class="cm-code-fade" aria-hidden></div>` : '';
+  const pre = `<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 pb-2 ${padTop} font-mono overflow-x-auto leading-snug${langClass}"><code class="${langClass.trim()}">${body}</code></pre>`;
+  const more = clipped
+    ? `<button type="button" data-expand-code class="cm-code-more">▾ Mostrar ${lineCount - MAX_CODE_LINES} líneas más</button>`
+    : '';
+
   return `<div class="relative group/code my-2" data-code-block>`
     + label
     + `<button type="button" data-copy-code aria-label="Copy code"`
     + ` class="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-light border border-border text-[10px] text-zinc-400 opacity-0 group-hover/code:opacity-100 hover:text-zinc-200 hover:border-border-light transition-opacity">`
     + `${COPY_ICON}<span data-copy-label>Copy</span></button>`
-    + `<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 pb-2 ${padTop} font-mono overflow-x-auto leading-snug${langClass}"><code class="${langClass.trim()}">${body}</code></pre>`
+    + scrollOpen + fade + pre + `</div>`
+    + more
     + `</div>`;
+}
+
+const FILE_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+
+// Render a `[name · sub](codiby-snippet:/abs/path)` reference (inserted by the
+// composer when a paste is saved to a file) as a clickable badge. The path is
+// stored on the button; clicks are caught by event delegation, which fires a
+// `codiby-code:open-file` event that ChatApp routes to the preview pane.
+function snippetBadgeHtml(label: string, path: string): string {
+  const [name, ...rest] = label.split(' · ');
+  const sub = rest.join(' · ');
+  const pathAttr = path.replace(/"/g, '&quot;');
+  return `<button type="button" data-snippet-open data-snippet-path="${pathAttr}"`
+    + ` class="inline-flex items-center gap-2 my-1 max-w-full align-middle rounded-lg border border-border bg-surface-light px-2.5 py-1.5 text-left hover:border-border-light hover:bg-zinc-800/60 transition-colors cursor-pointer">`
+    + `<span class="flex items-center justify-center w-6 h-6 rounded-md bg-indigo-500/15 text-indigo-300 shrink-0">${FILE_ICON}</span>`
+    + `<span class="min-w-0">`
+    + `<span class="block font-mono text-[12px] text-zinc-200 truncate">${escapeHtml(name)}</span>`
+    + (sub ? `<span class="block text-[10px] text-zinc-500 truncate">${escapeHtml(sub)}</span>` : '')
+    + `</span>`
+    + `<span class="text-zinc-600 shrink-0">›</span>`
+    + `</button>`;
 }
 
 function escapeHtml(text: string): string {
@@ -50,6 +92,8 @@ function escapeHtml(text: string): string {
 
 function renderInline(text: string): string {
   return text
+    // Saved-snippet reference badge: [name · sub](codiby-snippet:/abs/path)
+    .replace(/\[([^\]]+)\]\(codiby-snippet:([^)]+)\)/g, (_m, label, path) => snippetBadgeHtml(label, path))
     // Images: ![alt](url)
     .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="max-w-full rounded my-1" />')
     // Links: [text](url)
@@ -253,7 +297,26 @@ export const Markdown = memo(function Markdown({ text, className }: { text: stri
   // can't carry a React handler. Catch their clicks here, read the sibling
   // <code>'s textContent, and copy it.
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const btn = (e.target as HTMLElement).closest('[data-copy-code]');
+    const target = e.target as HTMLElement;
+
+    // Saved-snippet badge → ask ChatApp to open the file in the preview pane.
+    const snippet = target.closest('[data-snippet-open]');
+    if (snippet) {
+      const path = snippet.getAttribute('data-snippet-path');
+      if (path) window.dispatchEvent(new CustomEvent('codiby-code:open-file', { detail: { path } }));
+      return;
+    }
+
+    // "Show more" on a clipped code block → reveal the rest in place.
+    const expand = target.closest('[data-expand-code]');
+    if (expand) {
+      const scroll = expand.closest('[data-code-block]')?.querySelector('[data-code-scroll]');
+      scroll?.classList.add('cm-expanded');
+      expand.remove();
+      return;
+    }
+
+    const btn = target.closest('[data-copy-code]');
     if (!btn) return;
     const code = btn.closest('[data-code-block]')?.querySelector('pre code');
     const value = code?.textContent;

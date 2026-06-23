@@ -8,11 +8,12 @@
  *     reach for, plus browser-preview / CDP / plugin OAuth handlers.
  *   - on shutdown, kill the sidecar and tear down all preview surfaces.
  */
-import { app, BrowserWindow, ipcMain, shell, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Notification, crashReporter } from 'electron';
 import { join } from 'node:path';
 
 import { getBridgePort, killSidecar } from './bridge_server';
 import { installCliScript } from './cli_installer';
+import { wireRendererDiagnostics, diagnosticsLogPath, logMain } from './diagnostics';
 import {
   initBrowserPreview,
   openBrowserPreview,
@@ -101,6 +102,17 @@ process.on('unhandledRejection', (reason) => {
   console.error('[electron-main] Unhandled promise rejection (kept app alive):', reason);
 });
 
+// Capture native crash dumps locally (renderer/GPU/main). The recurring black
+// screen is an EXC_BREAKPOINT/SIGTRAP in the renderer's V8 — the macOS .ips
+// report doesn't carry V8's fatal message, but the Crashpad minidump does.
+// uploadToServer:false keeps everything on-disk (app.getPath('crashDumps')).
+// Must start before `app.whenReady()` so early crashes are caught too.
+try {
+  crashReporter.start({ productName: 'taskr', companyName: 'codiby', uploadToServer: false });
+} catch (e) {
+  console.error('[electron-main] crashReporter.start failed:', e);
+}
+
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
@@ -149,10 +161,28 @@ function createMainWindow(): BrowserWindow {
   // that point the window can flip from hidden → visible in one frame.
   win.once('ready-to-show', () => win.show());
 
+  // Capture renderer crashes / hangs / load failures (the "black screen")
+  // into a persistent log, and make the DevTools chord work even while the
+  // page is wedged. See electron/diagnostics.ts.
+  wireRendererDiagnostics(win);
+
   // External links open in the user's default browser, not inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url).catch(() => {});
     return { action: 'deny' };
+  });
+
+  // Browser-preview surfaces are native BrowserViews that live in the main
+  // process, decoupled from the host renderer's lifecycle. When the user
+  // hard-reloads the host (Cmd+Shift+R after a blank/black render), the React
+  // tree that owns them is torn down *without* running its unmount cleanup —
+  // so any open view is orphaned and keeps painting on top of everything with
+  // nothing left to close it. Tear them all down on a real top-frame
+  // navigation of the host; the reloaded renderer re-creates whatever previews
+  // it still needs on mount. In-document (SPA route) changes are ignored.
+  win.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    try { disposeAll(); } catch {}
   });
 
   return win;
@@ -184,7 +214,7 @@ function registerIpcHandlers(): void {
 
   // --- browser preview ------------------------------------------------------
   ipcMain.handle('app:open_browser_preview', async (_e, args: {
-    label: string; url: string; title?: string; cookieJar?: string;
+    label: string; url: string; title?: string; cookieJar?: string; openSeq?: number;
     x: number; y: number; width: number; height: number;
   }) => {
     await openBrowserPreview(args);
@@ -279,6 +309,7 @@ function registerIpcHandlers(): void {
 
 app.whenReady().then(async () => {
   installCliScript();
+  logMain(`[startup] taskr ${app.getVersion()} — diagnostics log at ${diagnosticsLogPath()}`);
 
   mainWindow = createMainWindow();
   initBrowserPreview({

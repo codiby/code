@@ -45,6 +45,13 @@ type PreviewState = {
    *  view under the new partition — Electron pins the partition at
    *  `BrowserView` construction time, so an in-place swap isn't possible. */
   cookieJar: string;
+  /** The model-driven re-open token (`openSeq`) the view was last (re)pointed
+   *  for. The React panel re-mounts on every tab switch and re-issues
+   *  `open_browser_preview` with the *same* openSeq — that's a pure reattach
+   *  and must NOT reload the live page. Only a bumped openSeq (a fresh
+   *  `browser_open` from the SDK) is allowed to navigate the existing view.
+   *  See the reuse path in `openBrowserPreview`. */
+  openSeq: number;
 };
 
 const previews = new Map<string, PreviewState>();
@@ -143,6 +150,11 @@ export async function openBrowserPreview(args: {
   url: string;
   title?: string; // accepted for API symmetry, no chrome
   cookieJar?: string;
+  /** Model-driven re-open token. Same value as last open → pure reattach
+   *  (tab switch), keep the live page. Different value → the SDK re-pointed
+   *  this browser, navigate to `url`. Undefined falls back to the legacy
+   *  URL-diff behaviour. */
+  openSeq?: number;
   x: number; y: number; width: number; height: number;
 }): Promise<void> {
   validateLabel(args.label);
@@ -159,9 +171,14 @@ export async function openBrowserPreview(args: {
   // destroy/recreate here would reload the page from scratch every time
   // — losing scroll state, form input, authenticated sessions, etc.
   //
-  //   - Same URL + same jar → just re-show it and push fresh bounds.
-  //   - Different URL + same jar → navigate the existing view (loadURL).
-  //     Cheaper than destroy+create, preserves the cookie/cache scope.
+  //   - Reattach (same openSeq) → just re-show it and push fresh bounds,
+  //     NEVER reload. A tab switch unmounts/remounts the React panel, which
+  //     re-issues open with the *same* openSeq; the live view already holds
+  //     the user's current page (post in-page navigation, scroll, form
+  //     input), so loading anything here would snap it back to a stale URL.
+  //   - Re-point (bumped openSeq, same jar) → navigate the existing view
+  //     (loadURL). This is a fresh `browser_open` from the SDK. Cheaper than
+  //     destroy+create, preserves the cookie/cache scope.
   //   - Different jar → fall through and recreate. The partition is fixed
   //     at `BrowserView` construction time, so an in-place swap is not
   //     possible; close + open is the only way to apply the new jar.
@@ -174,8 +191,14 @@ export async function openBrowserPreview(args: {
     }
     existing.bounds = bounds;
     existing.view.setBounds(bounds);
-    const currentUrl = existing.view.webContents.getURL();
-    if (currentUrl !== targetUrl) {
+    // Only navigate when the SDK genuinely re-pointed this browser (openSeq
+    // bumped). On a pure reattach the live page is authoritative — leave it
+    // be. When openSeq is absent (legacy caller) fall back to the URL diff.
+    const repointed = args.openSeq === undefined
+      ? existing.view.webContents.getURL() !== targetUrl
+      : args.openSeq !== existing.openSeq;
+    if (repointed) {
+      existing.openSeq = args.openSeq ?? existing.openSeq;
       await existing.view.webContents.loadURL(targetUrl);
     }
     return;
@@ -205,6 +228,7 @@ export async function openBrowserPreview(args: {
     bounds,
     inspectorReady: false,
     cookieJar: jar,
+    openSeq: args.openSeq ?? 0,
   };
   previews.set(args.label, state);
   wcIdToLabel.set(wcId, args.label);

@@ -113,6 +113,17 @@ function pickFreePort(): Promise<number> {
   });
 }
 
+/** Resolve true if the given local TCP port can be bound (i.e. is free). */
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const srv = createServer();
+    srv.once('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
 /** Wait until something is listening on 127.0.0.1:<port> (the forward is ready). */
 function waitForPort(port: number, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -435,7 +446,11 @@ export async function addPortForward(
   if (!state || state.status !== 'online') {
     throw new Error('Cannot add port forward — tunnel is not online');
   }
-  const localPort = localPortHint ?? await pickFreePort();
+  // Auto mode (no explicit hint): try to mirror the remote port locally so
+  // e.g. remote 3001 → local 3001 when possible; fall back to a random free
+  // port only if that one is already taken.
+  const localPort = localPortHint
+    ?? ((await isPortFree(remotePort)) ? remotePort : await pickFreePort());
   const key = `${localPort}:${remotePort}`;
   if (state.activeForwards.has(key)) return { localPort };
   await runSshControlCommand(state, 'forward', localPort, remotePort);

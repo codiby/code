@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect, useMemo, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
+  ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus, Zap,
+  Cog, Antenna, LayoutGrid,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
-import type { SessionInfo, ConnectionStatus } from '../lib/claude-client';
+import type { SessionInfo, ConnectionStatus, SessionActivity } from '../lib/claude-client';
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 
 type TabGroup = { id: string; name: string; color: string; cwd?: string; icon?: string };
@@ -23,6 +25,9 @@ interface Props {
   sessionInterrupted: Record<string, boolean>;
   sessionHasPermission: Record<string, boolean>;
   sessionTurnComplete: Set<string>;
+  /** Per-session running child processes + listening ports. Drives the two
+   *  sidebar badges. A session absent from the map has no active processes. */
+  sessionActivity?: Record<string, SessionActivity>;
   /** Per-session timestamp (epoch ms) of the most recent message — used to
    *  render a "5m ago" hint inside vertical tabs. */
   sessionLastMessageAt?: Record<string, number>;
@@ -84,6 +89,11 @@ interface Props {
   collapsed?: boolean;
   /** Click handler for the top-left collapse toggle button. */
   onToggleCollapsed?: () => void;
+  /** Active top-level view shown in the main pane. Drives the nav highlight at
+   *  the top of the sidebar (sessions list vs Automatizaciones). */
+  activeNavView?: 'sessions' | 'automations' | 'sessions-board';
+  /** Switch the main pane to a top-level view. */
+  onSelectNavView?: (view: 'sessions' | 'automations' | 'sessions-board') => void;
 }
 
 const COLOR_MAP: Record<string, { dot: string; bg: string; border: string; ring: string; text: string }> = {
@@ -130,8 +140,110 @@ function getDotClass(connStatus: string, isStreaming: boolean, turnComplete: boo
   return 'bg-zinc-600';
 }
 
-function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, groupColor: _groupColor, compact, ageLabel, isPinned, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onContextMenu }: {
-  id: string; session: SessionInfo; isActive: boolean; connStatus: string; isStreaming: boolean; wasInterrupted: boolean; turnComplete?: boolean; hasPermission: boolean; groupColor?: string; compact?: boolean;
+/** Styled hover popover listing a session's running processes and listening
+ *  ports. Rendered in a portal to document.body so it escapes the sidebar's
+ *  overflow clipping, and flips above the anchor when near the viewport bottom. */
+function ActivityPopover({ anchor, processes, listeningPorts }: {
+  anchor: DOMRect;
+  processes: SessionActivity['processes'];
+  listeningPorts: SessionActivity['listeningPorts'];
+}) {
+  const flipUp = anchor.bottom + 260 > window.innerHeight;
+  const style: React.CSSProperties = {
+    position: 'fixed',
+    left: Math.max(8, Math.min(anchor.left, window.innerWidth - 296)),
+    zIndex: 9999,
+    pointerEvents: 'none',
+    ...(flipUp
+      ? { bottom: window.innerHeight - anchor.top + 6 }
+      : { top: anchor.bottom + 6 }),
+  };
+  return createPortal(
+    <div
+      style={style}
+      className="w-72 max-w-[80vw] rounded-lg border border-[#2a2b30] bg-[#1c1d23] px-3 py-2.5 text-[11.5px] shadow-[0_10px_30px_rgba(0,0,0,0.5)]"
+    >
+      {processes.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 font-semibold text-amber-400/90">
+            <Cog size={11} strokeWidth={2.4} />
+            {processes.length} {processes.length === 1 ? 'proceso' : 'procesos'} en ejecución
+          </div>
+          <div className="mt-1 flex flex-col gap-0.5">
+            {processes.map(p => (
+              <div key={p.pid} className="flex gap-2 pl-[18px] leading-snug">
+                <span className="shrink-0 text-zinc-500 tabular-nums">pid {p.pid}</span>
+                <span className="truncate font-mono text-zinc-300">{p.label ? `${p.label}: ` : ''}{p.command}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {processes.length > 0 && listeningPorts.length > 0 && (
+        <div className="my-2 h-px bg-[#2a2b30]" />
+      )}
+      {listeningPorts.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 font-semibold text-sky-400/90">
+            <Antenna size={11} strokeWidth={2.4} />
+            {listeningPorts.length} {listeningPorts.length === 1 ? 'puerto' : 'puertos'} en escucha
+          </div>
+          <div className="mt-1 flex flex-col gap-0.5">
+            {listeningPorts.map(p => (
+              <div key={p.port} className="flex gap-2 pl-[18px] leading-snug">
+                <span className="shrink-0 text-sky-300/90 tabular-nums font-mono">:{p.port}</span>
+                <span className="truncate font-mono text-zinc-400">{p.command}</span>
+                <span className="ml-auto shrink-0 text-[10px] text-zinc-600">LISTEN</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
+/** Two compact badges shown on a session row: running child processes (amber)
+ *  and listening TCP ports (blue). Each is a chip with an icon + count; hover
+ *  reveals a styled popover with the underlying pids / commands / ports.
+ *  Renders nothing when the session has no activity. */
+function SessionActivityBadges({ activity }: { activity?: SessionActivity }) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  if (!activity) return null;
+  const { childProcessCount, processes, listeningPorts } = activity;
+  if (childProcessCount === 0 && listeningPorts.length === 0) return null;
+
+  // One port → show its number; several → show the count.
+  const portLabel = listeningPorts.length === 1 ? String(listeningPorts[0]!.port) : `×${listeningPorts.length}`;
+
+  return (
+    <span
+      className="shrink-0 flex items-center gap-1"
+      onMouseEnter={e => setAnchor(e.currentTarget.getBoundingClientRect())}
+      onMouseLeave={() => setAnchor(null)}
+      onClick={e => e.stopPropagation()}
+      onPointerDown={e => e.stopPropagation()}
+    >
+      {childProcessCount > 0 && (
+        <span className="flex items-center gap-0.5 h-[15px] px-1 rounded text-[9.5px] font-semibold tabular-nums text-amber-400/90 bg-amber-400/10">
+          <Cog size={9} strokeWidth={2.4} className="animate-[spin_4s_linear_infinite]" />
+          {childProcessCount}
+        </span>
+      )}
+      {listeningPorts.length > 0 && (
+        <span className="flex items-center gap-0.5 h-[15px] px-1 rounded text-[9.5px] font-semibold tabular-nums text-sky-400/90 bg-sky-400/10">
+          <Antenna size={9} strokeWidth={2.4} />
+          {portLabel}
+        </span>
+      )}
+      {anchor && <ActivityPopover anchor={anchor} processes={processes} listeningPorts={listeningPorts} />}
+    </span>
+  );
+}
+
+function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, activity, groupColor: _groupColor, compact, ageLabel, isPinned, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onContextMenu }: {
+  id: string; session: SessionInfo; isActive: boolean; connStatus: string; isStreaming: boolean; wasInterrupted: boolean; turnComplete?: boolean; hasPermission: boolean; activity?: SessionActivity; groupColor?: string; compact?: boolean;
   ageLabel?: string;
   isPinned?: boolean;
   editingId: string | null; editName: string; editRef: React.RefObject<HTMLInputElement | null>;
@@ -182,6 +294,9 @@ function SortableTab({ id, session, isActive, connStatus, isStreaming, wasInterr
           aria-label="Pinned to top"
         />
       )}
+      {/* Running-process / listening-port badges. Always visible (not
+          hover-gated) so activity is legible at a glance. */}
+      {editingId !== session.id && <SessionActivityBadges activity={activity} />}
       {/* Age chip — only shown on inactive tabs, replaced by close button on hover. */}
       {ageLabel && editingId !== session.id && !isActive && (
         <span
@@ -429,12 +544,13 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
 }
 
 export const TabBar = memo(function TabBar(props: Props) {
-  const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionLastMessageAt,
+  const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt,
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onSelectGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
-    collapsed, onToggleCollapsed } = props;
+    collapsed, onToggleCollapsed,
+    activeNavView = 'sessions', onSelectNavView } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
   // every other parent re-render (memoized parent + memoized TabBar).
@@ -496,11 +612,13 @@ export const TabBar = memo(function TabBar(props: Props) {
   const [editName, setEditName] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const [restoreSearch, setRestoreSearch] = useState('');
+  const [restoreHighlight, setRestoreHighlight] = useState(0);
   const [groupMenu, setGroupMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const restoreSearchRef = useRef<HTMLInputElement>(null);
+  const restoreActiveItemRef = useRef<HTMLDivElement | null>(null);
 
   // Reset the search box every time the restore popover is reopened, and focus
   // it so the user can immediately filter without an extra click.
@@ -517,6 +635,26 @@ export const TabBar = memo(function TabBar(props: Props) {
     if (!q) return closedSessions;
     return closedSessions.filter(s => s.name.toLowerCase().includes(q));
   }, [closedSessions, restoreSearch]);
+
+  // Reset the highlighted row when the popover reopens or the query changes,
+  // and keep the active row scrolled into view as the user arrows through.
+  useEffect(() => { setRestoreHighlight(0); }, [showMenu, restoreSearch]);
+  useEffect(() => { restoreActiveItemRef.current?.scrollIntoView({ block: 'nearest' }); }, [restoreHighlight]);
+
+  const onRestoreSearchKeyDown = (e: React.KeyboardEvent) => {
+    if (filteredClosedSessions.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setRestoreHighlight(h => Math.min(h + 1, filteredClosedSessions.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setRestoreHighlight(h => Math.max(h - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const s = filteredClosedSessions[restoreHighlight];
+      if (s) { setShowMenu(false); onReopen(s.id); }
+    }
+  };
   const editRef = useRef<HTMLInputElement>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -604,6 +742,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     wasInterrupted: sessionInterrupted[s.id] || false,
     turnComplete: sessionTurnComplete.has(s.id),
     hasPermission: sessionHasPermission[s.id] || false,
+    activity: sessionActivity?.[s.id],
     groupColor, compact,
     ageLabel: formatTabAge(sessionLastMessageAt?.[s.id], nowMs),
     isPinned: pinnedSessionIds?.has(s.id) || false,
@@ -624,6 +763,7 @@ export const TabBar = memo(function TabBar(props: Props) {
             type="text"
             value={restoreSearch}
             onChange={(e) => setRestoreSearch(e.target.value)}
+            onKeyDown={onRestoreSearchKeyDown}
             placeholder="Search closed sessions…"
             className="flex-1 bg-transparent text-[12px] text-zinc-300 placeholder:text-zinc-600 outline-none border-0 min-w-0"
           />
@@ -636,11 +776,15 @@ export const TabBar = memo(function TabBar(props: Props) {
             {closedSessions.length === 0 ? 'No closed sessions' : 'No matches'}
           </div>
         ) : (
-          filteredClosedSessions.map(s => (
+          filteredClosedSessions.map((s, i) => (
             <div
               key={s.id}
-              className="group/arch w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors cursor-pointer"
+              ref={i === restoreHighlight ? restoreActiveItemRef : undefined}
+              className={`group/arch w-full flex items-center gap-2 px-3 py-1.5 text-[12px] transition-colors cursor-pointer ${
+                i === restoreHighlight ? 'bg-surface-light text-zinc-200' : 'text-zinc-400 hover:bg-surface-light hover:text-zinc-200'
+              }`}
               onClick={() => { setShowMenu(false); onReopen(s.id); }}
+              onMouseEnter={() => setRestoreHighlight(i)}
               title="Click to reopen"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
@@ -693,6 +837,36 @@ export const TabBar = memo(function TabBar(props: Props) {
         }}
         title="Drag to resize"
       />
+      {/* Top-level nav — switches the main pane between the sessions
+          workspace and full-screen views like Automatizaciones. Sits above
+          the group/session list. */}
+      <div className="px-2 pt-2 pb-1 flex flex-col gap-0.5">
+        <button
+          type="button"
+          onClick={() => onSelectNavView?.('sessions-board')}
+          className={`w-full flex items-center gap-2.5 h-8 px-2.5 rounded-md text-[13px] transition-colors ${
+            activeNavView === 'sessions-board'
+              ? 'bg-surface-light text-zinc-200'
+              : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface/50'
+          }`}
+        >
+          <LayoutGrid size={15} strokeWidth={2} className="shrink-0" />
+          <span className="flex-1 text-left">Sesiones</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelectNavView?.('automations')}
+          className={`w-full flex items-center gap-2.5 h-8 px-2.5 rounded-md text-[13px] transition-colors ${
+            activeNavView === 'automations'
+              ? 'bg-surface-light text-zinc-200'
+              : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface/50'
+          }`}
+        >
+          <Zap size={15} strokeWidth={2} className="shrink-0" />
+          <span className="flex-1 text-left">Automatizaciones</span>
+        </button>
+      </div>
+      <div className="h-px bg-border mx-3 my-1" />
       <div className="flex flex-col gap-0.5 px-2 py-2 overflow-y-auto flex-1">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>

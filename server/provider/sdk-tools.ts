@@ -21,6 +21,7 @@ import { sessions, saveSessions } from '../sessions';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host';
 import { cdpRequest } from './browser-cdp';
 import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProcessOutput, addToGraveyard } from '../handlers/processes';
+import { pokeProcessMonitor } from '../process-monitor';
 import { spawnPty } from '../pty';
 import type { TrackedProcess } from '../types';
 import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../portless';
@@ -991,6 +992,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           };
           trackedProcesses.set(procId, tp);
           saveProcessRegistry();
+          pokeProcessMonitor();
           if (Object.keys(spawnTermEnv).length > 0) {
             deps.broadcastToSession(sessionId, { type: 'terminal_env_injected', sessionId, procId, env: spawnTermEnv });
           }
@@ -1121,6 +1123,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             return { content: [{ type: 'text', text: `Terminal "${tp.label || tp.id}" was no longer tracked.` }], isError: true };
           }
           deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId: tp.id, code: -1 });
+          pokeProcessMonitor();
           log(`[kill_terminal] killed "${tp.label || ''}" procId=${tp.id.slice(0, 8)} pid=${tp.pid} session=${sessionId.slice(0, 8)}`);
           return { content: [{ type: 'text', text: `Killed terminal "${tp.label || '(no name)'}" (procId=${tp.id}, pid=${tp.pid}). The whole process group was signalled (SIGTERM → SIGKILL).` }] };
         },
@@ -1312,6 +1315,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           };
           trackedProcesses.set(procId, tp);
           saveProcessRegistry();
+          pokeProcessMonitor();
           if (Object.keys(actionEnv).length > 0) {
             deps.broadcastToSession(sessionId, { type: 'terminal_env_injected', sessionId, procId, env: actionEnv });
           }
@@ -1444,6 +1448,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             if (killTrackedProcess(tp.id)) stopped++;
             deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId: tp.id, code: -1 });
           }
+          pokeProcessMonitor();
           const names = targets.map(t => t.label!.slice('Action · '.length)).join(', ');
           return { content: [{ type: 'text', text: `Stopped ${stopped} action${stopped === 1 ? '' : 's'}: ${names}.` }] };
         },

@@ -1,12 +1,17 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Button, Kbd, KbdAbbr, KbdContent, TextField, Input } from '@heroui/react';
 import { searchFiles, type FileEntry } from '../lib/fuzzy-file-search';
+import { chordTokens } from '../lib/keybindings';
 
 export interface PaletteAction {
   id: string;
   label: string;
   keys?: string[];
   key?: string;
+  /** Canonical keybinding chord (e.g. `'mod+k'`), resolved live from the
+   *  registry. Takes precedence over `keys`/`key` for the hint display so the
+   *  palette never shows a stale shortcut after a rebind. */
+  chord?: string;
   section?: string;
   onRun: () => void;
 }
@@ -144,10 +149,14 @@ export function CommandPalette({ isOpen, onClose, actions, fileIndex, onFileOpen
                   {action.section === 'Files' && action.key && (
                     <span className="text-[11px] text-zinc-600 font-mono truncate ml-3 shrink-0 max-w-[50%] text-right">{action.key}</span>
                   )}
-                  {action.section !== 'Files' && (action.keys || action.key) && (
+                  {action.section !== 'Files' && (action.chord || action.keys || action.key) && (
                     <Kbd className="bg-surface text-zinc-500 border-border-light">
-                      {action.keys?.map(k => <KbdAbbr key={k} keyValue={k as any} />)}
-                      {action.key && <KbdContent>{action.key}</KbdContent>}
+                      {action.chord
+                        ? chordTokens(action.chord).map((t, i) => <KbdContent key={i}>{t}</KbdContent>)
+                        : <>
+                            {action.keys?.map(k => <KbdAbbr key={k} keyValue={k as any} />)}
+                            {action.key && <KbdContent>{action.key}</KbdContent>}
+                          </>}
                     </Kbd>
                   )}
                 </Button>

@@ -336,6 +336,19 @@ export type FileChange = {
   isDir: boolean;
 };
 
+/** A TCP port in LISTEN owned by a session's process subtree. */
+export type ListeningPort = { port: number; pid: number; command: string };
+
+/** Live process/port activity for a session, pushed by the server-side
+ *  process monitor. Drives the sidebar "running processes" / "listening ports"
+ *  badges. Kept in lock-step with `SessionActivity` in
+ *  server/process-monitor.ts. */
+export type SessionActivity = {
+  childProcessCount: number;
+  processes: { pid: number; command: string; label?: string }[];
+  listeningPorts: ListeningPort[];
+};
+
 type ClientCallbacks = {
   onSessions: (sessions: SessionInfo[]) => void;
   onSessionState: (sessionId: string, state: SessionState) => void;
@@ -377,6 +390,9 @@ type ClientCallbacks = {
    */
   onBrowserRequest?: (req: { sessionId: string; name: string; requestId: string; action: string; args: unknown }) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
+  /** The keyboard-shortcut override map changed (the shortcuts editor saved,
+   *  possibly in another window). */
+  onKeybindings?: (overrides: Record<string, string | null>) => void;
   onFocusSession: (sessionId: string) => void;
   /** Tunnel status for a remote changed. Used by the chat header chip to
    *  show "tunnel offline" / "reconnecting" without polling. Optional —
@@ -411,6 +427,12 @@ type ClientCallbacks = {
    *  for a session. Optional — viewers that don't surface file activity can
    *  omit it. */
   onFileChanges?: (sessionId: string, changes: FileChange[]) => void;
+  /** The server-side watcher detected the session repo's checked-out branch
+   *  change (checkout, worktree HEAD move). Empty string means detached HEAD. */
+  onBranchChanged?: (sessionId: string, branch: string) => void;
+  /** The session's running child processes or listening ports changed. Drives
+   *  the sidebar badges. Optional — viewers without the badges can omit it. */
+  onSessionActivity?: (sessionId: string, activity: SessionActivity) => void;
   onConnectionChange: (status: ConnectionStatus) => void;
 };
 
@@ -693,6 +715,9 @@ export class ClaudeClient {
           (msg.lastError as string | null) ?? null,
         );
         break;
+      case 'keybindings':
+        this.callbacks.onKeybindings?.(msg.keybindings as Record<string, string | null>);
+        break;
       case 'preferences':
         this.callbacks.onPreferences(msg.preferences as Record<string, unknown>);
         break;
@@ -731,6 +756,14 @@ export class ClaudeClient {
         break;
       case 'file_changes':
         this.callbacks.onFileChanges?.(sessionId, (msg.changes as FileChange[]) || []);
+        break;
+      case 'branch_changed':
+        this.callbacks.onBranchChanged?.(sessionId, (msg.branch as string) || '');
+        break;
+      case 'session_activity':
+        this.callbacks.onSessionActivity?.(sessionId, (msg.activity as SessionActivity) || {
+          childProcessCount: 0, processes: [], listeningPorts: [],
+        });
         break;
       case 'terminal_env_injected':
         this.callbacks.onTerminalEnvInjected?.({
@@ -1100,6 +1133,18 @@ export class ClaudeClient {
     return resp.ok;
   }
 
+  /** Persist a large pasted snippet under ~/.codiby/<sessionId>/<uuid><.ext>.
+   *  Returns the absolute path + generated filename, or null on failure. */
+  async saveSnippet(sessionId: string, content: string, ext?: string): Promise<{ path: string; name: string; uuid: string } | null> {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/snippet`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId, content, ext }),
+    });
+    if (!resp.ok) return null;
+    return resp.json();
+  }
+
   async deletePath(path: string): Promise<{ ok: boolean; error?: string }> {
     const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`), { method: 'DELETE' });
     if (resp.ok) return { ok: true };
@@ -1434,6 +1479,25 @@ export class ClaudeClient {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),
+    });
+    return resp.ok;
+  }
+
+  /** Read the user's keyboard-shortcut overrides (command id → chord, or null
+   *  to force-unbind). Defaults live in the frontend registry, not here. */
+  async getKeybindings(): Promise<Record<string, string | null>> {
+    const resp = await authedFetch(`${this.serverUrl}/keybindings`);
+    if (!resp.ok) return {};
+    return resp.json();
+  }
+
+  /** Replace the whole override map (not a merge — sending without a key
+   *  deletes that override). The server persists and broadcasts the result. */
+  async updateKeybindings(overrides: Record<string, string | null>): Promise<boolean> {
+    const resp = await authedFetch(`${this.serverUrl}/keybindings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(overrides),
     });
     return resp.ok;
   }

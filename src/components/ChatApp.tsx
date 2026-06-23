@@ -10,6 +10,7 @@ import { FileExplorer, type GitModifiedState } from './FileExplorer';
 import { SessionTabStrip } from './SessionTabStrip';
 import { TabBar } from './TabBar';
 import { AutomationsView } from './AutomationsView';
+import { SessionsBoardView } from './SessionsBoardView';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
 import { Markdown } from './Markdown';
@@ -22,6 +23,8 @@ import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
 import { ChatFindWidget } from './ChatFindWidget';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
+import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { PortlessActionToast } from './PortlessActionToast';
 import { TerminalLaunchChip } from './TerminalLaunchChip';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
@@ -63,6 +66,7 @@ import {
   type ConnectionStatus,
   type FileChange,
   type PermissionRequest,
+  type SessionActivity,
   type SessionInfo,
   type SessionInitInfo,
   type SessionState,
@@ -444,6 +448,32 @@ const SESSION_ACCENT_PALETTE = [
   '#f87171', '#c084fc', '#38bdf8', '#fb7185',
 ];
 
+// When a turn is interrupted (barge-in send or Stop), the text/thinking that has
+// streamed so far lives only in the live `partialText`/`partialThinking` preview —
+// the SDK never re-delivers a completed block for the aborted turn. Snapshot that
+// content into permanent messages so it isn't wiped when the preview is cleared.
+function carriedStreamMessages(s: { partialText: string; partialThinking: string }): ChatMessage[] {
+  const carried: ChatMessage[] = [];
+  if (s.partialThinking) {
+    carried.push({
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: s.partialThinking,
+      timestamp: Date.now(),
+      isThinking: true,
+    });
+  }
+  if (s.partialText) {
+    carried.push({
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: s.partialText,
+      timestamp: Date.now(),
+    });
+  }
+  return carried;
+}
+
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   // Session lifecycle is per-session and persisted server-side (status:
@@ -475,7 +505,7 @@ export function ChatApp() {
   // Active top-level view in the main pane. 'automations' replaces the whole
   // session workspace with the Automatizaciones screen; selecting any session
   // or group snaps it back to 'sessions'.
-  const [activeNavView, setActiveNavView] = useState<'sessions' | 'automations'>('sessions');
+  const [activeNavView, setActiveNavView] = useState<'sessions' | 'automations' | 'sessions-board'>('sessions');
   const [autoGroupSessions, setAutoGroupSessions] = useState(false);
   // When true, action-style browser_* SDK tools (click/type/scroll/…) bring
   // the targeted preview to the front before they run, so the user actually
@@ -895,6 +925,10 @@ export function ChatApp() {
   };
 
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
+  /** Per-session running child processes + listening ports, pushed by the
+   *  server's `session_activity`. Drives the sidebar badges. A session drops
+   *  out of the map (badges hidden) once it reports fully idle. */
+  const [sessionActivity, setSessionActivity] = useState<Record<string, SessionActivity>>({});
   /** Tunnel status per remote, pushed by the server's `remote.status`
    *  broadcasts. Drives the offline state on the chat-header forwards chip. */
   const [remoteStatuses, setRemoteStatuses] = useState<Record<string, { status: 'connecting' | 'online' | 'reconnecting' | 'offline'; lastError: string | null }>>({});
@@ -1004,6 +1038,11 @@ export function ChatApp() {
   // search card. Driven from here so ⌘⇧F can toggle it.
   const [searchActive, setSearchActive] = useState(false);
   const [projectSettings, setProjectSettings] = useState<{ open: boolean; sectionId?: string }>({ open: false });
+  // Keyboard-shortcut overrides (command id → chord, or null to force-unbind);
+  // defaults live in the keybinding registry. Hydrated from the bridge and kept
+  // live across windows via the `onKeybindings` websocket broadcast.
+  const [kbOverrides, setKbOverrides] = useState<KeybindingOverrides>({});
+  const [showShortcuts, setShowShortcuts] = useState(false);
   // Tracks whether a plugin's <PluginDetailView /> is currently visible. Updated
   // from the codiby-code:linked-item-changed event so the right panel can claim space.
   const [pluginDetailOpen, setPluginDetailOpen] = useState(false);
@@ -1531,7 +1570,9 @@ export function ChatApp() {
             // knows to retry instead of staring at a stale orange forever.
             setSessionStates(prev => {
               const s = prev[sid] || emptyLocalState();
-              return { ...prev, [sid]: { ...s, isStreaming: false, partialText: '', partialThinking: '', wasInterrupted: true } };
+              // Keep any text/thinking that streamed before the turn died instead
+              // of discarding it along with the "thinking" preview.
+              return { ...prev, [sid]: { ...s, isStreaming: false, messages: [...s.messages, ...carriedStreamMessages(s)], partialText: '', partialThinking: '', wasInterrupted: true } };
             });
           }
         },
@@ -1710,6 +1751,7 @@ export function ChatApp() {
         // broadcasts an update (e.g. MCP tools creating a group or moving
         // sessions between groups). Session visibility (open/archived)
         // lives on each session, not in preferences.
+        onKeybindings: (overrides) => setKbOverrides(overrides || {}),
         onPreferences: (prefs) => {
           if (Array.isArray(prefs.tabOrder)) {
             setTabOrder(prefs.tabOrder as string[]);
@@ -1821,6 +1863,22 @@ export function ChatApp() {
           // dedicated piece of state. Mirrors the portless_status pattern.
           window.dispatchEvent(new CustomEvent('file_changes', { detail: { sessionId: sid, changes } }));
         },
+        onBranchChanged: (sid, branch) => {
+          window.dispatchEvent(new CustomEvent('branch_changed', { detail: { sessionId: sid, branch } }));
+        },
+        onSessionActivity: (sid, activity) => {
+          setSessionActivity(prev => {
+            // Drop fully-idle sessions from the map so the badges disappear and
+            // the object stays small.
+            if (activity.childProcessCount === 0 && activity.listeningPorts.length === 0) {
+              if (!prev[sid]) return prev;
+              const next = { ...prev };
+              delete next[sid];
+              return next;
+            }
+            return { ...prev, [sid]: activity };
+          });
+        },
 
         onConnectionChange: (status) => {
           if (status === 'connected') {
@@ -1878,6 +1936,20 @@ export function ChatApp() {
     window.addEventListener('codiby-code:open-mockup', handler as EventListener);
     return () => window.removeEventListener('codiby-code:open-mockup', handler as EventListener);
   }, [activeId, updateLocalState]);
+
+  // A saved-snippet badge in the chat was clicked (dispatched from Markdown.tsx).
+  // Read the file and open it read-only in the preview pane of the active session.
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const ev = e as CustomEvent<{ path: string }>;
+      const path = ev.detail?.path;
+      if (!activeId || !path || !clientRef.current) return;
+      const file = await clientRef.current.readFile(path);
+      if (file) openFileInEditor(activeId, path, file.content, undefined, { readOnly: true, pin: true });
+    };
+    window.addEventListener('codiby-code:open-file', handler as EventListener);
+    return () => window.removeEventListener('codiby-code:open-file', handler as EventListener);
+  }, [activeId, openFileInEditor]);
 
   // Close PR dropdown on outside click + fetch PRs when opened
   useEffect(() => {
@@ -2760,10 +2832,21 @@ export function ChatApp() {
     } catch {}
   };
 
+  // Per-session `codeBlock → badge` substitutions registered by the composer
+  // when a large paste is offloaded to a file. Consumed (and cleared) on send.
+  const snippetMapRef = useRef<Record<string, { block: string; badge: string }[]>>({});
+
   const handleSend = (sid: string | null = activeId) => {
     if (!sid || !clientRef.current) return;
     const state = getState(sid);
-    const text = state.input.trim();
+    let text = state.input.trim();
+    // Swap any file-backed code blocks (large pastes) for their reference badge:
+    // the composer shows the full block, but the agent receives the file path.
+    const snippetMaps = snippetMapRef.current[sid];
+    if (snippetMaps && snippetMaps.length) {
+      for (const m of snippetMaps) text = text.split(m.block).join(m.badge);
+      snippetMapRef.current[sid] = [];
+    }
     const sessionPastedImages = state.pastedImages;
     if (!text && sessionPastedImages.length === 0) return;
 
@@ -2906,7 +2989,12 @@ export function ChatApp() {
         updateLocalState(sid, s => ({
           ...s,
           isStreaming: false,
-          messages: [...s.messages.filter(m => !m.isPending), pendingMsg],
+          // Preserve whatever streamed before the barge-in (committed ahead of
+          // the new user message to keep the timeline order) — the incoming
+          // `interrupted` status would otherwise wipe the live preview.
+          messages: [...s.messages.filter(m => !m.isPending), ...carriedStreamMessages(s), pendingMsg],
+          partialText: '',
+          partialThinking: '',
           pendingMessages: [{ id: pendingId, text: effectiveText, images }],
         }));
       } else {
@@ -3342,6 +3430,71 @@ export function ChatApp() {
     }
   };
 
+  // Spawn an anonymous interactive terminal in the dock for the active session
+  // and focus it. Lifted to component scope (out of the terminals-dock render
+  // closure) so the global keybinding handler can fire it too.
+  const spawnNewTerminal = useCallback(() => {
+    if (!activeId) return;
+    const procId = crypto.randomUUID();
+    const cwd = getState(activeId).initInfo?.cwd
+      || sessions.find(s => s.id === activeId)?.cwd
+      || '/';
+    updateLocalState(activeId, s => ({
+      ...s,
+      messages: [...s.messages, {
+        id: procId,
+        role: 'system' as const,
+        content: '',
+        isInteractiveTerminal: true,
+        procId,
+        terminalCwd: cwd,
+        timestamp: Date.now(),
+      }],
+    }));
+    setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
+    setTerminalsPanelExpanded(true);
+  }, [activeId, sessions, getState, updateLocalState]);
+  const spawnNewTerminalRef = useRef(spawnNewTerminal);
+  spawnNewTerminalRef.current = spawnNewTerminal;
+
+  // Toggle the terminals dock and move keyboard focus with it: revealing the
+  // panel focuses the terminal (the active shell's xterm self-focuses on mount;
+  // we focus the dock host as a fallback when there are no shells yet), while
+  // hiding it returns focus to the chat input. Drives the `toggle-terminals`
+  // command + palette action so the keyboard never gets stranded on a panel
+  // that just disappeared.
+  const toggleTerminals = useCallback(() => {
+    setTerminalsPanelExpanded(prev => {
+      const next = !prev;
+      if (next) {
+        // The dock was unmounted while collapsed, so its xterm re-mounts and
+        // attaches `.xterm-helper-textarea` a few frames after React renders the
+        // expanded panel. Poll for it, then fall back to focusing the host (e.g.
+        // when there are no shells yet) so the panel always takes focus.
+        const host = termDockHost;
+        if (host) {
+          let tries = 0;
+          const grab = () => {
+            // Only the active shell is visible; the others sit under a
+            // `display:none` wrapper (offsetParent === null) and can't be
+            // focused, so pick the one that's actually laid out.
+            const ta = Array.from(host.querySelectorAll<HTMLElement>('.xterm-helper-textarea'))
+              .find(el => el.offsetParent !== null);
+            if (ta) { ta.focus(); return; }
+            if (tries++ < 30) requestAnimationFrame(grab);
+            else host.focus();
+          };
+          requestAnimationFrame(grab);
+        }
+      } else {
+        requestAnimationFrame(() => inputRef.current?.focus());
+      }
+      return next;
+    });
+  }, [termDockHost]);
+  const toggleTerminalsRef = useRef(toggleTerminals);
+  toggleTerminalsRef.current = toggleTerminals;
+
   const saveRef = useRef(handleSaveFileWrapped);
   saveRef.current = handleSaveFileWrapped;
   const newFileRef = useRef(handleNewFile);
@@ -3395,6 +3548,48 @@ export function ChatApp() {
     return out;
   }, [sessions, tabOrder, tabGroupMap, tabGroups]);
 
+  // ── Keybinding registry wiring ──────────────────────────────────────────
+  // Resolve the user's overrides against the registry defaults, and expose the
+  // result plus the command→action map through refs so the global keydown
+  // listener mounts once and never re-binds when a shortcut changes.
+  const kbBindings = useMemo(() => resolveBindings(kbOverrides), [kbOverrides]);
+  const kbBindingsRef = useRef(kbBindings);
+  kbBindingsRef.current = kbBindings;
+
+  // Mirror the terminals-dock focus flag into a ref so the once-mounted global
+  // keydown handler can gate condition-scoped commands (e.g. `new-terminal`,
+  // which only fires while focus is inside the dock).
+  const terminalsFocusedRef = useRef(terminalsFocused);
+  terminalsFocusedRef.current = terminalsFocused;
+
+  const commandHandlersRef = useRef<Record<string, () => void>>({});
+  commandHandlersRef.current = {
+    'command-palette': () => setShowPalette(p => !p),
+    'toggle-explorer': () => setExplorerCollapsed(c => !c),
+    'toggle-terminals': () => toggleTerminalsRef.current(),
+    'new-terminal': () => spawnNewTerminalRef.current(),
+    'focus-chat-input': () => inputRef.current?.focus(),
+    'find-in-chat': () => setFindOpen(true),
+    'search-files': () => { setSearchActive(true); setExplorerCollapsed(false); },
+    'save-file': () => saveRef.current(),
+    'new-file': () => newFileRef.current(),
+    'close-tab': () => closePanelRef.current(),
+    'new-session': () => setShowNewSession(true),
+    'clear-chat': () => { if (activeId) clearSession(activeId); },
+  };
+
+  // Hydrate overrides from the bridge once a client is connected; live edits
+  // (incl. from another window) arrive via the onKeybindings broadcast.
+  useEffect(() => {
+    clientRef.current?.getKeybindings().then(setKbOverrides).catch(() => {});
+  }, [client]);
+
+  // The editor sends the full override map; persist it and reflect it locally.
+  const persistKeybindings = useCallback((next: KeybindingOverrides) => {
+    setKbOverrides(next);
+    clientRef.current?.updateKeybindings(next).catch(() => {});
+  }, []);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -3430,46 +3625,18 @@ export function ChatApp() {
         return;
       }
 
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      switch (e.key) {
-        case 'k':
+      // Every other global shortcut resolves through the editable keybinding
+      // registry (see src/lib/keybindings.ts). The Shift+Tab permission-mode
+      // cycle keeps its own focus-gated handler below.
+      const cmdId = matchCommand(e, kbBindingsRef.current, {
+        terminalsFocused: terminalsFocusedRef.current,
+      });
+      if (cmdId) {
+        const fn = commandHandlersRef.current[cmdId];
+        if (fn) {
           e.preventDefault();
-          setShowPalette(p => !p);
-          break;
-        case 'b':
-          e.preventDefault();
-          setExplorerCollapsed(c => !c);
-          break;
-        case 'l':
-          e.preventDefault();
-          inputRef.current?.focus();
-          break;
-        case 's':
-          e.preventDefault();
-          saveRef.current();
-          break;
-        case 'w':
-          e.preventDefault();
-          closePanelRef.current();
-          break;
-        case 'n':
-          if (!e.shiftKey) {
-            e.preventDefault();
-            newFileRef.current();
-          }
-          break;
-        case 'f':
-          if (e.shiftKey) {
-            e.preventDefault();
-            setSearchActive(true);
-            setExplorerCollapsed(false);
-          } else {
-            // Plain ⌘F / Ctrl+F opens the in-chat find widget.
-            e.preventDefault();
-            setFindOpen(true);
-          }
-          break;
+          fn();
+        }
       }
     };
     window.addEventListener('keydown', handler);
@@ -3663,6 +3830,30 @@ export function ChatApp() {
     return out;
   }, [sessions, sessionStates]);
 
+  // Per-session "where it left off" preview — the last real assistant/user
+  // line (skipping system notes, tool calls and thinking), trimmed to a
+  // single line. Feeds the Sessions overview board/list so each card recovers
+  // its context without opening the session.
+  const sessionLastPreview = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const s of sessions) {
+      const msgs = sessionStates[s.id]?.messages || [];
+      let preview = '';
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role === 'system') continue;
+        if (m.isToolResult || m.toolName) continue;
+        if (m.isThinking) continue;
+        const c = (m.content || '').trim();
+        if (!c) continue;
+        preview = c;
+        break;
+      }
+      out[s.id] = preview.replace(/\s+/g, ' ').slice(0, 160);
+    }
+    return out;
+  }, [sessions, sessionStates]);
+
   // Archived list shown in the TabBar's restore dropdown — sorted
   // most-recent first. We trust the server-stamped `updated_at` (bumped
   // on message/archive/rename) so a session you just closed jumps to
@@ -3792,6 +3983,21 @@ export function ChatApp() {
     }).catch(() => setGitBranch(null));
   }, [client, explorerRoot]);
 
+  // The server watcher pushes a branch_changed event when the active session's
+  // repo switches branches (checkout from a terminal, an agent, or another
+  // worktree). Update the status bar and re-read the changes list without
+  // re-polling git on a timer.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionId: string; branch: string }>).detail;
+      if (!detail || detail.sessionId !== activeId) return;
+      setGitBranch(detail.branch || null);
+      refreshGitModified();
+    };
+    window.addEventListener('branch_changed', handler);
+    return () => window.removeEventListener('branch_changed', handler);
+  }, [activeId, refreshGitModified]);
+
   // Client-side builtin slash commands (intercepted in handleSend, never sent to Claude).
   const BUILTIN_SLASH_COMMANDS = ['terminal', 't'];
   const sdkSlashCommands = active.initInfo?.slashCommands || [];
@@ -3801,13 +4007,15 @@ export function ChatApp() {
   const fileMention = useFileMention(input, fileIndex);
 
   const paletteActions: PaletteAction[] = [
-    { id: 'new-session', label: 'New Session', keys: ['command'], key: 'N', section: 'Sessions', onRun: () => setShowNewSession(true) },
-    { id: 'focus-input', label: 'Focus Chat Input', keys: ['command'], key: 'L', section: 'Navigation', onRun: () => inputRef.current?.focus() },
-    { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', keys: ['command'], key: 'B', section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
-    { id: 'close-editor', label: 'Close Editor / Tab', keys: ['command'], key: 'W', section: 'Navigation', onRun: () => closePanelRef.current() },
-    { id: 'new-file', label: 'New File', keys: ['command'], key: 'N', section: 'Editor', onRun: handleNewFile },
-    { id: 'save-file', label: 'Save File', keys: ['command'], key: 'S', section: 'Editor', onRun: handleSaveFileWrapped },
-    { id: 'clear-chat', label: 'Clear Chat', section: 'Session', onRun: () => { if (activeId) clearSession(activeId); } },
+    { id: 'new-session', label: 'New Session', chord: kbBindings['new-session'] ?? undefined, section: 'Sessions', onRun: () => setShowNewSession(true) },
+    { id: 'focus-input', label: 'Focus Chat Input', chord: kbBindings['focus-chat-input'] ?? undefined, section: 'Navigation', onRun: () => inputRef.current?.focus() },
+    { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', chord: kbBindings['toggle-explorer'] ?? undefined, section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
+    { id: 'toggle-terminals', label: terminalsPanelExpanded ? 'Collapse Terminals' : 'Expand Terminals', chord: kbBindings['toggle-terminals'] ?? undefined, section: 'Navigation', onRun: () => toggleTerminals() },
+    { id: 'close-editor', label: 'Close Editor / Tab', chord: kbBindings['close-tab'] ?? undefined, section: 'Navigation', onRun: () => closePanelRef.current() },
+    { id: 'new-file', label: 'New File', chord: kbBindings['new-file'] ?? undefined, section: 'Editor', onRun: handleNewFile },
+    { id: 'save-file', label: 'Save File', chord: kbBindings['save-file'] ?? undefined, section: 'Editor', onRun: handleSaveFileWrapped },
+    { id: 'clear-chat', label: 'Clear Chat', chord: kbBindings['clear-chat'] ?? undefined, section: 'Session', onRun: () => { if (activeId) clearSession(activeId); } },
+    { id: 'keyboard-shortcuts', label: 'Keyboard Shortcuts', section: 'Navigation', onRun: () => setShowShortcuts(true) },
     { id: 'organize-tabs', label: 'Organize Tabs by Folder', section: 'Sessions', onRun: async () => {
       const c = clientRef.current;
       if (!c) return;
@@ -3860,7 +4068,7 @@ export function ChatApp() {
       setTabGroupMap(newMap);
       persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
     } },
-    { id: 'command-palette', label: 'Command Palette', keys: ['command'], key: 'K', section: 'Navigation', onRun: () => {} },
+    { id: 'command-palette', label: 'Command Palette', chord: kbBindings['command-palette'] ?? undefined, section: 'Navigation', onRun: () => {} },
     { id: 'open-browser', label: 'Open Browser…', section: 'Browser', onRun: () => {
       if (!activeId) return;
       // Defer the actual URL prompt to a React modal — `window.prompt` is
@@ -4316,6 +4524,7 @@ export function ChatApp() {
         client={client}
         cwd={s.initInfo?.cwd || sess?.cwd || null}
         onSend={() => handleSend(sid)}
+        onRegisterSnippet={(block, badge) => { (snippetMapRef.current[sid] ||= []).push({ block, badge }); }}
         onInterrupt={() => handleInterrupt(sid)}
         onSelectModel={(modelId) => {
           if (!clientRef.current) return;
@@ -5107,6 +5316,7 @@ export function ChatApp() {
               sessionInterrupted={sessionInterrupted}
               sessionTurnComplete={turnCompleteIds}
               sessionHasPermission={sessionHasPermission}
+              sessionActivity={sessionActivity}
               sessionLastMessageAt={sessionLastMessageAt}
               pinnedSessionIds={pinnedSessionIds}
               onTogglePin={handleTogglePin}
@@ -5181,7 +5391,21 @@ export function ChatApp() {
           )}
 
           <div className="flex-1 flex flex-col min-w-0">
-            {activeNavView === 'automations' ? (
+            {activeNavView === 'sessions-board' ? (
+              <SessionsBoardView
+                sessions={sessions}
+                statuses={statuses}
+                streaming={sessionStreaming}
+                hasPermission={sessionHasPermission}
+                lastMessageAt={sessionLastMessageAt}
+                lastPreview={sessionLastPreview}
+                prLinks={prLinks}
+                tabGroups={tabGroups}
+                tabGroupMap={tabGroupMap}
+                onSelectSession={handleSelectSession}
+                onAssignGroup={(sid, gid) => gid ? handleAddToGroup(sid, gid) : handleUngroupTab(sid)}
+              />
+            ) : activeNavView === 'automations' ? (
               <AutomationsView />
             ) : !activeId ? (
               <GroupComposer
@@ -5363,27 +5587,10 @@ export function ChatApp() {
 
                     // Helper used by both the collapsed bar and the expanded
                     // panel toolbar. Anonymous shells (no terminalName) live
-                    // only in the panel — the chat filter excludes them.
-                    const spawnNewShellHere = () => {
-                      const procId = crypto.randomUUID();
-                      const cwd = getState(activeId).initInfo?.cwd
-                        || sessions.find(s => s.id === activeId)?.cwd
-                        || '/';
-                      updateLocalState(activeId, s => ({
-                        ...s,
-                        messages: [...s.messages, {
-                          id: procId,
-                          role: 'system' as const,
-                          content: '',
-                          isInteractiveTerminal: true,
-                          procId,
-                          terminalCwd: cwd,
-                          timestamp: Date.now(),
-                        }],
-                      }));
-                      setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
-                      setTerminalsPanelExpanded(true);
-                    };
+                    // only in the panel — the chat filter excludes them. Shares
+                    // the same component-scoped implementation as the
+                    // `new-terminal` keybinding (see spawnNewTerminal).
+                    const spawnNewShellHere = spawnNewTerminal;
 
                     // Collapsed state — thin status bar with counter + chips.
                     // Always rendered (even with zero shells) so the user
@@ -6350,7 +6557,7 @@ export function ChatApp() {
               {/* Terminals dock — portaled here from the chat panel so it spans
                   the full content width at the bottom, below all panels and
                   outside the file explorer (VSCode-style). */}
-              <div ref={setTermDockHost} className="shrink-0 flex flex-col min-w-0" />
+              <div ref={setTermDockHost} tabIndex={-1} className="shrink-0 flex flex-col min-w-0 outline-none" />
 
               {/* Permission modal removed — shown inline in chat */}
             </>
@@ -6507,6 +6714,12 @@ export function ChatApp() {
           opencodeAvailable={opencodeInfo?.available ?? false}
           onClose={() => setShowNewSession(false)}
           onCreate={handleCreateSession}
+        />
+        <KeyboardShortcutsModal
+          open={showShortcuts}
+          onClose={() => setShowShortcuts(false)}
+          overrides={kbOverrides}
+          onChange={persistKeybindings}
         />
         <ProjectSettingsModal
           open={projectSettings.open}

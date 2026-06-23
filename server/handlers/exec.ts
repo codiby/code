@@ -5,6 +5,7 @@ import { log } from '../logger';
 import type { TrackedProcess } from '../types';
 import { trackedProcesses, saveProcessRegistry, appendProcessOutput, addToGraveyard } from './processes';
 import { getSessionEnvOverrides } from '../session-env';
+import { pokeProcessMonitor } from '../process-monitor';
 
 export interface SpawnTrackedOptions {
   command: string;
@@ -89,6 +90,8 @@ export function spawnTrackedProcess(opts: SpawnTrackedOptions): SpawnTrackedResu
   };
   trackedProcesses.set(procId, tp);
   saveProcessRegistry();
+  // Surface the new background process on the session's sidebar badges ASAP.
+  pokeProcessMonitor();
 
   const handleChunk = (chunk: Buffer) => {
     const text = chunk.toString();
@@ -104,6 +107,7 @@ export function spawnTrackedProcess(opts: SpawnTrackedOptions): SpawnTrackedResu
     tp.exitCode = code ?? 0;
     opts.onExit?.(tp.exitCode);
     addToGraveyard(procId);
+    pokeProcessMonitor();
     // Keep around briefly so any late viewer can see the exit code, then GC.
     setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
   });

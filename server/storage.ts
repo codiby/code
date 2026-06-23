@@ -256,3 +256,28 @@ export function savePreferences(prefs: Record<string, unknown>) {
     writeFileSync(PREFS_FILE, JSON.stringify(prefs, null, 2));
   } catch {}
 }
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts — user overrides only (defaults live in the frontend's
+// keybinding registry). Stored in a dedicated file so it stays editable by
+// hand and separate from UI layout prefs.
+// ---------------------------------------------------------------------------
+
+const KEYBINDINGS_FILE = join(CODIBY_DIR, 'keybindings.json');
+
+/** Map of command id → chord (or null to force-unbind). */
+export function loadKeybindings(): Record<string, string | null> {
+  try {
+    const data = JSON.parse(readFileSync(KEYBINDINGS_FILE, 'utf-8'));
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveKeybindings(overrides: Record<string, string | null>) {
+  try {
+    mkdirSync(CODIBY_DIR, { recursive: true });
+    writeFileSync(KEYBINDINGS_FILE, JSON.stringify(overrides, null, 2));
+  } catch {}
+}

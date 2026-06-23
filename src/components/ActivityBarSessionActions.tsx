@@ -19,8 +19,10 @@ interface Props {
 export function ActivityBarSessionActions({ closedSessions, onNew, onReopen, onArchive }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [highlight, setHighlight] = useState(0);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const activeItemRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -42,6 +44,28 @@ export function ActivityBarSessionActions({ closedSessions, onNew, onReopen, onA
   const filtered = query.trim()
     ? closedSessions.filter(s => s.name.toLowerCase().includes(query.toLowerCase()) || s.cwd.toLowerCase().includes(query.toLowerCase()))
     : closedSessions;
+
+  // Reset the highlighted row whenever the list changes (reopen or new query)
+  // so arrow-key navigation always starts from the top match.
+  useEffect(() => { setHighlight(0); }, [open, query]);
+
+  // Keep the highlighted row scrolled into view as the user arrows through.
+  useEffect(() => { activeItemRef.current?.scrollIntoView({ block: 'nearest' }); }, [highlight]);
+
+  const onSearchKeyDown = (e: React.KeyboardEvent) => {
+    if (filtered.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlight(h => Math.min(h + 1, filtered.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlight(h => Math.max(h - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const s = filtered[highlight];
+      if (s) { setOpen(false); onReopen(s.id); }
+    }
+  };
 
   return (
     <>
@@ -81,6 +105,7 @@ export function ActivityBarSessionActions({ closedSessions, onNew, onReopen, onA
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={onSearchKeyDown}
                 placeholder="Search closed sessions…"
                 className="flex-1 bg-transparent text-[12px] text-zinc-300 placeholder:text-zinc-600 outline-none border-0 min-w-0"
               />
@@ -93,11 +118,15 @@ export function ActivityBarSessionActions({ closedSessions, onNew, onReopen, onA
                 {closedSessions.length === 0 ? 'No closed sessions' : 'No matches'}
               </div>
             ) : (
-              filtered.map(s => (
+              filtered.map((s, i) => (
                 <div
                   key={s.id}
-                  className="group/arch w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors cursor-pointer"
+                  ref={i === highlight ? activeItemRef : undefined}
+                  className={`group/arch w-full flex items-center gap-2 px-3 py-1.5 text-[12px] transition-colors cursor-pointer ${
+                    i === highlight ? 'bg-surface-light text-zinc-200' : 'text-zinc-400 hover:bg-surface-light hover:text-zinc-200'
+                  }`}
                   onClick={() => { setOpen(false); onReopen(s.id); }}
+                  onMouseEnter={() => setHighlight(i)}
                   title="Click to reopen"
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
