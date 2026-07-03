@@ -63,6 +63,15 @@ interface ProjectSettingsModalProps {
   claudeModels: { id: string; label: string }[];
   onDeleteGroup: (groupId: string) => void;
   onPatchGroup: (groupId: string, patch: Partial<TabGroupInfo>) => void;
+  /** The currently-focused session's working directory — i.e. where the user
+   *  actually opened the session. When this session belongs to the project
+   *  whose action is being run, actions spawn here instead of the group's root
+   *  checkout, so a session opened in a git worktree runs the worktree's branch
+   *  rather than the main repo. */
+  activeSessionCwd?: string;
+  /** The group the focused session belongs to. Used to confirm the session and
+   *  the action's project are the same before honoring `activeSessionCwd`. */
+  activeSessionGroupId?: string;
 }
 
 type GlobalSection =
@@ -1392,9 +1401,9 @@ function PortlessProxySection({ client, tld, onChangeTld }: { client: ClaudeClie
   useEffect(() => { setTldDraft(tld); }, [tld]);
   const [cli, setCli] = useState<{ available: boolean; bin: string | null; version: string | null } | null>(null);
   const [proxy, setProxy] = useState<{ running: boolean; port: number | null; mode: 'default' | 'http80' | 'https443' | null } | null>(null);
-  const [busy, setBusy] = useState<null | 'start' | 'stop' | 'trust'>(null);
+  const [busy, setBusy] = useState<null | 'start' | 'stop' | 'trust' | 'funnel'>(null);
   const [pickedMode, setPickedMode] = useState<'default' | 'http80' | 'https443'>('default');
-  const [lastResult, setLastResult] = useState<{ ok: boolean; output: string; error?: string } | null>(null);
+  const [lastResult, setLastResult] = useState<{ ok: boolean; output: string; error?: string; conflict?: { port: number; funnelConflict: boolean } } | null>(null);
 
   const refresh = async () => {
     if (!client) return;
@@ -1442,6 +1451,21 @@ function PortlessProxySection({ client, tld, onChangeTld }: { client: ClaudeClie
     } finally {
       setBusy(null);
     }
+  };
+  const onDisableFunnelAndRetry = async () => {
+    if (!client) return;
+    setBusy('funnel');
+    try {
+      const res = await client.setTailscaleFunnel(false);
+      if (!res.ok) {
+        setLastResult({ ok: false, output: '', error: `Couldn't disable Funnel: ${res.error || 'unknown error'}` });
+        return;
+      }
+    } finally {
+      setBusy(null);
+    }
+    // :443 is free now — retry the privileged start that was blocked.
+    await onStart();
   };
 
   const modeLabel = (m: 'default' | 'http80' | 'https443' | null) =>
@@ -1582,6 +1606,16 @@ function PortlessProxySection({ client, tld, onChangeTld }: { client: ClaudeClie
           {lastResult.output && (
             <pre className="mt-1 font-mono text-[10.5px] whitespace-pre-wrap text-zinc-400">{lastResult.output}</pre>
           )}
+          {lastResult.conflict?.funnelConflict && (
+            <button
+              type="button"
+              onClick={onDisableFunnelAndRetry}
+              disabled={busy !== null}
+              className="mt-2 h-7 px-2.5 rounded-md text-[11px] font-medium text-white bg-red-600/80 hover:bg-red-500 border border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {busy === 'funnel' ? 'Disabling Funnel…' : busy === 'start' ? 'Retrying…' : 'Disable Funnel & retry'}
+            </button>
+          )}
         </div>
       )}
 
@@ -1707,7 +1741,7 @@ function resolveHost(action: PortlessAction, tld: string): string {
   return `${slug}.${tld}`;
 }
 
-function ProjectPortlessPane({ group, onPatch, client, tld }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void; client: ClaudeClient | null; tld: string }) {
+function ProjectPortlessPane({ group, onPatch, client, tld, activeSessionCwd, activeSessionGroupId }: { group: TabGroupInfo; onPatch: (patch: Partial<TabGroupInfo>) => void; client: ClaudeClient | null; tld: string; activeSessionCwd?: string; activeSessionGroupId?: string }) {
   const cfg: PortlessConfig = group.portless || {};
   const tls = cfg.tls !== false;
   const worktreeSubs = cfg.worktreeSubdomains !== false;
@@ -1809,7 +1843,13 @@ function ProjectPortlessPane({ group, onPatch, client, tld }: { group: TabGroupI
   };
 
   const run = async (a: PortlessAction) => {
-    if (!client || !group.cwd) { setError('Set a working directory on this project first.'); return; }
+    // Run from the focused session's cwd when that session belongs to this
+    // project — that's the directory the user actually opened (a git worktree,
+    // say), so the action serves the right branch. Fall back to the group's
+    // root checkout when no matching session is focused.
+    const sessionCwd = activeSessionGroupId === group.id ? (activeSessionCwd || '').trim() : '';
+    const runCwd = sessionCwd || group.cwd;
+    if (!client || !runCwd) { setError('Set a working directory on this project first.'); return; }
     const host = resolveHost(a, tld);
     const name = (a.name.trim() || slugHost(host.split('.')[0]!) || 'app');
     if (!a.command.trim()) { setError('Add a command to run.'); return; }
@@ -1822,7 +1862,7 @@ function ProjectPortlessPane({ group, onPatch, client, tld }: { group: TabGroupI
         name,
         command: a.command.trim(),
         hostname: host,
-        cwd: group.cwd,
+        cwd: runCwd,
         noTls: !tls,
         source: 'user',
       });
@@ -2233,6 +2273,7 @@ export function ProjectSettingsModal({
   portlessTld, onChangePortlessTld,
   client, claudeModels,
   onDeleteGroup, onPatchGroup,
+  activeSessionCwd, activeSessionGroupId,
 }: ProjectSettingsModalProps) {
   const [selected, setSelected] = useState<SelectedNav>({ kind: 'global', id: 'general' });
   const [projectTab, setProjectTab] = useState<ProjectTab>('general');
@@ -2351,6 +2392,8 @@ export function ProjectSettingsModal({
                   client={client}
                   claudeModels={claudeModels}
                   portlessTld={portlessTld}
+                  activeSessionCwd={activeSessionCwd}
+                  activeSessionGroupId={activeSessionGroupId}
                 />
               )
               : (
@@ -2455,7 +2498,7 @@ function PluginsContent() {
 }
 
 /* Project content (right pane when a project is selected) */
-function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount, client, claudeModels, portlessTld }: {
+function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMap, memberCount, client, claudeModels, portlessTld, activeSessionCwd, activeSessionGroupId }: {
   group: TabGroupInfo;
   tab: ProjectTab;
   onTabChange: (t: ProjectTab) => void;
@@ -2466,6 +2509,8 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
   client: ClaudeClient | null;
   claudeModels: { id: string; label: string }[];
   portlessTld: string;
+  activeSessionCwd?: string;
+  activeSessionGroupId?: string;
 }) {
   const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
   const Icon = group.icon ? ICON_MAP[group.icon] : Folder;
@@ -2529,7 +2574,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
       {tab === 'environment' && <ProjectEnvironmentPane group={group} onPatch={onPatch} />}
       {tab === 'mcp'         && <ProjectMcpPane group={group} onPatch={onPatch} />}
       {tab === 'hooks'       && <ProjectHooksPane group={group} client={client} />}
-      {tab === 'portless'    && <ProjectPortlessPane group={group} onPatch={onPatch} client={client} tld={portlessTld} />}
+      {tab === 'portless'    && <ProjectPortlessPane group={group} onPatch={onPatch} client={client} tld={portlessTld} activeSessionCwd={activeSessionCwd} activeSessionGroupId={activeSessionGroupId} />}
       {tab === 'sessions'    && <ProjectSessionsPane group={group} tabGroupMap={tabGroupMap} />}
 
       {/* Danger zone (always present, at the bottom) */}

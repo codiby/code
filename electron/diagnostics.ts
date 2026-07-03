@@ -20,7 +20,7 @@
  * in-renderer path can't run when JS is blocked. DevTools opens detached so it
  * stays visible even if the main window itself is painting black.
  */
-import { app, type BrowserWindow } from 'electron';
+import { app, powerMonitor, type BrowserWindow } from 'electron';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -114,18 +114,54 @@ function isDevToolsChord(input: Electron.Input): boolean {
   return i === 'i' && mod && (input.alt || input.shift);
 }
 
+// Recovery throttle shared by the render-process-gone and power-resume paths
+// below, so a renderer that's crash-looping (e.g. still pointed at whatever
+// killed it) can't spin the main process reloading it forever.
+const RELOAD_COOLDOWN_MS = 30_000;
+let lastReloadAt = 0;
+
+function reloadAfterCrash(win: BrowserWindow, reason: string): void {
+  if (win.isDestroyed()) return;
+  const now = Date.now();
+  if (now - lastReloadAt < RELOAD_COOLDOWN_MS) {
+    logMain(`[renderer] skipping auto-reload (${reason}) — within ${RELOAD_COOLDOWN_MS / 1000}s cooldown of last reload`);
+    return;
+  }
+  lastReloadAt = now;
+  logMain(`[renderer] auto-reloading window (${reason})`);
+  win.reload();
+}
+
 export function wireRendererDiagnostics(win: BrowserWindow): void {
   const wc = win.webContents;
 
   // The classic black screen: the renderer process died. `details.reason` is
   // one of 'crashed' | 'oom' | 'killed' | 'launch-failed' | ... and exitCode
   // narrows it further. Nothing in the page survives, so this log line is the
-  // primary evidence after the fact.
+  // primary evidence after the fact. We also auto-reload so a crash doesn't
+  // leave the user staring at a permanently black window.
   wc.on('render-process-gone', (_e, details) => {
     logMain(
       '[renderer] render-process-gone:', JSON.stringify(details),
       `| last mem: ${lastHostSample} | peak host ws=${peakHostMB}MB | crash dump: ${app.getPath('crashDumps')}`,
     );
+    if (details.reason === 'crashed' || details.reason === 'oom') {
+      reloadAfterCrash(win, `render-process-gone: ${details.reason}`);
+    }
+  });
+
+  // macOS can leave the renderer painting black after a system sleep/wake
+  // cycle (the GPU process loses its context) even when the process itself
+  // survives. `invalidate()` forces a fresh paint over the woken-up GPU
+  // context; if the renderer didn't survive at all, reload it instead.
+  powerMonitor.on('resume', () => {
+    if (win.isDestroyed()) return;
+    if (wc.isCrashed()) {
+      reloadAfterCrash(win, 'power resume: renderer crashed while asleep');
+    } else {
+      logMain('[renderer] power resume — invalidating to force a repaint');
+      wc.invalidate();
+    }
   });
 
   // Renderer alive but hung on a long synchronous task — frozen, often black.

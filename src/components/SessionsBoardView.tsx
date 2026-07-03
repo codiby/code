@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useDrag, useDrop } from 'react-aria';
 import {
   LayoutGrid, List as ListIcon, GitBranch, GitPullRequest, MessageSquare,
   Bell, Code2, Eye, CheckCircle2, X, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowRight,
@@ -38,6 +39,9 @@ export interface SessionsBoardViewProps {
 }
 
 const NO_GROUP = '__nogroup__';
+// react-aria drag payload type carrying a session id between a board card and
+// a group drop target.
+const BOARD_DRAG_TYPE = 'application/x-codiby-session';
 function groupHex(g: TabGroupInfo | undefined): string {
   if (!g) return '#5b5d66';
   return GROUP_HEX_COLOR[g.color] || g.color || '#5b5d66';
@@ -93,9 +97,6 @@ export function SessionsBoardView(props: SessionsBoardViewProps) {
   const [view, setView] = useState<'board' | 'list'>('board');
   const [openId, setOpenId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  // Drag-and-drop: the session being dragged + the group container hovered.
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [dropGroup, setDropGroup] = useState<string | null>(null);
   // Collapsed group containers, keyed by `lane:groupKey`.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleCollapse = (key: string) => setCollapsed(prev => {
@@ -211,16 +212,7 @@ export function SessionsBoardView(props: SessionsBoardViewProps) {
             onOpen={setOpenId}
             collapsed={collapsed}
             onToggleCollapse={toggleCollapse}
-            dragId={dragId}
-            dropGroup={dropGroup}
-            onDragStart={setDragId}
-            onDragEnd={() => { setDragId(null); setDropGroup(null); }}
-            onHoverGroup={setDropGroup}
-            onDropOnGroup={(gid) => {
-              if (dragId) onAssignGroup(dragId, gid === NO_GROUP ? null : gid);
-              setDragId(null);
-              setDropGroup(null);
-            }}
+            onAssignGroup={onAssignGroup}
           />
         : <ListView byLane={byLane} onOpen={setOpenId} />}
 
@@ -296,17 +288,12 @@ interface BoardProps {
   onOpen: (id: string) => void;
   collapsed: Set<string>;
   onToggleCollapse: (key: string) => void;
-  dragId: string | null;
-  dropGroup: string | null;
-  onDragStart: (id: string) => void;
-  onDragEnd: () => void;
-  onHoverGroup: (key: string | null) => void;
-  onDropOnGroup: (groupId: string) => void;
+  onAssignGroup: (sessionId: string, groupId: string | null) => void;
 }
 
 function BoardView(p: BoardProps) {
   return (
-    <div className="flex-1 overflow-x-auto">
+    <div className="flex-1 min-h-0 overflow-auto">
       <div className="flex gap-4 p-[18px] items-start min-h-full">
         {LANE_ORDER.map(l => {
           const lane = LANES[l];
@@ -362,26 +349,39 @@ function clusterByGroup(rows: Row[], tabGroups: Record<string, TabGroupInfo>) {
     });
 }
 
-function GroupCard({ laneKey, groupKey, group, rows, alert, onOpen, collapsed, onToggleCollapse, dragId, dropGroup, onDragStart, onDragEnd, onHoverGroup, onDropOnGroup }:
+function GroupCard({ laneKey, groupKey, group, rows, alert, onOpen, collapsed, onToggleCollapse, onAssignGroup }:
   { laneKey: LaneId; groupKey: string; group: TabGroupInfo | undefined; rows: Row[]; alert: boolean } & Omit<BoardProps, 'byLane' | 'tabGroups'>) {
   const hex = groupHex(group);
   const dropKey = `${laneKey}:${groupKey}`;
-  const isDropping = dropGroup === dropKey;
   const isCollapsed = collapsed.has(dropKey);
   const hasWaiting = alert && rows.some(r => r.live.key === 'wait');
   const Chevron = isCollapsed ? ChevronUp : ChevronDown;
+  // react-aria drop target: dropping a session card here reassigns it to this
+  // group (or ungroups it when this is the "No group" cluster).
+  const dropRef = useRef<HTMLDivElement>(null);
+  const { dropProps, isDropTarget } = useDrop({
+    ref: dropRef,
+    async onDrop(e) {
+      for (const item of e.items) {
+        if (item.kind === 'text' && item.types.has(BOARD_DRAG_TYPE)) {
+          const id = await item.getText(BOARD_DRAG_TYPE);
+          if (id) onAssignGroup(id, groupKey === NO_GROUP ? null : groupKey);
+          break;
+        }
+      }
+    },
+  });
   return (
     <div
+      ref={dropRef}
+      {...dropProps}
       className="rounded-xl border overflow-hidden transition-colors"
       style={{
-        borderColor: isDropping ? hex : `${hex}40`,
+        borderColor: isDropTarget ? hex : `${hex}40`,
         background: `linear-gradient(180deg, ${hex}17, ${hex}08), var(--color-surface-light)`,
-        outline: isDropping ? `2px dashed ${hex}` : undefined,
+        outline: isDropTarget ? `2px dashed ${hex}` : undefined,
         outlineOffset: -2,
       }}
-      onDragOver={e => { e.preventDefault(); onHoverGroup(dropKey); }}
-      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onHoverGroup(null); }}
-      onDrop={e => { e.preventDefault(); onDropOnGroup(groupKey); }}
     >
       {/* discreet group label — click to collapse */}
       <button
@@ -390,7 +390,7 @@ function GroupCard({ laneKey, groupKey, group, rows, alert, onOpen, collapsed, o
         className="w-full flex items-center gap-1.5 px-2.5 pt-2 pb-1.5 hover:bg-white/[0.02] transition-colors"
       >
         <span className="w-2.5 h-2.5 rounded-[3px] shrink-0" style={{ background: hex }} />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 truncate">{group?.name || 'Sin grupo'}</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 truncate">{group?.name || 'No group'}</span>
         {hasWaiting && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" style={{ boxShadow: '0 0 6px currentColor' }} />}
         <span className="ml-auto text-[10px] font-semibold text-zinc-600">{rows.length}</span>
         <Chevron size={13} strokeWidth={2.2} className="text-zinc-600 shrink-0" />
@@ -402,10 +402,7 @@ function GroupCard({ laneKey, groupKey, group, rows, alert, onOpen, collapsed, o
             <BoardCard
               key={r.s.id}
               r={r}
-              dragging={dragId === r.s.id}
               onOpen={onOpen}
-              onDragStart={() => onDragStart(r.s.id)}
-              onDragEnd={onDragEnd}
             />
           ))}
         </div>
@@ -414,15 +411,16 @@ function GroupCard({ laneKey, groupKey, group, rows, alert, onOpen, collapsed, o
   );
 }
 
-function BoardCard({ r, dragging, onOpen, onDragStart, onDragEnd }:
-  { r: Row; dragging: boolean; onOpen: (id: string) => void; onDragStart: () => void; onDragEnd: () => void }) {
+function BoardCard({ r, onOpen }:
+  { r: Row; onOpen: (id: string) => void }) {
+  const { dragProps, isDragging } = useDrag({
+    getItems: () => [{ [BOARD_DRAG_TYPE]: r.s.id, 'text/plain': r.s.name }],
+  });
   return (
     <div
-      draggable
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
+      {...dragProps}
       onClick={() => onOpen(r.s.id)}
-      className={`text-left rounded-lg border border-border px-2.5 py-2 cursor-grab active:cursor-grabbing hover:border-border-light hover:-translate-y-px transition-all ${dragging ? 'opacity-40' : ''}`}
+      className={`text-left rounded-lg border border-border px-2.5 py-2 cursor-grab active:cursor-grabbing hover:border-border-light hover:-translate-y-px transition-all ${isDragging ? 'opacity-40' : ''}`}
       style={{ background: 'linear-gradient(180deg, rgba(255,255,255,.022), transparent 40%), var(--color-surface-lighter)' }}
     >
       <div className="flex items-center gap-2 mb-1">

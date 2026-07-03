@@ -1,0 +1,29 @@
+{
+  "statuses": [
+    {
+      "id": "needs",
+      "label": "Needs Attention",
+      "color": "#fbbf24"
+    },
+    {
+      "id": "working",
+      "label": "Working",
+      "color": "#2dd4bf"
+    },
+    {
+      "id": "review",
+      "label": "Review",
+      "color": "#818cf8"
+    },
+    {
+      "id": "custom-4-1",
+      "label": "UAT",
+      "color": "#f472b6"
+    },
+    {
+      "id": "done",
+      "label": "Done",
+      "color": "#38bdf8"
+    }
+  ]
+}

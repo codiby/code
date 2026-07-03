@@ -84,6 +84,24 @@ export function removeCachedRemoteSession(remoteId: string, sessionId: string) {
   saveRemoteSessions(remoteId, list);
 }
 
+/** Patch a cached session's UI status (open | archived) in place. Offline
+ *  fallback for archive/unarchive: when the owning remote is unreachable we
+ *  can't proxy the PATCH, so we apply the intent to the local snapshot instead
+ *  — otherwise the next session-list broadcast would resurface the tab from
+ *  cache. Returns true if the entry existed. */
+export function setCachedRemoteSessionStatus(
+  remoteId: string,
+  sessionId: string,
+  status: 'open' | 'archived',
+): boolean {
+  const list = loadRemoteSessions(remoteId);
+  const idx = list.findIndex(s => s.id === sessionId);
+  if (idx < 0) return false;
+  list[idx] = { ...list[idx]!, status };
+  saveRemoteSessions(remoteId, list);
+  return true;
+}
+
 /** Drop the entire cache for a remote (used when the remote is deleted). */
 export function clearRemoteCache(remoteId: string) {
   try {

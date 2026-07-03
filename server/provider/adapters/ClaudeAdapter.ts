@@ -332,13 +332,20 @@ class ClaudeSession implements ProviderSession {
       const init = msg as any;
       this.providerSessionId = init.session_id as string;
       const tools: string[] = Array.isArray(init.tools) ? init.tools : [];
+      // Skills are invoked as `/<skill-name>`, so fold them into the slash
+      // command list. The SDK reports them in a separate `skills` array on the
+      // init message; without this the `/` picker only shows builtin/custom
+      // commands and never the agent's skills.
+      const slashCommands: string[] = Array.isArray(init.slash_commands) ? init.slash_commands : [];
+      const skills: string[] = Array.isArray(init.skills) ? init.skills : [];
+      const mergedCommands = [...slashCommands, ...skills.filter((s: string) => !slashCommands.includes(s))];
       this.events.onInit({
         providerSessionId: this.providerSessionId ?? '',
         cwd: (init.cwd as string) || '',
         version: (init.claude_code_version as string) || '',
         model: (init.model as string) || '',
         tools,
-        slashCommands: Array.isArray(init.slash_commands) ? init.slash_commands : [],
+        slashCommands: mergedCommands,
         permissionMode: (init.permissionMode as string) || 'default',
       });
       return;

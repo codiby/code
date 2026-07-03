@@ -42,6 +42,18 @@ html {
   50%      { opacity: 0.35; }
 }
 
+/* Session dot states (sidebar) ------------------------------------------- */
+/* "Working": three little bars that rise and fall, like a typing indicator. */
+@keyframes sessionTyping {
+  0%, 100% { height: 4px; opacity: 0.5; }
+  50%      { height: 9px; opacity: 1; }
+}
+/* "Turn complete / starting": a soft breathing glow. */
+@keyframes sessionBreathe {
+  0%, 100% { transform: scale(0.82); opacity: 0.55; }
+  50%      { transform: scale(1.15); opacity: 1; }
+}
+
 /* Hide the scrollbar on the session tab strip — overflow is communicated
  * via the chevron buttons that flank the strip. */
 .session-tab-strip-scroll {

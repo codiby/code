@@ -15,6 +15,7 @@ const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'st
 const MAX_CODE_LINES = 30;
 
 const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+const CHECK_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 
 // Renders a fenced code block wrapped with a hover-revealed copy button. The
 // button has no React handler (the parent renders via dangerouslySetInnerHTML);
@@ -98,8 +99,14 @@ function renderInline(text: string): string {
     .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="max-w-full rounded my-1" />')
     // Links: [text](url)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">$1</a>')
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="text-[11px] bg-zinc-800 px-1 py-0.5 rounded font-mono text-indigo-300">$1</code>')
+    // Inline code — with a hover-revealed copy icon pinned to the top-right
+    // corner. The button carries no React handler (parent renders via
+    // dangerouslySetInnerHTML); clicks are caught by event delegation below.
+    .replace(/`([^`]+)`/g, (_m, code) =>
+      `<code data-inline-code class="relative group/ic text-[11px] bg-zinc-800 px-1 py-0.5 rounded font-mono text-indigo-300">${code}`
+      + `<button type="button" data-copy-inline aria-label="Copy code"`
+      + ` class="absolute -top-2 -right-2 z-20 flex items-center justify-center w-[17px] h-[17px] rounded-[5px] bg-surface-light border border-border-light text-zinc-400 shadow-md opacity-0 scale-90 pointer-events-none transition-all group-hover/ic:opacity-100 group-hover/ic:scale-100 group-hover/ic:pointer-events-auto hover:text-zinc-200 hover:border-zinc-500">`
+      + `${COPY_ICON}</button></code>`)
     // Bold + italic
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     // Bold
@@ -313,6 +320,25 @@ export const Markdown = memo(function Markdown({ text, className }: { text: stri
       const scroll = expand.closest('[data-code-block]')?.querySelector('[data-code-scroll]');
       scroll?.classList.add('cm-expanded');
       expand.remove();
+      return;
+    }
+
+    // Inline code copy icon → copy the span's text, flash a green check.
+    const inlineBtn = target.closest('[data-copy-inline]');
+    if (inlineBtn) {
+      const codeEl = inlineBtn.closest('[data-inline-code]');
+      const value = codeEl?.textContent;
+      if (!value) return;
+      navigator.clipboard?.writeText(value).then(() => {
+        inlineBtn.innerHTML = CHECK_ICON;
+        // Keep it visible + green for the confirmation window even if the
+        // pointer leaves (the default opacity is hover-driven).
+        inlineBtn.setAttribute('style', 'opacity:1;transform:none;color:#4ade80;border-color:rgba(74,222,128,.5)');
+        window.setTimeout(() => {
+          inlineBtn.innerHTML = COPY_ICON;
+          inlineBtn.removeAttribute('style');
+        }, 1200);
+      }).catch(() => {});
       return;
     }
 

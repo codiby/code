@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
-import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, Sparkles, Copy, Check } from 'lucide-react';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import { Markdown } from './Markdown';
@@ -225,6 +225,24 @@ const MONACO_SHARED_OPTS = {
   domReadOnly: true,
 };
 
+function CopyButton({ text, title = 'Copy' }: { text: string; title?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      title={copied ? 'Copied' : title}
+      onClick={() => {
+        void navigator.clipboard?.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="shrink-0 rounded p-1 text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
+
 function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage; isLast?: boolean; onAnswerAskUser?: (answers: Record<string, string>) => void }) {
   const input = (message.toolInput && typeof message.toolInput === 'object' ? message.toolInput : null) as Record<string, unknown> | null;
   const isEdit = message.toolName === 'Edit' && input && typeof input.old_string === 'string' && typeof input.new_string === 'string';
@@ -414,8 +432,11 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
           )}
 
           {isBash && (
-            <div className="rounded bg-[#0d0d0d] border border-border mb-1 px-3 py-2">
-              <pre className="text-[12px] font-mono text-green-400 whitespace-pre-wrap break-all m-0 leading-snug">
+            <div className="group relative rounded bg-[#0d0d0d] border border-border mb-1 px-3 py-2">
+              <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <CopyButton text={input.command as string} title="Copy command" />
+              </div>
+              <pre className="text-[12px] font-mono text-green-400 whitespace-pre-wrap break-all m-0 leading-snug pr-7 select-text cursor-text">
                 <span className="text-zinc-600 select-none">$ </span>{input.command as string}
               </pre>
             </div>

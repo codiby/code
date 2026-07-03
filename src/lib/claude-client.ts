@@ -483,6 +483,10 @@ export interface PortlessProxyActionResult {
   ok: boolean;
   output: string;
   error?: string;
+  /** Present when a privileged start was blocked by a foreign listener on the
+   *  target port. `funnelConflict` flags the Tailscale-Funnel-on-:443 case so
+   *  the UI can offer a one-click "Disable Funnel & retry". */
+  conflict?: { port: number; funnelConflict: boolean };
 }
 
 export class ClaudeClient {
@@ -1133,6 +1137,28 @@ export class ClaudeClient {
     return resp.ok;
   }
 
+  /** Read a file's raw bytes for the file-explorer "Download" action. On a
+   *  remote session `withActiveRemote` routes this through the SSH tunnel, so
+   *  the bytes are read on the remote machine. Returns null on failure. */
+  async readFileBytes(path: string): Promise<{ bytes: ArrayBuffer; mime: string } | null> {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`));
+    if (!resp.ok) return null;
+    const mime = resp.headers.get('content-type') || 'application/octet-stream';
+    return { bytes: await resp.arrayBuffer(), mime };
+  }
+
+  /** Write raw bytes to a file for the file-explorer "Upload" action. On a
+   *  remote session this is proxied over the SSH tunnel, so the file lands on
+   *  the remote filesystem. */
+  async uploadFileBytes(path: string, bytes: ArrayBuffer | Uint8Array): Promise<boolean> {
+    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: bytes as BodyInit,
+    });
+    return resp.ok;
+  }
+
   /** Persist a large pasted snippet under ~/.codiby/<sessionId>/<uuid><.ext>.
    *  Returns the absolute path + generated filename, or null on failure. */
   async saveSnippet(sessionId: string, content: string, ext?: string): Promise<{ path: string; name: string; uuid: string } | null> {
@@ -1460,6 +1486,18 @@ export class ClaudeClient {
   async trustPortlessCA(): Promise<PortlessProxyActionResult> {
     const resp = await authedFetch(`${this.serverUrl}/portless/trust`, { method: 'POST' });
     return resp.json().catch(() => ({ ok: false, output: '', error: `HTTP ${resp.status}` }));
+  }
+
+  /** Toggle Tailscale Funnel. Used by the Portless proxy pane to clear a
+   *  Funnel-on-:443 conflict before retrying an HTTPS start. */
+  async setTailscaleFunnel(enabled: boolean): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/tailscale/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ funnelEnabled: enabled }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    return { ok: resp.ok && !data.error, error: data.error };
   }
 
   // ---------------------------------------------------------------------------

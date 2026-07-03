@@ -13,7 +13,7 @@ import { sessions, sessionToJSON, saveSessions } from './sessions';
 import { handleCreateSession, handleRestartSession } from './handlers/sessions';
 import { addMessage, getSessionState } from './state';
 import type { ChatMessage } from './state';
-import { createWorktree } from './handlers/worktree';
+import { createWorktree, applyWorktreeSetup } from './handlers/worktree';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { extname } from 'path';
@@ -174,7 +174,10 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
         '`cwd` is REQUIRED — explicitly choose the directory the new session opens in.\n\n' +
         'To run the session inside a fresh git worktree instead of `cwd` directly, set `worktree`. ' +
         'The worktree is created at `<dirname(cwd)>/.wt/<branch>`. `cwd` is then treated as the SOURCE repo, ' +
-        'and the new session\'s actual cwd becomes the worktree path. Omit `worktree` to use `cwd` as-is.',
+        'and the new session\'s actual cwd becomes the worktree path. Omit `worktree` to use `cwd` as-is.\n\n' +
+        'The `worktree` object can also mirror the create-worktree modal: `copy_env` copies `.env`, ' +
+        '`link_node_modules` symlinks `node_modules` (fast), `copy_node_modules` does a full copy, and ' +
+        '`install_deps` (with optional `package_manager`) runs a fresh install.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -220,6 +223,27 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
                   'true = run `git fetch origin "<source_branch>"` first and use `origin/<source_branch>` as the start-point ' +
                   '(so the worktree picks up the latest remote commits without touching the local checkout). ' +
                   'On fetch failure, falls back to the local `<source_branch>`. Defaults to false.',
+              },
+              copy_env: {
+                type: 'boolean',
+                description: 'Copy `.env` from the source repo into the worktree (skipped if absent or already present). Defaults to false.',
+              },
+              install_deps: {
+                type: 'boolean',
+                description: 'Run the package manager install in the worktree. Mutually exclusive with copy/link node_modules. Defaults to false.',
+              },
+              copy_node_modules: {
+                type: 'boolean',
+                description: 'Copy `node_modules` from the source repo into the worktree (full tar copy). Defaults to false.',
+              },
+              link_node_modules: {
+                type: 'boolean',
+                description: 'Symlink `node_modules` from the source repo into the worktree (fast, shares one install). Defaults to false.',
+              },
+              package_manager: {
+                type: 'string',
+                enum: ['npm', 'bun', 'yarn', 'pnpm'],
+                description: 'Package manager to use when `install_deps` is true. Defaults to "npm".',
               },
             },
             required: ['branch', 'new_branch'],
@@ -516,6 +540,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Optional worktree creation — overrides cwd with the new worktree path.
         let worktreeInfo: { path: string; branch: string } | null = null;
+        const worktreeSetupLog: string[] = [];
         if (args!.worktree !== undefined && args!.worktree !== null) {
           if (typeof args!.worktree !== 'object' || Array.isArray(args!.worktree)) {
             return { content: [{ type: 'text', text: '`worktree` must be an object with { branch, new_branch, source_branch?, pull_source? }.' }], isError: true };
@@ -537,6 +562,20 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
               newBranch: wt.new_branch,
               sourceBranch,
               pullSource,
+            });
+            // Mirror the create-worktree modal: optionally copy `.env`,
+            // install deps, and copy/symlink `node_modules` from the source
+            // repo. Collected log lines are appended to the tool result so the
+            // agent can see what setup ran.
+            await applyWorktreeSetup({
+              repoPath: cwd,
+              worktreePath: worktreeInfo.path,
+              copyEnv: wt.copy_env === true,
+              installDeps: wt.install_deps === true,
+              copyNodeModules: wt.copy_node_modules === true,
+              linkNodeModules: wt.link_node_modules === true,
+              packageManager: typeof wt.package_manager === 'string' ? wt.package_manager : undefined,
+              log: (m) => worktreeSetupLog.push(m),
             });
             body.cwd = worktreeInfo.path;
             // Hint the autogroup step about the *source* repo so the session
@@ -584,7 +623,8 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         _deps.broadcastSessionList();
 
         const wtSuffix = worktreeInfo ? ` [worktree: ${worktreeInfo.branch} @ ${worktreeInfo.path}]` : '';
-        return { content: [{ type: 'text', text: `Spawned session ${data.id} — ${data.name} (cwd: ${data.cwd})${wtSuffix}` }] };
+        const setupSuffix = worktreeSetupLog.length ? `\nSetup:\n${worktreeSetupLog.map((l) => `  ${l}`).join('\n')}` : '';
+        return { content: [{ type: 'text', text: `Spawned session ${data.id} — ${data.name} (cwd: ${data.cwd})${wtSuffix}${setupSuffix}` }] };
       }
       case 'ui_send_message': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

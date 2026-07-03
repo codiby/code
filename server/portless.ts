@@ -16,8 +16,9 @@ import type { Readable } from 'stream';
 import { connect } from 'net';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { log } from './logger';
+import { getFunnelStatus } from './tailscale';
 
 // ---------------------------------------------------------------------------
 // CLI detection
@@ -339,10 +340,10 @@ export interface ProxyStatus {
   mode: ProxyMode | null;
 }
 
-function probePort(port: number, timeoutMs = 250): Promise<boolean> {
+function probePort(port: number, host = '127.0.0.1', timeoutMs = 250): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
-    const sock = connect({ host: '127.0.0.1', port });
+    const sock = connect({ host, port });
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
@@ -353,6 +354,18 @@ function probePort(port: number, timeoutMs = 250): Promise<boolean> {
     sock.once('error', () => finish(false));
     sock.setTimeout(timeoutMs, () => finish(false));
   });
+}
+
+/** Is anything listening on `port`? Checks both loopback stacks — some
+ *  servers (notably Tailscale Funnel) bind :443 reachable only over IPv6
+ *  `::1`, so an IPv4-only probe would miss them and we'd let portless march
+ *  into an EADDRINUSE. */
+async function portInUse(port: number): Promise<boolean> {
+  const [v4, v6] = await Promise.all([
+    probePort(port, '127.0.0.1'),
+    probePort(port, '::1'),
+  ]);
+  return v4 || v6;
 }
 
 export async function getProxyStatus(): Promise<ProxyStatus> {
@@ -371,7 +384,56 @@ export async function getProxyStatus(): Promise<ProxyStatus> {
   return { running: false, port: null, mode: null };
 }
 
-export interface ProxyActionResult { ok: boolean; output: string; error?: string }
+export interface ProxyActionResult {
+  ok: boolean;
+  output: string;
+  error?: string;
+  /** Set when a privileged start was refused because another process already
+   *  holds the target port. The UI uses this to render an actionable hint —
+   *  and, when `funnelConflict` is true, a one-click "Disable Funnel & retry"
+   *  (Tailscale Funnel binds :443, which collides with the HTTPS proxy). */
+  conflict?: { port: number; funnelConflict: boolean };
+}
+
+/** Directory that holds the `node` binary. Privileged osascript shells run
+ *  as root with a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that omits
+ *  nvm/fnm/volta/asdf installs living under the user's home — so portless's
+ *  `#!/usr/bin/env node` shebang dies with "env: node: No such file or
+ *  directory" the instant we elevate. We prepend this dir to PATH inside the
+ *  sudo command. Returns null when node can't be located (caller then skips
+ *  the prepend and lets the underlying error surface). */
+function nodeBinDir(portlessBin: string): string | null {
+  // Version-manager installs put `portless` right next to `node`.
+  const sibling = dirname(portlessBin);
+  if (existsSync(join(sibling, 'node'))) return sibling;
+  // Otherwise scan the server's PATH — config.ts pre-enriches it from the
+  // user's login shell, so it carries the real node dir even though the
+  // elevated root shell won't.
+  for (const dir of (process.env.PATH || '').split(':')) {
+    if (dir && existsSync(join(dir, 'node'))) return dir;
+  }
+  return null;
+}
+
+/** Prefix an elevated command so portless's `#!/usr/bin/env node` shebang
+ *  resolves: the root shell osascript hands us has a minimal PATH that omits
+ *  the user's version-manager node. We deliberately DON'T touch HOME —
+ *  portless keeps its privileged proxy state in `/tmp/portless` regardless,
+ *  and pointing HOME at the user's home would only litter `~/.portless` with
+ *  root-owned files that later break non-root runs. */
+function elevatedPrefix(portlessBin: string): string {
+  const nodeDir = nodeBinDir(portlessBin);
+  if (!nodeDir) return '';
+  // Quote the literal dir but leave `$PATH` bare so the root shell still
+  // expands it (we prepend, never replace).
+  return `export PATH=${shellQuote(nodeDir)}:$PATH; `;
+}
+
+/** Single-quote a literal value for /bin/sh so spaces and metacharacters in
+ *  the path don't break the elevated command. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 /** Run a shell command with administrator privileges via osascript. The
  *  user is prompted by the OS for their password. Errors propagate. */
@@ -388,8 +450,14 @@ function runWithSudo(commandLine: string): Promise<ProxyActionResult> {
     proc.stdout?.on('data', (d) => { out += d.toString(); });
     proc.stderr?.on('data', (d) => { err += d.toString(); });
     proc.on('exit', (code) => {
-      if (code === 0) resolve({ ok: true, output: out.trim() });
-      else resolve({ ok: false, output: out.trim(), error: (err || `osascript exited with code ${code}`).trim() });
+      if (code === 0) { resolve({ ok: true, output: out.trim() }); return; }
+      // The user dismissing the password dialog isn't a failure worth a red
+      // scary box — map osascript's -128 to a calm message.
+      if (/User canceled|-128/.test(err)) {
+        resolve({ ok: false, output: out.trim(), error: 'Cancelled — admin password not entered.' });
+        return;
+      }
+      resolve({ ok: false, output: out.trim(), error: (err || `osascript exited with code ${code}`).trim() });
     });
     proc.on('error', (e) => resolve({ ok: false, output: out.trim(), error: e.message }));
   });
@@ -430,13 +498,36 @@ export async function startProxy(mode: ProxyMode): Promise<ProxyActionResult> {
   if (mode === 'default') {
     return runPortless(['proxy', 'start']);
   }
-  // Privileged modes — wrap in osascript so the user sees a system
-  // password prompt. We pre-stop the proxy inside the same elevated
-  // session so neither half races the other.
+  const targetPort = mode === 'http80' ? 80 : 443;
+  // Pre-flight: we just stopped portless's own proxy, so anything STILL
+  // listening on the privileged port is a foreign process. The usual culprit
+  // is Tailscale Funnel, which binds :443 and can't share it with the HTTPS
+  // proxy. Refuse here — before the admin password prompt and the ~20s
+  // "waiting for it to listen" timeout portless would otherwise burn — and
+  // hand the UI enough context to offer a fix.
+  const funnelActive = targetPort === 443 && getFunnelStatus().active;
+  if (funnelActive || await portInUse(targetPort)) {
+    const funnelConflict = funnelActive;
+    const who = funnelConflict
+      ? 'Tailscale Funnel is already serving HTTPS on :443'
+      : `another process is already listening on :${targetPort}`;
+    const fix = funnelConflict
+      ? 'Funnel and the Portless HTTPS proxy can’t share :443 — disable Funnel (button below) and try again.'
+      : `Free it first (e.g. \`sudo lsof -ti tcp:${targetPort}\`) and try again.`;
+    return {
+      ok: false,
+      output: '',
+      error: `Port ${targetPort} is already in use — ${who}. ${fix}`,
+      conflict: { port: targetPort, funnelConflict },
+    };
+  }
+  // Privileged modes — wrap in osascript so the user sees a system password
+  // prompt. We pre-stop the proxy inside the same elevated session so neither
+  // half races the other. The elevated prefix puts node on PATH (see
+  // elevatedPrefix).
   const bin = cli.bin;
-  const inner = mode === 'http80'
-    ? `${bin} proxy stop; ${bin} proxy start -p 80`
-    : `${bin} proxy stop; ${bin} proxy start --https -p 443`;
+  const flags = mode === 'http80' ? '-p 80' : '--https -p 443';
+  const inner = `${elevatedPrefix(bin)}${bin} proxy stop; ${bin} proxy start ${flags}`;
   return runWithSudo(inner);
 }
 
@@ -446,7 +537,7 @@ export async function trustCA(): Promise<ProxyActionResult> {
   const cli = getPortlessCliStatus();
   if (!cli.available || !cli.bin) return { ok: false, output: '', error: 'Portless CLI not found.' };
   if (process.platform === 'darwin') {
-    return runWithSudo(`${cli.bin} trust`);
+    return runWithSudo(`${elevatedPrefix(cli.bin)}${cli.bin} trust`);
   }
   return runPortless(['trust']);
 }

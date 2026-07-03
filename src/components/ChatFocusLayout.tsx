@@ -17,8 +17,15 @@
  */
 import { useState, useRef, useMemo, useEffect } from 'react';
 import type { ReactNode } from 'react';
+import { useDrag, useDrop } from 'react-aria';
 import { X, GripVertical, Plus, Search, ArrowRight } from 'lucide-react';
 import type { SessionInfo } from '../lib/claude-client';
+
+// react-aria drag payload type carrying a pane id between a pane header (drag
+// source) and a pane body (drop target) in the focus-mode tiling grid.
+const PANE_DRAG_TYPE = 'application/x-codiby-pane';
+// react-aria drag payload type for reordering workspace tiles in the rail.
+const WORKSPACE_DRAG_TYPE = 'application/x-codiby-workspace';
 
 export type Row = {
   id: string;
@@ -343,52 +350,23 @@ export function ChatFocusLayout({
   };
 
 
-  // Drag state — kept in a ref so the dragover handler does not re-render
-  // 60 times a second. The drop indicator overlay is rendered from React
-  // state but throttled by requestAnimationFrame.
-  const dragRef = useRef<{ paneId: string } | null>(null);
+  // Drop indicator overlay state. Updated from a pane's react-aria drop
+  // events as a drag hovers (onDropMove) and cleared on exit/drop.
   const [dropPreview, setDropPreview] = useState<{
     rect: DOMRect; zone: DropZone;
   } | null>(null);
 
-  // ---------- Drag / drop -------------------------------------------------
+  // ---------- Drag / drop (react-aria) ------------------------------------
 
-  const onHeaderDragStart = (paneId: string) => (e: React.DragEvent) => {
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', paneId);
-    dragRef.current = { paneId };
-  };
+  // Show / clear the tiling drop indicator while a pane is dragged over a target.
+  const onPreview = (rect: DOMRect | null, zone: DropZone | null) =>
+    setDropPreview(rect && zone ? { rect, zone } : null);
 
-  const onHeaderDragEnd = () => {
-    dragRef.current = null;
+  // Commit a pane move into the target's chosen zone (split/insert/swap).
+  const onMovePane = (fromId: string, toId: string, zone: DropZone) => {
     setDropPreview(null);
-  };
-
-  const onPaneDragOver = (paneEl: HTMLElement) => (e: React.DragEvent) => {
-    if (!dragRef.current) return;
-    e.preventDefault();
-    const rect = paneEl.getBoundingClientRect();
-    const zone = pickZone(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
-    setDropPreview({ rect, zone });
-  };
-
-  const onPaneDragLeave = (e: React.DragEvent) => {
-    const next = e.relatedTarget as Node | null;
-    const current = e.currentTarget as Node;
-    if (next && current.contains(next)) return;
-    setDropPreview(null);
-  };
-
-  const onPaneDrop = (targetPaneId: string) => (e: React.DragEvent) => {
-    e.preventDefault();
-    const fromId = e.dataTransfer.getData('text/plain') || dragRef.current?.paneId || '';
-    setDropPreview(null);
-    if (!fromId || fromId === targetPaneId) return;
-    const paneEl = e.currentTarget as HTMLElement;
-    const rect = paneEl.getBoundingClientRect();
-    const zone = pickZone(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
-
-    setLayout(prev => applyDrop(prev, fromId, targetPaneId, zone));
+    if (!fromId || fromId === toId) return;
+    setLayout(prev => applyDrop(prev, fromId, toId, zone));
   };
 
   // ---------- Resize ------------------------------------------------------
@@ -478,7 +456,6 @@ export function ChatFocusLayout({
   // ---------- Render ------------------------------------------------------
 
   const sessionById = new Map(sessions.map(s => [s.id, s]));
-  const dragging = dragRef.current?.paneId ?? null;
 
   return (
     <div className="flex-1 flex min-h-0 min-w-0 bg-base relative">
@@ -502,7 +479,6 @@ export function ChatFocusLayout({
             isLast={rIdx === layout.rows.length - 1}
             sessionById={sessionById}
             activeSessionId={activeSessionId}
-            dragging={dragging}
             paneAccent={paneAccent}
             accentPalette={accentPalette}
             onPickAccent={onPickAccent}
@@ -512,11 +488,8 @@ export function ChatFocusLayout({
             renderComposer={renderComposer}
             renderBody={renderBody}
             renderPaneHeaderExtras={renderPaneHeaderExtras}
-            onHeaderDragStart={onHeaderDragStart}
-            onHeaderDragEnd={onHeaderDragEnd}
-            onPaneDragOver={onPaneDragOver}
-            onPaneDragLeave={onPaneDragLeave}
-            onPaneDrop={onPaneDrop}
+            onMovePane={onMovePane}
+            onPreview={onPreview}
             onColResizeStart={onColResizeStart}
             onRowResizeStart={onRowResizeStart}
             onSelectSession={onSelectSession}
@@ -556,7 +529,6 @@ function RowView(props: {
   isLast: boolean;
   sessionById: Map<string, SessionInfo>;
   activeSessionId: string | null;
-  dragging: string | null;
   paneAccent?: (sessionId: string) => string;
   accentPalette?: string[];
   onPickAccent?: (sessionId: string, color: string | null) => void;
@@ -566,11 +538,8 @@ function RowView(props: {
   renderComposer?: (sessionId: string) => ReactNode;
   renderBody?: (sessionId: string) => ReactNode;
   renderPaneHeaderExtras?: (sessionId: string) => ReactNode;
-  onHeaderDragStart: (paneId: string) => (e: React.DragEvent) => void;
-  onHeaderDragEnd: () => void;
-  onPaneDragOver: (paneEl: HTMLElement) => (e: React.DragEvent) => void;
-  onPaneDragLeave: (e: React.DragEvent) => void;
-  onPaneDrop: (paneId: string) => (e: React.DragEvent) => void;
+  onMovePane: (fromId: string, toId: string, zone: DropZone) => void;
+  onPreview: (rect: DOMRect | null, zone: DropZone | null) => void;
   onColResizeStart: (rowIdx: number, leftIdx: number) => (e: React.MouseEvent) => void;
   onRowResizeStart: (aboveIdx: number) => (e: React.MouseEvent) => void;
   onSelectSession: (id: string) => void;
@@ -579,7 +548,7 @@ function RowView(props: {
   onRemoveSlot: (slotId: string) => void;
   onAddSlot: () => void;
 }) {
-  const { row, rIdx, isLast, sessionById, activeSessionId, dragging } = props;
+  const { row, rIdx, isLast, sessionById, activeSessionId } = props;
   return (
     <>
       <div
@@ -616,17 +585,13 @@ function RowView(props: {
               accentPalette={props.accentPalette}
               onPickAccent={props.onPickAccent}
               flex={row.widths[cIdx] ?? 1}
-              dragging={dragging}
               showRightHandle={showRightHandle}
               composer={props.renderComposer ? props.renderComposer(pid) : null}
               body={props.renderBody ? props.renderBody(pid) : null}
               headerExtras={props.renderPaneHeaderExtras ? props.renderPaneHeaderExtras(pid) : null}
               onColResizeStart={props.onColResizeStart(rIdx, cIdx)}
-              onHeaderDragStart={props.onHeaderDragStart(pid)}
-              onHeaderDragEnd={props.onHeaderDragEnd}
-              onPaneDragOver={props.onPaneDragOver}
-              onPaneDragLeave={props.onPaneDragLeave}
-              onPaneDrop={props.onPaneDrop(pid)}
+              onMovePane={props.onMovePane}
+              onPreview={props.onPreview}
               onSelect={() => props.onSelectSession(pid)}
               onExpand={props.onExpandSession ? () => props.onExpandSession!(pid) : undefined}
               onClose={() => props.onClearToSlot(pid)}
@@ -667,30 +632,58 @@ function PaneShell(props: {
   accentPalette?: string[];
   onPickAccent?: (sessionId: string, color: string | null) => void;
   flex: number;
-  dragging: string | null;
   showRightHandle: boolean;
   composer: ReactNode;
   body: ReactNode;
   headerExtras?: ReactNode;
   onColResizeStart: (e: React.MouseEvent) => void;
-  onHeaderDragStart: (e: React.DragEvent) => void;
-  onHeaderDragEnd: () => void;
-  onPaneDragOver: (paneEl: HTMLElement) => (e: React.DragEvent) => void;
-  onPaneDragLeave: (e: React.DragEvent) => void;
-  onPaneDrop: (e: React.DragEvent) => void;
+  onMovePane: (fromId: string, toId: string, zone: DropZone) => void;
+  onPreview: (rect: DOMRect | null, zone: DropZone | null) => void;
   onSelect: () => void;
   onExpand?: () => void;
   onClose: () => void;
 }) {
   const paneRef = useRef<HTMLDivElement | null>(null);
-  const { session, isActive, accent, flex, dragging, showRightHandle } = props;
-  const isMe = dragging === props.paneId;
+  const { session, isActive, accent, flex, showRightHandle } = props;
+
+  // react-aria drag (header) + drop (pane body) for the tiling layout. The
+  // zone is computed from the drop coordinates relative to the pane.
+  const { dragProps, isDragging } = useDrag({
+    getItems: () => [{ [PANE_DRAG_TYPE]: props.paneId }],
+    onDragEnd: () => props.onPreview(null, null),
+  });
+  const zoneAt = (x: number, y: number): DropZone | null => {
+    const el = paneRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return pickZone(x, y, rect.width, rect.height);
+  };
+  const { dropProps } = useDrop({
+    ref: paneRef,
+    onDropMove(e) {
+      const el = paneRef.current;
+      const zone = zoneAt(e.x, e.y);
+      if (el && zone) props.onPreview(el.getBoundingClientRect(), zone);
+    },
+    onDropExit() { props.onPreview(null, null); },
+    async onDrop(e) {
+      const zone = zoneAt(e.x, e.y);
+      let fromId = '';
+      for (const item of e.items) {
+        if (item.kind === 'text' && item.types.has(PANE_DRAG_TYPE)) { fromId = await item.getText(PANE_DRAG_TYPE); break; }
+      }
+      if (fromId && zone) props.onMovePane(fromId, props.paneId, zone);
+      props.onPreview(null, null);
+    },
+  });
+  const isMe = isDragging;
 
   return (
     <>
       <div
         data-focus-pane
         ref={paneRef}
+        {...dropProps}
         style={{
           flex,
           ...(accent ? { borderColor: isActive ? accent : `${accent}55` } : {}),
@@ -700,17 +693,12 @@ function PaneShell(props: {
           accent ? '' : (isActive ? 'border-sky-500/60 ring-1 ring-sky-500/40' : 'border-border')
         } ${isMe ? 'opacity-40' : ''}`}
         onClick={props.onSelect}
-        onDragOver={(e) => paneRef.current && props.onPaneDragOver(paneRef.current)(e)}
-        onDragLeave={props.onPaneDragLeave}
-        onDrop={props.onPaneDrop}
       >
         {/* Accent strip across the top, tinted with the session color. */}
         {accent && <div className="h-0.5 shrink-0" style={{ backgroundColor: accent }} />}
-        {/* Header */}
+        {/* Header — drag handle for moving the pane (react-aria). */}
         <div
-          draggable
-          onDragStart={props.onHeaderDragStart}
-          onDragEnd={props.onHeaderDragEnd}
+          {...dragProps}
           className="flex items-center gap-2 px-2 h-8 border-b border-border bg-base cursor-grab active:cursor-grabbing select-none shrink-0"
         >
           <GripVertical className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
@@ -1122,9 +1110,9 @@ function WorkspaceBar(props: {
   // Only one workspace can be renaming at a time.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
-  // Drag-to-reorder state. `dragId` is the workspace being dragged;
-  // `dropTarget` is where it would land if dropped now.
-  const [dragId, setDragId] = useState<string | null>(null);
+  // Drag-to-reorder: `dropTarget` is where the dragged workspace would land if
+  // dropped now (shown as an above/below indicator). The dragged tile tracks
+  // its own `isDragging` locally via react-aria.
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'above' | 'below' } | null>(null);
   const beginRename = (w: Workspace) => {
     if (!onRename) return;
@@ -1140,98 +1128,26 @@ function WorkspaceBar(props: {
   };
   return (
     <aside className="w-12 shrink-0 border-r border-border bg-base flex flex-col items-center py-2 gap-1.5">
-      {workspaces.map((w, i) => {
-        const isActive = w.id === activeWorkspaceId;
-        const color = w.color ?? WORKSPACE_COLORS[i % WORKSPACE_COLORS.length]!;
-        const initial = (w.name.trim().charAt(0) || 'W').toUpperCase();
-        const isRenaming = renamingId === w.id;
-        const isDragging = dragId === w.id;
-        const isDropTarget = dropTarget?.id === w.id;
-        return (
-          <div
-            key={w.id}
-            className="relative group"
-            onDragOver={(e) => {
-              if (!onReorder || !dragId || dragId === w.id) return;
-              e.preventDefault();
-              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-              const position: 'above' | 'below' = (e.clientY - rect.top) < rect.height / 2 ? 'above' : 'below';
-              setDropTarget(prev => (prev?.id === w.id && prev.position === position ? prev : { id: w.id, position }));
-            }}
-            onDragLeave={(e) => {
-              const next = e.relatedTarget as Node | null;
-              const current = e.currentTarget as Node;
-              if (next && current.contains(next)) return;
-              setDropTarget(prev => (prev?.id === w.id ? null : prev));
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              const fromId = e.dataTransfer.getData('text/plain') || dragId;
-              const pos = dropTarget?.id === w.id ? dropTarget.position : 'above';
-              setDragId(null);
-              setDropTarget(null);
-              if (onReorder && fromId && fromId !== w.id) onReorder(fromId, w.id, pos);
-            }}
-          >
-            {/* Drop indicator (above) */}
-            {isDropTarget && dropTarget?.position === 'above' && (
-              <div className="absolute -top-1 left-0 right-0 h-0.5 bg-sky-400/80 rounded-full shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
-            )}
-            <button
-              onClick={() => onSelect(w.id)}
-              onDoubleClick={() => beginRename(w)}
-              draggable={!!onReorder && !isRenaming}
-              onDragStart={(e) => {
-                if (!onReorder) return;
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', w.id);
-                setDragId(w.id);
-              }}
-              onDragEnd={() => {
-                setDragId(null);
-                setDropTarget(null);
-              }}
-              title={`${w.name} · ${w.sessionIds.length} chat${w.sessionIds.length === 1 ? '' : 's'} · double-click to rename · drag to reorder`}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center text-[12px] font-semibold transition-all ${color} ${
-                isActive
-                  ? 'ring-2 scale-[1.05]'
-                  : 'opacity-70 hover:opacity-100 ring-1 ring-transparent'
-              } ${isDragging ? 'opacity-40' : ''}`}
-            >
-              {initial}
-            </button>
-            {/* Drop indicator (below) */}
-            {isDropTarget && dropTarget?.position === 'below' && (
-              <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-sky-400/80 rounded-full shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
-            )}
-            {canClose && !isRenaming && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onClose!(w.id); }}
-                title="Close workspace"
-                className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-800 border border-border text-zinc-400 hover:bg-red-500/80 hover:text-white hover:border-red-500/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <X className="w-2.5 h-2.5" />
-              </button>
-            )}
-            {isRenaming && (
-              <div className="absolute left-10 top-0 z-20 flex items-center gap-1 bg-surface border border-border-light rounded-md shadow-xl px-2 py-1">
-                <input
-                  autoFocus
-                  value={renameDraft}
-                  onChange={(e) => setRenameDraft(e.target.value)}
-                  onBlur={commitRename}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename();
-                    else if (e.key === 'Escape') cancelRename();
-                  }}
-                  className="w-40 bg-transparent text-[12px] text-zinc-100 outline-none placeholder:text-zinc-500"
-                  placeholder="Workspace name"
-                />
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {workspaces.map((w, i) => (
+        <WorkspaceTile
+          key={w.id}
+          w={w}
+          color={w.color ?? WORKSPACE_COLORS[i % WORKSPACE_COLORS.length]!}
+          isActive={w.id === activeWorkspaceId}
+          isRenaming={renamingId === w.id}
+          canClose={canClose}
+          dropTarget={dropTarget}
+          setDropTarget={setDropTarget}
+          onReorder={onReorder}
+          onSelect={onSelect}
+          onClose={onClose}
+          beginRename={beginRename}
+          renameDraft={renameDraft}
+          setRenameDraft={setRenameDraft}
+          commitRename={commitRename}
+          cancelRename={cancelRename}
+        />
+      ))}
       <button
         onClick={onCreate}
         title="New workspace"
@@ -1240,5 +1156,95 @@ function WorkspaceBar(props: {
         <Plus className="w-4 h-4" />
       </button>
     </aside>
+  );
+}
+
+// One workspace tile in the rail — react-aria drag source + drop target for
+// reordering. The above/below drop position is derived from the cursor Y
+// relative to the tile and surfaced via the shared `dropTarget` state.
+function WorkspaceTile({ w, color, isActive, isRenaming, canClose, dropTarget, setDropTarget, onReorder, onSelect, onClose, beginRename, renameDraft, setRenameDraft, commitRename, cancelRename }: {
+  w: Workspace; color: string; isActive: boolean; isRenaming: boolean; canClose: boolean;
+  dropTarget: { id: string; position: 'above' | 'below' } | null;
+  setDropTarget: (v: { id: string; position: 'above' | 'below' } | null | ((prev: { id: string; position: 'above' | 'below' } | null) => { id: string; position: 'above' | 'below' } | null)) => void;
+  onReorder?: (fromId: string, toId: string, position: 'above' | 'below') => void;
+  onSelect: (id: string) => void; onClose?: (id: string) => void; beginRename: (w: Workspace) => void;
+  renameDraft: string; setRenameDraft: (v: string) => void; commitRename: () => void; cancelRename: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const initial = (w.name.trim().charAt(0) || 'W').toUpperCase();
+  const grabbable = !!onReorder && !isRenaming;
+  const posAt = (y: number): 'above' | 'below' => {
+    const el = ref.current;
+    if (!el) return 'above';
+    return y < el.getBoundingClientRect().height / 2 ? 'above' : 'below';
+  };
+  const { dragProps, isDragging } = useDrag({
+    getItems: () => [{ [WORKSPACE_DRAG_TYPE]: w.id }],
+    onDragEnd: () => setDropTarget(prev => (prev?.id === w.id ? null : prev)),
+  });
+  const { dropProps } = useDrop({
+    ref,
+    onDropMove(e) {
+      if (!onReorder) return;
+      const position = posAt(e.y);
+      setDropTarget(prev => (prev?.id === w.id && prev.position === position ? prev : { id: w.id, position }));
+    },
+    onDropExit() { setDropTarget(prev => (prev?.id === w.id ? null : prev)); },
+    async onDrop(e) {
+      const pos = posAt(e.y);
+      let fromId = '';
+      for (const item of e.items) {
+        if (item.kind === 'text' && item.types.has(WORKSPACE_DRAG_TYPE)) { fromId = await item.getText(WORKSPACE_DRAG_TYPE); break; }
+      }
+      setDropTarget(null);
+      if (onReorder && fromId && fromId !== w.id) onReorder(fromId, w.id, pos);
+    },
+  });
+  const isDropTarget = dropTarget?.id === w.id;
+  return (
+    <div ref={ref} {...dropProps} className="relative group">
+      {isDropTarget && dropTarget?.position === 'above' && (
+        <div className="absolute -top-1 left-0 right-0 h-0.5 bg-sky-400/80 rounded-full shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
+      )}
+      <button
+        onClick={() => onSelect(w.id)}
+        onDoubleClick={() => beginRename(w)}
+        {...(grabbable ? dragProps : {})}
+        title={`${w.name} · ${w.sessionIds.length} chat${w.sessionIds.length === 1 ? '' : 's'} · double-click to rename · drag to reorder`}
+        className={`w-8 h-8 rounded-lg flex items-center justify-center text-[12px] font-semibold transition-all ${color} ${
+          isActive ? 'ring-2 scale-[1.05]' : 'opacity-70 hover:opacity-100 ring-1 ring-transparent'
+        } ${isDragging ? 'opacity-40' : ''}`}
+      >
+        {initial}
+      </button>
+      {isDropTarget && dropTarget?.position === 'below' && (
+        <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-sky-400/80 rounded-full shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
+      )}
+      {canClose && !isRenaming && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onClose!(w.id); }}
+          title="Close workspace"
+          className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-800 border border-border text-zinc-400 hover:bg-red-500/80 hover:text-white hover:border-red-500/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <X className="w-2.5 h-2.5" />
+        </button>
+      )}
+      {isRenaming && (
+        <div className="absolute left-10 top-0 z-20 flex items-center gap-1 bg-surface border border-border-light rounded-md shadow-xl px-2 py-1">
+          <input
+            autoFocus
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename();
+              else if (e.key === 'Escape') cancelRename();
+            }}
+            className="w-40 bg-transparent text-[12px] text-zinc-100 outline-none placeholder:text-zinc-500"
+            placeholder="Workspace name"
+          />
+        </div>
+      )}
+    </div>
   );
 }

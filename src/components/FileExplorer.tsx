@@ -5,12 +5,14 @@ import {
   ChevronRight,
   CornerDownRight,
   Copy,
+  Download,
   Edit2,
   ExternalLink,
   File as FileIcon,
   FilePlus,
   FolderPlus,
   FolderTree,
+  Upload,
   GitBranch,
   GitPullRequest,
   Lock,
@@ -29,6 +31,7 @@ import {
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
 import type { ClaudeClient, SessionInfo, ConnectionStatus, McpServerView, McpServerScope } from '../lib/claude-client';
+import { getNative } from '../lib/native';
 
 /** Session-switcher palette — kept inline so this section stays visually
  *  distinct from the rest of the explorer chrome. Mirrors the colors from
@@ -832,7 +835,7 @@ function ProcessesSection({ client, sessionId, onViewTerminal, onCountChange }: 
   );
 }
 
-function FileTreeSection({ rootPath, entries, onNewAtRoot }: { rootPath: string | null; entries: FileEntry[]; onNewAtRoot: (kind: 'file' | 'dir') => void }) {
+function FileTreeSection({ rootPath, entries, onNewAtRoot, onUpload }: { rootPath: string | null; entries: FileEntry[]; onNewAtRoot: (kind: 'file' | 'dir') => void; onUpload?: () => void }) {
   const { creatingIn, cancelCreate, commitCreate } = useExplorer();
   const [expanded, setExpanded] = useState(true);
   const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
@@ -856,6 +859,17 @@ function FileTreeSection({ rootPath, entries, onNewAtRoot }: { rootPath: string 
             className="ml-auto flex items-center gap-1 opacity-0 group-hover/hd:opacity-100 transition-opacity"
             onClick={e => e.stopPropagation()}
           >
+            {onUpload && (
+              <button
+                type="button"
+                className="w-[22px] h-[22px] rounded-[6px] flex items-center justify-center text-[#5aa6f0] hover:text-[#8cc4ff] hover:bg-[#191a1f] transition-colors"
+                onClick={onUpload}
+                aria-label="Upload files to remote"
+                title="Upload files to remote"
+              >
+                <Upload size={13} />
+              </button>
+            )}
             <button
               type="button"
               className="w-[22px] h-[22px] rounded-[6px] flex items-center justify-center text-[#4f525a] hover:text-[#9aa0a8] hover:bg-[#191a1f] transition-colors"
@@ -1851,6 +1865,54 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
     closeMenu();
   }, [menu, closeMenu]);
 
+  // Download / Upload are only meaningful when the session lives on a remote —
+  // locally the files are already on this machine (use Reveal in Finder). The
+  // bytes ride the same SSH tunnel the rest of the remote file IO uses.
+  const isRemote = useMemo(
+    () => !!sessions?.find(s => s.id === activeSessionId)?.remoteId,
+    [sessions, activeSessionId],
+  );
+
+  const handleDownload = useCallback(async () => {
+    if (!menu || !client) return;
+    const path = menu.entry.path;
+    closeMenu();
+    const native = getNative();
+    if (!native) { alert('Download is only available in the desktop app.'); return; } // eslint-disable-line no-alert
+    const file = await client.readFileBytes(path);
+    if (!file) { alert('Download failed: could not read the file.'); return; } // eslint-disable-line no-alert
+    try {
+      await native.invoke('save_file', {
+        suggestedName: path.split('/').pop() || 'download',
+        data: new Uint8Array(file.bytes),
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      alert(`Download failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [menu, client, closeMenu]);
+
+  const handleUploadTo = useCallback(async (dirPath: string) => {
+    if (!client) return;
+    const native = getNative();
+    if (!native) { alert('Upload is only available in the desktop app.'); return; } // eslint-disable-line no-alert
+    let picked: { name: string; data: Uint8Array }[];
+    try {
+      picked = await native.invoke<{ name: string; data: Uint8Array }[]>('pick_files');
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      alert(`Upload failed: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (!picked || picked.length === 0) return;
+    for (const f of picked) {
+      const ok = await client.uploadFileBytes(pathJoin(dirPath, f.name), f.data);
+      if (!ok) { alert(`Upload failed: ${f.name}`); break; } // eslint-disable-line no-alert
+    }
+    refreshDir(dirPath);
+    onRefreshGit?.();
+  }, [client, onRefreshGit]);
+
   const handleNewAtRoot = useCallback((kind: 'file' | 'dir') => {
     if (!rootPath) return;
     setCreatingIn({ path: rootPath, kind });
@@ -1955,7 +2017,12 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
             <McpServersSection client={client} rootPath={rootPath} sessionId={activeSessionId} />
 
             {/* File tree (collapsible) — grows to fill remaining panel height */}
-            <FileTreeSection rootPath={rootPath} entries={entries} onNewAtRoot={handleNewAtRoot} />
+            <FileTreeSection
+              rootPath={rootPath}
+              entries={entries}
+              onNewAtRoot={handleNewAtRoot}
+              onUpload={isRemote && rootPath ? () => handleUploadTo(rootPath) : undefined}
+            />
           </div>
         )}
 
@@ -1979,6 +2046,13 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
                   onClick={() => { onFileOpen(menu.entry.path); closeMenu(); }}
                 />
               )}
+              {menu.entry.type === 'file' && isRemote && (
+                <MenuItem
+                  icon={<Download size={11} />}
+                  label="Download"
+                  onClick={handleDownload}
+                />
+              )}
               {menu.entry.type === 'dir' && (
                 <>
                   <MenuItem
@@ -1991,6 +2065,13 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
                     label="New Folder"
                     onClick={() => { setCreatingIn({ path: menu.entry.path, kind: 'dir' }); closeMenu(); }}
                   />
+                  {isRemote && (
+                    <MenuItem
+                      icon={<Upload size={11} />}
+                      label="Upload Files Here…"
+                      onClick={() => { const p = menu.entry.path; closeMenu(); handleUploadTo(p); }}
+                    />
+                  )}
                   <div className="h-px bg-border mx-2 my-1" />
                 </>
               )}

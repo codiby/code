@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Circle } from 'lucide-react';
+import { DEFAULT_STATUSES, STATUS_ICON, resolveStatus, statusById, projectRootOf, type StatusDef } from '../lib/session-status';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -12,6 +13,7 @@ import { TabBar } from './TabBar';
 import { AutomationsView } from './AutomationsView';
 import { SessionsBoardView } from './SessionsBoardView';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
+import { RunningInstancesButton } from './RunningInstancesButton';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
 import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
@@ -472,6 +474,69 @@ function carriedStreamMessages(s: { partialText: string; partialThinking: string
     });
   }
   return carried;
+}
+
+/** Titlebar status picker for the active session — sets/clears its manual
+ *  status (the same value dragging a card into a status sets). Uses the active
+ *  session's project status set. `manual` is true when an override is in
+ *  effect; otherwise the shown status is runtime-derived. */
+function SessionStatusPicker({ statuses, currentId, manual, onSet }: {
+  statuses: StatusDef[]; currentId: string; manual: boolean; onSet: (statusId: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  const def = statusById(statuses, currentId) ?? statuses[0] ?? DEFAULT_STATUSES[0]!;
+  return (
+    <div ref={ref} className="relative mr-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        title="Session status"
+        className={`flex items-center gap-1.5 h-7 px-2 rounded-lg bg-surface border border-border transition-colors ${open ? 'text-zinc-100 ring-1 ring-border-light' : 'text-zinc-400 hover:text-zinc-200'}`}
+      >
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: def.color }} />
+        <span className="text-[11px] font-medium max-w-[110px] truncate">{def.label}</span>
+        {!manual && <span className="text-[9px] text-zinc-600 uppercase tracking-wide">auto</span>}
+        <ChevronDown className="w-3 h-3 shrink-0 text-zinc-500" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-8 z-[10000] w-48 bg-surface border border-border-light rounded-lg shadow-xl py-1">
+          {statuses.map(d => {
+            const Icon = STATUS_ICON[d.id];
+            const active = manual && currentId === d.id;
+            return (
+              <button
+                key={d.id}
+                onClick={() => { onSet(d.id); setOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-surface-light transition-colors"
+              >
+                {Icon
+                  ? <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: d.color }} />
+                  : <span className="w-2 h-2 rounded-full shrink-0" style={{ background: d.color }} />}
+                <span className="flex-1 text-zinc-300 truncate">{d.label}</span>
+                {active && <Check className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+              </button>
+            );
+          })}
+          <div className="h-px bg-border mx-2 my-1" />
+          <button
+            onClick={() => { onSet(null); setOpen(false); }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-surface-light transition-colors text-zinc-400"
+            title="Back to the runtime-derived status"
+          >
+            <Circle className="w-3.5 h-3.5 shrink-0" />
+            <span className="flex-1">Automatic</span>
+            {!manual && <Check className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ChatApp() {
@@ -1047,6 +1112,13 @@ export function ChatApp() {
   // from the codiby-code:linked-item-changed event so the right panel can claim space.
   const [pluginDetailOpen, setPluginDetailOpen] = useState(false);
   const [prLinks, setPrLinks] = useState<Record<string, { prNumber: number; title: string; url: string; headRefName: string; state: string }>>({});
+  // Manual per-session status (overrides the runtime-derived status in the
+  // sidebar's grouped views). Persisted server-side via /session-status.
+  const [sessionLane, setSessionLane] = useState<Record<string, string>>({});
+  // Per-project custom status sets, keyed by project root path. Loaded lazily
+  // for each project that appears in the session list; persisted in the
+  // project's own <root>/.codiby/settings.json.
+  const [projectStatuses, setProjectStatuses] = useState<Record<string, StatusDef[]>>({});
   const [showPrDropdown, setShowPrDropdown] = useState(false);
   const [sessionPrs, setSessionPrs] = useState<{ number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[]>([]);
   const [openPR, setOpenPR] = useState<PRInfo | null>(null);
@@ -1905,6 +1977,84 @@ export function ChatApp() {
       } catch {}
     }
     loadPrLinks();
+  }, []);
+
+  // Load manual session-status overrides.
+  useEffect(() => {
+    async function loadSessionStatuses() {
+      try {
+        const base = await resolveServerUrl();
+        const res = await fetch(`${base}/session-statuses`);
+        if (res.ok) setSessionLane(await res.json());
+      } catch {}
+    }
+    loadSessionStatuses();
+  }, []);
+
+  // Set or clear a session's manual status lane. `lane === null` clears the
+  // override (the card falls back to its runtime-derived lane). Optimistic —
+  // the local map updates immediately, then persists server-side.
+  const setSessionLaneFor = useCallback((sessionId: string, lane: string | null) => {
+    setSessionLane(prev => {
+      const next = { ...prev };
+      if (lane === null) delete next[sessionId];
+      else next[sessionId] = lane;
+      return next;
+    });
+    resolveServerUrl().then(base => {
+      if (lane === null) {
+        fetch(`${base}/session-status/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+      } else {
+        fetch(`${base}/session-status/${sessionId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lane }),
+        }).catch(() => {});
+      }
+    });
+  }, []);
+
+  // Lazily load each project's custom status set from its .codiby/settings.json
+  // as new project roots appear in the session list.
+  const loadedProjectRoots = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const roots = [...new Set(sessions.map(s => projectRootOf(s.cwd || '')).filter(Boolean))];
+    const pending = roots.filter(r => !loadedProjectRoots.current.has(r));
+    if (pending.length === 0) return;
+    pending.forEach(r => loadedProjectRoots.current.add(r));
+    (async () => {
+      const base = await resolveServerUrl();
+      await Promise.all(pending.map(async (root) => {
+        try {
+          const res = await fetch(`${base}/project-settings?path=${encodeURIComponent(root)}`);
+          if (!res.ok) return;
+          const data = await res.json() as { statuses?: StatusDef[] };
+          if (Array.isArray(data.statuses) && data.statuses.length > 0) {
+            setProjectStatuses(prev => ({ ...prev, [root]: data.statuses! }));
+          }
+        } catch {}
+      }));
+    })();
+  }, [sessions]);
+
+  // Persist a project's custom status set (optimistic). Saving the defaults
+  // removes the override so the project tracks future default changes.
+  const setProjectStatusesFor = useCallback((root: string, statuses: StatusDef[]) => {
+    setProjectStatuses(prev => ({ ...prev, [root]: statuses }));
+    resolveServerUrl().then(base => {
+      fetch(`${base}/project-settings?path=${encodeURIComponent(root)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ statuses }),
+      }).catch(() => {});
+    });
+  }, []);
+
+  // Stop a session's Claude process without removing it from the sidebar — it
+  // becomes "not running" and can be resumed later. Optimistic.
+  const handleStopInstance = useCallback((id: string) => {
+    clientRef.current?.stopSession(id).catch(() => {});
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, runtime_status: 'stopped' } : s));
   }, []);
 
   // Track whether a plugin's <PluginDetailView /> wants right-panel space.
@@ -2836,6 +2986,31 @@ export function ChatApp() {
   // when a large paste is offloaded to a file. Consumed (and cleared) on send.
   const snippetMapRef = useRef<Record<string, { block: string; badge: string }[]>>({});
 
+  // Bring an offline session back to life so a just-staged message gets
+  // flushed on reconnect — without the user having to switch tabs and back.
+  // Resumes a stopped process; otherwise just (re)subscribes. Mirrors the
+  // resume logic in handleSelectSession.
+  const reviveSession = async (id: string) => {
+    const c = clientRef.current;
+    const session = sessions.find(s => s.id === id);
+    if (!c || !session) return;
+    try {
+      if (session.runtime_status === 'stopped') {
+        const updated = await c.resumeSession(id);
+        setSessions(prev => prev.map(s => s.id === id ? updated : s));
+        c.subscribe(updated.id);
+        subscribedRef.current.add(updated.id);
+        c.getSessionState(id);
+      } else {
+        c.subscribe(id);
+        subscribedRef.current.add(id);
+        c.getSessionState(id);
+      }
+    } catch (e) {
+      console.error('[send] revive failed:', e);
+    }
+  };
+
   const handleSend = (sid: string | null = activeId) => {
     if (!sid || !clientRef.current) return;
     const state = getState(sid);
@@ -2965,6 +3140,9 @@ export function ChatApp() {
       setInputForSession(sid, '');
       setPastedImagesForSession(sid, []);
       beginDelivery(sid, msgId);
+      // Kick a resume/reconnect so the staged message ships on its own — a
+      // stopped session would otherwise sit at "sending" until refocused.
+      void reviveSession(sid);
       return;
     }
 
@@ -3825,7 +4003,14 @@ export function ChatApp() {
         const t = m.timestamp;
         if (typeof t === 'number' && t > last) { last = t; break; }
       }
-      out[s.id] = last || (s.created_at ?? 0);
+      // Take the max of the locally-derived last message and the server's
+      // `updated_at` (bumped on every real message, including thinking). For a
+      // session whose messages aren't loaded locally — a background tab, or one
+      // mid-resubscribe where `messages` was momentarily reset — `last` is 0, so
+      // relying on it alone would sink the session to `created_at` ("1d") and
+      // then snap it back once messages reload. `updated_at` keeps it stable and
+      // reflects activity even while it's only thinking.
+      out[s.id] = Math.max(last, s.updated_at ?? 0, s.created_at ?? 0);
     }
     return out;
   }, [sessions, sessionStates]);
@@ -4606,6 +4791,11 @@ export function ChatApp() {
           const grouped = collapseToolRuns(groupMessages(
             [...cs.messages]
               .filter(m => {
+                // Queued user messages render after the live thinking/text
+                // preview (below), so the in-flight assistant turn they
+                // interrupted stays above them in the timeline. Keeping them
+                // in this list would float them above the live preview.
+                if (m.isPending) return false;
                 if (m.isTerminal && !m.isManagedTerminal) return false;
                 if (m.isInteractiveTerminal) {
                   // Only NAMED terminals (spawned by `actions_run`) get a
@@ -4734,6 +4924,23 @@ export function ChatApp() {
             </p>
           </div>
         )}
+        {/* Queued user messages — rendered after the live preview so they sit
+            below the in-flight assistant turn (thinking/text) they follow,
+            preserving timeline order. */}
+        {cs.messages.filter(m => m.isPending).map((m, idx, arr) => (
+          <div key={m.id} id={`msg-${m.id}`}>
+            <MessageBubble
+              message={m}
+              onOpenTerminal={handleOpenTerminal}
+              isLast={idx === arr.length - 1}
+              sessionId={sid}
+              client={clientRef.current || undefined}
+              accent={accent}
+              onCancelPending={(id) => removePendingMessage(sid, id)}
+              onRetry={(id) => retryDelivery(sid, id)}
+            />
+          </div>
+        ))}
         {/* Inline permission request — skip for AskUserQuestion (rendered inline by the tool card) */}
         {cs.permRequest && cs.permRequest.toolName !== 'AskUserQuestion' && (() => {
           const req = cs.permRequest;
@@ -4943,6 +5150,12 @@ export function ChatApp() {
               onNew={handleNewSession}
               onReopen={handleReopenSession}
               onArchive={handleArchiveSession}
+            />
+            <RunningInstancesButton
+              sessions={sessions}
+              sessionStreaming={sessionStreaming}
+              sessionHasPermission={sessionHasPermission}
+              onStop={handleStopInstance}
             />
           </div>
 
@@ -5217,6 +5430,28 @@ export function ChatApp() {
             </div>
           )}
 
+          {/* Active-session status picker — sets/clears its manual status,
+              using the active session's project status set. */}
+          {activeId && (() => {
+            const root = projectRootOf(activeSession?.cwd || '');
+            const projStatuses = projectStatuses[root] ?? DEFAULT_STATUSES;
+            const currentId = resolveStatus(activeId, sessionLane, {
+              hasPermission: sessionHasPermission,
+              streaming: sessionStreaming,
+              interrupted: sessionInterrupted,
+              statuses,
+              turnComplete: turnCompleteIds,
+            }, projStatuses);
+            return (
+              <SessionStatusPicker
+                statuses={projStatuses}
+                currentId={currentId}
+                manual={!!sessionLane[activeId]}
+                onSet={(l) => setSessionLaneFor(activeId, l)}
+              />
+            );
+          })()}
+
           {/* Right: settings + layout-mode pill (clickable — opt out of drag) */}
           <button
             onClick={() => setProjectSettings(prev => ({ open: !prev.open }))}
@@ -5351,6 +5586,10 @@ export function ChatApp() {
               onToggleCollapsed={toggleTabsCollapsed}
               activeNavView={activeNavView}
               onSelectNavView={setActiveNavView}
+              sessionLane={sessionLane}
+              onSetSessionLane={setSessionLaneFor}
+              projectStatuses={projectStatuses}
+              onSetProjectStatuses={setProjectStatusesFor}
             />
           )}
           {/* Side Panel: Explorer (cards) — Search now lives inside it as a card,
@@ -6041,45 +6280,10 @@ export function ChatApp() {
                         const ePath = tab.id.slice('editor:'.length);
                         const eTab = active.editorTabs.find(t => t.path === ePath);
                         if (!eTab) return null;
-                        const eDirty = eTab.dirty;
                         const liveKey = liveBufKey(activeId, ePath);
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <div className="flex-1 flex flex-col min-w-0">
-                    <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
-                      <div className="flex items-center gap-1.5 truncate cursor-default">
-                        <span className={`text-[12px] font-mono truncate ${eTab.deleted ? 'line-through text-red-400/80' : gitModified.staged.has(ePath) ? 'text-green-400' : gitModified.unstaged.has(ePath) ? 'text-amber-400' : 'text-zinc-400'}`}>
-                          {ePath.split('/').pop()}
-                        </span>
-                        {eDirty && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />}
-                        {eTab.deleted && <span className="text-[10px] uppercase tracking-wide text-red-400/80 border border-red-500/40 rounded px-1 shrink-0" title="Deleted on disk — press Cmd+S to restore">deleted</span>}
-                        {eTab.readOnly && <span className="text-[10px] uppercase tracking-wide text-zinc-500 border border-border rounded px-1 shrink-0" title="Read-only (outside project / node_modules)">read-only</span>}
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {(eDirty || eTab.deleted) && (
-                          <button
-                            className={`text-[11px] px-1.5 ${eTab.deleted ? 'text-red-400/80 hover:text-red-300' : 'text-zinc-500 hover:text-zinc-200'}`}
-                            onClick={handleSaveFileWrapped}
-                            title={eTab.deleted ? 'Restore file (Cmd+S)' : 'Save (Cmd+S)'}
-                          >
-                            {eTab.deleted ? 'Restore' : 'Save'}
-                          </button>
-                        )}
-                        <button
-                          className={`text-[11px] px-1.5 transition-colors ${showDebugPanel ? 'text-amber-400' : 'text-zinc-500 hover:text-zinc-200'}`}
-                          onClick={() => setShowDebugPanel(v => !v)}
-                          title="Toggle Debugger"
-                        >
-                          Bug
-                        </button>
-                        <button
-                          className="text-zinc-500 hover:text-zinc-200 text-sm px-1"
-                          onClick={() => { closeEditor(activeId, ePath); }}
-                        >
-                          &times;
-                        </button>
-                      </div>
-                    </div>
                     <div className={showDebugPanel ? 'flex-1 min-h-0' : 'flex-1'} style={showDebugPanel ? { flex: '1 1 60%' } : undefined}>
                       <Editor
                         key={ePath}
@@ -6754,6 +6958,8 @@ export function ChatApp() {
           }}
           client={client}
           claudeModels={claudeModels}
+          activeSessionCwd={sessions.find(s => s.id === activeId)?.cwd}
+          activeSessionGroupId={activeId ? tabGroupMap[activeId] : undefined}
           onDeleteGroup={handleDeleteGroup}
           onPatchGroup={(groupId, patch) => {
             const current = tabGroups[groupId];

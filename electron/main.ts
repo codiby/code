@@ -8,8 +8,9 @@
  *     reach for, plus browser-preview / CDP / plugin OAuth handlers.
  *   - on shutdown, kill the sidecar and tear down all preview surfaces.
  */
-import { app, BrowserWindow, ipcMain, shell, Notification, crashReporter } from 'electron';
-import { join } from 'node:path';
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification, crashReporter } from 'electron';
+import { join, basename } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 import { getBridgePort, killSidecar } from './bridge_server';
 import { installCliScript } from './cli_installer';
@@ -295,6 +296,27 @@ function registerIpcHandlers(): void {
   // --- plugin OAuth ---------------------------------------------------------
   ipcMain.handle('app:plugin_oauth_login', async (_e, args: { spec: OAuthSpec }) => {
     await pluginOauthLogin(args.spec, getBridgePort);
+  });
+
+  // --- file transfer (remote download / upload) -----------------------------
+  // The renderer fetches/sends bytes over the SSH-tunnelled bridge; the native
+  // side only provides the OS Save-As / Open dialogs and local disk IO.
+  ipcMain.handle('app:save_file', async (_e, args: { suggestedName: string; data: Uint8Array }) => {
+    const opts = { defaultPath: join(app.getPath('downloads'), args.suggestedName || 'download') };
+    const res = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, opts)
+      : await dialog.showSaveDialog(opts);
+    if (res.canceled || !res.filePath) return { canceled: true };
+    writeFileSync(res.filePath, Buffer.from(args.data));
+    return { canceled: false, path: res.filePath };
+  });
+  ipcMain.handle('app:pick_files', async () => {
+    const opts = { properties: ['openFile', 'multiSelections'] as Array<'openFile' | 'multiSelections'> };
+    const res = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, opts)
+      : await dialog.showOpenDialog(opts);
+    if (res.canceled || res.filePaths.length === 0) return [];
+    return res.filePaths.map((p) => ({ name: basename(p), data: readFileSync(p) }));
   });
 
   // --- auto-update ----------------------------------------------------------

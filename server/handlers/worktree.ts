@@ -131,6 +131,127 @@ export async function handleRemoveWorktree(req: Request): Promise<Response> {
 }
 
 /**
+ * Post-create worktree setup: copy `.env`, install deps, and copy/symlink
+ * `node_modules` from the source repo. Shared by the SSE HTTP handler and the
+ * in-process MCP spawn path so both get the same behavior. Each step is
+ * independently guarded (source-exists / dest-absent) and emits progress
+ * through the optional `log` callback. Never throws on a per-step failure —
+ * logs and moves on, matching the original inline behavior.
+ */
+export async function applyWorktreeSetup(opts: {
+  repoPath: string;
+  worktreePath: string;
+  copyEnv?: boolean;
+  installDeps?: boolean;
+  copyNodeModules?: boolean;
+  linkNodeModules?: boolean;
+  packageManager?: string;
+  log?: (msg: string) => void;
+}): Promise<void> {
+  const log = opts.log ?? (() => {});
+  const repoPath = opts.repoPath;
+  const resolvedPath = opts.worktreePath;
+  const pm = opts.packageManager || 'npm';
+
+  // Copy .env
+  if (opts.copyEnv) {
+    const envSrc = `${repoPath}/.env`;
+    const envDst = `${resolvedPath}/.env`;
+    if (existsSync(envSrc) && !existsSync(envDst)) {
+      const { copyFileSync } = await import('fs');
+      copyFileSync(envSrc, envDst);
+      log('Copied .env');
+    } else if (!existsSync(envSrc)) {
+      log('.env not found in source, skipping');
+    }
+  }
+
+  // Install dependencies (streamed)
+  if (opts.installDeps) {
+    if (!existsSync(`${resolvedPath}/package.json`)) {
+      log('No package.json found, skipping install');
+    } else {
+      const installCmd: Record<string, string> = {
+        bun: 'bun install', yarn: 'yarn install',
+        pnpm: 'pnpm install', npm: 'npm install',
+      };
+      const cmd = installCmd[pm] || 'npm install';
+      log(`$ ${cmd}`);
+
+      await new Promise<void>((resolve) => {
+        const parts = cmd.split(' ');
+        const proc = spawn(parts[0]!, parts.slice(1), {
+          cwd: resolvedPath,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' },
+        });
+
+        proc.stdout?.on('data', (d: Buffer) => {
+          for (const line of d.toString().split('\n').filter(Boolean)) log(line);
+        });
+        proc.stderr?.on('data', (d: Buffer) => {
+          for (const line of d.toString().split('\n').filter(Boolean)) log(line);
+        });
+        proc.on('close', (code) => {
+          log(code === 0 ? 'Dependencies installed' : `Install exited with code ${code}`);
+          resolve();
+        });
+        proc.on('error', (err) => {
+          log(`Error: ${err.message}`);
+          resolve();
+        });
+      });
+    }
+  }
+
+  // Copy node_modules from source repo
+  if (opts.copyNodeModules) {
+    const nmSrc = `${repoPath}/node_modules`;
+    const nmDst = `${resolvedPath}/node_modules`;
+    if (!existsSync(nmSrc)) {
+      log('node_modules not found in source, skipping copy');
+    } else if (existsSync(nmDst)) {
+      log('node_modules already exists in worktree, skipping copy');
+    } else {
+      log(`$ tar c node_modules | tar x -C ${resolvedPath}`);
+      await new Promise<void>((resolve) => {
+        const proc = spawn('sh', ['-c', `cd "${repoPath}" && tar cf - node_modules | tar xf - -C "${resolvedPath}"`], { stdio: ['ignore', 'pipe', 'pipe'] });
+        proc.stdout?.on('data', (d: Buffer) => {
+          for (const line of d.toString().split('\n').filter(Boolean)) log(line);
+        });
+        proc.stderr?.on('data', (d: Buffer) => {
+          for (const line of d.toString().split('\n').filter(Boolean)) log(line);
+        });
+        proc.on('close', (code) => {
+          log(code === 0 ? 'node_modules copied' : `cp exited with code ${code}`);
+          resolve();
+        });
+        proc.on('error', (err) => {
+          log(`Error: ${err.message}`);
+          resolve();
+        });
+      });
+    }
+  }
+
+  // Symlink node_modules from source repo
+  if (opts.linkNodeModules) {
+    const nmSrc = `${repoPath}/node_modules`;
+    const nmDst = `${resolvedPath}/node_modules`;
+    if (!existsSync(nmSrc)) {
+      log('node_modules not found in source, skipping link');
+    } else if (existsSync(nmDst)) {
+      log('node_modules already exists in worktree, skipping link');
+    } else {
+      log(`$ ln -s ${nmSrc} → ${nmDst}`);
+      const { symlinkSync } = await import('fs');
+      symlinkSync(nmSrc, nmDst);
+      log('node_modules symlinked');
+    }
+  }
+}
+
+/**
  * Worktree creation with SSE streaming of setup logs.
  * Returns text/event-stream with log lines, and a final `done` or `error` event.
  */
@@ -225,102 +346,17 @@ export async function handleCreateWorktree(req: Request): Promise<Response> {
         const resolvedPath = execSync(`cd "${wtPath}" && pwd`, { stdio: 'pipe' }).toString().trim();
         log(`Worktree created at ${resolvedPath}`);
 
-        // 3. Copy .env
-        if (doCopyEnv) {
-          const envSrc = `${repoPath}/.env`;
-          const envDst = `${resolvedPath}/.env`;
-          if (existsSync(envSrc) && !existsSync(envDst)) {
-            const { copyFileSync } = await import('fs');
-            copyFileSync(envSrc, envDst);
-            log('Copied .env');
-          } else if (!existsSync(envSrc)) {
-            log('.env not found in source, skipping');
-          }
-        }
-
-        // 4. Install dependencies (streamed)
-        if (doInstallDeps) {
-          if (!existsSync(`${resolvedPath}/package.json`)) {
-            log('No package.json found, skipping install');
-          } else {
-          const installCmd: Record<string, string> = {
-            bun: 'bun install', yarn: 'yarn install',
-            pnpm: 'pnpm install', npm: 'npm install',
-          };
-          const cmd = installCmd[pm] || 'npm install';
-          log(`$ ${cmd}`);
-
-          await new Promise<void>((resolve) => {
-            const parts = cmd.split(' ');
-            const proc = spawn(parts[0]!, parts.slice(1), {
-              cwd: resolvedPath,
-              stdio: ['ignore', 'pipe', 'pipe'],
-              env: { ...process.env, TERM: 'dumb', FORCE_COLOR: '0' },
-            });
-
-            proc.stdout?.on('data', (d: Buffer) => {
-              for (const line of d.toString().split('\n').filter(Boolean)) log(line);
-            });
-            proc.stderr?.on('data', (d: Buffer) => {
-              for (const line of d.toString().split('\n').filter(Boolean)) log(line);
-            });
-            proc.on('close', (code) => {
-              log(code === 0 ? 'Dependencies installed' : `Install exited with code ${code}`);
-              resolve();
-            });
-            proc.on('error', (err) => {
-              log(`Error: ${err.message}`);
-              resolve();
-            });
-          });
-          } // end else (has package.json)
-        }
-
-        // 5. Copy node_modules from source repo
-        if (doCopyNodeModules) {
-          const nmSrc = `${repoPath}/node_modules`;
-          const nmDst = `${resolvedPath}/node_modules`;
-          if (!existsSync(nmSrc)) {
-            log('node_modules not found in source, skipping copy');
-          } else if (existsSync(nmDst)) {
-            log('node_modules already exists in worktree, skipping copy');
-          } else {
-            log(`$ tar c node_modules | tar x -C ${resolvedPath}`);
-            await new Promise<void>((resolve) => {
-              const proc = spawn('sh', ['-c', `cd "${repoPath}" && tar cf - node_modules | tar xf - -C "${resolvedPath}"`], { stdio: ['ignore', 'pipe', 'pipe'] });
-              proc.stdout?.on('data', (d: Buffer) => {
-                for (const line of d.toString().split('\n').filter(Boolean)) log(line);
-              });
-              proc.stderr?.on('data', (d: Buffer) => {
-                for (const line of d.toString().split('\n').filter(Boolean)) log(line);
-              });
-              proc.on('close', (code) => {
-                log(code === 0 ? 'node_modules linked' : `cp exited with code ${code}`);
-                resolve();
-              });
-              proc.on('error', (err) => {
-                log(`Error: ${err.message}`);
-                resolve();
-              });
-            });
-          }
-        }
-
-        // 6. Symlink node_modules from source repo
-        if (doLinkNodeModules) {
-          const nmSrc = `${repoPath}/node_modules`;
-          const nmDst = `${resolvedPath}/node_modules`;
-          if (!existsSync(nmSrc)) {
-            log('node_modules not found in source, skipping link');
-          } else if (existsSync(nmDst)) {
-            log('node_modules already exists in worktree, skipping link');
-          } else {
-            log(`$ ln -s ${nmSrc} → ${nmDst}`);
-            const { symlinkSync } = await import('fs');
-            symlinkSync(nmSrc, nmDst);
-            log('node_modules symlinked');
-          }
-        }
+        // Steps 3–6: copy .env, install deps, copy/symlink node_modules.
+        await applyWorktreeSetup({
+          repoPath,
+          worktreePath: resolvedPath,
+          copyEnv: doCopyEnv,
+          installDeps: doInstallDeps,
+          copyNodeModules: doCopyNodeModules,
+          linkNodeModules: doLinkNodeModules,
+          packageManager: pm,
+          log,
+        });
 
         send('done', JSON.stringify({ path: resolvedPath, branch: safeBranch }));
       } catch (e) {

@@ -1,12 +1,9 @@
 /**
- * A single leaf panel: a draggable/sortable tab strip on top, the active
- * tab's content below. Tabs reorder within the panel and drag across panels
- * via the workspace-level DndContext (see PanelsWorkspace). The split buttons
- * peel the active tab into a new sibling panel (row/col).
+ * A single leaf panel: a tab strip on top, the active tab's content below.
+ * Tabs are moved between panels via the split buttons (which peel the active
+ * tab into a new sibling panel, row/col) and the store's tab ops — there is no
+ * drag-and-drop here.
  */
-import { useDroppable } from '@dnd-kit/core';
-import { SortableContext, horizontalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import type { ReactNode } from 'react';
 import type { PanelNode, Tab } from './types';
 
@@ -27,24 +24,11 @@ export interface PanelProps {
 function TabPill({
   tab, active, onActivate, onClose, onPin,
 }: { tab: Tab; active: boolean; onActivate: () => void; onClose: () => void; onPin?: () => void }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: tab.id,
-    data: { type: 'tab', tabId: tab.id },
-  });
-  const style = {
-    transform: CSS.Translate.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : 1,
-  };
   return (
     <div
-      ref={setNodeRef}
-      style={style}
-      {...attributes}
-      {...listeners}
       onMouseDown={onActivate}
       onDoubleClick={onPin}
-      className={`group flex items-center gap-1.5 h-full px-2.5 rounded-t-md text-[12px] whitespace-nowrap cursor-grab select-none border-b-0 ${
+      className={`group flex items-center gap-1.5 h-full px-2.5 rounded-t-md text-[12px] whitespace-nowrap cursor-default select-none border-b-0 ${
         active
           ? 'bg-surface text-zinc-100 border border-border'
           : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
@@ -60,7 +44,7 @@ function TabPill({
           tabIndex={-1}
           onMouseDown={(e) => { e.stopPropagation(); }}
           onClick={(e) => { e.stopPropagation(); onClose(); }}
-          className="opacity-0 group-hover:opacity-60 hover:!opacity-100 text-[12px] leading-none px-0.5"
+          className="opacity-0 group-hover:opacity-60 hover:!opacity-100 text-[12px] leading-none px-0.5 cursor-pointer"
         >
           ×
         </span>
@@ -70,7 +54,6 @@ function TabPill({
 }
 
 export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit, onPin }: PanelProps) {
-  const { setNodeRef, isOver } = useDroppable({ id: `strip:${node.id}`, data: { type: 'strip', panelId: node.id } });
   const orderedTabs = node.tabIds.map((id) => tabs.get(id)).filter((t): t is Tab => !!t);
   // Resolve the active tab against the *live* tab set, falling back to the last
   // surviving tab. When a tab is closed the host drops it from `tabs` a render
@@ -91,26 +74,19 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
         focused ? 'border-blue-500/60' : 'border-border'
       }`}
     >
-      <div
-        ref={setNodeRef}
-        className={`flex items-stretch h-[34px] shrink-0 px-1 gap-0.5 border-b border-border bg-base ${
-          isOver ? 'bg-blue-500/10' : ''
-        }`}
-      >
-        <SortableContext items={node.tabIds} strategy={horizontalListSortingStrategy}>
-          <div className="flex items-stretch gap-0.5 min-w-0 overflow-x-auto no-scrollbar">
-            {orderedTabs.map((t) => (
-              <TabPill
-                key={t.id}
-                tab={t}
-                active={t.id === activeTabId}
-                onActivate={() => onActivate(t.id)}
-                onClose={() => onClose(t)}
-                onPin={onPin ? () => onPin(t.id) : undefined}
-              />
-            ))}
-          </div>
-        </SortableContext>
+      <div className="flex items-stretch h-[34px] shrink-0 px-1 gap-0.5 border-b border-border bg-base">
+        <div className="flex items-stretch gap-0.5 min-w-0 overflow-x-auto no-scrollbar">
+          {orderedTabs.map((t) => (
+            <TabPill
+              key={t.id}
+              tab={t}
+              active={t.id === activeTabId}
+              onActivate={() => onActivate(t.id)}
+              onClose={() => onClose(t)}
+              onPin={onPin ? () => onPin(t.id) : undefined}
+            />
+          ))}
+        </div>
         <div className="flex-1" />
         {canSplit && (
           <div className="flex items-center gap-0.5 shrink-0">

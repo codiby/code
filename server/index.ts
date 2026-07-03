@@ -5,7 +5,7 @@
  * Run as MCP server (stdio):    bun run server/index.ts --mcp
  */
 
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, statSync } from 'fs';
 import { dirname, join, extname } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
@@ -36,6 +36,7 @@ import {
   resolveSessionRemote,
   registerRemoteSession,
   unregisterRemoteSession,
+  setRemoteSessionStatusLocally,
   listAllCachedRemoteSessions,
   reconcileRemote,
   setSessionListBroadcaster,
@@ -83,7 +84,7 @@ import {
   clearSessionState,
 } from './state';
 import type { ChatMessage } from './state';
-import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
+import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadSessionStatuses, saveSessionStatus, removeSessionStatus, loadProjectSettings, saveProjectSettings, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
 import { createDocsApp } from './swagger';
 import { Hono } from 'hono';
@@ -1406,7 +1407,27 @@ app.patch('/sessions/:id', async (c) => {
   const sid = c.req.param('id');
   const remoteId = resolveSessionRemote(sid);
   if (remoteId) {
-    const resp = await proxyHttpToRemote(req, remoteId);
+    // Peek at the body so an archive/unarchive can be honored locally if the
+    // remote is unreachable (closing a tab on an offline remote must stick).
+    let updates: any = null;
+    try { updates = await req.clone().json(); } catch {}
+    const applyStatusOffline = (): boolean => {
+      if ((updates?.status === 'open' || updates?.status === 'archived')
+          && setRemoteSessionStatusLocally(remoteId, sid, updates.status)) {
+        broadcastSessionList();
+        return true;
+      }
+      return false;
+    };
+    let resp: Response;
+    try {
+      resp = await proxyHttpToRemote(req, remoteId);
+    } catch {
+      // Remote offline — apply the status change to our cache so the sidebar
+      // reflects the user's intent instead of snapping the tab back.
+      if (applyStatusOffline()) return c.json({ ok: true, offline: true });
+      return c.json({ error: 'Remote unreachable' }, 502);
+    }
     // Refresh the cache entry name so the sidebar reflects the rename.
     if (resp.ok) {
       try {
@@ -1429,6 +1450,10 @@ app.patch('/sessions/:id', async (c) => {
           broadcastSessionList();
         }
       } catch {}
+    } else {
+      // Remote reachable but rejected the PATCH — still honor an
+      // archive/unarchive locally so closing the tab doesn't bounce back.
+      applyStatusOffline();
     }
     return resp;
   }
@@ -1480,12 +1505,22 @@ app.delete('/sessions/:id', async (c) => {
   const sid = c.req.param('id');
   const remoteId = resolveSessionRemote(sid);
   if (remoteId) {
-    const resp = await proxyHttpToRemote(req, remoteId);
-    if (resp.ok) {
+    try {
+      const resp = await proxyHttpToRemote(req, remoteId);
+      if (resp.ok) {
+        unregisterRemoteSession(remoteId, sid);
+        broadcastSessionList();
+      }
+      return resp;
+    } catch {
+      // Remote unreachable — drop it from our local cache anyway so it stops
+      // showing in the sidebar instead of bouncing back on the next broadcast.
+      // It only resurfaces if it still exists when the remote reconnects and we
+      // re-pull its authoritative list.
       unregisterRemoteSession(remoteId, sid);
       broadcastSessionList();
+      return c.json({ ok: true, offline: true });
     }
-    return resp;
   }
   // ?purge=1 → also delete the on-disk chat history + UI state.
   // ?worktree=1 → also remove the git worktree (when cwd looks like one).
@@ -1543,10 +1578,25 @@ app.get('/file-index', (c) => {
   if (!root) return Response.json({ error: 'root required' }, { status: 400, headers: corsHeaders });
   return handleFileIndex(root);
 });
+// Reading a huge file into a JS string (and later JSON.stringify-ing the
+// response) can blow past Blink's partition allocator and SIGTRAP-crash the
+// renderer — this isn't a V8 heap OOM (it stays small), it's a native abort.
+// Cap it here so a growing log/output file an editor tab is watching can't
+// take the whole window down.
+const FILE_CONTENT_MAX_BYTES = 10 * 1024 * 1024;
+const FILE_RAW_MAX_BYTES = 50 * 1024 * 1024;
+
 app.get('/file-content', (c) => {
   const filePath = new URL(c.req.url).searchParams.get('path');
   if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
   try {
+    const { size } = statSync(filePath);
+    if (size > FILE_CONTENT_MAX_BYTES) {
+      return Response.json(
+        { error: `File too large to open (${(size / 1048576).toFixed(1)}MB > ${FILE_CONTENT_MAX_BYTES / 1048576}MB limit)`, size, tooLarge: true },
+        { status: 413, headers: corsHeaders },
+      );
+    }
     const content = readFileSync(filePath, 'utf-8');
     return Response.json({ path: filePath, content }, { headers: corsHeaders });
   } catch {
@@ -1565,6 +1615,13 @@ app.get('/file-raw', (c) => {
   const filePath = new URL(c.req.url).searchParams.get('path');
   if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
   try {
+    const { size } = statSync(filePath);
+    if (size > FILE_RAW_MAX_BYTES) {
+      return Response.json(
+        { error: `File too large to open (${(size / 1048576).toFixed(1)}MB > ${FILE_RAW_MAX_BYTES / 1048576}MB limit)`, size, tooLarge: true },
+        { status: 413, headers: corsHeaders },
+      );
+    }
     const bytes = readFileSync(filePath);
     const mime = RAW_MIME[extname(filePath).toLowerCase()] || 'application/octet-stream';
     return new Response(bytes, { headers: { ...corsHeaders, 'content-type': mime } });
@@ -1578,6 +1635,21 @@ app.put('/file-content', async (c) => {
     if (!body.path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
     writeFileSync(body.path, body.content, 'utf-8');
     return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+  }
+});
+// Write a file's raw bytes — the binary counterpart to `PUT /file-content`.
+// Used by the file-explorer "Upload" action; on remote sessions the request is
+// proxied over the SSH tunnel by the `?remoteId=` catchall, so the bytes land
+// on the remote filesystem.
+app.put('/file-raw', async (c) => {
+  const filePath = new URL(c.req.url).searchParams.get('path');
+  if (!filePath) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+  try {
+    const bytes = Buffer.from(await c.req.raw.arrayBuffer());
+    writeFileSync(filePath, bytes);
+    return Response.json({ ok: true, path: filePath }, { headers: corsHeaders });
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
   }
@@ -1745,6 +1817,31 @@ app.put('/pr-link/:sessionId', async (c) => {
 });
 app.delete('/pr-link/:sessionId', (c) => {
   removePRLink(c.req.param('sessionId'));
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// ── Per-session status lane (manual triage override) ─────────────────────────
+app.get('/session-statuses', () => Response.json(loadSessionStatuses(), { headers: corsHeaders }));
+app.put('/session-status/:sessionId', async (c) => {
+  const body = await c.req.raw.json() as { lane: string };
+  saveSessionStatus(c.req.param('sessionId'), body.lane);
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+app.delete('/session-status/:sessionId', (c) => {
+  removeSessionStatus(c.req.param('sessionId'));
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// ── Per-project settings (<root>/.codiby/settings.json) ──────────────────────
+app.get('/project-settings', (c) => {
+  const path = new URL(c.req.url).searchParams.get('path') || '';
+  return Response.json(loadProjectSettings(path), { headers: corsHeaders });
+});
+app.put('/project-settings', async (c) => {
+  const path = new URL(c.req.url).searchParams.get('path') || '';
+  if (!path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
+  const body = await c.req.raw.json() as { statuses?: { id: string; label: string; color: string }[] };
+  saveProjectSettings(path, body);
   return Response.json({ ok: true }, { headers: corsHeaders });
 });
 

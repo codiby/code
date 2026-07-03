@@ -22,6 +22,7 @@ import {
   saveRemoteSessions,
   upsertRemoteSession,
   removeCachedRemoteSession,
+  setCachedRemoteSessionStatus,
   type CachedRemoteSession,
 } from './remote-sessions-cache';
 import { loadRemoteGroups, saveRemoteGroups, type RemoteGroups } from './remote-groups-cache';
@@ -66,6 +67,16 @@ export function registerRemoteSession(remoteId: string, entry: CachedRemoteSessi
 export function unregisterRemoteSession(remoteId: string, sessionId: string) {
   remoteSessionsIndex.delete(sessionId);
   removeCachedRemoteSession(remoteId, sessionId);
+}
+
+/** Offline fallback for archive/unarchive: patch the cached UI status without
+ *  reaching the remote. Returns true if the cached entry existed. */
+export function setRemoteSessionStatusLocally(
+  remoteId: string,
+  sessionId: string,
+  status: 'open' | 'archived',
+): boolean {
+  return setCachedRemoteSessionStatus(remoteId, sessionId, status);
 }
 
 export function listAllCachedRemoteSessions(): Array<CachedRemoteSession & { remoteId: string }> {
@@ -494,12 +505,15 @@ export async function proxyFrontendWsMessage(
     out = await getOrOpenRemoteFrontendWs(ws, remoteId);
   } catch (e: any) {
     log(`[gateway] frontend-ws → remote ${remoteId.slice(0, 12)} dial failed: ${e?.message || e}`);
-    // Surface a synthetic error so the UI can react instead of hanging.
+    // An unreachable remote is a connectivity condition (laptop asleep, tunnel
+    // down), not a session error — surface it as `disconnected` so the tab
+    // shows neutral/idle instead of a red error dot. Without this every session
+    // on an offline remote turns red the moment we try to (re)subscribe.
     try {
       ws.send(JSON.stringify({
         type: 'status',
         sessionId: msg?.sessionId,
-        status: 'error',
+        status: 'disconnected',
         error: `Remote unreachable: ${e?.message || e}`,
       }));
     } catch {}
