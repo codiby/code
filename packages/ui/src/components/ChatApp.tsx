@@ -34,6 +34,7 @@ import { PRDetail, type PRInfo } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
 import { tryInvokeNative } from '../lib/native';
+import { registerDotenv, isDotenvPath } from '../lib/monaco-dotenv';
 import { PanelsWorkspace } from '../panels/PanelsWorkspace';
 import type { Tab as PanelTab } from '../panels/types';
 // Browser names are validated by the bridge before any open_browser broadcast,
@@ -4680,7 +4681,7 @@ export function ChatApp() {
           const filePath = typeof input.file_path === 'string' ? input.file_path : null;
           const ext = filePath?.split('.').pop() || '';
           const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact', py: 'python', rs: 'rust', go: 'go', json: 'json', css: 'css', html: 'html', md: 'markdown', sh: 'shell', bash: 'shell', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql' };
-          const lang = langMap[ext] || 'plaintext';
+          const lang = filePath && isDotenvPath(filePath) ? 'dotenv' : (langMap[ext] || 'plaintext');
           const oldLines = isEdit ? (input.old_string as string).split('\n').length : 0;
           const newLines = isEdit ? (input.new_string as string).split('\n').length : 0;
           const diffHeight = isEdit ? Math.min(Math.max(oldLines, newLines) * 19 + 20, 300) : 0;
@@ -5977,6 +5978,7 @@ export function ChatApp() {
                         path={ePath}
                         defaultValue={liveBuffersRef.current[liveKey] ?? eTab.content}
                         theme="vs-dark"
+                        beforeMount={(monaco) => registerDotenv(monaco)}
                         onMount={(editor, monaco) => {
                           // This tab just became the visible one — keep the
                           // active-editor pointer in sync (drives LSP/debugger

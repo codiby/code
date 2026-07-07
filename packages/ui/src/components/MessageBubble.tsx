@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
 import { ChevronDown, ChevronRight, Sparkles, Copy, Check } from 'lucide-react';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
+import { isDotenvPath } from '../lib/monaco-dotenv';
 import { Markdown } from './Markdown';
 import { MobileImageViewer } from './mobile/MobileImageViewer';
 
@@ -204,6 +205,7 @@ const LANG_MAP: Record<string, string> = {
 };
 
 function langFromPath(filePath: string): string {
+  if (isDotenvPath(filePath)) return 'dotenv';
   const ext = filePath.split('.').pop() || '';
   return LANG_MAP[ext] || 'plaintext';
 }

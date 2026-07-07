@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import { Button, TextField, TextArea } from '@heroui/react';
+import { isDotenvPath } from '../lib/monaco-dotenv';
 
 export interface ReviewComment {
   id: string;
@@ -184,6 +185,7 @@ export function DiffReview({ original, modified, filePath, comments, onAddCommen
   }, {});
 
   const langFromPath = (p: string) => {
+    if (isDotenvPath(p)) return 'dotenv';
     const ext = p.split('.').pop()?.toLowerCase();
     const map: Record<string, string> = {
       ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
