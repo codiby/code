@@ -46,7 +46,7 @@ echo "-- Building frontend"
 ( cd "$PROJECT_DIR" && "$BUN_PATH" run scripts/build.ts ) >/dev/null
 
 echo "-- Bundling server.js"
-"$BUN_PATH" build "$PROJECT_DIR/server/index.ts" \
+"$BUN_PATH" build "$PROJECT_DIR/packages/core/index.ts" \
     --outfile "$SERVICE_DIR/server.js" \
     --target bun --minify >/dev/null
 

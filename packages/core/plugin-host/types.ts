@@ -16,7 +16,7 @@ export type {
   SettingsSectionContribution,
   LinkedItemProviderContribution,
   DetailViewContribution,
-} from '../../src/lib/plugin-types';
+} from '../../ui/src/lib/plugin-types';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 

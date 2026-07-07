@@ -16,6 +16,6 @@
     "allowSyntheticDefaultImports": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*", "server/**/*", "scripts/**/*"],
-  "exclude": ["dist", "node_modules", "electron-dist", "electron-out"]
+  "include": ["packages/ui/src/**/*", "packages/core/**/*", "scripts/**/*"],
+  "exclude": ["dist", "node_modules", "electron-dist", "electron-out", "packages/desktop"]
 }

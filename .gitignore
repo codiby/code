@@ -27,7 +27,7 @@ server.log
 # Electron
 electron-dist/
 electron-out/
-electron/resources/
+packages/desktop/resources/
 
 # Playwright
 .playwright-cli/

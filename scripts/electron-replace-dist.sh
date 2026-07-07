@@ -91,7 +91,7 @@ if [ "$SKIP_SERVER" = "0" ]; then
   [ -f "$APP_SERVER" ] || fail "app has no Resources/server.js — packaged build expected"
   TMP_SERVER="$(mktemp -t codiby-server).js"
   trap 'rm -f "$TMP_SERVER"' EXIT
-  bun build "$REPO_ROOT/server/index.ts" --outfile "$TMP_SERVER" --target bun --minify >/dev/null
+  bun build "$REPO_ROOT/packages/core/index.ts" --outfile "$TMP_SERVER" --target bun --minify >/dev/null
   before="$(shasum -a 256 "$APP_SERVER" | awk '{print $1}')"
   after="$(shasum -a 256 "$TMP_SERVER" | awk '{print $1}')"
   if [ "$before" != "$after" ]; then

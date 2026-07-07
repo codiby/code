@@ -1,0 +1,10 @@
+{
+  "name": "@codiby/desktop",
+  "version": "0.23.0",
+  "private": true,
+  "main": "main.ts",
+  "dependencies": {
+    "@codiby/core": "workspace:*",
+    "@codiby/ui": "workspace:*"
+  }
+}

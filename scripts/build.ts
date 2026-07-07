@@ -110,13 +110,13 @@ ${css.map((href) => `    <link rel="stylesheet" href="${href}" />`).join('\n')}
 const ENTRIES: EntryCfg[] = [
   {
     name: 'desktop',
-    entry: join(ROOT, 'src/index.tsx'),
+    entry: join(ROOT, 'packages/ui/src/index.tsx'),
     htmlPath: join(OUT, 'index.html'),
     html: DESKTOP_HTML,
   },
   {
     name: 'mobile',
-    entry: join(ROOT, 'src/m/main.tsx'),
+    entry: join(ROOT, 'packages/ui/src/m/main.tsx'),
     htmlPath: join(OUT, 'm/index.html'),
     html: MOBILE_HTML,
   },
@@ -234,7 +234,7 @@ async function buildOnce() {
   }
 
   // Copy verbatim passthroughs (favicon, manifest, sw.js) from public/ into dist/.
-  const publicDir = join(ROOT, 'public');
+  const publicDir = join(ROOT, 'packages/ui/public');
   if (existsSync(publicDir)) {
     await cp(publicDir, OUT, { recursive: true });
   }
@@ -285,11 +285,11 @@ if (WATCH) {
     timer = setTimeout(() => { runBuild(); }, 100);
   };
 
-  watch(join(ROOT, 'src'), { recursive: true }, rebuild);
-  if (existsSync(join(ROOT, 'public'))) {
-    watch(join(ROOT, 'public'), { recursive: true }, rebuild);
+  watch(join(ROOT, 'packages/ui/src'), { recursive: true }, rebuild);
+  if (existsSync(join(ROOT, 'packages/ui/public'))) {
+    watch(join(ROOT, 'packages/ui/public'), { recursive: true }, rebuild);
   }
-  console.log('[build] watching src/ and public/ (Ctrl-C to stop)');
+  console.log('[build] watching packages/ui/src and packages/ui/public (Ctrl-C to stop)');
 } else {
   await buildOnce();
 }

@@ -3,7 +3,7 @@
 // Usage: bun run scripts/bench-search.ts [root] [query]
 
 import { rgPath } from '@vscode/ripgrep';
-import { handleSearch } from '../server/handlers/search';
+import { handleSearch } from '../packages/core/handlers/search';
 
 const ROOT = process.argv[2] || '/Users/jovaz/src/up/utilityprofit';
 const QUERY = process.argv[3] || 'auto';
