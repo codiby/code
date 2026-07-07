@@ -43,7 +43,7 @@ sleep 0.4
 
 cd "$ROOT"
 CLAUDE_UI_PORT="$API_PORT" CODIBY_SWAGGER_PORT="$PORT" \
-  nohup "$BUN" run server/swagger.ts >"$LOG" 2>&1 &
+  nohup "$BUN" run packages/core/swagger.ts >"$LOG" 2>&1 &
 PID=$!
 echo "$PID" > "$PIDFILE"
 disown "$PID" 2>/dev/null || disown || true

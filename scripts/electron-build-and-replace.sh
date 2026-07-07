@@ -53,9 +53,9 @@ rm -rf \
   "$REPO_ROOT/dist" \
   "$REPO_ROOT/electron-dist" \
   "$REPO_ROOT/electron-out" \
-  "$REPO_ROOT/electron/resources/server.js" \
-  "$REPO_ROOT/electron/resources/bun" \
-  "$REPO_ROOT/electron/resources/bun.exe"
+  "$REPO_ROOT/packages/desktop/resources/server.js" \
+  "$REPO_ROOT/packages/desktop/resources/bun" \
+  "$REPO_ROOT/packages/desktop/resources/bun.exe"
 info "removed dist/ electron-dist/ electron-out/ electron/resources/{server.js,bun}"
 
 # -----------------------------------------------------------------------------

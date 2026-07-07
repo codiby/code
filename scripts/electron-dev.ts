@@ -5,7 +5,7 @@
  *
  * Sequencing:
  *   1. Start `run.sh` (frontend bundler + bridge server on :3111).
- *   2. Compile the Electron main process in watch mode (tsc -p electron/tsconfig.json --watch).
+ *   2. Compile the Electron main process in watch mode (tsc -p packages/desktop/tsconfig.json --watch).
  *   3. Wait for `dist/index.html` AND `electron-dist/main.js` to exist.
  *   4. Spawn `electron .` with `ELECTRON_DEV=1` + `CODIBY_BRIDGE_PORT_OVERRIDE=3111`
  *      so the main process points the renderer at the already-running bridge
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   }
 
   // 2. Electron main process (watch).
-  spawnSub('electron-tsc', 'bunx', ['tsc', '-p', 'electron/tsconfig.json', '--watch']);
+  spawnSub('electron-tsc', 'bunx', ['tsc', '-p', 'packages/desktop/tsconfig.json', '--watch']);
 
   // 3. Wait for first builds.
   console.log('[electron-dev] waiting for first builds…');

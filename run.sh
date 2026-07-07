@@ -119,4 +119,4 @@ echo ""
 # Replace the shell with the bridge server so callers see a single, stable
 # PID serving the frontend + API. stderr/stdout are teed into logs/bridge.log
 # so Bun's native panic trace (the real SIGILL cause) is always persisted.
-exec env CLAUDE_UI_PORT="$PORT" "$BUN_BIN" server/index.ts > >(tee -a "$BRIDGE_LOG") 2>&1
+exec env CLAUDE_UI_PORT="$PORT" "$BUN_BIN" packages/core/index.ts > >(tee -a "$BRIDGE_LOG") 2>&1

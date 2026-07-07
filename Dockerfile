@@ -2,14 +2,18 @@ FROM oven/bun:1.3 AS builder
 
 WORKDIR /app
 
-# Install dependencies (production + dev; bun-plugin-tailwind is a devDep)
+# Install dependencies (production + dev; bun-plugin-tailwind is a devDep).
+# The workspace package.json files must be present for a frozen-lockfile install.
 COPY package.json bun.lock ./
+COPY packages/core/package.json packages/core/
+COPY packages/ui/package.json packages/ui/
+COPY packages/desktop/package.json packages/desktop/
+COPY packages/mobile/package.json packages/mobile/
 RUN bun install --frozen-lockfile
 
 # Copy server + frontend sources
-COPY server/ server/
-COPY src/ src/
-COPY public/ public/
+COPY packages/core/ packages/core/
+COPY packages/ui/ packages/ui/
 COPY scripts/ scripts/
 COPY tsconfig.json ./
 
@@ -17,7 +21,7 @@ COPY tsconfig.json ./
 RUN bun run scripts/build.ts
 
 # Bundle the server into a single file
-RUN bun build ./server/index.ts --outfile /app/server.js --target bun --minify
+RUN bun build ./packages/core/index.ts --outfile /app/server.js --target bun --minify
 
 # ---- Runtime stage ----
 FROM oven/bun:1.3-slim

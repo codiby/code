@@ -25,7 +25,7 @@ import { createTerminal, removeTerminal } from '../handlers/terminals';
 import type { TrackedProcess } from '../types';
 import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../portless';
 import { buildInjectedActionEnv, configuredActionUrl, getGlobalTld, worktreePrefix } from '../action-env';
-import type { PortlessConfig, TabGroupInfo } from '../../src/lib/tab-groups';
+import type { PortlessConfig, TabGroupInfo } from '../../ui/src/lib/tab-groups';
 
 /** Resolve a tracked process for the current session by procId OR name. */
 function resolveTrackedProcess(

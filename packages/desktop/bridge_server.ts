@@ -68,11 +68,11 @@ function resolveSidecarPaths(): { bunPath: string; serverScript: string; dev: bo
   const dev = !app.isPackaged;
   if (dev) {
     // Host `bun` is on PATH thanks to `run.sh` / the user's profile.
-    // server/index.ts runs directly; bun handles TS natively.
+    // packages/core/index.ts runs directly; bun handles TS natively.
     const projectRoot = join(__dirname, '..');
     return {
       bunPath: process.env.CODIBY_BUN_PATH || 'bun',
-      serverScript: join(projectRoot, 'server', 'index.ts'),
+      serverScript: join(projectRoot, 'packages', 'core', 'index.ts'),
       dev: true,
     };
   }

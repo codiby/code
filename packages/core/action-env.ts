@@ -23,7 +23,7 @@ import type {
   PortlessAction,
   PortlessExport,
   PortlessExportFormat,
-} from '../src/lib/tab-groups';
+} from '../ui/src/lib/tab-groups';
 
 function slugHostname(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';

@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-OUT_DIR="$PROJECT_DIR/electron/resources"
+OUT_DIR="$PROJECT_DIR/packages/desktop/resources"
 
 mkdir -p "$OUT_DIR"
 
@@ -31,7 +31,7 @@ chmod +x "$BUN_OUT"
 SERVER_OUT="$OUT_DIR/server.js"
 echo "-- Bundling server -> $SERVER_OUT"
 cd "$PROJECT_DIR"
-"$BUN_PATH" build ./server/index.ts \
+"$BUN_PATH" build ./packages/core/index.ts \
   --outfile "$SERVER_OUT" \
   --target bun \
   --minify >/dev/null
