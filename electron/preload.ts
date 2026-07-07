@@ -70,6 +70,20 @@ contextBridge.exposeInMainWorld('codiby', {
   },
 
   /**
+   * Subscribe to SSH-tunnel status changes emitted by the main process
+   * (one event per remote: idle | connecting | online | reconnecting | offline).
+   * Replaces bun's old `remote.status` WS frames. Returns an unlisten fn.
+   * Wired by the renderer's remote-status consumers (RemotesSection, ChatApp).
+   */
+  onRemoteTunnelStatus(
+    cb: (msg: { remoteId: string; status: string; lastError: string | null; port: number | null }) => void,
+  ): () => void {
+    const handler = (_e: unknown, msg: { remoteId: string; status: string; lastError: string | null; port: number | null }) => cb(msg);
+    ipcRenderer.on('remote-tunnel-status', handler);
+    return () => ipcRenderer.removeListener('remote-tunnel-status', handler);
+  },
+
+  /**
    * Current zoom factor of the host webContents. `BrowserView.setBounds()`
    * takes window-content DIPs while `getBoundingClientRect()` in the renderer
    * returns CSS pixels — these diverge when the user hits Cmd+=/Cmd+-. The

@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
 import { ChevronDown, ChevronRight, Sparkles, Copy, Check } from 'lucide-react';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
-import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import { Markdown } from './Markdown';
 import { MobileImageViewer } from './mobile/MobileImageViewer';
 
@@ -1063,18 +1062,8 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
   const [viewerSrc, setViewerSrc] = useState<string | null>(null);
   const viewer = <MobileImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />;
 
-  // Interactive PTY (/terminal, /t) must be checked before the one-shot isTerminal.
-  if (message.isInteractiveTerminal && sessionId && client) {
-    return (
-      <InteractiveTerminalBubble
-        message={message}
-        sessionId={sessionId}
-        client={client}
-        minimized={interactiveMinimized}
-        onToggleMinimize={onToggleInteractiveMinimize ? () => onToggleInteractiveMinimize(message.id) : undefined}
-      />
-    );
-  }
+  // Interactive terminals are a first-class resource rendered only in the
+  // terminals dock (desktop) / shells list (mobile) — never inline here.
 
   if (message.isTerminal) {
     return <TerminalBubble message={message} onOpenInPanel={onOpenTerminal} />;

@@ -68,6 +68,14 @@ export const COMMANDS: CommandDef[] = [
   { id: 'close-tab',        title: 'Close Editor / Tab',   category: 'Navigation', when: 'always', defaultChord: 'mod+w' },
   { id: 'new-session',      title: 'New Session',          category: 'Sessions',   when: 'always', defaultChord: null },
   { id: 'clear-chat',       title: 'Clear Chat',           category: 'Session',    when: 'always', defaultChord: null },
+  // Defaults mirror VS Code's activity-bar shortcuts where an equivalent view
+  // exists: Files→Explorer (⇧⌘E), Changes→Source Control (⇧⌘G). The rest have
+  // no VS Code counterpart, so they ship unbound and can be assigned in the UI.
+  { id: 'sidebar-files',     title: 'Show Explorer Card',  category: 'Sidebar', when: 'always', defaultChord: 'mod+shift+e' },
+  { id: 'sidebar-changes',   title: 'Show Changes Card',   category: 'Sidebar', when: 'always', defaultChord: 'mod+shift+g' },
+  { id: 'sidebar-toolsmcp',  title: 'Show Tools & MCP Card', category: 'Sidebar', when: 'always', defaultChord: null },
+  { id: 'sidebar-processes', title: 'Show Processes Card', category: 'Sidebar', when: 'always', defaultChord: null },
+  { id: 'sidebar-prs',       title: 'Show Pull Requests Card', category: 'Sidebar', when: 'always', defaultChord: null },
 ];
 
 const COMMAND_IDS = new Set(COMMANDS.map(c => c.id));

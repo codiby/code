@@ -496,22 +496,37 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: prs || 'No pull requests found' }] };
       }
       case 'ui_exec': {
-        const createResp = await api('/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command: args!.command, cwd: args!.cwd }) });
-        const { procId } = createResp;
-        const wsUrl = `ws://localhost:${_serverPort}/terminal/ws/${procId}`;
-        return new Promise((resolve) => {
-          let output = '';
-          const ws = new WebSocket(wsUrl);
-          const timeout = setTimeout(() => { ws.close(); resolve({ content: [{ type: 'text', text: output || '(no output)' }] }); }, 30000);
-          ws.onmessage = (event) => {
-            try {
-              const msg = JSON.parse(event.data);
-              if (msg.type === 'data') output += msg.text;
-              if (msg.type === 'exit') { clearTimeout(timeout); ws.close(); resolve({ content: [{ type: 'text', text: output + `\n[exit ${msg.code}]` }] }); }
-            } catch {}
-          };
-          ws.onerror = () => { clearTimeout(timeout); resolve({ content: [{ type: 'text', text: output || 'Connection error' }] }); };
+        // One-shot command capture (distinct from the interactive terminal
+        // resource): run the command through the user's login shell, collect
+        // stdout+stderr with a 30s cap, and return it. Runs as a plain child
+        // process — it isn't a managed terminal, so it doesn't go through the
+        // /session/:id/terminals CRUD.
+        const shell = process.env.SHELL || '/bin/sh';
+        const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
+        const proc = Bun.spawn([shell, '-c', init + (args!.command as string)], {
+          cwd: (args!.cwd as string) || process.env.HOME || '/',
+          env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1', COLORTERM: 'truecolor' },
+          stdout: 'pipe',
+          stderr: 'pipe',
         });
+        const decoder = new TextDecoder();
+        let output = '';
+        let timedOut = false;
+        const timeout = setTimeout(() => { timedOut = true; try { proc.kill(); } catch {} }, 30000);
+        try {
+          const pump = async (stream: ReadableStream<Uint8Array> | null) => {
+            if (!stream) return;
+            for await (const chunk of stream) output += decoder.decode(chunk, { stream: true });
+          };
+          await Promise.all([pump(proc.stdout), pump(proc.stderr)]);
+          const code = await proc.exited;
+          clearTimeout(timeout);
+          const tail = timedOut ? '\n[timed out after 30s]' : `\n[exit ${code}]`;
+          return { content: [{ type: 'text', text: (output || '(no output)') + tail }] };
+        } catch (e) {
+          clearTimeout(timeout);
+          return { content: [{ type: 'text', text: output || `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+        }
       }
       case 'ui_list_sessions': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

@@ -139,6 +139,9 @@ interface Props {
   searchActive?: boolean;
   onSearchActiveChange?: (v: boolean) => void;
   renderSearchCard?: (onClose: () => void) => React.ReactNode;
+  /** A card-tab activation requested from the host (via a keyboard shortcut).
+   *  The nonce lets the same tab be re-requested; FileExplorer owns the state. */
+  requestedTab?: { card: string; nonce: number } | null;
   /** Optional: list of open sessions to render in the inline session
    *  switcher at the top of the panel. When omitted the switcher is
    *  hidden, preserving the legacy explorer-only layout. */
@@ -428,7 +431,7 @@ function CardHeader({ icon, iconColor, title, expanded, onToggle, meta }: {
     <button
       type="button"
       onClick={onToggle}
-      className="group/hd w-full flex items-center gap-[9px] h-[34px] px-[11px] text-left hover:bg-white/[0.018] transition-colors"
+      className="group/hd relative w-full flex items-center gap-[9px] h-[34px] px-[11px] text-left hover:bg-white/[0.018] transition-colors"
     >
       <span className="flex text-[#4f525a] group-hover/hd:text-[#6b6e76] transition-colors shrink-0">
         {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
@@ -439,6 +442,84 @@ function CardHeader({ icon, iconColor, title, expanded, onToggle, meta }: {
       <span className="text-[10.5px] font-semibold tracking-[0.07em] uppercase text-[#9aa0a8] truncate">{title}</span>
       {meta && <span className="ml-auto flex items-center gap-2 shrink-0">{meta}</span>}
     </button>
+  );
+}
+
+/* ── Card tabs ─────────────────────────────────────────────────────────────
+ * The sidebar cards (Processes, Changes, PRs, Tools, MCP, Files) are shown one
+ * at a time as a tabbed panel: the icon rail is the tab bar, and only the
+ * active card renders below it. Tab order is user-defined (drag a tab to
+ * reorder) and persisted to localStorage. */
+const DEFAULT_CARD_ORDER = ['files', 'changes', 'toolsmcp', 'processes', 'prs'] as const;
+// Bumped when the card set changes (tools+mcp were merged into 'toolsmcp'), so
+// stale saved orders don't pin the old layout.
+const CARD_ORDER_KEY = 'cardsOrder.v2';
+
+function loadCardOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(CARD_ORDER_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (Array.isArray(saved)) {
+        // Keep only known ids, then append any card not present in the saved
+        // list (handles first run after a new card is introduced).
+        const known = saved.filter((id): id is string => DEFAULT_CARD_ORDER.includes(id));
+        const missing = DEFAULT_CARD_ORDER.filter(id => !known.includes(id));
+        return [...known, ...missing];
+      }
+    }
+  } catch {}
+  return [...DEFAULT_CARD_ORDER];
+}
+
+/* ── Card resizing ────────────────────────────────────────────────────────
+ * A card body can expose a draggable bottom edge that sets its height. The
+ * height is persisted per card (localStorage). Callers apply the returned
+ * value as a fixed `height` (Changes) or as `maxHeight` (the lighter cards,
+ * so short lists stay compact and only scroll past the cap). */
+function useCardResize(storageKey: string, defaultH: number, min = 80) {
+  const [height, setHeight] = useState<number>(() => {
+    try {
+      const s = Number(localStorage.getItem(storageKey));
+      return Number.isFinite(s) && s >= min ? s : defaultH;
+    } catch { return defaultH; }
+  });
+  const ref = useRef(height);
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startY = e.clientY;
+    const startH = ref.current;
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.max(min, Math.min(window.innerHeight * 0.8, startH + (ev.clientY - startY)));
+      ref.current = next;
+      setHeight(next);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try { localStorage.setItem(storageKey, String(ref.current)); } catch {}
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  }, [storageKey, min]);
+  return { height, onResizeStart };
+}
+
+/** Draggable row-resize grip drawn under a card body. */
+function ResizeGrip({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      className="group/grip h-2 shrink-0 cursor-row-resize flex items-center justify-center border-t border-[#1e1f24] hover:bg-[#7c5cff]/10 transition-colors"
+      title="Drag to resize"
+    >
+      <span className="w-7 h-[3px] rounded-full bg-[#26272d] group-hover/grip:bg-[#7c5cff] transition-colors" />
+    </div>
   );
 }
 
@@ -484,33 +565,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
   // Vertical resize: the file-list area has a draggable height, persisted so
   // the card keeps its size across sessions. Dragging the grip between the list
   // and the footer grows/shrinks the whole card.
-  const [listHeight, setListHeight] = useState<number>(() => {
-    const saved = typeof localStorage !== 'undefined' ? Number(localStorage.getItem('changesCardHeight')) : NaN;
-    return Number.isFinite(saved) && saved > 80 ? saved : 280;
-  });
-  const heightRef = useRef(listHeight);
-  const onResizeHeight = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startY = e.clientY;
-    const startH = heightRef.current;
-    const onMove = (ev: MouseEvent) => {
-      const next = Math.max(80, Math.min(window.innerHeight * 0.8, startH + (ev.clientY - startY)));
-      heightRef.current = next;
-      setListHeight(next);
-    };
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      try { localStorage.setItem('changesCardHeight', String(heightRef.current)); } catch {}
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-  };
+  const { height: listHeight, onResizeStart: onResizeHeight } = useCardResize('changesCardHeight', 280);
 
   const toggleStage = async (e: React.MouseEvent, filePath: string, isStaged: boolean) => {
     e.stopPropagation();
@@ -663,13 +718,7 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
                 {(vsMain ? [...stagedFiles, ...unstagedFiles].sort() : unstagedFiles).map(path => renderFile(path, false))}
               </div>
               {/* Vertical resize grip — drag to grow/shrink the card */}
-              <div
-                onMouseDown={onResizeHeight}
-                className="group/grip h-2 shrink-0 cursor-row-resize flex items-center justify-center border-t border-[#1e1f24] hover:bg-[#7c5cff]/10 transition-colors"
-                title="Drag to resize"
-              >
-                <span className="w-7 h-[3px] rounded-full bg-[#26272d] group-hover/grip:bg-[#7c5cff] transition-colors" />
-              </div>
+              <ResizeGrip onMouseDown={onResizeHeight} />
               {/* Footer: file count + diff totals + primary actions */}
               <div className="flex items-center gap-2 px-[11px] py-2 border-t border-[#1e1f24]">
                 <span className="text-[11px] font-mono tabular-nums flex items-center gap-2">
@@ -733,7 +782,7 @@ function ProcessNode({ proc, onKill, onView }: { proc: ProcessInfo; onKill: (pro
         )}
         <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
         <span className="truncate text-[11px] font-mono flex-1 cursor-pointer hover:text-[#e6e7ea]" onClick={() => onView?.(proc.command)}>{proc.command}</span>
-        <span className="text-[10px] text-[#5e6068] shrink-0">{proc.pid}</span>
+        {proc.pid ? <span className="text-[10px] text-[#5e6068] shrink-0">{proc.pid}</span> : null}
         {onView && (
           <Button
             isIconOnly
@@ -786,7 +835,15 @@ function ProcessesSection({ client, sessionId, onViewTerminal, onCountChange }: 
   const refresh = useCallback(async () => {
     if (!client || !sessionId) { setProcesses([]); onCountChange?.(0); return; }
     try {
-      const procs = await client.listProcesses(sessionId);
+      const terms = await client.fetchTerminals(sessionId);
+      const procs: ProcessInfo[] = terms.map(t => ({
+        id: t.procId,
+        pid: 0,
+        command: t.terminalName || t.command,
+        cwd: t.cwd,
+        startedAt: t.startedAt,
+        children: [],
+      }));
       setProcesses(procs);
       onCountChange?.(procs.length);
     } catch { setProcesses([]); onCountChange?.(0); }
@@ -798,11 +855,13 @@ function ProcessesSection({ client, sessionId, onViewTerminal, onCountChange }: 
     return () => clearInterval(intervalRef.current);
   }, [refresh]);
 
-  const handleKill = async (processId?: string, pid?: number) => {
-    if (!client || !sessionId) return;
-    client.killProcess(sessionId, processId, pid);
+  const handleKill = async (processId?: string) => {
+    if (!client || !sessionId || !processId) return;
+    await client.deleteTerminal(sessionId, processId);
     setTimeout(refresh, 500);
   };
+
+  const { height, onResizeStart } = useCardResize('processesCardHeight', 200);
 
   if (processes.length === 0) return null;
 
@@ -824,27 +883,54 @@ function ProcessesSection({ client, sessionId, onViewTerminal, onCountChange }: 
       {expanded && (
         <>
           <CardDivider />
-          <div className="py-[5px]">
+          <div className="py-[5px] overflow-y-auto" style={{ maxHeight: height }}>
             {processes.map(proc => (
               <ProcessNode key={proc.id} proc={proc} onKill={handleKill} onView={onViewTerminal} />
             ))}
           </div>
+          <ResizeGrip onMouseDown={onResizeStart} />
         </>
       )}
     </div>
   );
 }
 
-function FileTreeSection({ rootPath, entries, onNewAtRoot, onUpload }: { rootPath: string | null; entries: FileEntry[]; onNewAtRoot: (kind: 'file' | 'dir') => void; onUpload?: () => void }) {
+function FileTreeSection({ rootPath, entries, onNewAtRoot, onUpload, height, onHeightChange }: { rootPath: string | null; entries: FileEntry[]; onNewAtRoot: (kind: 'file' | 'dir') => void; onUpload?: () => void; height: number | null; onHeightChange: (h: number) => void }) {
   const { creatingIn, cancelCreate, commitCreate } = useExplorer();
   const [expanded, setExpanded] = useState(true);
   const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
   const isCreatingAtRoot = !!rootPath && creatingIn?.path === rootPath;
 
+  // Resize: by default the tree fills the remaining panel height (height null →
+  // flex-1). Once the user drags the grip it switches to a fixed height (owned
+  // by the parent so the card wrapper can stop growing). Drag start seeds from
+  // the current rendered height so it doesn't jump.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startY = e.clientY;
+    const startH = height ?? bodyRef.current?.clientHeight ?? 300;
+    const onMove = (ev: MouseEvent) => {
+      onHeightChange(Math.max(80, Math.min(window.innerHeight * 0.85, startH + (ev.clientY - startY))));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  }, [height, onHeightChange]);
+  const fills = height === null;
+
   return (
-    <div data-card="files" className={`${CARD_CLS} flex flex-col ${expanded ? '!flex-1 min-h-0' : ''}`}>
+    <div data-card="files" className={`${CARD_CLS} flex flex-col ${fills && expanded ? '!flex-1 min-h-0' : ''}`}>
       <div
-        className="group/hd flex items-center gap-[9px] w-full text-left h-[34px] px-[11px] hover:bg-white/[0.018] transition-colors shrink-0 cursor-pointer"
+        className="group/hd relative flex items-center gap-[9px] w-full text-left h-[34px] px-[11px] hover:bg-white/[0.018] transition-colors shrink-0 cursor-pointer"
         onClick={() => setExpanded(e => !e)}
       >
         <span className="flex text-[#4f525a] group-hover/hd:text-[#6b6e76] transition-colors shrink-0">
@@ -891,7 +977,12 @@ function FileTreeSection({ rootPath, entries, onNewAtRoot, onUpload }: { rootPat
       </div>
       {expanded && <CardDivider />}
       {expanded && (
-        <div className="flex-1 overflow-y-auto py-[5px]">
+        <>
+        <div
+          ref={bodyRef}
+          className={`${fills ? 'flex-1' : ''} overflow-y-auto py-[5px]`}
+          style={fills ? undefined : { height: height! }}
+        >
           {!rootPath && (
             <p className="text-[11px] text-[#5e6068] px-3 py-4 text-center">No session active</p>
           )}
@@ -916,6 +1007,8 @@ function FileTreeSection({ rootPath, entries, onNewAtRoot, onUpload }: { rootPat
             )
           )}
         </div>
+        <ResizeGrip onMouseDown={onResizeStart} />
+        </>
       )}
     </div>
   );
@@ -956,6 +1049,8 @@ function PRsSection({ client, rootPath, sessionName, onCountChange }: { client: 
     }).catch(() => { setPrs([]); onCountChange?.(0); });
   }, [client, rootPath, sessionName, onCountChange]);
 
+  const { height, onResizeStart } = useCardResize('prsCardHeight', 200);
+
   if (prs.length === 0) return null;
 
   return (
@@ -971,7 +1066,7 @@ function PRsSection({ client, rootPath, sessionName, onCountChange }: { client: 
       {expanded && (
         <>
           <CardDivider />
-          <div className="py-[5px]">
+          <div className="py-[5px] overflow-y-auto" style={{ maxHeight: height }}>
           {prs.map(pr => {
             const colors = pr.isDraft
               ? { dot: 'bg-amber-400', text: 'text-amber-400' }
@@ -996,6 +1091,7 @@ function PRsSection({ client, rootPath, sessionName, onCountChange }: { client: 
             );
           })}
           </div>
+          <ResizeGrip onMouseDown={onResizeStart} />
         </>
       )}
     </div>
@@ -1004,6 +1100,7 @@ function PRsSection({ client, rootPath, sessionName, onCountChange }: { client: 
 
 function ToolsSection({ tools }: { tools: string[] }) {
   const [expanded, setExpanded] = useState(false);
+  const { height, onResizeStart } = useCardResize('toolsCardHeight', 160);
   if (tools.length === 0) return null;
 
   return (
@@ -1019,13 +1116,14 @@ function ToolsSection({ tools }: { tools: string[] }) {
       {expanded && (
         <>
           <CardDivider />
-          <div className="px-[11px] py-2 flex flex-wrap gap-1 max-h-40 overflow-y-auto">
+          <div className="px-[11px] py-2 flex flex-wrap gap-1 overflow-y-auto" style={{ maxHeight: height }}>
           {tools.map(tool => (
             <span key={tool} className="text-[10px] bg-[#191a1f] border border-[#1e1f24] text-[#9aa0a8] px-1.5 py-0.5 rounded font-mono">
               {tool}
             </span>
           ))}
           </div>
+          <ResizeGrip onMouseDown={onResizeStart} />
         </>
       )}
     </div>
@@ -1061,6 +1159,7 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
   const [fArgs, setFArgs] = useState('');
   const [fUrl, setFUrl] = useState('');
   const [fScope, setFScope] = useState<McpServerScope>('user');
+  const { height, onResizeStart } = useCardResize('mcpCardHeight', 220);
 
   const refresh = useCallback(async () => {
     if (!client) return;
@@ -1142,7 +1241,7 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
           <CardDivider />
 
           {/* Server list */}
-          <div className="py-[5px]">
+          <div className="py-[5px] overflow-y-auto" style={{ maxHeight: height }}>
             {servers.map(srv => {
               const dot = MCP_TYPE_COLOR[srv.type] || '#6b6e76';
               const sub = srv.type === 'stdio'
@@ -1184,6 +1283,7 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
               <div className="px-[11px] py-2 text-[11px] text-[#5e6068]">No hay servidores MCP configurados.</div>
             )}
           </div>
+          <ResizeGrip onMouseDown={onResizeStart} />
 
           {/* Add bar / form */}
           {!adding ? (
@@ -1602,17 +1702,79 @@ function useSidebarWidth() {
  *  only shows icons for cards that are actually rendered. */
 interface RailItem { key: string; title: string; color: string; icon: React.ReactNode; badge?: number }
 
-/** The icon rail — the former sidebar, now a card. A collapse toggle is pinned
- *  far-left (collapses every card down to just this rail); the rest are shortcuts
- *  to each card below. When collapsed only the toggle remains, stacked. */
-function PanelRail({ collapsed, onToggleCollapse, items, onJump, searchActive, onToggleSearch }: {
+/** The icon rail — now a tab bar. A collapse toggle is pinned first; the rest
+ *  are tabs, one per card. Clicking a tab shows that card below; the active tab
+ *  is highlighted. Tabs can be dragged to reorder (persisted as the card order).
+ *  When collapsed the rail stacks vertically. */
+function PanelRail({ collapsed, onToggleCollapse, items, activeKey, onSelect, onReorder, searchActive, onToggleSearch }: {
   collapsed: boolean;
   onToggleCollapse: () => void;
   items: RailItem[];
-  onJump: (key: string) => void;
+  activeKey: string;
+  onSelect: (key: string) => void;
+  onReorder: (from: string, to: string, pos: 'before' | 'after') => void;
   searchActive: boolean;
   onToggleSearch: () => void;
 }) {
+  const [drag, setDrag] = useState<string | null>(null);
+  const [over, setOver] = useState<{ key: string; pos: 'before' | 'after' } | null>(null);
+  const reset = () => { setDrag(null); setOver(null); };
+
+  const renderTab = (it: RailItem) => {
+    const isActive = !searchActive && it.key === activeKey;
+    const showBefore = !!drag && over?.key === it.key && over.pos === 'before';
+    const showAfter = !!drag && over?.key === it.key && over.pos === 'after';
+    // Insertion line orientation follows the layout axis.
+    const lineBase = collapsed ? 'absolute left-1 right-1 h-[2px]' : 'absolute top-1 bottom-1 w-[2px]';
+    return (
+      <button
+        key={it.key}
+        draggable
+        onClick={() => onSelect(it.key)}
+        onDragStart={e => { setDrag(it.key); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', it.key); } catch {} }}
+        onDragEnd={reset}
+        onDragOver={e => {
+          if (!drag || drag === it.key) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          const r = e.currentTarget.getBoundingClientRect();
+          const pos: 'before' | 'after' = collapsed
+            ? (e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+            : (e.clientX - r.left < r.width / 2 ? 'before' : 'after');
+          setOver(o => (o && o.key === it.key && o.pos === pos ? o : { key: it.key, pos }));
+        }}
+        onDrop={e => { if (drag && drag !== it.key) { e.preventDefault(); onReorder(drag, it.key, over?.pos ?? 'before'); } reset(); }}
+        title={it.title}
+        aria-label={it.title}
+        className={`relative w-[32px] h-[28px] rounded-[8px] flex items-center justify-center transition-colors shrink-0 ${isActive ? 'bg-[#1f2025]' : 'opacity-60 hover:opacity-100 hover:bg-[#191a1f]'} ${drag === it.key ? '!opacity-40' : ''}`}
+        style={{ color: it.color }}
+      >
+        {it.icon}
+        {it.badge ? (
+          <span
+            className="absolute top-0 right-[1px] min-w-[13px] h-[13px] px-[3px] rounded-[7px] text-[8.5px] font-bold font-mono flex items-center justify-center text-[#0b0c0e]"
+            style={{ background: it.color }}
+          >
+            {it.badge}
+          </span>
+        ) : null}
+        {/* Active indicator: bottom bar (horizontal) / left bar (collapsed) */}
+        {isActive && (
+          <span
+            className={`rounded-full ${collapsed ? 'absolute left-[1px] top-1/2 -translate-y-1/2 w-[2px] h-[16px]' : 'absolute bottom-[1px] left-1/2 -translate-x-1/2 h-[2px] w-[16px]'}`}
+            style={{ background: it.color }}
+          />
+        )}
+        {showBefore && <span className={`${lineBase} ${collapsed ? '-top-[3px]' : '-left-[3px]'} rounded-full bg-[#7c5cff] pointer-events-none`} />}
+        {showAfter && <span className={`${lineBase} ${collapsed ? '-bottom-[3px]' : '-right-[3px]'} rounded-full bg-[#7c5cff] pointer-events-none`} />}
+      </button>
+    );
+  };
+
+  // Layout order: Explorer (Files) → Search → the remaining tabs. Files is
+  // pinned first and Search sits right after it, matching VS Code's top items.
+  const filesItem = items.find(it => it.key === 'files');
+  const rest = items.filter(it => it.key !== 'files');
   return (
     <div
       className={`rounded-[10px] border border-[#1e1f24] bg-[#141519] shrink-0 flex p-[5px] ${collapsed ? 'flex-col gap-[3px] items-center' : 'items-center gap-[3px]'}`}
@@ -1625,46 +1787,25 @@ function PanelRail({ collapsed, onToggleCollapse, items, onJump, searchActive, o
       >
         {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
       </button>
-      {!collapsed && (
-        <>
-          <span className="w-px h-[16px] bg-[#1e1f24] mx-[3px] shrink-0" />
-          {/* Search: a toggle, not a jump — its card replaces the others */}
-          <button
-            onClick={onToggleSearch}
-            title="Search in files"
-            aria-label="Search in files"
-            className={`relative w-[32px] h-[28px] rounded-[8px] flex items-center justify-center transition-colors shrink-0 ${searchActive ? 'text-[#e6e7ea] bg-[#7c5cff]/[0.14]' : 'text-[#6b6e76] hover:text-[#9aa0a8] hover:bg-[#191a1f]'}`}
-          >
-            <Search size={15} />
-            {searchActive && <span className="absolute bottom-[2px] left-1/2 -translate-x-1/2 w-[13px] h-[2px] rounded-full bg-current" />}
-          </button>
-          {items.map(it => (
-            <button
-              key={it.key}
-              onClick={() => onJump(it.key)}
-              title={it.title}
-              aria-label={it.title}
-              className="relative w-[32px] h-[28px] rounded-[8px] flex items-center justify-center text-[#6b6e76] hover:bg-[#191a1f] transition-colors shrink-0"
-              style={{ color: it.color }}
-            >
-              {it.icon}
-              {it.badge ? (
-                <span
-                  className="absolute top-0 right-[1px] min-w-[13px] h-[13px] px-[3px] rounded-[7px] text-[8.5px] font-bold font-mono flex items-center justify-center text-[#0b0c0e]"
-                  style={{ background: it.color }}
-                >
-                  {it.badge}
-                </span>
-              ) : null}
-            </button>
-          ))}
-        </>
-      )}
+      <span className={`bg-[#1e1f24] shrink-0 ${collapsed ? 'h-px w-[16px] my-[3px]' : 'w-px h-[16px] mx-[3px]'}`} />
+      {filesItem && renderTab(filesItem)}
+      {/* Search: a toggle, not a tab — its card replaces the others */}
+      <button
+        onClick={onToggleSearch}
+        title="Search in files"
+        aria-label="Search in files"
+        className={`relative w-[32px] h-[28px] rounded-[8px] flex items-center justify-center transition-colors shrink-0 ${searchActive ? 'text-[#e6e7ea] bg-[#7c5cff]/[0.14]' : 'text-[#6b6e76] hover:text-[#9aa0a8] hover:bg-[#191a1f]'}`}
+      >
+        <Search size={15} />
+        {searchActive && <span className="absolute bottom-[2px] left-1/2 -translate-x-1/2 w-[13px] h-[2px] rounded-full bg-current" />}
+      </button>
+      <span className={`bg-[#1e1f24] shrink-0 ${collapsed ? 'h-px w-[16px] my-[3px]' : 'w-px h-[16px] mx-[3px]'}`} />
+      {rest.map(renderTab)}
     </div>
   );
 }
 
-export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeDiffPath, changesCompare, onChangesCompareChange, baseBranch, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, searchActive = false, onSearchActiveChange, renderSearchCard, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
+export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeDiffPath, changesCompare, onChangesCompareChange, baseBranch, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, searchActive = false, onSearchActiveChange, renderSearchCard, requestedTab, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>(() => (rootPath ? filesCache.get(rootPath) : null) || []);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const dragging = useRef(false);
@@ -1701,6 +1842,39 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   const [prCount, setPrCount] = useState(0);
   const cardsScrollRef = useRef<HTMLDivElement>(null);
 
+  // Card tabs: persisted order (drag a tab to reorder) + which card is active.
+  const [cardOrder, setCardOrder] = useState<string[]>(loadCardOrder);
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    try { return localStorage.getItem('activeCardTab') || ''; } catch { return ''; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(cardOrder)); } catch {}
+  }, [cardOrder]);
+  useEffect(() => {
+    try { if (activeTab) localStorage.setItem('activeCardTab', activeTab); } catch {}
+  }, [activeTab]);
+
+  // Files card height: null = fill remaining space (default), number = fixed.
+  const [filesHeight, setFilesHeight] = useState<number | null>(() => {
+    try { const s = Number(localStorage.getItem('filesCardHeight')); return Number.isFinite(s) && s >= 80 ? s : null; } catch { return null; }
+  });
+  useEffect(() => {
+    try { if (filesHeight !== null) localStorage.setItem('filesCardHeight', String(filesHeight)); } catch {}
+  }, [filesHeight]);
+
+  // Move a tab before/after another (drag reorder from the rail).
+  const reorderCards = useCallback((from: string, to: string, pos: 'before' | 'after') => {
+    if (from === to) return;
+    setCardOrder(prev => {
+      const next = prev.filter(x => x !== from);
+      const idx = next.indexOf(to);
+      if (idx === -1) return prev;
+      next.splice(pos === 'before' ? idx : idx + 1, 0, from);
+      return next;
+    });
+  }, []);
+
   const toggleCardsCollapsed = useCallback(() => {
     setCardsCollapsed(v => {
       const next = !v;
@@ -1709,31 +1883,46 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
     });
   }, []);
 
-  const toggleSearch = useCallback(() => {
-    onSearchActiveChange?.(!searchActive);
-  }, [onSearchActiveChange, searchActive]);
+  // Expand the collapsed panel (used when a rail icon is clicked while the
+  // panel is collapsed, so the target card actually mounts before we jump).
+  const expandCards = useCallback(() => {
+    setCardsCollapsed(false);
+    try { localStorage.setItem('cardsCollapsed', '0'); } catch {}
+  }, []);
 
-  const jumpToCard = useCallback((card: string) => {
-    // Leaving search first if it's covering the cards, then scroll once the
-    // cards column has re-mounted.
+  const toggleSearch = useCallback(() => {
+    if (cardsCollapsed) expandCards();
+    onSearchActiveChange?.(!searchActive);
+  }, [onSearchActiveChange, searchActive, cardsCollapsed, expandCards]);
+
+  // Select a card tab: activate it, leaving search and expanding the panel if
+  // either is covering the cards.
+  const selectTab = useCallback((card: string) => {
     if (searchActive) onSearchActiveChange?.(false);
-    requestAnimationFrame(() => {
-      cardsScrollRef.current?.querySelector(`[data-card="${card}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  }, [searchActive, onSearchActiveChange]);
+    if (cardsCollapsed) expandCards();
+    setActiveTab(card);
+  }, [searchActive, onSearchActiveChange, cardsCollapsed, expandCards]);
+
+  // A keyboard shortcut (owned by the host) asked to switch tabs. The nonce
+  // changes on every press so re-pressing the same shortcut re-fires.
+  useEffect(() => {
+    if (requestedTab) selectTab(requestedTab.card);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedTab?.nonce]);
 
   const railItems: RailItem[] = useMemo(() => {
     const changesCount = new Set([...gitModified.staged, ...gitModified.unstaged]).size;
     const items: RailItem[] = [
+      { key: 'files', title: 'Explorer', color: '#5aa6f0', icon: <FolderTree size={15} /> },
       { key: 'changes', title: 'Changes', color: MODIFIED_COLOR, icon: <GitBranch size={16} />, badge: changesCount || undefined },
+      // Tools + MCP unified under a single tab/icon.
+      { key: 'toolsmcp', title: 'Tools & MCP', color: MCP_COLOR, icon: <Plug size={15} /> },
     ];
     if (processCount > 0) items.push({ key: 'processes', title: 'Processes', color: '#5cc98c', icon: <Terminal size={15} />, badge: processCount });
     if (prCount > 0) items.push({ key: 'prs', title: 'Pull Requests', color: '#56b6e8', icon: <GitPullRequest size={15} />, badge: prCount });
-    if ((tools?.length ?? 0) > 0) items.push({ key: 'tools', title: 'Tools', color: '#a78bfa', icon: <Wrench size={15} /> });
-    items.push({ key: 'mcp', title: 'MCP Servers', color: MCP_COLOR, icon: <Plug size={15} /> });
-    items.push({ key: 'files', title: 'Files', color: '#5aa6f0', icon: <FolderTree size={15} /> });
-    return items;
-  }, [gitModified.staged, gitModified.unstaged, processCount, prCount, tools]);
+    // Mirror the user's card order so the rail tabs line up with the panel.
+    return items.sort((a, b) => cardOrder.indexOf(a.key) - cardOrder.indexOf(b.key));
+  }, [gitModified.staged, gitModified.unstaged, processCount, prCount, cardOrder]);
 
   const fetchRoot = useCallback(async () => {
     if (!client || !rootPath) return;
@@ -1983,7 +2172,9 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
             collapsed={cardsCollapsed}
             onToggleCollapse={toggleCardsCollapsed}
             items={railItems}
-            onJump={jumpToCard}
+            activeKey={searchActive ? '' : activeTab}
+            onSelect={selectTab}
+            onReorder={reorderCards}
             searchActive={searchActive}
             onToggleSearch={toggleSearch}
           />
@@ -1996,35 +2187,43 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
           </div>
         )}
 
-        {/* Cards column: each section is an independent, collapsible card
-            anchored to this hide/show panel. The panel-level scroll keeps the
-            cards spaced over the base canvas; the file-tree card grows to fill. */}
-        {!cardsCollapsed && !searchActive && (
-          <div ref={cardsScrollRef} className="flex-1 min-h-0 flex flex-col gap-[7px] px-[7px] pb-[7px] overflow-y-auto">
-            {/* Processes */}
-            <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} onCountChange={setProcessCount} />
-
-            {/* Changes */}
-            <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} baseBranch={baseBranch} />
-
-            {/* Pull Requests */}
-            <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} onCountChange={setPrCount} />
-
-            {/* Tools */}
-            <ToolsSection tools={tools || []} />
-
-            {/* MCP Servers */}
-            <McpServersSection client={client} rootPath={rootPath} sessionId={activeSessionId} />
-
-            {/* File tree (collapsible) — grows to fill remaining panel height */}
-            <FileTreeSection
-              rootPath={rootPath}
-              entries={entries}
-              onNewAtRoot={handleNewAtRoot}
-              onUpload={isRemote && rootPath ? () => handleUploadTo(rootPath) : undefined}
-            />
-          </div>
-        )}
+        {/* Tabbed card panel: the rail is the tab bar, and only the active
+            card renders here. Tools is omitted when empty. */}
+        {!cardsCollapsed && !searchActive && (() => {
+          const cardNodes: Record<string, React.ReactNode> = {
+            processes: <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} onCountChange={setProcessCount} />,
+            changes: <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} baseBranch={baseBranch} />,
+            prs: <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} onCountChange={setPrCount} />,
+            // Tools + MCP unified in one tab: the Tools chips (when present)
+            // stacked above the MCP servers card.
+            toolsmcp: (
+              <div className="flex flex-col gap-[7px]">
+                {tools && tools.length > 0 ? <ToolsSection tools={tools} /> : null}
+                <McpServersSection client={client} rootPath={rootPath} sessionId={activeSessionId} />
+              </div>
+            ),
+            files: (
+              <FileTreeSection
+                rootPath={rootPath}
+                entries={entries}
+                onNewAtRoot={handleNewAtRoot}
+                onUpload={isRemote && rootPath ? () => handleUploadTo(rootPath) : undefined}
+                height={filesHeight}
+                onHeightChange={setFilesHeight}
+              />
+            ),
+          };
+          // Resolve the active tab against the cards that actually exist right
+          // now, falling back to the first in order (so an emptied/hidden tab
+          // never leaves a blank panel).
+          const visible = cardOrder.filter(id => cardNodes[id]);
+          const active = visible.includes(activeTab) ? activeTab : visible[0];
+          return (
+            <div ref={cardsScrollRef} className="flex-1 min-h-0 flex flex-col px-[7px] pb-[7px] overflow-y-auto">
+              {active ? cardNodes[active] : null}
+            </div>
+          );
+        })()}
 
         {/* Right-click context menu */}
         {menu && (

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { ChevronDown, ChevronRight, ArrowDown, LayoutGrid, X as XIcon, Sparkles } from 'lucide-react';
 import { Button, TextField, TextArea } from '@heroui/react';
-import type { ChatMessage, ClaudeClient, PermissionRequest, SessionInfo } from '../../lib/claude-client';
+import type { ChatMessage, ClaudeClient, PermissionRequest, SessionInfo, TerminalInfo } from '../../lib/claude-client';
 import { getAuthToken, resolveServerUrl } from '../../lib/claude-client';
 import { Terminal as TerminalIcon } from 'lucide-react';
 import { Markdown } from '../Markdown';
@@ -61,9 +61,9 @@ interface Props {
    *  dismiss affordance. Parent is expected to kill the server-side proc
    *  (best-effort) and remove the entry from its shells list. */
   onRemoveShell?: (procId: string) => void;
-  /** Locally-managed interactive shells for this session — rendered inline
-   *  at the bottom of the message list. */
-  shells?: { id: string; procId: string; cwd: string; command?: string; createdAt: number }[];
+  /** Live terminals for this session — rendered inline at the bottom of the
+   *  message list. First-class resources fetched/broadcast from the bridge. */
+  shells?: TerminalInfo[];
   /** Open the new-session modal. Wired by MobileApp; called when the
    *  action sheet's "New session" tile is tapped. */
   onOpenNewSession?: () => void;
@@ -905,16 +905,7 @@ export function MobileChat({
                 <InteractiveTerminalBubble
                   sessionId={session.id}
                   client={client}
-                  message={{
-                    id: sh.id,
-                    role: 'system',
-                    content: '',
-                    timestamp: sh.createdAt,
-                    isInteractiveTerminal: true,
-                    procId: sh.procId,
-                    terminalCommand: sh.command,
-                    terminalCwd: sh.cwd,
-                  }}
+                  terminal={sh}
                   // "Minimized" for mobile means the full bubble is moved
                   // off the chat canvas into the floating dock above the
                   // composer. We keep the bubble mounted (hidden only) so
@@ -1044,7 +1035,8 @@ export function MobileChat({
             shells
               .filter((sh) => minimizedShells.has(sh.id))
               .map((sh) => {
-                const label = sh.command?.trim() || sh.cwd.split('/').pop() || 'shell';
+                const cmd = sh.command && sh.command !== '(interactive shell)' ? sh.command.trim() : '';
+                const label = sh.terminalName || cmd || sh.cwd.split('/').pop() || 'shell';
                 return (
                   <Button
                     key={sh.id}

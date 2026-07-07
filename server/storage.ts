@@ -155,67 +155,6 @@ export function getPRLink(sessionId: string): PRLink | null {
 }
 
 // ---------------------------------------------------------------------------
-// Per-session status lane (manual triage override)
-// ---------------------------------------------------------------------------
-// A user-assigned lane ('needs' | 'working' | 'done' | 'idle') that takes
-// precedence over the runtime-derived status in the sidebar's grouped views.
-// Set by dragging a session card into a status group; cleared to fall back to
-// the derived lane. Stored as a plain sessionId → lane map, like PR links.
-
-const SESSION_STATUS_FILE = join(CODIBY_DIR, 'ui-session-status.json');
-
-export function loadSessionStatuses(): Record<string, string> {
-  try {
-    return JSON.parse(readFileSync(SESSION_STATUS_FILE, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-export function saveSessionStatus(sessionId: string, lane: string) {
-  const map = loadSessionStatuses();
-  map[sessionId] = lane;
-  mkdirSync(CODIBY_DIR, { recursive: true });
-  writeFileSync(SESSION_STATUS_FILE, JSON.stringify(map, null, 2));
-}
-
-export function removeSessionStatus(sessionId: string) {
-  const map = loadSessionStatuses();
-  if (!(sessionId in map)) return;
-  delete map[sessionId];
-  writeFileSync(SESSION_STATUS_FILE, JSON.stringify(map, null, 2));
-}
-
-// ---------------------------------------------------------------------------
-// Per-project settings — stored IN the project at <root>/.codiby/settings.json
-// (committable, travels with the repo). Currently holds the custom status set
-// for the sidebar's Project view; extensible for future per-project config.
-// ---------------------------------------------------------------------------
-
-export interface ProjectSettings {
-  statuses?: { id: string; label: string; color: string }[];
-}
-
-function projectSettingsPath(projectRoot: string): string {
-  return join(projectRoot, '.codiby', 'settings.json');
-}
-
-export function loadProjectSettings(projectRoot: string): ProjectSettings {
-  if (!projectRoot) return {};
-  try {
-    return JSON.parse(readFileSync(projectSettingsPath(projectRoot), 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-export function saveProjectSettings(projectRoot: string, settings: ProjectSettings) {
-  if (!projectRoot) return;
-  mkdirSync(join(projectRoot, '.codiby'), { recursive: true });
-  writeFileSync(projectSettingsPath(projectRoot), JSON.stringify(settings, null, 2));
-}
-
-// ---------------------------------------------------------------------------
 // Telegram settings
 // ---------------------------------------------------------------------------
 

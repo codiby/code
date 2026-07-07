@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Circle } from 'lucide-react';
-import { DEFAULT_STATUSES, STATUS_ICON, resolveStatus, statusById, projectRootOf, type StatusDef } from '../lib/session-status';
+import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -10,7 +9,6 @@ import { Providers } from './Providers';
 import { FileExplorer, type GitModifiedState } from './FileExplorer';
 import { SessionTabStrip } from './SessionTabStrip';
 import { TabBar } from './TabBar';
-import { AutomationsView } from './AutomationsView';
 import { SessionsBoardView } from './SessionsBoardView';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { RunningInstancesButton } from './RunningInstancesButton';
@@ -28,7 +26,6 @@ import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { PortlessActionToast } from './PortlessActionToast';
-import { TerminalLaunchChip } from './TerminalLaunchChip';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
@@ -73,6 +70,7 @@ import {
   type SessionInitInfo,
   type SessionState,
   type SupportedModel,
+  type TerminalInfo,
 } from '../lib/claude-client';
 import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
@@ -476,69 +474,6 @@ function carriedStreamMessages(s: { partialText: string; partialThinking: string
   return carried;
 }
 
-/** Titlebar status picker for the active session — sets/clears its manual
- *  status (the same value dragging a card into a status sets). Uses the active
- *  session's project status set. `manual` is true when an override is in
- *  effect; otherwise the shown status is runtime-derived. */
-function SessionStatusPicker({ statuses, currentId, manual, onSet }: {
-  statuses: StatusDef[]; currentId: string; manual: boolean; onSet: (statusId: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-  const def = statusById(statuses, currentId) ?? statuses[0] ?? DEFAULT_STATUSES[0]!;
-  return (
-    <div ref={ref} className="relative mr-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        title="Session status"
-        className={`flex items-center gap-1.5 h-7 px-2 rounded-lg bg-surface border border-border transition-colors ${open ? 'text-zinc-100 ring-1 ring-border-light' : 'text-zinc-400 hover:text-zinc-200'}`}
-      >
-        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: def.color }} />
-        <span className="text-[11px] font-medium max-w-[110px] truncate">{def.label}</span>
-        {!manual && <span className="text-[9px] text-zinc-600 uppercase tracking-wide">auto</span>}
-        <ChevronDown className="w-3 h-3 shrink-0 text-zinc-500" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-8 z-[10000] w-48 bg-surface border border-border-light rounded-lg shadow-xl py-1">
-          {statuses.map(d => {
-            const Icon = STATUS_ICON[d.id];
-            const active = manual && currentId === d.id;
-            return (
-              <button
-                key={d.id}
-                onClick={() => { onSet(d.id); setOpen(false); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-surface-light transition-colors"
-              >
-                {Icon
-                  ? <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: d.color }} />
-                  : <span className="w-2 h-2 rounded-full shrink-0" style={{ background: d.color }} />}
-                <span className="flex-1 text-zinc-300 truncate">{d.label}</span>
-                {active && <Check className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-              </button>
-            );
-          })}
-          <div className="h-px bg-border mx-2 my-1" />
-          <button
-            onClick={() => { onSet(null); setOpen(false); }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-surface-light transition-colors text-zinc-400"
-            title="Back to the runtime-derived status"
-          >
-            <Circle className="w-3.5 h-3.5 shrink-0" />
-            <span className="flex-1">Automatic</span>
-            {!manual && <Check className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function ChatApp() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   // Session lifecycle is per-session and persisted server-side (status:
@@ -567,10 +502,9 @@ export function ChatApp() {
    *  inline new-session composer (GroupComposer) instead of the active
    *  session's chat body. Cleared as soon as a session is selected. */
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  // Active top-level view in the main pane. 'automations' replaces the whole
-  // session workspace with the Automatizaciones screen; selecting any session
-  // or group snaps it back to 'sessions'.
-  const [activeNavView, setActiveNavView] = useState<'sessions' | 'automations' | 'sessions-board'>('sessions');
+  // Active top-level view in the main pane. 'sessions-board' shows the board;
+  // selecting any session or group snaps it back to 'sessions'.
+  const [activeNavView, setActiveNavView] = useState<'sessions' | 'sessions-board'>('sessions');
   const [autoGroupSessions, setAutoGroupSessions] = useState(false);
   // When true, action-style browser_* SDK tools (click/type/scroll/…) bring
   // the targeted preview to the front before they run, so the user actually
@@ -615,28 +549,16 @@ export function ChatApp() {
     );
   };
 
-  /** Permanently dismiss a terminal bubble — kills the tracked process,
-   *  tells the bridge to remember the dismiss (survives reloads), and
-   *  prunes related local state. Shared by the context menu, the chip's
-   *  × button, and the tab strip's × button. */
+  /** Close a terminal — close === kill. DELETEs the terminal resource; the
+   *  dock drops the tab when the `terminal_removed` broadcast lands (which
+   *  also prunes activeShell state via onTerminalRemoved). Shared by the
+   *  context menu, the chip's × button, and the tab strip's × button. */
   const dismissShellPersistent = (procId: string, shellId: string) => {
     if (!activeId) return;
-    try { clientRef.current?.killProcess(activeId, procId); } catch {}
-    try { void clientRef.current?.dismissShell(activeId, procId); } catch {}
-    setDismissedShells(prev => {
-      const existing = prev[activeId] || new Set<string>();
-      if (existing.has(procId)) return prev;
-      const next = new Set(existing); next.add(procId);
-      return { ...prev, [activeId]: next };
-    });
+    try { void clientRef.current?.deleteTerminal(activeId, procId); } catch {}
     setMinimizedShells(prev => {
       if (!prev.has(shellId)) return prev;
       const n = new Set(prev); n.delete(shellId); return n;
-    });
-    setActiveShellBySession(prev => {
-      if (prev[activeId] !== shellId) return prev;
-      const { [activeId]: _drop, ...rest } = prev;
-      return rest;
     });
   };
 
@@ -997,10 +919,12 @@ export function ChatApp() {
   /** Tunnel status per remote, pushed by the server's `remote.status`
    *  broadcasts. Drives the offline state on the chat-header forwards chip. */
   const [remoteStatuses, setRemoteStatuses] = useState<Record<string, { status: 'connecting' | 'online' | 'reconnecting' | 'offline'; lastError: string | null }>>({});
-  // Dismissed-shell registry mirrored from the bridge — bridge is the source
-  // of truth for which terminal bubbles are visible. Keyed by sessionId,
-  // each entry is a Set of procIds the user has closed.
-  const [dismissedShells, setDismissedShells] = useState<Record<string, Set<string>>>({});
+  // Terminals as first-class resources, keyed by sessionId. Fetched from the
+  // bridge on connect (`onTerminalsSnapshot`) and kept in sync via the
+  // `terminal_created` / `terminal_removed` / `terminal_exit` broadcasts. The
+  // terminals dock renders straight from this — terminals are never inferred
+  // from chat messages, and a create only shows up once its broadcast lands.
+  const [terminals, setTerminals] = useState<Record<string, TerminalInfo[]>>({});
   // Bottom Terminals panel — collapsed means the panel is a single status
   // strip with no xterm body shown; expanded means full tabbed UI. Starts
   // collapsed (VSCode-style); opening/spawning a shell auto-expands it.
@@ -1102,6 +1026,14 @@ export function ChatApp() {
   // Search-as-a-card: when true the FileExplorer panel swaps its cards for the
   // search card. Driven from here so ⌘⇧F can toggle it.
   const [searchActive, setSearchActive] = useState(false);
+  // Sidebar tab requested via keyboard shortcut. The nonce lets pressing the
+  // same shortcut again re-fire (FileExplorer owns the actual active-tab state).
+  const [tabRequest, setTabRequest] = useState<{ card: string; nonce: number } | null>(null);
+  const tabNonceRef = useRef(0);
+  const requestSidebarTab = useCallback((card: string) => {
+    setExplorerCollapsed(false);
+    setTabRequest({ card, nonce: ++tabNonceRef.current });
+  }, []);
   const [projectSettings, setProjectSettings] = useState<{ open: boolean; sectionId?: string }>({ open: false });
   // Keyboard-shortcut overrides (command id → chord, or null to force-unbind);
   // defaults live in the keybinding registry. Hydrated from the bridge and kept
@@ -1112,13 +1044,6 @@ export function ChatApp() {
   // from the codiby-code:linked-item-changed event so the right panel can claim space.
   const [pluginDetailOpen, setPluginDetailOpen] = useState(false);
   const [prLinks, setPrLinks] = useState<Record<string, { prNumber: number; title: string; url: string; headRefName: string; state: string }>>({});
-  // Manual per-session status (overrides the runtime-derived status in the
-  // sidebar's grouped views). Persisted server-side via /session-status.
-  const [sessionLane, setSessionLane] = useState<Record<string, string>>({});
-  // Per-project custom status sets, keyed by project root path. Loaded lazily
-  // for each project that appears in the session list; persisted in the
-  // project's own <root>/.codiby/settings.json.
-  const [projectStatuses, setProjectStatuses] = useState<Record<string, StatusDef[]>>({});
   const [showPrDropdown, setShowPrDropdown] = useState(false);
   const [sessionPrs, setSessionPrs] = useState<{ number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[]>([]);
   const [openPR, setOpenPR] = useState<PRInfo | null>(null);
@@ -1138,6 +1063,10 @@ export function ChatApp() {
   baseBranchRef.current = baseBranch;
   const [client, setClient] = useState<ClaudeClient | null>(null);
   const clientRef = useRef<ClaudeClient | null>(null);
+  // Live mirror of `activeId` readable from long-lived client callbacks
+  // (which capture the value at construction time otherwise).
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
   const serverUrlRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const permRequestRef = useRef<HTMLDivElement>(null);
@@ -1515,28 +1444,9 @@ export function ChatApp() {
               },
             };
           });
-          // Restore terminal messages from running processes
-          c.listProcesses(sid).then(procs => {
-            if (procs.length === 0) return;
-            setSessionStates(prev => {
-              const s = prev[sid];
-              if (!s) return prev;
-              const existingTermIds = new Set(s.messages.filter(m => m.isTerminal).map(m => m.id));
-              const newTermMsgs = procs
-                .filter(p => !existingTermIds.has(p.id))
-                .map(p => ({
-                  id: p.id,
-                  role: 'system' as const,
-                  content: p.output || '',
-                  isTerminal: true,
-                  terminalCommand: p.command,
-                  exitCode: p.exitCode ?? undefined,
-                  timestamp: p.startedAt,
-                }));
-              if (newTermMsgs.length === 0) return prev;
-              return { ...prev, [sid]: { ...s, messages: [...s.messages, ...newTermMsgs] } };
-            });
-          }).catch(() => {});
+          // Live terminals are fetched separately as a first-class resource
+          // (client.fetchTerminals → onTerminalsSnapshot) as soon as we
+          // subscribe — they're no longer reconstructed as chat messages.
         },
 
         onMessage: (sid, msg) => {
@@ -1649,36 +1559,44 @@ export function ChatApp() {
           }
         },
 
-        onTerminalData: (sid, procId, text) => {
-          setSessionStates(prev => {
-            const s = prev[sid] || emptyLocalState();
-            const hasScreenClear = text.includes('\x1b[2J') || text.includes('\x1b[3J');
-            return {
-              ...prev,
-              [sid]: {
-                ...s,
-                messages: s.messages.map(m =>
-                  m.id === procId
-                    ? { ...m, content: hasScreenClear ? text : m.content + text }
-                    : m
-                ),
-              },
-            };
+        // Live bytes stream straight into the xterm via the per-procId
+        // subscription in ClaudeClient (see InteractiveTerminalBubble). This
+        // global callback is intentionally a no-op — terminals are no longer
+        // chat messages, so there's nothing to append here.
+        onTerminalData: () => {},
+
+        onTerminalsSnapshot: (sid, list) => {
+          setTerminals(prev => ({ ...prev, [sid]: list }));
+        },
+
+        onTerminalCreated: (sid, terminal) => {
+          setTerminals(prev => {
+            const arr = prev[sid] || [];
+            if (arr.some(t => t.procId === terminal.procId)) return prev;
+            return { ...prev, [sid]: [...arr, terminal] };
           });
+          // Auto-focus the freshly created terminal and open the dock, so a
+          // user's `/terminal` (or an agent's spawn_terminal) surfaces right
+          // away. Runs on the broadcast — never optimistically.
+          setActiveShellBySession(prev => ({ ...prev, [sid]: terminal.procId }));
+          setMinimizedShells(prev => { if (!prev.has(terminal.procId)) return prev; const n = new Set(prev); n.delete(terminal.procId); return n; });
+          if (sid === activeIdRef.current) setTerminalsPanelExpanded(true);
+        },
+
+        onTerminalRemoved: (sid, procId) => {
+          setTerminals(prev => {
+            const arr = prev[sid];
+            if (!arr) return prev;
+            return { ...prev, [sid]: arr.filter(t => t.procId !== procId) };
+          });
+          setActiveShellBySession(prev => (prev[sid] === procId ? (() => { const { [sid]: _drop, ...rest } = prev; return rest; })() : prev));
         },
 
         onTerminalExit: (sid, procId, code) => {
-          setSessionStates(prev => {
-            const s = prev[sid] || emptyLocalState();
-            return {
-              ...prev,
-              [sid]: {
-                ...s,
-                messages: s.messages.map(m =>
-                  m.id === procId ? { ...m, exitCode: code } : m
-                ),
-              },
-            };
+          setTerminals(prev => {
+            const arr = prev[sid];
+            if (!arr) return prev;
+            return { ...prev, [sid]: arr.map(t => t.procId === procId ? { ...t, exitCode: code } : t) };
           });
           refreshGitModified();
         },
@@ -1914,18 +1832,6 @@ export function ChatApp() {
         onPortlessUrlResolved: (info) => {
           window.dispatchEvent(new CustomEvent('portless_url_resolved', { detail: info }));
         },
-        onShellDismissed: ({ sessionId: sid, procId }) => {
-          // Only update if we already have the cached set for this session;
-          // otherwise let the focus-time loader fetch the full authoritative
-          // list (avoids creating a partial set that the loader then skips).
-          setDismissedShells(prev => {
-            const existing = prev[sid];
-            if (!existing) return prev;
-            if (existing.has(procId)) return prev;
-            const next = new Set(existing); next.add(procId);
-            return { ...prev, [sid]: next };
-          });
-        },
         onTerminalEnvInjected: ({ procId, env }) => {
           setInjectedEnvByProc(prev => ({ ...prev, [procId]: env }));
         },
@@ -1977,77 +1883,6 @@ export function ChatApp() {
       } catch {}
     }
     loadPrLinks();
-  }, []);
-
-  // Load manual session-status overrides.
-  useEffect(() => {
-    async function loadSessionStatuses() {
-      try {
-        const base = await resolveServerUrl();
-        const res = await fetch(`${base}/session-statuses`);
-        if (res.ok) setSessionLane(await res.json());
-      } catch {}
-    }
-    loadSessionStatuses();
-  }, []);
-
-  // Set or clear a session's manual status lane. `lane === null` clears the
-  // override (the card falls back to its runtime-derived lane). Optimistic —
-  // the local map updates immediately, then persists server-side.
-  const setSessionLaneFor = useCallback((sessionId: string, lane: string | null) => {
-    setSessionLane(prev => {
-      const next = { ...prev };
-      if (lane === null) delete next[sessionId];
-      else next[sessionId] = lane;
-      return next;
-    });
-    resolveServerUrl().then(base => {
-      if (lane === null) {
-        fetch(`${base}/session-status/${sessionId}`, { method: 'DELETE' }).catch(() => {});
-      } else {
-        fetch(`${base}/session-status/${sessionId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lane }),
-        }).catch(() => {});
-      }
-    });
-  }, []);
-
-  // Lazily load each project's custom status set from its .codiby/settings.json
-  // as new project roots appear in the session list.
-  const loadedProjectRoots = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const roots = [...new Set(sessions.map(s => projectRootOf(s.cwd || '')).filter(Boolean))];
-    const pending = roots.filter(r => !loadedProjectRoots.current.has(r));
-    if (pending.length === 0) return;
-    pending.forEach(r => loadedProjectRoots.current.add(r));
-    (async () => {
-      const base = await resolveServerUrl();
-      await Promise.all(pending.map(async (root) => {
-        try {
-          const res = await fetch(`${base}/project-settings?path=${encodeURIComponent(root)}`);
-          if (!res.ok) return;
-          const data = await res.json() as { statuses?: StatusDef[] };
-          if (Array.isArray(data.statuses) && data.statuses.length > 0) {
-            setProjectStatuses(prev => ({ ...prev, [root]: data.statuses! }));
-          }
-        } catch {}
-      }));
-    })();
-  }, [sessions]);
-
-  // Persist a project's custom status set (optimistic). Saving the defaults
-  // removes the override so the project tracks future default changes.
-  const setProjectStatusesFor = useCallback((root: string, statuses: StatusDef[]) => {
-    setProjectStatuses(prev => ({ ...prev, [root]: statuses }));
-    resolveServerUrl().then(base => {
-      fetch(`${base}/project-settings?path=${encodeURIComponent(root)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ statuses }),
-      }).catch(() => {});
-    });
   }, []);
 
   // Stop a session's Claude process without removing it from the sidebar — it
@@ -2167,19 +2002,6 @@ export function ChatApp() {
     clientRef.current?.notifyActiveTab(activeId);
   }, [activeId, client]);
 
-  // Pull the dismissed-shells registry from the bridge whenever a new
-  // session becomes active. The bridge is authoritative — bubbles only
-  // render when their procId is NOT in this set.
-  useEffect(() => {
-    if (!activeId || !clientRef.current) return;
-    if (dismissedShells[activeId]) return; // already cached for this session
-    let cancelled = false;
-    void clientRef.current.listDismissedShells(activeId).then(list => {
-      if (cancelled) return;
-      setDismissedShells(prev => ({ ...prev, [activeId]: new Set(list) }));
-    });
-    return () => { cancelled = true; };
-  }, [activeId, client]);
 
   // Sync active session to URL hash. The hash is what lets a webview reload
   // restore the previously-selected session, so we must NOT strip it on
@@ -2932,21 +2754,10 @@ export function ChatApp() {
     if (!id || !clientRef.current) return;
     const session = sessions.find(s => s.id === id);
     const cwd = getState(id).initInfo?.cwd || session?.cwd || '/';
-    // Re-run each command — server sends back terminal_data/terminal_exit
+    // Re-run each command as a terminal resource — it shows up in the dock
+    // once the `terminal_created` broadcast lands.
     for (const command of cmds) {
-      const msgId = crypto.randomUUID();
-      updateLocalState(id, s => ({
-        ...s,
-        messages: [...s.messages, {
-          id: msgId,
-          role: 'system' as const,
-          content: '',
-          isTerminal: true,
-          terminalCommand: command,
-          timestamp: Date.now(),
-        }],
-      }));
-      clientRef.current!.execCommand(id, command, cwd);
+      void clientRef.current!.createTerminal(id, { command, cwd });
     }
     // Clear saved commands on server
     clientRef.current.saveCommands(id, []);
@@ -3053,58 +2864,24 @@ export function ChatApp() {
     }
 
     // Interactive PTY terminal: /terminal [initial cmd]   or   /t [initial cmd]
-    // Client-side only — never sent to Claude. Mirrors the `>` intercept below
-    // but spawns a long-lived shell rendered inline via InteractiveTerminalBubble.
+    // Client-side only — never sent to Claude. Creates a terminal resource via
+    // the CRUD endpoint; the dock adds it when the `terminal_created` broadcast
+    // arrives (see onTerminalCreated), never optimistically.
     const slashTermMatch = text.match(/^\/(terminal|t)(?:\s+([\s\S]*))?$/);
     if (slashTermMatch) {
       const initialCmd = slashTermMatch[2]?.trim() || '';
-      const procId = crypto.randomUUID();
       const cwd = state.initInfo?.cwd || session?.cwd || '/';
-      updateLocalState(sid, s => ({
-        ...s,
-        messages: [...s.messages, {
-          id: procId,
-          role: 'system' as const,
-          content: '',
-          isInteractiveTerminal: true,
-          procId,
-          terminalCommand: initialCmd || undefined,
-          terminalCwd: cwd,
-          timestamp: Date.now(),
-        }],
-      }));
-      // Auto-activate + ensure expanded in the sticky panel.
-      setActiveShellBySession(prev => ({ ...prev, [sid]: procId }));
-      setMinimizedShells(prev => { const n = new Set(prev); n.delete(procId); return n; });
+      void clientRef.current?.createTerminal(sid, { command: initialCmd || undefined, cwd });
       setInputForSession(sid, '');
-      // The InteractiveTerminalBubble (mounted next render) calls execShell itself
-      // once its xterm instance has sized — we don't call it from here to avoid
-      // a cols/rows mismatch with the rendered terminal.
       return;
     }
 
-    // Terminal command: > command
+    // Terminal command: > command  — same terminal-resource path as /terminal.
     if (text.startsWith('>')) {
       const command = text.slice(1).trim();
       if (!command) return;
-      const procId = crypto.randomUUID();
       const cwd = state.initInfo?.cwd || session?.cwd || '/';
-
-      updateLocalState(sid, s => ({
-        ...s,
-        messages: [...s.messages, {
-          id: procId,
-          role: 'system' as const,
-          content: '',
-          isInteractiveTerminal: true,
-          procId,
-          terminalCommand: command,
-          terminalCwd: cwd,
-          timestamp: Date.now(),
-        }],
-      }));
-      setActiveShellBySession(prev => ({ ...prev, [sid]: procId }));
-      setMinimizedShells(prev => { const n = new Set(prev); n.delete(procId); return n; });
+      void clientRef.current?.createTerminal(sid, { command, cwd });
       setInputForSession(sid, '');
       return;
     }
@@ -3613,25 +3390,15 @@ export function ChatApp() {
   // closure) so the global keybinding handler can fire it too.
   const spawnNewTerminal = useCallback(() => {
     if (!activeId) return;
-    const procId = crypto.randomUUID();
     const cwd = getState(activeId).initInfo?.cwd
       || sessions.find(s => s.id === activeId)?.cwd
       || '/';
-    updateLocalState(activeId, s => ({
-      ...s,
-      messages: [...s.messages, {
-        id: procId,
-        role: 'system' as const,
-        content: '',
-        isInteractiveTerminal: true,
-        procId,
-        terminalCwd: cwd,
-        timestamp: Date.now(),
-      }],
-    }));
-    setActiveShellBySession(prev => ({ ...prev, [activeId]: procId }));
+    // Create a bare interactive shell via the CRUD endpoint. It appears in the
+    // dock (auto-focused + expanded) when the `terminal_created` broadcast
+    // lands — see onTerminalCreated.
+    void clientRef.current?.createTerminal(activeId, { cwd });
     setTerminalsPanelExpanded(true);
-  }, [activeId, sessions, getState, updateLocalState]);
+  }, [activeId, sessions, getState]);
   const spawnNewTerminalRef = useRef(spawnNewTerminal);
   spawnNewTerminalRef.current = spawnNewTerminal;
 
@@ -3754,6 +3521,11 @@ export function ChatApp() {
     'close-tab': () => closePanelRef.current(),
     'new-session': () => setShowNewSession(true),
     'clear-chat': () => { if (activeId) clearSession(activeId); },
+    'sidebar-files': () => requestSidebarTab('files'),
+    'sidebar-changes': () => requestSidebarTab('changes'),
+    'sidebar-toolsmcp': () => requestSidebarTab('toolsmcp'),
+    'sidebar-processes': () => requestSidebarTab('processes'),
+    'sidebar-prs': () => requestSidebarTab('prs'),
   };
 
   // Hydrate overrides from the bridge once a client is connected; live edits
@@ -4783,11 +4555,6 @@ export function ChatApp() {
           </button>
         )}
         {(() => {
-          // Interactive-terminal messages stay in the stream now — they
-          // render as compact launch chips (announcement only). The
-          // dismissed-shells filter still applies so closed terminals
-          // disappear permanently.
-          const sessionDismissed = activeId ? dismissedShells[activeId] : undefined;
           const grouped = collapseToolRuns(groupMessages(
             [...cs.messages]
               .filter(m => {
@@ -4797,16 +4564,10 @@ export function ChatApp() {
                 // in this list would float them above the live preview.
                 if (m.isPending) return false;
                 if (m.isTerminal && !m.isManagedTerminal) return false;
-                if (m.isInteractiveTerminal) {
-                  // Only NAMED terminals (spawned by `actions_run`) get a
-                  // chat announcement chip. Anonymous shells (the `+ new`
-                  // button in the panel, the `/terminal` slash command)
-                  // live only in the bottom Terminals panel — keeps the
-                  // chat clutter-free for ad-hoc tinkering.
-                  if (!m.terminalName) return false;
-                  const pid = m.procId || m.id;
-                  return !sessionDismissed?.has(pid);
-                }
+                // Terminals are a first-class resource rendered only in the
+                // bottom Terminals dock — never inline in the chat stream.
+                // (Old persisted history may still carry these flags.)
+                if (m.isInteractiveTerminal) return false;
                 return true;
               })
               .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))
@@ -4829,43 +4590,6 @@ export function ChatApp() {
                   client={clientRef.current || undefined}
                   hasContentAfter={hasContentAfter}
                 />
-              );
-            }
-            // Interactive-terminal messages are announcements only in the
-            // chat — the live xterm lives in the bottom Terminals panel.
-            if (item.isInteractiveTerminal) {
-              const procId = item.procId || item.id;
-              return (
-                <div key={item.id} id={`msg-${item.id}`} className="py-0.5">
-                  <TerminalLaunchChip
-                    message={item}
-                    sessionId={sid}
-                    client={clientRef.current}
-                    onShowLogs={(pid) => {
-                      setActiveShellBySession(prev => ({ ...prev, [sid]: pid }));
-                      setMinimizedShells(prev => {
-                        if (!prev.has(pid)) return prev;
-                        const n = new Set(prev); n.delete(pid); return n;
-                      });
-                      setTerminalsPanelExpanded(true);
-                    }}
-                    onDismiss={(pid) => {
-                      try { clientRef.current?.killProcess(sid, pid); } catch {}
-                      try { void clientRef.current?.dismissShell(sid, pid); } catch {}
-                      setDismissedShells(prev => {
-                        const existing = prev[sid] || new Set<string>();
-                        if (existing.has(pid)) return prev;
-                        const next = new Set(existing); next.add(pid);
-                        return { ...prev, [sid]: next };
-                      });
-                      setActiveShellBySession(prev => {
-                        if (prev[sid] !== procId) return prev;
-                        const { [sid]: _drop, ...rest } = prev;
-                        return rest;
-                      });
-                    }}
-                  />
-                </div>
               );
             }
             const isAskTool = item.toolName === 'AskUserQuestion' && Array.isArray((item.toolInput as any)?.questions);
@@ -5430,28 +5154,6 @@ export function ChatApp() {
             </div>
           )}
 
-          {/* Active-session status picker — sets/clears its manual status,
-              using the active session's project status set. */}
-          {activeId && (() => {
-            const root = projectRootOf(activeSession?.cwd || '');
-            const projStatuses = projectStatuses[root] ?? DEFAULT_STATUSES;
-            const currentId = resolveStatus(activeId, sessionLane, {
-              hasPermission: sessionHasPermission,
-              streaming: sessionStreaming,
-              interrupted: sessionInterrupted,
-              statuses,
-              turnComplete: turnCompleteIds,
-            }, projStatuses);
-            return (
-              <SessionStatusPicker
-                statuses={projStatuses}
-                currentId={currentId}
-                manual={!!sessionLane[activeId]}
-                onSet={(l) => setSessionLaneFor(activeId, l)}
-              />
-            );
-          })()}
-
           {/* Right: settings + layout-mode pill (clickable — opt out of drag) */}
           <button
             onClick={() => setProjectSettings(prev => ({ open: !prev.open }))}
@@ -5586,10 +5288,6 @@ export function ChatApp() {
               onToggleCollapsed={toggleTabsCollapsed}
               activeNavView={activeNavView}
               onSelectNavView={setActiveNavView}
-              sessionLane={sessionLane}
-              onSetSessionLane={setSessionLaneFor}
-              projectStatuses={projectStatuses}
-              onSetProjectStatuses={setProjectStatusesFor}
             />
           )}
           {/* Side Panel: Explorer (cards) — Search now lives inside it as a card,
@@ -5623,6 +5321,7 @@ export function ChatApp() {
             sessionName={activeSession?.name}
             searchActive={searchActive}
             onSearchActiveChange={setSearchActive}
+            requestedTab={tabRequest}
             renderSearchCard={(onClose) => (
               <SearchPanel client={client} rootPath={explorerRoot} onFileOpen={handleFileOpen} onClose={onClose} />
             )}
@@ -5644,8 +5343,6 @@ export function ChatApp() {
                 onSelectSession={handleSelectSession}
                 onAssignGroup={(sid, gid) => gid ? handleAddToGroup(sid, gid) : handleUngroupTab(sid)}
               />
-            ) : activeNavView === 'automations' ? (
-              <AutomationsView />
             ) : !activeId ? (
               <GroupComposer
                 groupName=""
@@ -5786,14 +5483,9 @@ export function ChatApp() {
 
                   {termDockHost && createPortal((() => {
                     if (!activeId) return null;
-                    // Bridge-owned visibility filter (dismissed shells never render).
-                    const dismissed = dismissedShells[activeId];
-                    const shells = active.messages.filter(m => {
-                      if (!m.isInteractiveTerminal) return false;
-                      if (!dismissed) return true;
-                      const pid = m.procId || m.id;
-                      return !dismissed.has(pid);
-                    });
+                    // Terminals are a first-class resource — the dock renders
+                    // straight from the fetched list, not from chat messages.
+                    const shells = terminals[activeId] || [];
                     const hasShells = shells.length > 0;
                     const activeShellId = hasShells
                       ? (activeShellBySession[activeId] || shells[shells.length - 1]!.id)
@@ -5801,26 +5493,21 @@ export function ChatApp() {
                     const activeShell = hasShells
                       ? (shells.find(s => s.id === activeShellId) || shells[shells.length - 1]!)
                       : null;
-                    const runningCount = shells.filter(s => s.exitCode === undefined && !s.terminalExited).length;
+                    const runningCount = shells.filter(s => s.exitCode === null).length;
                     const idleCount = shells.length - runningCount;
+                    // "(interactive shell)" is the server's placeholder command
+                    // for a bare shell — surface a friendlier label instead.
+                    const shellLabel = (s: TerminalInfo): string =>
+                      s.terminalName || (s.command && s.command !== '(interactive shell)' ? s.command : 'shell');
 
+                    // Close === kill: DELETE the terminal; the tab disappears
+                    // when the `terminal_removed` broadcast lands (which also
+                    // clears activeShell state via onTerminalRemoved).
                     const dismissProcId = (procId: string, shellId: string) => {
-                      try { clientRef.current?.killProcess(activeId, procId); } catch {}
-                      try { void clientRef.current?.dismissShell(activeId, procId); } catch {}
-                      setDismissedShells(prev => {
-                        const existing = prev[activeId] || new Set<string>();
-                        if (existing.has(procId)) return prev;
-                        const next = new Set(existing); next.add(procId);
-                        return { ...prev, [activeId]: next };
-                      });
+                      try { void clientRef.current?.deleteTerminal(activeId, procId); } catch {}
                       setMinimizedShells(prev => {
                         if (!prev.has(shellId)) return prev;
                         const n = new Set(prev); n.delete(shellId); return n;
-                      });
-                      setActiveShellBySession(prev => {
-                        if (prev[activeId] !== shellId) return prev;
-                        const { [activeId]: _drop, ...rest } = prev;
-                        return rest;
                       });
                     };
 
@@ -5852,17 +5539,17 @@ export function ChatApp() {
                               {hasShells ? `${runningCount} running${idleCount ? ` · ${idleCount} idle` : ''}` : 'none'}
                             </span>
                             <span className="inline-flex items-center gap-1.5 ml-1">
-                              {shells.filter(s => s.exitCode === undefined && !s.terminalExited).slice(-4).map(s => {
+                              {shells.filter(s => s.exitCode === null).slice(-4).map(s => {
                                 const pid = s.procId || s.id;
                                 const renamed = shellRenames[activeId]?.[pid];
                                 return (
                                   <span
                                     key={s.id}
                                     className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-mono text-emerald-300"
-                                    title={renamed || s.terminalName || s.terminalCommand}
+                                    title={renamed || shellLabel(s)}
                                   >
                                     <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
-                                    {(renamed || s.terminalName || (s.terminalCommand || 'shell')).slice(0, 14)}
+                                    {(renamed || shellLabel(s)).slice(0, 14)}
                                   </span>
                                 );
                               })}
@@ -5949,13 +5636,13 @@ export function ChatApp() {
                         <div className="flex items-center border-b border-border bg-surface/40 shrink-0 h-9">
                           <div className="flex items-stretch overflow-x-auto h-full">
                             {shells.map(sh => {
-                              const running = sh.exitCode === undefined && !sh.terminalExited;
-                              const code = sh.terminalExitCode ?? sh.exitCode;
+                              const running = sh.exitCode === null;
+                              const code = sh.exitCode;
                               const exited = !running;
                               const isActive = sh.id === activeShellId;
                               const procId = sh.procId || sh.id;
                               const renamed = shellRenames[activeId]?.[procId];
-                              const fallback = sh.terminalName || (sh.terminalCommand ? sh.terminalCommand.slice(0, 24) : 'shell');
+                              const fallback = shellLabel(sh).slice(0, 24);
                               const name = renamed || fallback;
                               const isRenaming = renamingShellId === sh.id;
                               const dotCls = running
@@ -5994,7 +5681,7 @@ export function ChatApp() {
                                         : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.02]'
                                   }`}
                                   style={isActive ? { boxShadow: 'inset 0 -2px 0 #8b5cf6' } : undefined}
-                                  title={`${name}${sh.terminalCwd ? ' · ' + sh.terminalCwd : ''} — double-click or right-click to rename`}
+                                  title={`${name}${sh.cwd ? ' · ' + sh.cwd : ''} — double-click or right-click to rename`}
                                 >
                                   <span
                                     className={`w-2 h-2 rounded-full shrink-0 ${dotCls}`}
@@ -6094,7 +5781,7 @@ export function ChatApp() {
                         {/* Status strip for the active terminal — hidden when there are no shells */}
                         {activeShell && (() => {
                           const activeProcId = activeShell.procId || activeShell.id;
-                          const injected = injectedEnvByProc[activeProcId];
+                          const injected = activeShell.injectedEnv;
                           const injectedCount = injected ? Object.keys(injected).length : 0;
                           return (
                           <div className="px-3.5 py-1.5 border-b border-border bg-surface/30 flex items-center gap-3 text-[11px] shrink-0 relative">
@@ -6148,24 +5835,24 @@ export function ChatApp() {
                               </>
                             )}
                             <span className="ml-auto inline-flex items-center gap-3 text-zinc-500 shrink-0">
-                              {activeShell.terminalCwd && (
-                                <span className="font-mono text-[10.5px] truncate max-w-[280px]" title={activeShell.terminalCwd}>
+                              {activeShell.cwd && (
+                                <span className="font-mono text-[10.5px] truncate max-w-[280px]" title={activeShell.cwd}>
                                   {(() => {
                                     const home = (typeof window !== 'undefined' && (window as any).__HOME__) || '';
-                                    const cwd = activeShell.terminalCwd!;
+                                    const cwd = activeShell.cwd!;
                                     const s = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
                                     return s;
                                   })()}
                                 </span>
                               )}
-                              {activeShell.exitCode === undefined && !activeShell.terminalExited ? (
+                              {activeShell.exitCode === null ? (
                                 <span className="inline-flex items-center gap-1 text-emerald-400">
                                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                                   running
                                 </span>
                               ) : (
-                                <span className={(activeShell.terminalExitCode ?? activeShell.exitCode) === 0 ? 'text-zinc-500' : 'text-red-300'}>
-                                  exit {activeShell.terminalExitCode ?? activeShell.exitCode ?? 0}
+                                <span className={activeShell.exitCode === 0 ? 'text-zinc-500' : 'text-red-300'}>
+                                  exit {activeShell.exitCode ?? 0}
                                 </span>
                               )}
                             </span>
@@ -6196,7 +5883,7 @@ export function ChatApp() {
                             >
                               {clientRef.current && (
                                 <InteractiveTerminalBubble
-                                  message={sh}
+                                  terminal={sh}
                                   sessionId={activeId}
                                   client={clientRef.current}
                                   hideHeader

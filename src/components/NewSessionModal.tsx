@@ -6,6 +6,7 @@ import {
 } from '@heroui/react';
 import type { ClaudeClient } from '../lib/claude-client';
 import { resolveServerUrl } from '../lib/claude-client';
+import { getNative } from '../lib/native';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
 
 interface RemoteInfo {
@@ -103,12 +104,18 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
 
   const isRemote = target !== 'local';
 
-  // Wraps `?remoteId=…` onto any local server URL when the target is a remote.
-  const withTarget = useCallback((path: string): string => {
+  // Resolve the base URL for the chosen target. Local → the bun sidecar; a
+  // remote → its DIRECT tunnel base (Electron main owns the tunnel), acquired
+  // over IPC. bun no longer proxies remote file/git browsing.
+  const targetUrl = useCallback(async (path: string): Promise<string> => {
     if (!serverUrl) return path;
     if (target === 'local') return `${serverUrl}${path}`;
-    const sep = path.includes('?') ? '&' : '?';
-    return `${serverUrl}${path}${sep}remoteId=${encodeURIComponent(target)}`;
+    try {
+      const native = getNative();
+      const res = await native?.invoke<{ port: number }>('remote_tunnel_acquire', { remoteId: target });
+      if (res?.port) return `http://127.0.0.1:${res.port}${path}`;
+    } catch {}
+    return `${serverUrl}${path}`;
   }, [serverUrl, target]);
 
   const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
@@ -131,7 +138,7 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
         setFolders(dirs);
       } else {
         const p = path.endsWith('/') ? path : path + '/';
-        const res = await fetch(withTarget(`/ls?prefix=${encodeURIComponent(p)}`));
+        const res = await fetch(await targetUrl(`/ls?prefix=${encodeURIComponent(p)}`));
         if (res.ok) {
           const data = await res.json();
           setFolders(Array.isArray(data) ? data : (data.dirs || []));
@@ -144,7 +151,7 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
     } finally {
       setLoading(false);
     }
-  }, [client, isRemote, withTarget]);
+  }, [client, isRemote, targetUrl]);
 
   const checkGit = useCallback(async (path: string) => {
     if (!path) { setGitInfo(null); return; }
@@ -153,25 +160,25 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
       if (!isRemote && client) {
         info = await client.getGitInfo(path);
       } else {
-        const res = await fetch(withTarget(`/git/info?cwd=${encodeURIComponent(path)}`));
+        const res = await fetch(await targetUrl(`/git/info?cwd=${encodeURIComponent(path)}`));
         if (!res.ok) { setGitInfo(null); return; }
         info = await res.json();
       }
       setGitInfo(info);
     } catch { setGitInfo(null); }
-  }, [client, isRemote, withTarget]);
+  }, [client, isRemote, targetUrl]);
 
   const fetchUserHome = useCallback(async (): Promise<string> => {
     try {
       if (!isRemote && client) return await client.getUserHome();
-      const res = await fetch(withTarget('/user-home'));
+      const res = await fetch(await targetUrl('/user-home'));
       if (res.ok) {
         const data = await res.json();
         return data.home || '/';
       }
     } catch {}
     return '/';
-  }, [client, isRemote, withTarget]);
+  }, [client, isRemote, targetUrl]);
 
   useEffect(() => {
     if (!isOpen) return;

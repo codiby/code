@@ -20,9 +20,8 @@ import type { ChatMessage } from '../state';
 import { sessions, saveSessions } from '../sessions';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host';
 import { cdpRequest } from './browser-cdp';
-import { trackedProcesses, killTrackedProcess, saveProcessRegistry, appendProcessOutput, addToGraveyard } from '../handlers/processes';
-import { pokeProcessMonitor } from '../process-monitor';
-import { spawnPty } from '../pty';
+import { trackedProcesses } from '../handlers/processes';
+import { createTerminal, removeTerminal } from '../handlers/terminals';
 import type { TrackedProcess } from '../types';
 import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../portless';
 import { buildInjectedActionEnv, configuredActionUrl, getGlobalTld, worktreePrefix } from '../action-env';
@@ -952,105 +951,36 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             return { content: [{ type: 'text', text: `cwd "${args.cwd}" is not accessible: ${err}` }], isError: true };
           }
 
-          // Spawn a PTY-backed shell so the running command gets a real TTY
-          // (curses output, color, line discipline) and so the same xterm
-          // bubble used by `/terminal` can re-attach to it. Default size is
-          // re-negotiated by the bubble's xterm via `terminal_resize` once
-          // it mounts.
+          // Spawn through the shared terminal resource path — the SAME code
+          // the UI's `POST /session/:id/terminals` uses. The command is
+          // auto-typed on the PTY's first byte; a `terminal_created` broadcast
+          // makes the terminal appear in the user's dock. No chat message: a
+          // terminal is a first-class resource, discovered from the terminals
+          // list, not inferred from message history.
           //
-          // Inject env from every configured action in this session's
-          // project so the spawned command sees `API_URL`, `WEB_URL`, etc.
-          // — no source-action exclusion since `spawn_terminal` is
-          // session-scoped, not action-scoped.
-          const procId = randomUUID();
-          const cols = 120;
-          const rows = 30;
+          // Inject env from every configured action in this session's project
+          // so the spawned command sees `API_URL`, `WEB_URL`, etc. — no
+          // source-action exclusion since `spawn_terminal` is session-scoped.
           const spawnTermGroup = resolveSessionGroup(sessionId, deps)?.group as TabGroupInfo | undefined;
           const spawnTermEnv = buildInjectedActionEnv(spawnTermGroup, getGlobalTld(deps.loadPreferences()), undefined, args.cwd);
-          const pty = spawnPty({ cwd: args.cwd, cols, rows, sessionId, extraEnv: spawnTermEnv });
-          if (!pty) {
-            return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
-          }
-
-          const tp: TrackedProcess = {
-            id: procId,
-            pid: pty.pid,
-            command: args.command,
-            cwd: args.cwd,
+          const spawnResult = createTerminal({
             sessionId,
-            startedAt: Date.now(),
-            proc: null,
-            viewers: new Set(),
-            outputBuffer: [],
-            exitCode: null,
-            kind: 'pty',
-            cols,
-            rows,
-            pty,
+            cwd: args.cwd,
+            command: args.command,
             label,
-            injectedEnv: Object.keys(spawnTermEnv).length > 0 ? spawnTermEnv : undefined,
-          };
-          trackedProcesses.set(procId, tp);
-          saveProcessRegistry();
-          pokeProcessMonitor();
-          if (Object.keys(spawnTermEnv).length > 0) {
-            deps.broadcastToSession(sessionId, { type: 'terminal_env_injected', sessionId, procId, env: spawnTermEnv });
-          }
-
-          // Inject the user's command on the PTY's first byte. We pre-type
-          // here (instead of relying on the bubble's `terminalCommand`
-          // auto-send) because the bubble suppresses auto-send whenever it
-          // detects a re-attach — and our pre-spawned PTY makes every
-          // `execShell` from the bubble look like a re-attach. Waiting for
-          // first byte means the shell has finished sourcing its rc files
-          // and is ready to read input.
-          let didTypeCommand = false;
-          pty.onData((text: string) => {
-            tp.outputBuffer.push(text);
-            if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
-            appendProcessOutput(procId, text);
-            deps.broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
-            if (!didTypeCommand) {
-              didTypeCommand = true;
-              try { pty.write(args.command + '\r'); } catch {}
-            }
+            terminalName: label,
+            injectedEnv: spawnTermEnv,
           });
-          pty.onExit((code: number) => {
-            if (tp.exitCode !== null) return;
-            tp.exitCode = code;
-            log(`[spawn_terminal] "${label}" procId=${procId.slice(0, 8)} exited code=${code}`);
-            deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
-            addToGraveyard(procId);
-            setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
-          });
-
-          // Push the chat message AFTER the PTY is in `trackedProcesses` so
-          // when the InteractiveTerminalBubble mounts and fires `exec_shell`,
-          // the bridge re-attaches to this PTY (replays buffer, resizes)
-          // instead of spawning a duplicate. The bubble auto-types
-          // `terminalCommand + \r` once the PTY produces its first byte —
-          // that's how the command actually starts running.
-          const termMsg: ChatMessage = {
-            id: procId,
-            role: 'system',
-            content: '',
-            timestamp: Date.now(),
-            isInteractiveTerminal: true,
-            procId,
-            terminalCommand: args.command,
-            terminalCwd: args.cwd,
-          };
-          if (addMessage(sessionId, termMsg)) {
-            deps.broadcastToSession(sessionId, { type: 'message', sessionId, message: termMsg });
+          if (!spawnResult.ok) {
+            return { content: [{ type: 'text', text: spawnResult.error }], isError: true };
           }
-
-          log(`[spawn_terminal] "${label}" procId=${procId.slice(0, 8)} pid=${pty.pid} session=${sessionId.slice(0, 8)} cmd=${args.command.slice(0, 80)}`);
+          const { info: spawnInfo } = spawnResult;
 
           const summary = [
-            `Spawned terminal "${label}" (procId=${procId}, pid=${pty.pid}).`,
+            `Spawned terminal "${label}" (procId=${spawnInfo.procId}).`,
             `cwd: ${args.cwd}`,
             `command: ${args.command}`,
-            'A live xterm shell is mounted in the chat (same UX as the /terminal slash command); the process also appears in the Processes panel. Read output with read_terminal_output, send keystrokes with send_terminal_input, stop it with kill_terminal — all by procId or by name.',
+            'A live xterm shell is mounted in the terminals dock; read output with read_terminal_output, send keystrokes with send_terminal_input, stop it with kill_terminal — all by procId or by name.',
           ].join('\n');
           return { content: [{ type: 'text', text: summary }] };
         },
@@ -1118,12 +1048,10 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (tp.exitCode !== null) {
             return { content: [{ type: 'text', text: `Terminal "${tp.label || tp.id}" already exited (code ${tp.exitCode}).` }] };
           }
-          const ok = killTrackedProcess(tp.id);
+          const ok = removeTerminal(sessionId, tp.id);
           if (!ok) {
             return { content: [{ type: 'text', text: `Terminal "${tp.label || tp.id}" was no longer tracked.` }], isError: true };
           }
-          deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId: tp.id, code: -1 });
-          pokeProcessMonitor();
           log(`[kill_terminal] killed "${tp.label || ''}" procId=${tp.id.slice(0, 8)} pid=${tp.pid} session=${sessionId.slice(0, 8)}`);
           return { content: [{ type: 'text', text: `Killed terminal "${tp.label || '(no name)'}" (procId=${tp.id}, pid=${tp.pid}). The whole process group was signalled (SIGTERM → SIGKILL).` }] };
         },
@@ -1283,55 +1211,26 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             ? `portless ${portlessSlug} -- sh -c '${match.command.replace(/'/g, `'\\''`)}'`
             : match.command;
 
-          const procId = randomUUID();
-          const cols = 120;
-          const rows = 30;
           // Inject env from sibling actions — never from this one itself
           // (an api action receiving its own API_URL would be useless).
           // Pass spawnCwd so the injected URLs honor the active worktree.
           const actionEnv = buildInjectedActionEnv(ctx.group as TabGroupInfo, globalTld, match.id, spawnCwd);
-          const pty = spawnPty({ cwd: spawnCwd, cols, rows, sessionId, extraEnv: actionEnv });
-          if (!pty) {
-            return { content: [{ type: 'text', text: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' }], isError: true };
-          }
 
-          const tp: TrackedProcess = {
-            id: procId,
-            pid: pty.pid,
-            command: visibleCommand,
-            cwd: spawnCwd,
-            sessionId,
-            startedAt: Date.now(),
-            proc: null,
-            viewers: new Set(),
-            outputBuffer: [],
-            exitCode: null,
-            kind: 'pty',
-            cols,
-            rows,
-            pty,
-            label,
-            injectedEnv: Object.keys(actionEnv).length > 0 ? actionEnv : undefined,
-          };
-          trackedProcesses.set(procId, tp);
-          saveProcessRegistry();
-          pokeProcessMonitor();
-          if (Object.keys(actionEnv).length > 0) {
-            deps.broadcastToSession(sessionId, { type: 'terminal_env_injected', sessionId, procId, env: actionEnv });
-          }
-
-          let didTypeCommand = false;
+          // Spawn through the shared terminal resource path (same as the UI).
+          // The onData hook scrapes the portless URL out of the first lines of
+          // output. `terminalName` promotes the action name to the dock tab so
+          // the user sees "api" rather than the full portless wrapper.
           let resolvedUrl: string | null = null;
-          pty.onData((text: string) => {
-            tp.outputBuffer.push(text);
-            if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
-            appendProcessOutput(procId, text);
-            deps.broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
-            if (!didTypeCommand) {
-              didTypeCommand = true;
-              try { pty.write(visibleCommand + '\r'); } catch {}
-            }
-            if (usePortless && !resolvedUrl) {
+          const actionResult = createTerminal({
+            sessionId,
+            cwd: spawnCwd,
+            command: visibleCommand,
+            label,
+            terminalName: match.name,
+            terminalUrl: usePortless ? url : undefined,
+            injectedEnv: actionEnv,
+            onData: (text) => {
+              if (!usePortless || resolvedUrl) return;
               const found = extractPortlessUrl(text);
               if (found) {
                 resolvedUrl = found;
@@ -1342,39 +1241,14 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
                   url: found,
                 });
               }
-            }
+            },
           });
-          pty.onExit((code: number) => {
-            if (tp.exitCode !== null) return;
-            tp.exitCode = code;
-            log(`[actions_run] "${label}" procId=${procId.slice(0, 8)} exited code=${code}`);
-            deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
-            addToGraveyard(procId);
-            setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30_000);
-          });
-
-          // Interactive terminal bubble in the chat. `terminalName`
-          // promotes the action's configured name to the bubble title and
-          // the shells-dock pill so the user sees "api" / "web-renter"
-          // rather than the cwd or the full portless wrapper.
-          const termMsg: ChatMessage = {
-            id: procId,
-            role: 'system',
-            content: '',
-            timestamp: Date.now(),
-            isInteractiveTerminal: true,
-            procId,
-            terminalCommand: visibleCommand,
-            terminalCwd: spawnCwd,
-            terminalName: match.name,
-            terminalUrl: usePortless ? url : undefined,
-          };
-          if (addMessage(sessionId, termMsg)) {
-            deps.broadcastToSession(sessionId, { type: 'message', sessionId, message: termMsg });
+          if (!actionResult.ok) {
+            return { content: [{ type: 'text', text: actionResult.error }], isError: true };
           }
+          const { info: actionInfo, tp: actionTp } = actionResult;
 
-          // Toast only when there's a stable URL to surface — otherwise the
-          // visible terminal bubble is sufficient feedback.
+          // Toast when there's a stable URL to surface.
           if (usePortless) {
             emitPortlessActionFired(
               {
@@ -1386,7 +1260,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
                 hostname,
                 url,
                 cwd: spawnCwd,
-                pid: pty.pid,
+                pid: actionTp.pid,
                 state: 'starting',
                 startedAt: Date.now(),
                 exitedAt: null,
@@ -1399,7 +1273,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             );
           }
 
-          log(`[actions_run] "${label}" procId=${procId.slice(0, 8)} pid=${pty.pid} session=${sessionId.slice(0, 8)} portless=${usePortless} cmd=${visibleCommand.slice(0, 80)}`);
+          log(`[actions_run] "${label}" procId=${actionInfo.procId.slice(0, 8)} pid=${actionTp.pid} session=${sessionId.slice(0, 8)} portless=${usePortless} cmd=${visibleCommand.slice(0, 80)}`);
 
           const summary = usePortless
             ? [
@@ -1445,10 +1319,8 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           }
           let stopped = 0;
           for (const tp of targets) {
-            if (killTrackedProcess(tp.id)) stopped++;
-            deps.broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId: tp.id, code: -1 });
+            if (removeTerminal(sessionId, tp.id)) stopped++;
           }
-          pokeProcessMonitor();
           const names = targets.map(t => t.label!.slice('Action · '.length)).join(', ');
           return { content: [{ type: 'text', text: `Stopped ${stopped} action${stopped === 1 ? '' : 's'}: ${names}.` }] };
         },

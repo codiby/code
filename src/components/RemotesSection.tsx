@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button, TextField, Input } from '@heroui/react';
+import { getNative } from '../lib/native';
 
 const REMOTE_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'] as const;
 type RemoteColor = typeof REMOTE_COLORS[number] | 'auto';
@@ -42,8 +43,7 @@ export function RemotesSection({ serverUrl }: Props) {
     refresh();
   }, [serverUrl]);
 
-  // Subscribe to remote.status events over the existing main WS so the UI
-  // reflects the tunnel state without polling.
+  // Keep the remotes LIST in sync via the bun WS (`remotes` broadcast on CRUD).
   useEffect(() => {
     if (!serverUrl) return;
     const wsUrl = serverUrl.replace(/^http/, 'ws') + '/ws';
@@ -53,20 +53,30 @@ export function RemotesSection({ serverUrl }: Props) {
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg?.type === 'remote.status' && typeof msg.remoteId === 'string') {
-            setRemotes(prev => prev.map(r =>
-              r.id === msg.remoteId
-                ? { ...r, status: msg.status, lastError: msg.lastError }
-                : r,
-            ));
-          } else if (msg?.type === 'remotes' && Array.isArray(msg.remotes)) {
-            setRemotes(msg.remotes);
+          if (msg?.type === 'remotes' && Array.isArray(msg.remotes)) {
+            setRemotes(prev => msg.remotes.map((r: Remote) => {
+              // Preserve the live tunnel status we track from main.
+              const cur = prev.find(p => p.id === r.id);
+              return { ...r, status: cur?.status, lastError: cur?.lastError };
+            }));
           }
         } catch {}
       };
     } catch {}
     return () => { try { ws?.close(); } catch {} };
   }, [serverUrl]);
+
+  // Tunnel STATUS now comes from the Electron main process (it owns the
+  // tunnels), pushed over IPC instead of bun's old `remote.status` WS frames.
+  useEffect(() => {
+    const native = getNative();
+    if (!native?.onRemoteTunnelStatus) return;
+    return native.onRemoteTunnelStatus(({ remoteId, status, lastError }) => {
+      setRemotes(prev => prev.map(r =>
+        r.id === remoteId ? { ...r, status: status as TunnelStatus, lastError } : r,
+      ));
+    });
+  }, []);
 
   async function refresh() {
     if (!serverUrl) return;
@@ -81,6 +91,8 @@ export function RemotesSection({ serverUrl }: Props) {
     if (!serverUrl) return;
     try {
       await fetch(`${serverUrl}/remotes/${id}`, { method: 'DELETE' });
+      // Tear down the (Electron-main-owned) tunnel for the removed remote.
+      await getNative()?.invoke('remote_tunnel_disconnect', { remoteId: id }).catch(() => {});
       await refresh();
     } catch {}
     setConfirmingDelete(null);
@@ -172,12 +184,13 @@ function RemoteRow({
   const [testResult, setTestResult] = useState<string | null>(null);
 
   async function handleTest() {
-    if (!serverUrl) return;
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await fetch(`${serverUrl}/remotes/${remote.id}/test`, { method: 'POST' });
-      const data = await res.json();
+      // Test Connection runs in Electron main (it owns the tunnel).
+      const native = getNative();
+      if (!native) { setTestResult('✗ Requires the desktop app'); return; }
+      const data = await native.invoke<{ ok: boolean; reason?: string }>('remote_test', { remoteId: remote.id });
       if (data.ok) setTestResult('✓ Connected · bridge up');
       else setTestResult(`✗ ${data.reason || 'Unknown error'}`);
     } catch (e: any) {
@@ -291,6 +304,11 @@ function RemoteEditDialog({
         setError(data?.error || `Save failed (HTTP ${res.status})`);
         setSaving(false);
         return;
+      }
+      // On edit, drop the (main-owned) tunnel so it respawns with the new
+      // alias/port on next use.
+      if (isEdit && initial) {
+        await getNative()?.invoke('remote_tunnel_disconnect', { remoteId: initial.id }).catch(() => {});
       }
       onSaved();
     } catch (e: any) {

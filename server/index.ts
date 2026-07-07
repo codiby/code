@@ -9,7 +9,6 @@ import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, statSyn
 import { dirname, join, extname } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { spawnPty } from './pty';
 
 import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, CODIBY_DIR, loadOrCreateMobileToken, getLanIp, resolveTls } from './config';
 import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } from './handlers/mobile';
@@ -18,7 +17,6 @@ import { log, registerGlobalErrorHandlers } from './logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON, setStatusBroadcaster } from './sessions';
 import { loadRemotes, getRemote } from './remotes';
 import { migrateToCodiby } from './migrate-to-codiby';
-import { cleanupStaleControlSockets, onTunnelStatus } from './ssh-tunnel';
 import {
   handleListRemotes,
   handleAddRemote,
@@ -26,27 +24,9 @@ import {
   handleRemoveRemote,
   handleTestRemote,
 } from './handlers/remotes';
-import {
-  handleListPortForwards,
-  handleAddPortForward,
-  handleRemovePortForward,
-} from './handlers/port-forwards';
-import {
-  hydrateRemoteSessionsIndex,
-  resolveSessionRemote,
-  registerRemoteSession,
-  unregisterRemoteSession,
-  setRemoteSessionStatusLocally,
-  listAllCachedRemoteSessions,
-  reconcileRemote,
-  setSessionListBroadcaster,
-  proxyHttpToRemote,
-  startWsProxy,
-  relayWsMessage,
-  closeWsProxy,
-  proxyFrontendWsMessage,
-  closeFrontendRemoteSockets,
-} from './gateway';
+// Remote traffic is no longer proxied by bun — the renderer connects directly
+// to each remote's tunnelled bridge (Electron main owns the SSH tunnels), so
+// the former gateway/ssh-tunnel imports are gone.
 import { getMergedRemoteGroups, isRemoteGroupId } from './remote-groups-cache';
 import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import { handleListMcpServers, handleAddMcpServer, handleRemoveMcpServer } from './handlers/mcp-servers';
@@ -60,10 +40,17 @@ import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
-import { handleExecCreate, terminalWsOpen, terminalWsClose, spawnTrackedProcess } from './handlers/exec';
 import { startProcessMonitor, pokeProcessMonitor } from './process-monitor';
-import { trackedProcesses, handleListProcesses, handleKillProcess, killProcessTree, killTrackedProcess, saveProcessRegistry, restoreProcessRegistry, appendProcessOutput, addToGraveyard, isInGraveyard, dismissShell, getDismissedShells } from './handlers/processes';
-import type { TrackedProcess } from './types';
+import { trackedProcesses, restoreProcessRegistry } from './handlers/processes';
+import {
+  setTerminalBroadcaster,
+  createTerminal,
+  attachTerminal,
+  listTerminals,
+  getTerminal,
+  getTerminalOutput,
+  removeTerminal,
+} from './handlers/terminals';
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef, runShell } from './handlers/git';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree } from './handlers/worktree';
@@ -84,7 +71,7 @@ import {
   clearSessionState,
 } from './state';
 import type { ChatMessage } from './state';
-import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadSessionStatuses, saveSessionStatus, removeSessionStatus, loadProjectSettings, saveProjectSettings, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
+import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
 import { createDocsApp } from './swagger';
 import { Hono } from 'hono';
@@ -150,8 +137,6 @@ const SPAWN_MODE: SpawnMode = parseSpawnMode();
 migrateToCodiby();
 loadSessions();
 loadRemotes();
-hydrateRemoteSessionsIndex();
-cleanupStaleControlSockets();
 restoreProcessRegistry();
 ensureMcpConfig();
 registerShutdownHandlers();
@@ -181,35 +166,16 @@ function broadcastToSession(sessionId: string, msg: object) {
  *  into the same wire shape as a local session, with the remote's color/name
  *  attached so the sidebar can tint them. */
 function buildFullSessionList(): any[] {
-  const localList: any[] = [...sessions.values()].map(s => {
+  // Local sessions only. Remote sessions are discovered by the renderer over
+  // its DIRECT connection to each remote's tunnelled bridge — bun no longer
+  // proxies or mirrors them.
+  return [...sessions.values()].map(s => {
     const j = sessionToJSON(s, server.port) as any;
     j.remoteId = null;
     j.remoteColor = null;
     j.remoteName = null;
     return j;
   });
-  const remoteList: any[] = listAllCachedRemoteSessions().map(s => {
-    const r = getRemote(s.remoteId);
-    return {
-      id: s.id,
-      name: s.name,
-      cwd: s.cwd,
-      created_at: s.createdAt,
-      status: s.status,
-      runtime_status: s.runtimeStatus,
-      ready: false,
-      claude_session_id: s.claudeSessionId,
-      ws_url: `ws://localhost:${server.port}/browser/ws/${s.id}`,
-      saved_commands: [],
-      model: s.model,
-      permission_mode: s.permissionMode,
-      provider: s.provider,
-      remoteId: s.remoteId,
-      remoteColor: r?.color ?? null,
-      remoteName: r?.name ?? null,
-    };
-  });
-  return [...localList, ...remoteList];
 }
 
 /** Broadcast a message to *every* connected frontend client, regardless of
@@ -230,38 +196,17 @@ function broadcastSessionList() {
   }
 }
 
-/** Broadcast the full remote list (with current tunnel status) to all clients. */
+/** Broadcast the configured-remotes list to all clients. Live tunnel status is
+ *  no longer bun's concern — the renderer gets it from Electron main. */
 function broadcastRemoteList() {
   // Lazy require avoids circular import at module load.
   const { listRemotes } = require('./remotes') as typeof import('./remotes');
-  const { getTunnelStatus } = require('./ssh-tunnel') as typeof import('./ssh-tunnel');
-  const list = listRemotes().map(r => {
-    const { status, lastError } = getTunnelStatus(r.id);
-    return { ...r, status, lastError };
-  });
+  const list = listRemotes();
   const data = JSON.stringify({ type: 'remotes', remotes: list });
   for (const ws of frontendClients) {
     try { ws.send(data); } catch {}
   }
 }
-
-/** Broadcast tunnel-status change for a single remote (lower-traffic than the full list). */
-function broadcastRemoteStatus(remoteId: string, status: string, lastError: string | null) {
-  const data = JSON.stringify({ type: 'remote.status', remoteId, status, lastError });
-  for (const ws of frontendClients) {
-    try { ws.send(data); } catch {}
-  }
-}
-
-// Repaint the local sidebar after the gateway reconciles a remote: the
-// session list AND preferences (which carry the spliced-in remote tab groups).
-function broadcastRemoteReconciled() {
-  broadcastSessionList();
-  broadcastPreferences(loadPreferences());
-}
-
-// Used by the gateway's debounced refresh (fires when a remote spawns).
-setSessionListBroadcaster(broadcastRemoteReconciled);
 
 // Repaint the sidebar when a session auto-unarchives on an incoming message.
 setStatusBroadcaster(broadcastSessionList);
@@ -271,19 +216,6 @@ setStatusBroadcaster(broadcastSessionList);
 // to all clients (not subscription-scoped) so badges stay live for every
 // session in the sidebar, not just the one the user is viewing.
 startProcessMonitor((_sessionId, msg) => broadcastToAllClients(msg));
-
-// Subscribe once at module load — wire status events into the WS bus.
-onTunnelStatus((remoteId, status, lastError) => {
-  broadcastRemoteStatus(remoteId, status, lastError);
-  // When a tunnel comes online, reconcile that remote's sessions + groups into
-  // our cache so anything spawned while offline (or by an agent on the remote)
-  // appears — and correctly grouped — without the user touching anything.
-  if (status === 'online') {
-    reconcileRemote(remoteId).then((changed) => {
-      if (changed) broadcastRemoteReconciled();
-    });
-  }
-});
 
 /** Broadcast a Portless action status update to every frontend client.
  *  This is a global stream (not per-session) so the Project Settings pane
@@ -529,6 +461,10 @@ setBridgeDeps({
   notifyTelegramIfMainSession,
 });
 
+// Let the terminals module push lifecycle events (terminal_created /
+// terminal_removed / terminal_data / …) to subscribed frontend clients.
+setTerminalBroadcaster(broadcastToSession);
+
 /** Sideloaded plugins from `~/.codiby/plugins/<id>/`. Empty dir ⇒ no-op. */
 await pluginHost.loadPlugins({
   broadcastToAllFrontends(msg) {
@@ -553,19 +489,6 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   }
 
   const { type } = msg as { type: string };
-
-  // If the message targets a session that lives on a remote bridge, forward
-  // it (subscribe / send_message / interrupt / set_model / etc.) over a
-  // multiplexed outbound /ws to that remote. Without this, remote-session
-  // events never reach the frontend and the UI hangs on "waiting for
-  // connection". Local sessions fall through to the handlers below.
-  if (typeof msg.sessionId === 'string') {
-    const remoteId = resolveSessionRemote(msg.sessionId);
-    if (remoteId) {
-      try { await proxyFrontendWsMessage(ws, remoteId, msg, text); } catch {}
-      return;
-    }
-  }
 
   // ---- get_sessions --------------------------------------------------------
   if (type === 'get_sessions') {
@@ -637,20 +560,6 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   if (type === 'send_message') {
     const { sessionId, text: msgText, images } = msg as { sessionId: string; text: string; images?: { media_type: string; data: string }[] };
     if (!sessionId || !msgText) return;
-
-    // Remote session — forward via HTTP to the remote bridge.
-    const remoteId = resolveSessionRemote(sessionId);
-    if (remoteId) {
-      const fwd = new Request(`http://x/sessions/${sessionId}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: msgText, images }),
-      });
-      proxyHttpToRemote(fwd, remoteId).catch(e => {
-        log(`[gateway] send_message proxy failed: ${e?.message || e}`);
-      });
-      return;
-    }
 
     const session = sessions.get(sessionId);
     if (!session) return;
@@ -862,155 +771,19 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     return;
   }
 
-  // ---- exec ----------------------------------------------------------------
-  if (type === 'exec') {
-    const { sessionId, command, cwd, procId: clientProcId } = msg as { sessionId: string; command: string; cwd?: string; procId?: string };
-    if (!sessionId || !command) return;
-
-    const { procId, pid } = spawnTrackedProcess({
-      command,
-      cwd: cwd || '/',
-      sessionId,
-      procId: clientProcId,
-      onData: (text) => broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text }),
-      onExit: (code) => broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code }),
-    });
-    log(`[exec/ws] Started process ${procId.slice(0, 8)} (pid=${pid}) for session ${sessionId.slice(0, 8)}: ${command.slice(0, 80)}`);
-
-    // Acknowledge with procId so the client can correlate
-    ws.send(JSON.stringify({ type: 'terminal_data', sessionId, procId, text: '' }));
-    return;
-  }
-
-  // ---- exec_shell ----------------------------------------------------------
-  // Spawn a long-lived interactive PTY shell. Client (xterm.js) streams
-  // keystrokes via `terminal_input` and receives output via `terminal_data`.
-  if (type === 'exec_shell') {
-    const { sessionId, procId: clientProcId, cwd, cols, rows, label, command } = msg as {
-      sessionId: string;
-      procId?: string;
-      cwd?: string;
-      cols?: number;
-      rows?: number;
-      /** Set by InteractiveTerminalBubble when respawning a bubble whose
-       *  original PTY died with the bridge — lets the new TrackedProcess
-       *  reclaim the action's identity so MCP lookups by name still find it. */
-      label?: string;
-      command?: string;
-    };
-    if (!sessionId) return;
-
-    const procId = clientProcId || randomUUID();
-    const execCwd = cwd || process.env.HOME || '/';
-    const execCols = Math.max(1, Math.min(500, Number(cols) || 120));
-    const execRows = Math.max(1, Math.min(200, Number(rows) || 30));
-
-    // Graveyard short-circuit: this procId points to a PTY that already
-    // died (clean exit, or bridge restart cleanup). Don't auto-resurrect
-    // it — the bubble is just remounting from chat history. Tell the
-    // viewer to render as exited so the user can re-launch explicitly.
-    if (clientProcId && isInGraveyard(procId)) {
+  // ---- terminal_attach -----------------------------------------------------
+  // Re-attach a viewer to a live PTY (tab switch / bubble remount / reload).
+  // Terminals are CREATED over REST (`POST /session/:id/terminals`), so this
+  // never spawns — it only replays the authoritative buffer + resizes.
+  if (type === 'terminal_attach') {
+    const { sessionId, procId, cols, rows } = msg as { sessionId: string; procId: string; cols?: number; rows?: number };
+    if (!sessionId || !procId) return;
+    const attached = attachTerminal(sessionId, procId, Number(cols) || 120, Number(rows) || 30);
+    if (!attached) {
+      // The PTY is gone (exited / GC'd). Tell the viewer to render as exited
+      // so it stops waiting for a replay that will never come.
       broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: -1 });
-      log(`[exec_shell] declined respawn for tombed procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)}`);
-      return;
     }
-
-    // Re-attach path: if the client already sent us this procId and the PTY
-    // is still live, don't spawn a second shell. Instead replay whatever
-    // buffered output we have so the xterm that just mounted can paint the
-    // current screen — this is how terminals survive a tab switch / PWA
-    // reload (the server keeps the PTY alive the whole time).
-    const existing = trackedProcesses.get(procId);
-    if (existing && existing.kind === 'pty' && existing.exitCode === null) {
-      const replay = existing.outputBuffer.join('');
-      // Tell the viewer to reset its xterm BEFORE the replay lands. Without
-      // this, any optimistic local replay the client did from its persisted
-      // chat log (desktop reducer appends every terminal_data into the
-      // message's content field) ends up concatenated with our authoritative
-      // buffer — producing the doubled-character symptom that looks like
-      // `ggitt cchheerrryy--pppiicckk …`.
-      broadcastToSession(sessionId, { type: 'terminal_reset', sessionId, procId });
-      if (replay) {
-        broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text: replay });
-      }
-      // Push the newly-requested cols/rows through — xterm was probably
-      // remounted at a different viewport size than the previous viewer.
-      try {
-        existing.pty?.resize(execCols, execRows);
-        existing.cols = execCols;
-        existing.rows = execRows;
-      } catch {}
-      log(`[exec_shell] re-attached procId=${procId.slice(0, 8)} (reset+replayed ${replay.length} bytes)`);
-      return;
-    }
-
-    // Cross-action env injection for /terminal slash shells. The user
-    // might run `npm run dev` manually here, so the shell needs the
-    // same `API_URL` / `WEB_URL` env vars an action-spawned shell gets.
-    // No source-action exclusion — this isn't tied to a specific action.
-    const execShellPrefs = loadPreferences();
-    const execShellGroup = resolveGroupForSession(execShellPrefs, sessionId);
-    // Use the shell's own cwd for worktree detection so the injected URLs
-    // match the branch the user is actually running in (not the project root).
-    const execShellEnv = buildInjectedActionEnv(execShellGroup, getGlobalTld(execShellPrefs), undefined, execCwd);
-
-    const pty = spawnPty({ cwd: execCwd, cols: execCols, rows: execRows, sessionId, extraEnv: execShellEnv });
-    if (!pty) {
-      broadcastToSession(sessionId, {
-        type: 'terminal_data', sessionId, procId,
-        text: '\r\n\x1b[31m[/terminal unavailable: Bun.Terminal requires Bun >= 1.3.5]\x1b[0m\r\n',
-      });
-      broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code: 127 });
-      return;
-    }
-
-    const tp: TrackedProcess = {
-      id: procId,
-      pid: pty.pid,
-      command: '(interactive shell)',
-      cwd: execCwd,
-      sessionId,
-      startedAt: Date.now(),
-      proc: null,
-      viewers: new Set<any>(),
-      outputBuffer: [] as string[],
-      exitCode: null,
-      kind: 'pty',
-      cols: execCols,
-      rows: execRows,
-      pty,
-      label,
-      injectedEnv: Object.keys(execShellEnv).length > 0 ? execShellEnv : undefined,
-    };
-    trackedProcesses.set(procId, tp);
-    saveProcessRegistry();
-    pokeProcessMonitor();
-    log(`[exec_shell] spawned pty procId=${procId.slice(0, 8)} session=${sessionId.slice(0, 8)} pid=${pty.pid} cwd=${execCwd}${label ? ` label="${label}"` : ''}`);
-
-    // NOTE: We deliberately do NOT auto-type `command` here even when the
-    // bubble forwards one. The label/command on the message are for
-    // identity (so MCP lookups still find the bubble) and for display —
-    // re-running the command on every bubble remount caused dev servers
-    // to be silently re-launched on app reopen. Users that want to
-    // restart an action invoke actions_run / actions_stop explicitly.
-    pty.onData((text) => {
-      tp.outputBuffer.push(text);
-      if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
-      appendProcessOutput(procId, text);
-      broadcastToSession(sessionId, { type: 'terminal_data', sessionId, procId, text });
-    });
-    pty.onExit((code) => {
-      if (tp.exitCode !== null) return; // already handled
-      tp.exitCode = code;
-      log(`[exec_shell] pty exited procId=${procId.slice(0, 8)} code=${code}`);
-      broadcastToSession(sessionId, { type: 'terminal_exit', sessionId, procId, code });
-      addToGraveyard(procId);
-      pokeProcessMonitor();
-      setTimeout(() => { trackedProcesses.delete(procId); saveProcessRegistry(); }, 30000);
-    });
-
-    // Acknowledge so the client can correlate immediately
-    ws.send(JSON.stringify({ type: 'terminal_data', sessionId, procId, text: '' }));
     return;
   }
 
@@ -1036,38 +809,8 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     return;
   }
 
-  // ---- terminal_kill -------------------------------------------------------
-  // Gracefully end an interactive shell (SIGHUP), falling back to process group
-  // kill if the shell doesn't exit within 500ms.
-  if (type === 'terminal_kill') {
-    const { procId } = msg as { procId: string };
-    if (!procId) return;
-    const tp = trackedProcesses.get(procId);
-    if (!tp) return;
-    if (tp.kind === 'pty' && tp.pty) {
-      tp.pty.kill('SIGHUP');
-      setTimeout(() => {
-        if (tp.exitCode !== null) return;
-        if (tp.pid) killProcessTree(tp.pid);
-      }, 500);
-    } else if (tp.pid) {
-      killProcessTree(tp.pid);
-    }
-    return;
-  }
-
-  // ---- kill_process --------------------------------------------------------
-  if (type === 'kill_process') {
-    const { sessionId, processId, pid } = msg as { sessionId: string; processId?: string; pid?: number };
-    if (!sessionId) return;
-    if (pid) {
-      killProcessTree(pid);
-    } else if (processId) {
-      killTrackedProcess(processId);
-    }
-    pokeProcessMonitor();
-    return;
-  }
+  // Terminal lifecycle (create / kill) is handled over REST — see the
+  // `/session/:id/terminals` CRUD routes below. The WS carries live I/O only.
 
   // ---- update_ui_state -----------------------------------------------------
   if (type === 'update_ui_state') {
@@ -1286,51 +1029,8 @@ app.get('/sessions', () => {
 app.post('/sessions', async (c) => {
   const req = c.req.raw;
   const url = new URL(req.url);
-  // Sniff the body so we can decide local vs remote without consuming the
-  // original request (handleCreateSession reads it again).
-  let body: { remoteId?: string | null; cwd?: string; name?: string; model?: string | null; provider?: string; permissionMode?: string } = {};
-  try { body = await req.clone().json() as typeof body; } catch {}
-
-  if (body?.remoteId) {
-    // Remote: ask the remote bridge to create the session, then mirror the
-    // metadata in our local cache so the sidebar shows it next time.
-    if (!getRemote(body.remoteId)) {
-      return Response.json({ error: `Remote ${body.remoteId} not found` }, { status: 404, headers: corsHeaders });
-    }
-    // Strip remoteId from the body that gets forwarded — the remote bridge
-    // doesn't know what to do with it.
-    const forwardBody = { ...body };
-    delete (forwardBody as any).remoteId;
-    const fwdReq = new Request(req.url, {
-      method: 'POST',
-      headers: req.headers,
-      body: JSON.stringify(forwardBody),
-    });
-    const resp = await proxyHttpToRemote(fwdReq, body.remoteId, '/sessions');
-    if (resp.ok) {
-      try {
-        const created = await resp.clone().json() as any;
-        registerRemoteSession(body.remoteId, {
-          id: created.id,
-          name: created.name,
-          cwd: created.cwd,
-          createdAt: created.created_at,
-          status: created.status ?? 'open',
-          runtimeStatus: created.runtime_status ?? 'starting',
-          model: created.model ?? null,
-          permissionMode: created.permission_mode ?? 'default',
-          provider: created.provider ?? 'claudeAgent',
-          claudeSessionId: created.claude_session_id ?? null,
-          portForwards: [],
-          cachedAt: Date.now(),
-        });
-        broadcastSessionList();
-        if (url.searchParams.get('focus') === '1') broadcastFocusSession(created.id);
-      } catch {}
-    }
-    return resp;
-  }
-
+  // Remote sessions are created by the renderer DIRECTLY on the remote bridge
+  // (through its tunnel), so this endpoint is local-only now.
   const resp = await handleCreateSession(req, server.port);
   // Apply the `autoGroupSessions` preference server-side so every entry
   // point (frontend, mobile, CLI) honors it without each client needing
@@ -1355,8 +1055,6 @@ app.post('/sessions', async (c) => {
 
 app.post('/sessions/:id/resume', (c) => {
   const sid = c.req.param('id');
-  const remoteId = resolveSessionRemote(sid);
-  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
   const resp = handleResumeSession(sid, server.port);
   broadcastSessionList();
   return resp;
@@ -1373,8 +1071,6 @@ app.get('/providers/claude/info', () => {
 
 app.post('/sessions/:id/stop', (c) => {
   const sid = c.req.param('id');
-  const remoteId = resolveSessionRemote(sid);
-  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
   const resp = handleStopSession(sid);
   broadcastSessionList();
   return resp;
@@ -1382,8 +1078,6 @@ app.post('/sessions/:id/stop', (c) => {
 
 app.post('/sessions/:id/restart', async (c) => {
   const sid = c.req.param('id');
-  const remoteId = resolveSessionRemote(sid);
-  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
   const resp = await handleRestartSession(sid, server.port);
   broadcastSessionList();
   return resp;
@@ -1391,8 +1085,6 @@ app.post('/sessions/:id/restart', async (c) => {
 
 app.post('/sessions/:id/clear', async (c) => {
   const sid = c.req.param('id');
-  const remoteId = resolveSessionRemote(sid);
-  if (remoteId) return proxyHttpToRemote(c.req.raw, remoteId);
   const resp = await handleClearSession(sid);
   // Tell every connected UI to drop its in-memory chat for this session
   // before pushing the updated session list.
@@ -1405,93 +1097,79 @@ app.post('/sessions/:id/clear', async (c) => {
 app.patch('/sessions/:id', async (c) => {
   const req = c.req.raw;
   const sid = c.req.param('id');
-  const remoteId = resolveSessionRemote(sid);
-  if (remoteId) {
-    // Peek at the body so an archive/unarchive can be honored locally if the
-    // remote is unreachable (closing a tab on an offline remote must stick).
-    let updates: any = null;
-    try { updates = await req.clone().json(); } catch {}
-    const applyStatusOffline = (): boolean => {
-      if ((updates?.status === 'open' || updates?.status === 'archived')
-          && setRemoteSessionStatusLocally(remoteId, sid, updates.status)) {
-        broadcastSessionList();
-        return true;
-      }
-      return false;
-    };
-    let resp: Response;
-    try {
-      resp = await proxyHttpToRemote(req, remoteId);
-    } catch {
-      // Remote offline — apply the status change to our cache so the sidebar
-      // reflects the user's intent instead of snapping the tab back.
-      if (applyStatusOffline()) return c.json({ ok: true, offline: true });
-      return c.json({ error: 'Remote unreachable' }, 502);
-    }
-    // Refresh the cache entry name so the sidebar reflects the rename.
-    if (resp.ok) {
-      try {
-        const updated = await resp.clone().json() as any;
-        if (updated?.id) {
-          registerRemoteSession(remoteId, {
-            id: updated.id,
-            name: updated.name,
-            cwd: updated.cwd,
-            createdAt: updated.created_at,
-            status: updated.status ?? 'open',
-            runtimeStatus: updated.runtime_status ?? 'stopped',
-            model: updated.model ?? null,
-            permissionMode: updated.permission_mode ?? 'default',
-            provider: updated.provider ?? 'claudeAgent',
-            claudeSessionId: updated.claude_session_id ?? null,
-            portForwards: updated.port_forwards ?? [],
-            cachedAt: Date.now(),
-          });
-          broadcastSessionList();
-        }
-      } catch {}
-    } else {
-      // Remote reachable but rejected the PATCH — still honor an
-      // archive/unarchive locally so closing the tab doesn't bounce back.
-      applyStatusOffline();
-    }
-    return resp;
-  }
   const resp = await handleRenameSession(sid, req);
   broadcastSessionList();
   return resp;
 });
 
-// Per-session port forwards (only for remote sessions).
-app.get('/sessions/:id/port-forwards', (c) => handleListPortForwards(c.req.param('id')));
-app.post('/sessions/:id/port-forwards', (c) => handleAddPortForward(c.req.param('id'), c.req.raw));
-app.delete('/sessions/:id/port-forwards/:remotePort/:localPort', (c) =>
-  handleRemovePortForward(c.req.param('id'), Number(c.req.param('remotePort')), Number(c.req.param('localPort'))));
+// Per-session port forwards moved to the Electron main process (it owns the
+// SSH ControlMaster). The renderer drives them via IPC — no bun route.
 
-// Per-session dismissed shells — the bridge owns terminal-bubble visibility.
-app.get('/sessions/:id/shells/dismissed', (c) => {
-  return Response.json({ dismissed: getDismissedShells(c.req.param('id')) }, { headers: corsHeaders });
+// ── Terminals (CRUD) ─────────────────────────────────────────────────────────
+// Single source of truth for terminal lifecycle, shared by the UI and the MCP
+// tools. Live I/O stays on the /ws multiplexer (terminal_input / terminal_data).
+
+// List every terminal for a session. The UI fetches this as soon as it
+// subscribes so open terminals repopulate the dock on (re)connect.
+app.get('/session/:id/terminals', (c) => {
+  return Response.json({ terminals: listTerminals(c.req.param('id')) }, { headers: corsHeaders });
 });
-app.delete('/sessions/:id/shells/:procId', (c) => {
-  const sid = c.req.param('id');
-  const procId = c.req.param('procId');
-  const changed = dismissShell(sid, procId);
-  if (changed) {
-    const data = JSON.stringify({ type: 'shell_dismissed', sessionId: sid, procId });
-    for (const ws of frontendClients) {
-      try { ws.send(data); } catch {}
-    }
+
+// Create a terminal. Spawns the PTY, then broadcasts `terminal_created` — the
+// UI adds the tab only when that broadcast arrives (never optimistically).
+app.post('/session/:id/terminals', async (c) => {
+  const sessionId = c.req.param('id');
+  let body: { command?: string; cwd?: string; cols?: number; rows?: number; label?: string; terminalName?: string } = {};
+  try { body = await c.req.raw.json() as typeof body; } catch {}
+
+  const session = sessions.get(sessionId);
+  const cwd = body.cwd || session?.cwd || process.env.HOME || '/';
+
+  // Cross-action env injection so a manually-run `npm run dev` sees the same
+  // API_URL / WEB_URL an action-spawned shell gets. Worktree detection uses
+  // the shell's own cwd so injected URLs match the active branch.
+  const prefs = loadPreferences();
+  const group = resolveGroupForSession(prefs, sessionId);
+  const injectedEnv = buildInjectedActionEnv(group, getGlobalTld(prefs), undefined, cwd);
+
+  const result = createTerminal({
+    sessionId,
+    cwd,
+    cols: body.cols,
+    rows: body.rows,
+    command: body.command,
+    terminalName: body.terminalName,
+    injectedEnv,
+  });
+  if (!result.ok) {
+    return Response.json({ error: result.error }, { status: 500, headers: corsHeaders });
   }
-  return Response.json({ ok: true, changed }, { headers: corsHeaders });
+  return Response.json({ terminal: result.info }, { headers: corsHeaders });
 });
 
-// POST /sessions/:id/messages — HTTP path used by the gateway to forward user
-// messages from local frontends into a remote bridge.
+// Read one terminal. `?output=1` also returns the buffered scrollback.
+app.get('/session/:id/terminals/:procId', (c) => {
+  const sessionId = c.req.param('id');
+  const procId = c.req.param('procId');
+  const info = getTerminal(sessionId, procId);
+  if (!info) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+  const wantOutput = new URL(c.req.url).searchParams.get('output') === '1';
+  const output = wantOutput ? getTerminalOutput(sessionId, procId) : undefined;
+  return Response.json({ terminal: info, output }, { headers: corsHeaders });
+});
+
+// Delete (kill) a terminal. Close === kill; broadcasts `terminal_removed`.
+app.delete('/session/:id/terminals/:procId', (c) => {
+  const removed = removeTerminal(c.req.param('id'), c.req.param('procId'));
+  if (!removed) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
+  return Response.json({ ok: true }, { headers: corsHeaders });
+});
+
+// POST /sessions/:id/messages — HTTP path a remote bridge serves when the
+// renderer sends a message to a remote session directly through its tunnel.
 app.post('/sessions/:id/messages', async (c) => {
   const req = c.req.raw;
   const sid = c.req.param('id');
-  const remoteId = resolveSessionRemote(sid);
-  if (remoteId) return proxyHttpToRemote(req, remoteId);
   let body: { text?: string; images?: { media_type: string; data: string }[] } = {};
   try { body = await req.json() as typeof body; } catch {}
   if (!body.text) return Response.json({ error: 'text required' }, { status: 400, headers: corsHeaders });
@@ -1503,25 +1181,6 @@ app.delete('/sessions/:id', async (c) => {
   const req = c.req.raw;
   const url = new URL(req.url);
   const sid = c.req.param('id');
-  const remoteId = resolveSessionRemote(sid);
-  if (remoteId) {
-    try {
-      const resp = await proxyHttpToRemote(req, remoteId);
-      if (resp.ok) {
-        unregisterRemoteSession(remoteId, sid);
-        broadcastSessionList();
-      }
-      return resp;
-    } catch {
-      // Remote unreachable — drop it from our local cache anyway so it stops
-      // showing in the sidebar instead of bouncing back on the next broadcast.
-      // It only resurfaces if it still exists when the remote reconnects and we
-      // re-pull its authoritative list.
-      unregisterRemoteSession(remoteId, sid);
-      broadcastSessionList();
-      return c.json({ ok: true, offline: true });
-    }
-  }
   // ?purge=1 → also delete the on-disk chat history + UI state.
   // ?worktree=1 → also remove the git worktree (when cwd looks like one).
   const purge = url.searchParams.get('purge') === '1';
@@ -1709,21 +1368,6 @@ app.post('/file-reveal', async (c) => {
   }
 });
 
-// ── Exec / Processes ─────────────────────────────────────────────────────────
-app.post('/exec', (c) => handleExecCreate(c.req.raw));
-app.get('/processes', (c) => {
-  const sessionId = new URL(c.req.url).searchParams.get('sessionId');
-  if (!sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
-  return handleListProcesses(sessionId);
-});
-app.post('/kill', async (c) => {
-  const body = await c.req.raw.json() as { processId?: string; pid?: number };
-  if (!body.processId && !body.pid) return Response.json({ error: 'processId or pid required' }, { status: 400, headers: corsHeaders });
-  const killed = handleKillProcess(body.processId || '', body.pid);
-  pokeProcessMonitor();
-  return killed;
-});
-
 // ── Git ──────────────────────────────────────────────────────────────────────
 app.get('/file-original', async (c) => {
   const url = new URL(c.req.url);
@@ -1817,31 +1461,6 @@ app.put('/pr-link/:sessionId', async (c) => {
 });
 app.delete('/pr-link/:sessionId', (c) => {
   removePRLink(c.req.param('sessionId'));
-  return Response.json({ ok: true }, { headers: corsHeaders });
-});
-
-// ── Per-session status lane (manual triage override) ─────────────────────────
-app.get('/session-statuses', () => Response.json(loadSessionStatuses(), { headers: corsHeaders }));
-app.put('/session-status/:sessionId', async (c) => {
-  const body = await c.req.raw.json() as { lane: string };
-  saveSessionStatus(c.req.param('sessionId'), body.lane);
-  return Response.json({ ok: true }, { headers: corsHeaders });
-});
-app.delete('/session-status/:sessionId', (c) => {
-  removeSessionStatus(c.req.param('sessionId'));
-  return Response.json({ ok: true }, { headers: corsHeaders });
-});
-
-// ── Per-project settings (<root>/.codiby/settings.json) ──────────────────────
-app.get('/project-settings', (c) => {
-  const path = new URL(c.req.url).searchParams.get('path') || '';
-  return Response.json(loadProjectSettings(path), { headers: corsHeaders });
-});
-app.put('/project-settings', async (c) => {
-  const path = new URL(c.req.url).searchParams.get('path') || '';
-  if (!path) return Response.json({ error: 'path required' }, { status: 400, headers: corsHeaders });
-  const body = await c.req.raw.json() as { statuses?: { id: string; label: string; color: string }[] };
-  saveProjectSettings(path, body);
   return Response.json({ ok: true }, { headers: corsHeaders });
 });
 
@@ -2260,34 +1879,8 @@ const server = Bun.serve({
       return new Response('Unauthorized', { status: 401, headers: corsHeaders });
     }
 
-    // -----------------------------------------------------------------------
-    // Cross-cutting remote routing: any HTTP request carrying `?remoteId=<id>`
-    // is forwarded to that remote's bun bridge, with the parameter stripped.
-    // Used by session-agnostic endpoints (file browse, git info, etc.) that
-    // the NewSessionModal calls when its target tab is a remote.
-    // Skips: WS upgrades (handled below), session/remote-bound endpoints that
-    // resolve `remoteId` from their own state, static assets, plugins.
-    // -----------------------------------------------------------------------
-    const remoteIdQuery = url.searchParams.get('remoteId');
-    if (
-      remoteIdQuery &&
-      remoteIdQuery !== 'local' &&
-      getRemote(remoteIdQuery) &&
-      !url.pathname.startsWith('/ws') &&
-      !url.pathname.startsWith('/browser/ws') &&
-      !url.pathname.startsWith('/terminal/ws') &&
-      !url.pathname.startsWith('/lsp/ws') &&
-      !url.pathname.startsWith('/debug/ws') &&
-      !url.pathname.startsWith('/sessions') &&     // sessions/* already remote-aware
-      !url.pathname.startsWith('/remotes') &&      // remotes management lives local
-      !url.pathname.startsWith('/plugins') &&
-      url.pathname !== '/' && url.pathname !== '/index.html'
-    ) {
-      const stripped = new URLSearchParams(url.searchParams);
-      stripped.delete('remoteId');
-      const newPath = url.pathname + (stripped.toString() ? '?' + stripped.toString() : '');
-      return proxyHttpToRemote(req, remoteIdQuery, newPath);
-    }
+    // (Remote routing removed: the renderer now talks to each remote's
+    // tunnelled bridge directly, so there is no `?remoteId=` forwarding here.)
 
     // Sideloaded plugins (`~/.codiby/plugins/<id>/`).
     // - GET /plugins         → manifest list for the frontend loader
@@ -2369,8 +1962,7 @@ const server = Bun.serve({
     if (
       url.pathname !== '/health' &&
       url.pathname !== '/file-index' &&
-      url.pathname !== '/git-modified' &&
-      url.pathname !== '/processes'
+      url.pathname !== '/git-modified'
     ) {
       log(`${req.method} ${url.pathname}${url.search}`);
     }
@@ -2385,17 +1977,11 @@ const server = Bun.serve({
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
-    // Legacy per-session browser WebSocket (kept for backwards compatibility).
-    // For remote sessions we still accept the upgrade, but instead of routing
-    // to the local browserWs set, we open a parallel WS to the remote bridge
-    // and shuttle frames in both directions.
+    // Legacy per-session browser WebSocket. Remote sessions connect to their
+    // remote bridge's own /browser/ws directly through the tunnel, so this is
+    // local-only now.
     if (url.pathname.startsWith('/browser/ws/')) {
       const sessionId = url.pathname.split('/browser/ws/')[1];
-      const remoteId = resolveSessionRemote(sessionId!);
-      if (remoteId) {
-        const upgraded = server.upgrade(req, { data: { type: 'proxy-browser', sessionId, remoteId } });
-        return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
-      }
       const session = sessions.get(sessionId!);
       if (!session) {
         return new Response('Session not found', { status: 404 });
@@ -2404,13 +1990,6 @@ const server = Bun.serve({
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
-    // Terminal viewer WebSocket
-    const termWsMatch = url.pathname.match(/^\/terminal\/ws\/([^/]+)$/);
-    if (termWsMatch) {
-      const procId = termWsMatch[1]!;
-      const upgraded = server.upgrade(req, { data: { type: 'terminal', procId } });
-      return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
-    }
 
     // LSP WebSocket — /lsp/ws/{sessionId}/{languageId}
     const lspWsMatch = url.pathname.match(/^\/lsp\/ws\/([^/]+)\/([^/]+)$/);
@@ -2442,12 +2021,6 @@ const server = Bun.serve({
     open(ws) {
       const { type, sessionId, procId } = ws.data as { type: string; sessionId?: string; procId?: string };
 
-      // Terminal viewer
-      if (type === 'terminal') {
-        if (procId) terminalWsOpen(ws, procId);
-        return;
-      }
-
       // Multiplexed frontend WebSocket
       if (type === 'frontend') {
         frontendClients.add(ws);
@@ -2476,16 +2049,6 @@ const server = Bun.serve({
         if (session.ready) {
           ws.send(JSON.stringify({ type: 'bridge', status: 'claude_connected' }) + '\n');
         }
-        return;
-      }
-
-      // Per-session WS for a REMOTE session — open a parallel WS to the remote
-      // bridge and pipe both directions. The gateway also bumps the tunnel
-      // refcount so the master stays alive while at least one pane is open.
-      if (type === 'proxy-browser') {
-        const { sessionId: sid, remoteId } = ws.data as any;
-        if (!sid || !remoteId) { ws.close(4004, 'Bad proxy data'); return; }
-        startWsProxy(ws, remoteId, `/browser/ws/${sid}`);
         return;
       }
 
@@ -2544,12 +2107,6 @@ const server = Bun.serve({
         return;
       }
 
-      // Proxied per-session WS for a remote session — relay all frames upstream.
-      if (type === 'proxy-browser') {
-        relayWsMessage(ws, message as string | ArrayBuffer | Buffer);
-        return;
-      }
-
       // Legacy per-session browser WebSocket — messages are ignored.
       // New clients use the multiplexed frontend socket; this endpoint remains
       // open only for older clients that expect a one-way event feed.
@@ -2558,20 +2115,9 @@ const server = Bun.serve({
     close(ws) {
       const { type, sessionId, procId } = ws.data as { type: string; sessionId?: string; procId?: string };
 
-      if (type === 'terminal') {
-        if (procId) terminalWsClose(ws, procId);
-        return;
-      }
-
-      if (type === 'proxy-browser') {
-        closeWsProxy(ws);
-        return;
-      }
-
       if (type === 'frontend') {
         frontendClients.delete(ws);
         subscriptions.delete(ws);
-        closeFrontendRemoteSockets(ws);
         log(`[/ws] Frontend client disconnected (${frontendClients.size} remaining)`);
         return;
       }

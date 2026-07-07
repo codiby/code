@@ -22,11 +22,23 @@ export type UpdateEvent = {
   message?: string;
 };
 
+/** SSH-tunnel status for a remote, pushed by the Electron main process (which
+ *  now owns the tunnels). `port` is the current local forward port when online
+ *  (it changes whenever the ssh master respawns), else null. */
+export type RemoteTunnelStatusEvent = {
+  remoteId: string;
+  status: 'idle' | 'connecting' | 'online' | 'reconnecting' | 'offline';
+  lastError: string | null;
+  port: number | null;
+};
+
 export interface CodibyNative {
   invoke<T = unknown>(cmd: string, args?: unknown): Promise<T>;
   onBrowserPreviewEvent(name: BrowserPreviewEventName, cb: (p: RelayPayload) => void): Unlisten;
   onCdpRequest(cb: (req: { requestId: string; action: string; args: unknown }) => void): Unlisten;
   onUpdateEvent(cb: (msg: UpdateEvent) => void): Unlisten;
+  /** SSH-tunnel status changes for remotes (replaces bun's `remote.status`). */
+  onRemoteTunnelStatus(cb: (msg: RemoteTunnelStatusEvent) => void): Unlisten;
   /** Host webContents zoom factor (1.0 = no zoom). Sync, no IPC. */
   getZoomFactor(): number;
 }

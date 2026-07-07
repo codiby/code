@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, memo } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import type { ChatMessage } from '../lib/claude-client';
+import type { TerminalInfo } from '../lib/claude-client';
 import type { ClaudeClient } from '../lib/claude-client';
 
 // xterm.css is a static side-effect import so Vite unconditionally bundles
@@ -32,7 +32,7 @@ function loadXterm() {
 }
 
 interface Props {
-  message: ChatMessage;
+  terminal: TerminalInfo;
   sessionId: string;
   client: ClaudeClient;
   /** When true, hide the xterm body and only show the header row. Preserves
@@ -44,9 +44,7 @@ interface Props {
    *  scrollback + running processes survive switching between shells. */
   hidden?: boolean;
   /** Called when the user taps "Close" on an exited terminal — lets the
-   *  parent drop the bubble entirely (remove from shells list + registry).
-   *  Only surfaced after the PTY has emitted its exit event; tapping it
-   *  is a "goodbye", not a kill. */
+   *  parent drop the bubble entirely. */
   onClose?: () => void;
   /** When true, the bubble renders only the xterm body — no header row,
    *  no rounded border, no inline status chrome. Used when the bottom
@@ -56,43 +54,31 @@ interface Props {
 }
 
 /**
- * Inline interactive PTY terminal rendered inside a chat message bubble.
+ * Live interactive PTY terminal.
  *
- * Created client-side when the user types `/terminal` or `/t` in the chat
- * input (see ChatApp.tsx `handleSend`). Mounts an xterm.js instance, asks
- * the server to spawn a PTY (`exec_shell`), pipes keystrokes via
- * `terminal_input`, and streams raw output back into xterm.
- *
- * `message.procId` doubles as the server-side process id (matches `message.id`).
- * On exit, the bubble stays visible but input is disabled and status flips to
- * `exited <code>`. No auto-restart — the user types `/t` again for a new shell.
+ * The terminal is a first-class server resource (see `TerminalInfo`), created
+ * over `POST /session/:id/terminals` by the user (`/terminal`, the dock's
+ * "new" button) or by an MCP tool (`spawn_terminal`, `actions_run`). This
+ * component only renders + drives an already-created terminal: it mounts an
+ * xterm.js instance, RE-ATTACHES to the server-side PTY (`attachTerminal` —
+ * never spawns), pipes keystrokes via `terminal_input`, and streams raw output
+ * back into xterm. Any auto-run command is typed by the server on the PTY's
+ * first byte, so the bubble never sends it.
  */
-function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, onToggleMinimize, hidden, onClose, hideHeader }: Props) {
+function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized, onToggleMinimize, hidden, onClose, hideHeader }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<TerminalInstance | null>(null);
   const fitRef = useRef<FitAddonInstance | null>(null);
-  const didSpawnRef = useRef(false);
-  const didReplayRef = useRef(false);
-  const didSendInitialRef = useRef(false);
-  const gotFirstDataRef = useRef(false);
-  // Set when the server emits `terminal_reset` for this procId — its presence
-  // means the server treated our `execShell` call as a re-attach to an
-  // existing PTY (tab switch / remount / reload), not a fresh spawn. We use
-  // this to suppress the optional initial-command injection so it doesn't
-  // re-fire every time the bubble remounts.
-  const wasReattachedRef = useRef(false);
+  const didAttachRef = useRef(false);
 
-  const procId = message.procId || message.id;
-  const cwd = message.terminalCwd || '/';
-  const initialCommand = message.terminalCommand;
-  // On reload, the server-side `onTerminalExit` pipeline persists the exit
-  // via `message.exitCode` (same reducer as one-shot terminals). Also honor
-  // the newer `terminalExited` / `terminalExitCode` fields for forward-compat.
-  const persistedExitCode = message.terminalExitCode ?? message.exitCode;
-  const [exited, setExited] = useState<boolean>(!!message.terminalExited || persistedExitCode !== undefined);
-  const [exitCode, setExitCode] = useState<number | undefined>(persistedExitCode);
+  const procId = terminal.procId || terminal.id;
+  const cwd = terminal.cwd || '/';
+  // `command` is "(interactive shell)" for a bare shell — don't surface that.
+  const displayCommand = terminal.command && terminal.command !== '(interactive shell)' ? terminal.command : undefined;
+  const [exited, setExited] = useState<boolean>(terminal.exitCode !== null && terminal.exitCode !== undefined);
+  const [exitCode, setExitCode] = useState<number | undefined>(terminal.exitCode ?? undefined);
 
-  // Mount xterm, spawn PTY, wire subscriptions.
+  // Mount xterm, attach to the PTY, wire subscriptions.
   useEffect(() => {
     if (!containerRef.current) return;
     let cancelled = false;
@@ -141,24 +127,8 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
       fitRef.current = fit;
       try { fit.fit(); } catch {}
 
-      // One-time replay of any persisted output (post-reload rehydrate).
-      if (!didReplayRef.current && message.content) {
-        try { term.write(message.content); } catch {}
-      }
-      didReplayRef.current = true;
-
-      // Subscribe to live data BEFORE spawning so we don't miss the first chunk.
+      // Subscribe to live data BEFORE attaching so we don't miss the replay.
       const unsubData = client.onTerminalDataForProc(procId, (text: string) => {
-        if (!gotFirstDataRef.current) {
-          gotFirstDataRef.current = true;
-          // Once the PTY has produced any output, it's safe to inject the
-          // optional initial command typed after `/terminal` (e.g. `/t ls`).
-          // Skip on re-attach: the command already ran on the original spawn.
-          if (initialCommand && !didSendInitialRef.current && !wasReattachedRef.current) {
-            didSendInitialRef.current = true;
-            try { client.sendTerminalInput(sessionId, procId, initialCommand + '\r'); } catch {}
-          }
-        }
         try { term.write(text); } catch {}
       });
 
@@ -169,32 +139,20 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
       });
 
       // Server sends this right before replaying the authoritative output
-      // buffer on a re-attach (tab-switch / bubble remount / PWA reload).
-      // Clear xterm first so the replay doesn't land on top of whatever
-      // we optimistically wrote from `message.content` — otherwise every
-      // character ends up duplicated.
+      // buffer on attach. Clear xterm first so the replay doesn't land on top
+      // of any stale content.
       const unsubReset = client.onTerminalResetForProc(procId, () => {
-        wasReattachedRef.current = true;
         try { term.reset(); } catch {}
       });
 
-      // Spawn the PTY exactly once per message mount (StrictMode-safe via ref).
-      // Forward the message's name/command so a fresh respawn (after the
-      // bridge restarted and dropped the original PTY) re-establishes the
-      // tracked-process identity — otherwise MCP lookups by name fail.
-      //
-      // Skip while `hidden` — the bubble is rendered inside a tab that's
-      // currently `display:none`, so `fit.fit()` saw a 0×0 container and
-      // term.cols/rows are still the xterm defaults (80×24). Spawning now
-      // would make zsh draw its prompt at the wrong width; later, when the
-      // tab becomes visible, the resize-on-show effect below handles the
-      // initial spawn with the real dimensions.
-      if (!didSpawnRef.current && !exited && !hidden) {
-        didSpawnRef.current = true;
-        client.execShell(sessionId, procId, cwd, term.cols, term.rows, {
-          label: message.terminalName,
-          command: message.terminalCommand,
-        });
+      // Attach exactly once per mount (StrictMode-safe via ref). Skip while
+      // `hidden` — the bubble is inside a `display:none` tab so `fit.fit()`
+      // saw a 0×0 container and cols/rows are still xterm defaults (80×24).
+      // The resize-on-show effect below performs the first attach with the
+      // real dimensions once the tab becomes visible.
+      if (!didAttachRef.current && !exited && !hidden) {
+        didAttachRef.current = true;
+        client.attachTerminal(sessionId, procId, term.cols, term.rows);
       }
 
       // Forward keystrokes (xterm already encodes Enter as \r, Ctrl+C as \x03, arrows, etc.)
@@ -216,12 +174,7 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
 
       // Finger-drag scrolling — xterm's viewport doesn't react to touch
       // gestures on its own, so we translate vertical drags into
-      // `term.scrollLines(...)` calls. Accumulating the pixel delta keeps
-      // the motion 1:1 with the finger; we only fire `scrollLines` when
-      // the accumulator crosses a full row height, so no jitter.
-      // Row height tracks xterm's computed `_core._renderService.dimensions`
-      // (device-pixel-ratio aware) when available; falls back to
-      // fontSize × lineHeight otherwise.
+      // `term.scrollLines(...)` calls.
       const readRowHeight = (): number => {
         try {
           const d = (term as any)._core?._renderService?.dimensions;
@@ -251,8 +204,6 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
           try { term.scrollLines(lines); } catch {}
           touchAccumPx -= lines * rowPx;
         }
-        // Must be non-passive for this to actually stop iOS/Android from
-        // scrolling the outer page while we drag inside the terminal.
         e.preventDefault();
       };
       const onTouchEnd = () => { touchActive = false; };
@@ -299,27 +250,20 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
   // When we come back from minimized OR from hidden (shell switch), the
   // container just re-gained layout. Refit xterm to its visible size —
   // ResizeObserver alone doesn't fire when `display` toggles between
-  // none/block on a parent.
-  //
-  // Also handles the deferred-spawn case: the mount effect skips execShell
-  // when `hidden` is true (so the PTY isn't created at the wrong 80×24
-  // default), and this effect picks it up the first time the bubble
-  // actually has layout.
+  // none/block on a parent. Also handles the deferred-attach case: the mount
+  // effect skips attach when `hidden` is true, and this effect picks it up
+  // the first time the bubble actually has layout.
   useEffect(() => {
     if (minimized || hidden) return;
     const term = termRef.current;
     const fit = fitRef.current;
     if (!term || !fit) return;
-    // rAF so the browser has applied layout before we measure.
     const raf = requestAnimationFrame(() => {
       try {
         fit.fit();
-        if (!didSpawnRef.current && !exited) {
-          didSpawnRef.current = true;
-          client.execShell(sessionId, procId, cwd, term.cols, term.rows, {
-            label: message.terminalName,
-            command: message.terminalCommand,
-          });
+        if (!didAttachRef.current && !exited) {
+          didAttachRef.current = true;
+          client.attachTerminal(sessionId, procId, term.cols, term.rows);
         } else if (!exited) {
           client.resizeTerminal(sessionId, procId, term.cols, term.rows);
         }
@@ -327,7 +271,7 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
       } catch {}
     });
     return () => cancelAnimationFrame(raf);
-  }, [minimized, hidden, exited, client, sessionId, procId, cwd, message.terminalName, message.terminalCommand]);
+  }, [minimized, hidden, exited, client, sessionId, procId]);
 
   // Short, readable cwd label
   const cwdLabel = (() => {
@@ -339,8 +283,7 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
 
   // Header-less mode: the bottom Terminals panel hosts the bubble inside
   // its own tab + status strip, so the bubble's wrapper / header would
-  // just be duplicated chrome. Render only the xterm container, fully
-  // filling whatever box the panel gives us.
+  // just be duplicated chrome. Render only the xterm container.
   if (hideHeader) {
     return (
       <div
@@ -371,15 +314,15 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
           </span>
           <span className="text-[10px] text-green-400 font-mono shrink-0">$</span>
           <span className="text-[11px] font-mono text-zinc-400 truncate flex-1">
-            {message.terminalName ? (
+            {terminal.terminalName ? (
               <>
-                <span className="text-violet-300 font-medium">{message.terminalName}</span>
+                <span className="text-violet-300 font-medium">{terminal.terminalName}</span>
                 {cwdLabel ? <span className="text-zinc-600"> · {cwdLabel}</span> : null}
               </>
             ) : (
               <>
                 {cwdLabel || 'terminal'}
-                {initialCommand ? <span className="text-zinc-600"> · {initialCommand}</span> : null}
+                {displayCommand ? <span className="text-zinc-600"> · {displayCommand}</span> : null}
               </>
             )}
           </span>
@@ -407,7 +350,7 @@ function InteractiveTerminalBubbleImpl({ message, sessionId, client, minimized, 
               <button
                 className="text-zinc-500 hover:text-red-400 text-[10px] font-mono shrink-0 px-1.5 py-0.5 rounded border border-border-light hover:border-red-900/60 transition-colors"
                 onClick={(e) => { e.stopPropagation(); handleKill(); }}
-                title="Kill shell (SIGHUP)"
+                title="Kill shell"
               >
                 kill
               </button>

@@ -320,22 +320,6 @@ export const openApiSpec: OpenApiSpec = {
         responses: { 200: corsResponse },
       },
     },
-    '/sessions/{id}/shells/dismissed': {
-      get: {
-        tags: ['Sessions'],
-        summary: 'List dismissed terminal-bubble procIds',
-        parameters: [sessionIdParam],
-        responses: { 200: { description: 'OK', content: { 'application/json': { schema: { type: 'object', properties: { dismissed: { type: 'array', items: { type: 'string' } } } } } } } },
-      },
-    },
-    '/sessions/{id}/shells/{procId}': {
-      delete: {
-        tags: ['Sessions'],
-        summary: 'Dismiss a terminal bubble',
-        parameters: [sessionIdParam, { name: 'procId', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: { 200: { description: 'OK', content: { 'application/json': { schema: { type: 'object', properties: { ok: { type: 'boolean' }, changed: { type: 'boolean' } } } } } } },
-      },
-    },
 
     // ───────────────────────── Providers ─────────────────────────
     '/providers/opencode/info': {
@@ -474,29 +458,36 @@ export const openApiSpec: OpenApiSpec = {
       },
     },
 
-    // ───────────────────────── Exec / Processes ─────────────────────────
-    '/exec': {
-      post: {
-        tags: ['Exec'],
-        summary: 'Spawn a tracked process',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, sessionId: { type: 'string' } } } } } },
-        responses: { 200: corsResponse },
-      },
-    },
-    '/processes': {
+    // ───────────────────────── Terminals (CRUD) ─────────────────────────
+    // Single source of truth for terminal lifecycle, shared by the UI and the
+    // in-process MCP tools. Live I/O stays on the /ws multiplexer.
+    '/session/{id}/terminals': {
       get: {
-        tags: ['Exec'],
-        summary: 'List tracked processes for a session',
-        parameters: [{ name: 'sessionId', in: 'query', required: true, schema: { type: 'string' } }],
-        responses: { 200: corsResponse, 400: errorResponse('sessionId required') },
+        tags: ['Terminals'],
+        summary: 'List a session\'s terminals',
+        parameters: [sessionIdParam],
+        responses: { 200: { description: 'OK', content: { 'application/json': { schema: { type: 'object', properties: { terminals: { type: 'array', items: { type: 'object' } } } } } } } },
+      },
+      post: {
+        tags: ['Terminals'],
+        summary: 'Create a terminal (broadcasts terminal_created)',
+        parameters: [sessionIdParam],
+        requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, cols: { type: 'integer' }, rows: { type: 'integer' }, terminalName: { type: 'string' } } } } } },
+        responses: { 200: corsResponse, 500: errorResponse('spawn failed') },
       },
     },
-    '/kill': {
-      post: {
-        tags: ['Exec'],
-        summary: 'Kill a tracked process',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { processId: { type: 'string' }, pid: { type: 'integer' } } } } } },
-        responses: { 200: corsResponse, 400: errorResponse('processId or pid required') },
+    '/session/{id}/terminals/{procId}': {
+      get: {
+        tags: ['Terminals'],
+        summary: 'Read one terminal (append ?output=1 for the buffer)',
+        parameters: [sessionIdParam, { name: 'procId', in: 'path', required: true, schema: { type: 'string' } }, { name: 'output', in: 'query', required: false, schema: { type: 'string' } }],
+        responses: { 200: corsResponse, 404: errorResponse('not found') },
+      },
+      delete: {
+        tags: ['Terminals'],
+        summary: 'Kill a terminal (broadcasts terminal_removed)',
+        parameters: [sessionIdParam, { name: 'procId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: corsResponse, 404: errorResponse('not found') },
       },
     },
 

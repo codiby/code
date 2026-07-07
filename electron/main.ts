@@ -46,6 +46,20 @@ import {
 } from './cdp';
 import { pluginOauthLogin, type OAuthSpec } from './plugin_oauth';
 import { registerUpdaterIpc, startUpdateChecks } from './updater';
+import {
+  acquireTunnel,
+  releaseTunnel,
+  disconnectTunnel,
+  closeAllTunnels,
+  getTunnelStatus,
+  getTunnelLocalPort,
+  probeRemoteHealth,
+  addPortForward,
+  removePortForward,
+  listActiveForwards,
+  onTunnelStatus,
+  cleanupStaleControlSockets,
+} from './ssh_tunnel';
 
 const DEV = process.env.ELECTRON_DEV === '1' || !app.isPackaged;
 const DEV_URL = process.env.CODIBY_DEV_URL || 'http://localhost:3111';
@@ -293,6 +307,39 @@ function registerIpcHandlers(): void {
     return await cdpHandleDialog(args.label, { accept: args.accept, promptText: args.promptText });
   });
 
+  // --- remote SSH tunnels ---------------------------------------------------
+  // Main owns the ssh masters. The renderer acquires a tunnel (getting a free
+  // local port), then connects DIRECTLY to 127.0.0.1:<port> for that remote's
+  // sessions. bun no longer proxies remote traffic.
+  ipcMain.handle('app:remote_tunnel_acquire', async (_e, args: { remoteId: string }) => {
+    const { localTunnelPort } = await acquireTunnel(args.remoteId);
+    return { port: localTunnelPort };
+  });
+  ipcMain.handle('app:remote_tunnel_release', async (_e, args: { remoteId: string }) => {
+    releaseTunnel(args.remoteId);
+    return { ok: true };
+  });
+  ipcMain.handle('app:remote_tunnel_status', async (_e, args: { remoteId: string }) => {
+    return getTunnelStatus(args.remoteId);
+  });
+  ipcMain.handle('app:remote_tunnel_disconnect', async (_e, args: { remoteId: string }) => {
+    await disconnectTunnel(args.remoteId);
+    return { ok: true };
+  });
+  ipcMain.handle('app:remote_test', async (_e, args: { remoteId: string }) => {
+    return await probeRemoteHealth(args.remoteId);
+  });
+  ipcMain.handle('app:remote_forward_add', async (_e, args: { remoteId: string; remotePort: number; localPort?: number | null; label?: string }) => {
+    return await addPortForward(args.remoteId, args.remotePort, args.localPort ?? null, args.label);
+  });
+  ipcMain.handle('app:remote_forward_remove', async (_e, args: { remoteId: string; localPort: number; remotePort: number }) => {
+    await removePortForward(args.remoteId, args.localPort, args.remotePort);
+    return { ok: true };
+  });
+  ipcMain.handle('app:remote_forward_list', async (_e, args: { remoteId: string }) => {
+    return listActiveForwards(args.remoteId);
+  });
+
   // --- plugin OAuth ---------------------------------------------------------
   ipcMain.handle('app:plugin_oauth_login', async (_e, args: { spec: OAuthSpec }) => {
     await pluginOauthLogin(args.spec, getBridgePort);
@@ -340,6 +387,18 @@ app.whenReady().then(async () => {
   });
   registerIpcHandlers();
 
+  // Remove stale ssh control sockets from a previous run, and forward tunnel
+  // status changes to the renderer (replaces bun's `remote.status` WS frames).
+  cleanupStaleControlSockets();
+  onTunnelStatus((remoteId, status, lastError) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      // Include the current local port so the renderer can (re)point its direct
+      // connection — the port changes whenever the ssh master respawns.
+      const port = getTunnelLocalPort(remoteId);
+      mainWindow.webContents.send('remote-tunnel-status', { remoteId, status, lastError, port });
+    }
+  });
+
   await loadInitialUrl(mainWindow);
 
   // Begin polling GitHub releases (packaged macOS builds only).
@@ -360,9 +419,11 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   try { disposeAll(); } catch {}
+  try { closeAllTunnels(); } catch {}
   killSidecar();
 });
 
 process.on('exit', () => {
+  try { closeAllTunnels(); } catch {}
   killSidecar();
 });

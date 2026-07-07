@@ -8,6 +8,7 @@ import {
   type PermissionRequest,
   type SessionInfo,
   type SupportedModel,
+  type TerminalInfo,
 } from '../../lib/claude-client';
 import { playChime } from '../../lib/chime';
 import { useScreenWakeLock } from '../../lib/wake-lock';
@@ -253,30 +254,9 @@ export function MobileApp() {
             },
           };
         });
-        // Server-driven interactive terminals (the `spawn_terminal` SDK
-        // tool pushes a `isInteractiveTerminal: true` chat message). The
-        // desktop renders these from `state.messages`; mobile reads its
-        // shell dock from a separate `shellsBySession` map, so we hydrate
-        // it here whenever such a message arrives.
-        if (msg.isInteractiveTerminal && msg.procId) {
-          setShellsBySession((prev) => {
-            const list = prev[sessionId] || [];
-            if (list.some((s) => s.procId === msg.procId)) return prev;
-            return {
-              ...prev,
-              [sessionId]: [
-                ...list,
-                {
-                  id: msg.procId!,
-                  procId: msg.procId!,
-                  cwd: msg.terminalCwd || '/',
-                  command: msg.terminalCommand,
-                  createdAt: msg.timestamp || Date.now(),
-                },
-              ],
-            };
-          });
-        }
+        // Terminals are a first-class resource now — they arrive via the
+        // dedicated terminal_created / onTerminalsSnapshot callbacks, not as
+        // chat messages.
       },
       onPartialText: (sessionId, text) => {
         setRuntime((prev) => {
@@ -360,8 +340,31 @@ export function MobileApp() {
           }, 4000);
         }
       },
-      onTerminalData: () => {/* Mobile doesn't render the live terminal stream */},
-      onTerminalExit: () => {},
+      onTerminalData: () => {/* live bytes stream via the per-procId sub in the bubble */},
+      onTerminalsSnapshot: (sessionId, list) => {
+        setShellsBySession((prev) => ({ ...prev, [sessionId]: list }));
+      },
+      onTerminalCreated: (sessionId, terminal) => {
+        setShellsBySession((prev) => {
+          const list = prev[sessionId] || [];
+          if (list.some((t) => t.procId === terminal.procId)) return prev;
+          return { ...prev, [sessionId]: [...list, terminal] };
+        });
+      },
+      onTerminalRemoved: (sessionId, procId) => {
+        setShellsBySession((prev) => {
+          const list = prev[sessionId];
+          if (!list) return prev;
+          return { ...prev, [sessionId]: list.filter((t) => t.procId !== procId) };
+        });
+      },
+      onTerminalExit: (sessionId, procId, code) => {
+        setShellsBySession((prev) => {
+          const list = prev[sessionId];
+          if (!list) return prev;
+          return { ...prev, [sessionId]: list.map((t) => (t.procId === procId ? { ...t, exitCode: code } : t)) };
+        });
+      },
       onTodos: () => {},
       onAutoApproved: () => {},
       onSessionName: (sessionId, name) => {
@@ -639,18 +642,17 @@ export function MobileApp() {
   // back on upward scroll or near the top of the chat.
   const [chromeHidden, setChromeHidden] = useState(false);
 
-  // Local interactive shells — keyed by session. The server has no record of
-  // these (they're entirely client-side bubbles); the InteractiveTerminalBubble
-  // does the WS-side spawn/IO. Same data shape the desktop uses.
-  type LocalShell = { id: string; procId: string; cwd: string; command?: string; createdAt: number };
-  const [shellsBySession, setShellsBySession] = useState<Record<string, LocalShell[]>>({});
-  const createShell = (procId: string, cwd: string, command?: string) => {
+  // Terminals as first-class resources, keyed by session. Fetched from the
+  // bridge on connect (onTerminalsSnapshot) and kept in sync via the
+  // terminal_created / terminal_removed / terminal_exit broadcasts — same
+  // model the desktop uses.
+  const [shellsBySession, setShellsBySession] = useState<Record<string, TerminalInfo[]>>({});
+  // Create a terminal via the CRUD endpoint. It appears in the dock when the
+  // `terminal_created` broadcast lands — never optimistically. (`procId` from
+  // the caller is ignored; the server assigns the real id.)
+  const createShell = (_procId: string, cwd: string, command?: string) => {
     if (!activeId) return;
-    setShellsBySession((prev) => {
-      const list = prev[activeId] || [];
-      if (list.some((s) => s.procId === procId)) return prev;
-      return { ...prev, [activeId]: [...list, { id: procId, procId, cwd, command, createdAt: Date.now() }] };
-    });
+    void clientRef.current?.createTerminal(activeId, { command, cwd });
   };
 
   // Remove a shell from the local list once its PTY has exited. The server
@@ -658,7 +660,9 @@ export function MobileApp() {
   // our UI reference (and fire a best-effort kill to speed up server cleanup).
   const removeShell = (procId: string) => {
     if (!activeId) return;
-    try { void clientRef.current?.killProcess(procId); } catch {}
+    // Close === kill. The terminal_removed broadcast drops it from every
+    // client; filter locally too for instant feedback.
+    try { void clientRef.current?.deleteTerminal(activeId, procId); } catch {}
     setShellsBySession((prev) => {
       const list = prev[activeId] || [];
       const next = list.filter((s) => s.procId !== procId);
@@ -670,51 +674,20 @@ export function MobileApp() {
     // won't re-add this procId because it no longer exists server-side.)
   };
 
-  // Server-side shell persistence — every time the active session changes we
-  // pull the list of live PTYs for it from `/processes` and hydrate the local
-  // shell registry. The bridge server keeps PTYs running across PWA reloads
-  // and client disconnects (they only die on server restart or explicit
-  // kill), so this is what restores the mobile terminals end-to-end when the
-  // user closes the app and comes back. Shells created locally during the
-  // session merge on top (createShell dedupes by procId).
-  const hydratedSessionsRef = useRef<Set<string>>(new Set());
+  // Server-side terminal persistence is handled by the client: subscribing to
+  // a session fetches its live terminals and delivers them via
+  // onTerminalsSnapshot (above). The bridge keeps PTYs running across PWA
+  // reloads and client disconnects, so this restores the mobile terminals
+  // end-to-end when the user reopens the app. Refresh on demand too, since a
+  // terminal may have been created by another client while we were away.
   useEffect(() => {
     const client = clientRef.current;
     if (!client || !activeId) return;
-    // Re-hydrate on every open — the PTY registry can change behind our back
-    // (other clients, /processes endpoint pruning exited PTYs after 30 s).
     let cancelled = false;
-    (async () => {
-      try {
-        const procs = await client.listProcesses(activeId);
-        if (cancelled) return;
-        const live = procs.filter((p) => p.kind === 'pty' && (p.exitCode == null));
-        if (live.length === 0 && hydratedSessionsRef.current.has(activeId)) return;
-        hydratedSessionsRef.current.add(activeId);
-        setShellsBySession((prev) => {
-          const existing = prev[activeId] || [];
-          const existingIds = new Set(existing.map((s) => s.procId));
-          const additions: LocalShell[] = [];
-          for (const p of live) {
-            if (existingIds.has(p.id)) continue;
-            // The user's `/terminal` shells are tracked on the bridge with
-            // command: '(interactive shell)' — that's a placeholder, not
-            // something to surface. PTYs spawned by `spawn_terminal` have
-            // a real command we want to keep as the badge label.
-            const cmd = p.command && p.command !== '(interactive shell)' ? p.command : undefined;
-            additions.push({
-              id: p.id,
-              procId: p.id,
-              cwd: p.cwd,
-              command: cmd,
-              createdAt: p.startedAt || Date.now(),
-            });
-          }
-          if (additions.length === 0) return prev;
-          return { ...prev, [activeId]: [...existing, ...additions] };
-        });
-      } catch {/* best-effort — swallow fetch errors */}
-    })();
+    void client.fetchTerminals(activeId).then((list) => {
+      if (cancelled) return;
+      setShellsBySession((prev) => ({ ...prev, [activeId]: list }));
+    }).catch(() => {});
     return () => { cancelled = true; };
   }, [activeId]);
   // Always show chrome when a sheet is open (otherwise the user can't dismiss it)

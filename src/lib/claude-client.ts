@@ -1,7 +1,11 @@
 /**
- * Codiby Code Client — single WebSocket connection to the bridge server.
- * All state lives on the server. The client is a stateless viewer.
+ * Codiby Code Client — one WebSocket per bridge. There is always a LOCAL
+ * connection (to the bun sidecar) plus one DIRECT connection per remote,
+ * reached through an SSH tunnel that the Electron main process owns. The
+ * client routes each session's REST/WS to the connection its remote belongs
+ * to. All state lives on the bridges; the client is a stateless viewer.
  */
+import { getNative } from './native';
 
 export async function resolveServerUrl(): Promise<string> {
   const native = (typeof window !== 'undefined') ? window.codiby : null;
@@ -111,25 +115,16 @@ function withToken(url: string): string {
 
 // ---------------------------------------------------------------------------
 // Active remote — set by the UI when the focused session lives on a remote.
-// `withActiveRemote` injects `?remoteId=` on session-agnostic endpoints (file
-// browse, git, search, …) so the local bun bridge proxies them through the
-// SSH tunnel. Endpoints that resolve `remoteId` from their own state
-// (`/sessions/*`, `/remotes/*`) are not touched.
+// Session-agnostic endpoints (file browse, git, search, …) are re-pointed at
+// the remote's DIRECT tunnel base (see `ClaudeClient.remoteUrl`) instead of
+// the local bun bridge. Endpoints that resolve the remote from their own state
+// (`/sessions/*`) route via the session's connection; `/remotes/*` stay local.
 // ---------------------------------------------------------------------------
 
 let _activeRemoteId: string | null = null;
 
 export function setActiveRemoteId(id: string | null): void {
   _activeRemoteId = id && id.length > 0 ? id : null;
-}
-
-/** Append `remoteId=<active>` if the focused session lives on a remote and
- *  the URL doesn't already carry one. No-op on local sessions. */
-function withActiveRemote(url: string): string {
-  if (!_activeRemoteId) return url;
-  if (url.includes('remoteId=')) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}remoteId=${encodeURIComponent(_activeRemoteId)}`;
 }
 
 /** Build fetch init with Authorization header when a token is set. */
@@ -218,6 +213,30 @@ export interface ChatMessage {
    * button. Undefined once the message ships normally.
    */
   deliveryStatus?: 'sending' | 'failed';
+}
+
+/**
+ * A terminal as a first-class resource. Fetched from
+ * `GET /session/:id/terminals` on connect and kept in sync via the
+ * `terminal_created` / `terminal_removed` broadcasts. The terminals dock
+ * renders straight from a list of these — terminals are no longer inferred
+ * from chat messages. `id === procId`.
+ */
+export interface TerminalInfo {
+  id: string;
+  procId: string;
+  sessionId: string;
+  command: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  startedAt: number;
+  exitCode: number | null;
+  kind: 'oneshot' | 'pty';
+  label?: string;
+  terminalName?: string;
+  terminalUrl?: string;
+  injectedEnv?: Record<string, string>;
 }
 
 export interface PermissionRequest {
@@ -360,6 +379,14 @@ type ClientCallbacks = {
   onStatus: (sessionId: string, status: string) => void;
   onTerminalData: (sessionId: string, procId: string, text: string) => void;
   onTerminalExit: (sessionId: string, procId: string, code: number) => void;
+  /** A terminal was created (by the user or an MCP tool). The dock adds the
+   *  tab only in response to this — never optimistically on the create call. */
+  onTerminalCreated?: (sessionId: string, terminal: TerminalInfo) => void;
+  /** A terminal was killed / GC'd. The dock drops the tab. */
+  onTerminalRemoved?: (sessionId: string, procId: string) => void;
+  /** Full terminals list for a session, delivered right after (re)subscribe so
+   *  the dock repopulates open terminals on connect. */
+  onTerminalsSnapshot?: (sessionId: string, terminals: TerminalInfo[]) => void;
   onTodos: (sessionId: string, todos: { content: string; status: string; activeForm?: string }[]) => void;
   onAutoApproved: (sessionId: string, toolName: string, filePath?: string, command?: string) => void;
   onSessionName: (sessionId: string, name: string) => void;
@@ -489,12 +516,136 @@ export interface PortlessProxyActionResult {
   conflict?: { port: number; funnelConflict: boolean };
 }
 
+type ConnStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+
+/**
+ * One WebSocket connection to a bridge — the local bun sidecar, or a remote
+ * reached directly through its SSH tunnel (a plain `127.0.0.1:<tunnelPort>`
+ * base). Owns its own reconnect loop and subscription set so the ClaudeClient
+ * can hold a collection: one local + one per active remote. The remote base
+ * can change when the tunnel respawns on a new local port — `setBase()` and
+ * the reconnect path both re-derive it.
+ */
+class Conn {
+  ws: WebSocket | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly activeSubs = new Set<string>();
+  private closed = false;
+  private base: string | null;
+
+  constructor(
+    readonly remoteId: string | null,
+    base: string | null,
+    private readonly hooks: {
+      /** Re-derive the http base (remote: current tunnel port). Null if not ready. */
+      resolveBase: () => Promise<string | null>;
+      token: () => string | null;
+      onMessage: (msg: Record<string, unknown>, remoteId: string | null) => void;
+      onStatus: (remoteId: string | null, status: ConnStatus) => void;
+    },
+  ) {
+    this.base = base;
+    void this.connect();
+  }
+
+  /** Point at a new base (e.g. the tunnel came online on a fresh port). */
+  setBase(base: string | null) {
+    if (base && base !== this.base) {
+      this.base = base;
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) this.reopenSoon(0);
+    }
+  }
+
+  private async connect() {
+    if (this.closed) return;
+    if (!this.base) {
+      this.base = await this.hooks.resolveBase();
+      if (this.closed) return;
+    }
+    if (!this.base) { this.reopenSoon(2000); return; }
+    const token = this.hooks.token();
+    const wsBase = this.base.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
+    const url = token ? `${wsBase}?t=${encodeURIComponent(token)}` : wsBase;
+    this.hooks.onStatus(this.remoteId, 'connecting');
+    const ws = new WebSocket(url);
+    this.ws = ws;
+    ws.onopen = () => {
+      this.hooks.onStatus(this.remoteId, 'connected');
+      for (const sid of this.activeSubs) {
+        try { ws.send(JSON.stringify({ type: 'subscribe', sessionId: sid })); } catch {}
+      }
+    };
+    ws.onmessage = (event) => {
+      try { this.hooks.onMessage(JSON.parse(event.data), this.remoteId); } catch {}
+    };
+    ws.onclose = () => {
+      this.hooks.onStatus(this.remoteId, 'disconnected');
+      if (!this.closed) {
+        // Re-derive the base on reconnect — a remote tunnel may have respawned
+        // on a different local port.
+        this.base = null;
+        this.reopenSoon(2000);
+      }
+    };
+    ws.onerror = () => { this.hooks.onStatus(this.remoteId, 'error'); };
+  }
+
+  private reopenSoon(delay: number) {
+    if (this.closed) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; void this.connect(); }, delay);
+  }
+
+  send(msg: object) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+  }
+  subscribe(sessionId: string) { this.activeSubs.add(sessionId); this.send({ type: 'subscribe', sessionId }); }
+  unsubscribe(sessionId: string) { this.activeSubs.delete(sessionId); this.send({ type: 'unsubscribe', sessionId }); }
+
+  /** Close the socket for bfcache/background without forgetting subs. */
+  closeForBackground() {
+    try { this.ws?.close(); } catch {}
+    this.ws = null;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+  }
+  /** Reopen if the socket isn't open (foreground / pageshow). */
+  reopen() {
+    if (this.closed) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      try { this.ws?.close(); } catch {}
+      this.ws = null;
+      this.base = null;
+      void this.connect();
+    }
+  }
+  destroy() {
+    this.closed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    try { this.ws?.close(); } catch {}
+    this.ws = null;
+  }
+}
+
 export class ClaudeClient {
-  private ws: WebSocket | null = null;
   private serverUrl: string;
   private callbacks: ClientCallbacks;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
+  /** Local connection to the bun sidecar. */
+  private localConn!: Conn;
+  /** Direct connections to remotes, keyed by remoteId. */
+  private remoteConns = new Map<string, Conn>();
+  /** sessionId → remoteId for sessions that live on a remote (absent = local). */
+  private sessionRemote = new Map<string, string>();
+  /** Last known SSH-tunnel local port per remote. */
+  private remotePorts = new Map<string, number>();
+  /** Memoized tunnel-acquire promise per remote (one acquire → one refcount). */
+  private remoteBasePromises = new Map<string, Promise<string | null>>();
+  /** Remote display metadata (color/name) used to tag discovered sessions. */
+  private remoteMeta = new Map<string, { color?: string | null; name?: string | null }>();
+  /** Last session list received from each connection ('' = local, else remoteId).
+   *  Merged into a single list for `onSessions`. */
+  private sessionsByConn = new Map<string, SessionInfo[]>();
+  private tunnelStatusUnlisten: (() => void) | null = null;
   // Per-procId listeners for interactive terminals (xterm.js subscribers).
   // Populated by `onTerminalDataForProc` / `onTerminalExitForProc`; fired
   // from the WS message handler so xterm receives the raw byte stream
@@ -506,9 +657,6 @@ export class ClaudeClient {
   // replay arrives on top of whatever stale content they had rendered from
   // their local chat log.
   private termResetSubs = new Map<string, Set<() => void>>();
-  // Track active session subscriptions so they can be re-sent after a
-  // reconnect — the server doesn't remember them per-WS-id.
-  private activeSubs = new Set<string>();
   // Visibility listener (mobile PWA) — re-checks the connection when the
   // user brings the app back to the foreground.
   private visibilityHandler: (() => void) | null = null;
@@ -518,37 +666,48 @@ export class ClaudeClient {
   constructor(serverUrl: string, callbacks: ClientCallbacks) {
     this.serverUrl = serverUrl;
     this.callbacks = callbacks;
-    this.connect();
-    // Visibility / lifecycle handling:
-    //
-    //   • Page goes to background → CLOSE the WS so the page stays
-    //     bfcache-eligible. An OPEN WebSocket disqualifies the page from
-    //     bfcache (per spec), which forces the browser to do a full reload
-    //     when the user comes back — the symptom users report as "the
-    //     mobile PWA reloads every time I switch back to it".
-    //
-    //   • Page comes back (visibilitychange / pageshow / pagehide) →
-    //     reconnect if needed. On bfcache restore (`pageshow.persisted ===
-    //     true`), no JS state was lost so this is just a WS reopen.
-    //
-    //   • iOS Safari and Android Chrome both fire visibilitychange for
-    //     PWA background/foreground; pageshow/pagehide are the bfcache
-    //     entry/exit points specifically.
+
+    // The local connection always exists; its WS status drives the app's
+    // connection indicator. Remote connections are added lazily via
+    // `setRemotes` / when a remote session is first used.
+    this.localConn = new Conn(null, this.serverUrl, {
+      resolveBase: async () => this.serverUrl,
+      token: () => _authToken,
+      onMessage: (msg, rid) => this.handleMessage(msg, rid),
+      onStatus: (rid, status) => { if (rid === null) this.callbacks.onConnectionChange(status); },
+    });
+
+    // Discover configured remotes and open a direct connection to each.
+    void this.refreshRemotes();
+
+    // Tunnel status (owned by Electron main) → refresh the direct base URL when
+    // a remote comes online on a new port, and feed the remote-status UI.
+    const native = getNative();
+    if (native?.onRemoteTunnelStatus) {
+      this.tunnelStatusUnlisten = native.onRemoteTunnelStatus(({ remoteId, status, lastError, port }) => {
+        if (port) {
+          this.remotePorts.set(remoteId, port);
+          this.remoteConns.get(remoteId)?.setBase(`http://127.0.0.1:${port}`);
+        }
+        const uiStatus = status === 'idle' ? 'offline' : status;
+        this.callbacks.onRemoteStatus?.(remoteId, uiStatus as 'connecting' | 'online' | 'reconnecting' | 'offline', lastError);
+      });
+    }
+
+    // Visibility / lifecycle handling — same rationale as before, applied to
+    // every connection (local + each remote):
+    //   • background → CLOSE the sockets so the page stays bfcache-eligible.
+    //   • foreground / pageshow → reopen any that aren't open.
     if (typeof document !== 'undefined') {
       const reconnect = () => {
         if (this.destroyed) return;
-        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-          try { this.ws?.close(); } catch {}
-          this.ws = null;
-          this.connect();
-        }
+        this.localConn.reopen();
+        for (const c of this.remoteConns.values()) c.reopen();
       };
       const closeForBackground = () => {
         if (this.destroyed) return;
-        try { this.ws?.close(); } catch {}
-        this.ws = null;
-        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        this.localConn.closeForBackground();
+        for (const c of this.remoteConns.values()) c.closeForBackground();
       };
       this.visibilityHandler = () => {
         if (this.destroyed) return;
@@ -556,8 +715,6 @@ export class ClaudeClient {
         else closeForBackground();
       };
       document.addEventListener('visibilitychange', this.visibilityHandler);
-      // bfcache hooks — pagehide closes connections so the page can be
-      // saved; pageshow restores them.
       this.pageHideHandler = () => closeForBackground();
       this.pageShowHandler = () => reconnect();
       window.addEventListener('pagehide', this.pageHideHandler);
@@ -565,57 +722,151 @@ export class ClaudeClient {
     }
   }
 
-  private connect() {
-    if (this.destroyed) return;
-    // Browsers don't allow custom headers on WS upgrades. We pass the bearer
-    // token via the URL query string (`?t=<token>`); the server's authCheck
-    // accepts it from either Authorization, ?t=, or Sec-WebSocket-Protocol.
-    // Subprotocol negotiation is fragile (the server must echo back the same
-    // protocol or browsers close the connection immediately), so a query
-    // param keeps the handshake completely standard.
-    const baseWs = this.serverUrl.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
-    const wsUrl = _authToken ? `${baseWs}?t=${encodeURIComponent(_authToken)}` : baseWs;
-    this.callbacks.onConnectionChange('connecting');
+  // ---------------------------------------------------------------------------
+  // Remote connections (direct-to-tunnel)
+  // ---------------------------------------------------------------------------
 
-    const ws = new WebSocket(wsUrl);
-    this.ws = ws;
-
-    ws.onopen = () => {
-      this.callbacks.onConnectionChange('connected');
-      // Server sends session list automatically on connect — no need to request
-      // Replay any active subscriptions so the new socket starts receiving
-      // session_state / message / permission_request for them again.
-      for (const sid of this.activeSubs) {
-        try { ws.send(JSON.stringify({ type: 'subscribe', sessionId: sid })); } catch {}
-      }
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        this.handleMessage(msg);
-      } catch {}
-    };
-
-    ws.onclose = () => {
-      this.callbacks.onConnectionChange('disconnected');
-      if (!this.destroyed) {
-        this.reconnectTimer = setTimeout(() => this.connect(), 2000);
-      }
-    };
-
-    ws.onerror = () => {
-      this.callbacks.onConnectionChange('error');
-    };
+  /** Current http base for a remote from the last known tunnel port, or null. */
+  private remoteBase(remoteId: string): string | null {
+    const port = this.remotePorts.get(remoteId);
+    return port ? `http://127.0.0.1:${port}` : null;
   }
 
-  private handleMessage(msg: Record<string, unknown>) {
+  /** Bring a remote's tunnel up ONCE (memoized), caching the local port. Holds
+   *  a single refcount for the remote's lifetime. Memoizing here — and deduping
+   *  the spawn in Electron main — is what stops many `ssh` masters racing for
+   *  the same control socket. Failed acquires are un-memoized so REST retries. */
+  private ensureRemoteBaseUp(remoteId: string): Promise<string | null> {
+    let p = this.remoteBasePromises.get(remoteId);
+    if (!p) {
+      p = this.acquireRemoteBase(remoteId).then((base) => {
+        if (!base) this.remoteBasePromises.delete(remoteId);
+        return base;
+      });
+      this.remoteBasePromises.set(remoteId, p);
+    }
+    return p;
+  }
+
+  private async acquireRemoteBase(remoteId: string): Promise<string | null> {
+    const native = getNative();
+    if (!native) return null;
+    try {
+      const { port } = await native.invoke<{ port: number }>('remote_tunnel_acquire', { remoteId });
+      this.remotePorts.set(remoteId, port);
+      const base = `http://127.0.0.1:${port}`;
+      this.remoteConns.get(remoteId)?.setBase(base);
+      return base;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Open (once) the direct connection to a remote's tunnelled bridge. Registers
+   *  the Conn SYNCHRONOUSLY (before any await) so concurrent callers share one
+   *  connection instead of each opening their own socket + acquiring. */
+  private ensureRemoteConn(remoteId: string): Conn {
+    let conn = this.remoteConns.get(remoteId);
+    if (conn) return conn;
+    conn = new Conn(remoteId, this.remoteBase(remoteId), {
+      resolveBase: async () => this.remoteBase(remoteId), // cached port; no re-acquire on reconnect
+      token: () => null, // the loopback tunnel is trusted; no bearer needed
+      onMessage: (msg, rid) => this.handleMessage(msg, rid),
+      onStatus: () => {}, // remote UI status comes from the tunnel-status push
+    });
+    this.remoteConns.set(remoteId, conn);
+    // Bring the tunnel up once and point the connection at the resolved port.
+    void this.ensureRemoteBaseUp(remoteId).then((base) => { if (base) conn!.setBase(base); });
+    return conn;
+  }
+
+  private releaseRemote(remoteId: string) {
+    this.remoteBasePromises.delete(remoteId);
+    getNative()?.invoke('remote_tunnel_release', { remoteId }).catch(() => {});
+  }
+
+  /** Configure which remotes exist (from `/remotes`). Opens a connection per
+   *  remote so its session list is discovered directly, and tears down any that
+   *  were removed. Also records display metadata used to tag sessions. */
+  setRemotes(remotes: { id: string; color?: string | null; name?: string | null }[]) {
+    const ids = new Set(remotes.map((r) => r.id));
+    for (const r of remotes) this.remoteMeta.set(r.id, { color: r.color, name: r.name });
+    for (const r of remotes) this.ensureRemoteConn(r.id);
+    for (const [rid, conn] of [...this.remoteConns]) {
+      if (!ids.has(rid)) {
+        conn.destroy();
+        this.remoteConns.delete(rid);
+        this.sessionsByConn.delete(rid);
+        this.releaseRemote(rid);
+      }
+    }
+  }
+
+  /** Re-point a `${serverUrl}/…` file/git/search URL at the currently-focused
+   *  remote's direct tunnel base. No-op when the focused session is local. */
+  private async remoteUrl(url: string): Promise<string> {
+    if (!_activeRemoteId) return url;
+    this.ensureRemoteConn(_activeRemoteId);
+    const base = await this.ensureRemoteBaseUp(_activeRemoteId);
+    return base ? url.replace(this.serverUrl, base) : url;
+  }
+
+  /** http base for a specific session's bridge (session-bound REST). */
+  private async sessionBase(sessionId: string): Promise<string> {
+    const rid = this.sessionRemote.get(sessionId);
+    if (!rid) return this.serverUrl;
+    this.ensureRemoteConn(rid);
+    return (await this.ensureRemoteBaseUp(rid)) ?? this.serverUrl;
+  }
+
+  /** Merge each connection's last session list into one and emit it. */
+  private emitMergedSessions() {
+    const all: SessionInfo[] = [];
+    for (const list of this.sessionsByConn.values()) all.push(...list);
+    this.callbacks.onSessions(all);
+  }
+
+  /** Load the configured remotes from the local bridge and open a direct
+   *  connection to each (discovering their sessions). `/remotes` CRUD +
+   *  persistence still lives on the local bun sidecar. */
+  async refreshRemotes(): Promise<void> {
+    try {
+      const resp = await authedFetch(`${this.serverUrl}/remotes`);
+      if (!resp.ok) return;
+      const remotes = await resp.json() as { id: string; color?: string | null; name?: string | null }[];
+      this.setRemotes(remotes);
+    } catch {
+      // Local bridge not reachable yet — retried on the next `remotes` broadcast.
+    }
+  }
+
+  private handleMessage(msg: Record<string, unknown>, remoteId: string | null = null) {
     const type = msg.type as string;
     const sessionId = msg.sessionId as string;
 
     switch (type) {
-      case 'sessions':
-        this.callbacks.onSessions(msg.sessions as SessionInfo[]);
+      case 'sessions': {
+        // Each connection reports its own session list. Tag remote sessions
+        // with their remoteId + display metadata, record the sessionId→remote
+        // mapping (used to route later REST/WS), then emit the merged list.
+        const sessions = (msg.sessions as SessionInfo[]) || [];
+        if (remoteId) {
+          const meta = this.remoteMeta.get(remoteId);
+          for (const s of sessions) {
+            this.sessionRemote.set(s.id, remoteId);
+            s.remoteId = remoteId;
+            s.remoteColor = meta?.color ?? null;
+            s.remoteName = meta?.name ?? null;
+          }
+        }
+        this.sessionsByConn.set(remoteId ?? '', sessions);
+        this.emitMergedSessions();
+        break;
+      }
+      case 'remotes':
+        // The configured-remotes list changed (added/removed/edited in
+        // Settings). Re-open/close direct connections to match.
+        this.setRemotes((msg.remotes as { id: string; color?: string | null; name?: string | null }[]) || []);
         break;
       case 'session_state':
         this.callbacks.onSessionState(sessionId, msg.state as SessionState);
@@ -776,13 +1027,25 @@ export class ClaudeClient {
           env: (msg.env as Record<string, string>) || {},
         });
         break;
+      case 'terminal_created':
+        this.callbacks.onTerminalCreated?.(sessionId, msg.terminal as TerminalInfo);
+        break;
+      case 'terminal_removed':
+        this.callbacks.onTerminalRemoved?.(sessionId, msg.procId as string);
+        break;
     }
   }
 
+  /** Route a session-keyed WS frame to the connection owning that session
+   *  (local or the session's remote). Frames without a sessionId go local. */
   private send(msg: object) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
+    const sid = (msg as { sessionId?: string }).sessionId;
+    const rid = sid ? this.sessionRemote.get(sid) : undefined;
+    if (rid) {
+      this.ensureRemoteConn(rid).send(msg);
+      return;
     }
+    this.localConn.send(msg);
   }
 
   // ---------------------------------------------------------------------------
@@ -790,15 +1053,26 @@ export class ClaudeClient {
   // ---------------------------------------------------------------------------
 
   subscribe(sessionId: string) {
-    this.activeSubs.add(sessionId);
-    this.send({ type: 'subscribe', sessionId });
+    const rid = this.sessionRemote.get(sessionId);
+    if (rid) this.ensureRemoteConn(rid).subscribe(sessionId);
+    else this.localConn.subscribe(sessionId);
+    // Repopulate the dock with whatever terminals are already alive for this
+    // session, as soon as we connect. Best-effort — a not-yet-ready bridge
+    // just returns an empty list; a later `terminal_created` fills it in.
+    void this.fetchTerminals(sessionId)
+      .then(terminals => this.callbacks.onTerminalsSnapshot?.(sessionId, terminals))
+      .catch(() => {});
   }
   unsubscribe(sessionId: string) {
-    this.activeSubs.delete(sessionId);
-    this.send({ type: 'unsubscribe', sessionId });
+    const rid = this.sessionRemote.get(sessionId);
+    if (rid) this.remoteConns.get(rid)?.unsubscribe(sessionId);
+    else this.localConn.unsubscribe(sessionId);
   }
   getSessionState(sessionId: string) { this.send({ type: 'get_session_state', sessionId }); }
-  getSessions() { this.send({ type: 'get_sessions' }); }
+  getSessions() {
+    this.localConn.send({ type: 'get_sessions' });
+    for (const c of this.remoteConns.values()) c.send({ type: 'get_sessions' });
+  }
 
   /** Tell the server which tab the user is currently viewing. In app spawn
    *  mode this is the only signal that boots a session's provider; in
@@ -837,21 +1111,51 @@ export class ClaudeClient {
   // Terminal
   // ---------------------------------------------------------------------------
 
-  execCommand(sessionId: string, command: string, cwd: string, procId?: string) {
-    this.send({ type: 'exec', sessionId, command, cwd, procId });
+  // ---- Terminal CRUD (REST) ----
+  // Lifecycle goes over REST; the terminal appears in the dock only when the
+  // server broadcasts `terminal_created` back over the WS. Live I/O
+  // (keystrokes / bytes) stays on the WS below.
+
+  /** List every terminal for a session. Fetched on connect + on demand. */
+  async fetchTerminals(sessionId: string): Promise<TerminalInfo[]> {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/session/${encodeURIComponent(sessionId)}/terminals`);
+    if (!resp.ok) return [];
+    const data = await resp.json() as { terminals?: TerminalInfo[] };
+    return data.terminals || [];
   }
 
-  killProcess(sessionId: string, processId?: string, pid?: number) {
-    this.send({ type: 'kill_process', sessionId, processId, pid });
+  /** Create a terminal. Resolves with the created terminal, but callers should
+   *  NOT insert it themselves — the dock adds it when `terminal_created`
+   *  arrives over the WS (single source of truth). */
+  async createTerminal(
+    sessionId: string,
+    opts?: { command?: string; cwd?: string; cols?: number; rows?: number; terminalName?: string },
+  ): Promise<TerminalInfo | null> {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/session/${encodeURIComponent(sessionId)}/terminals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts || {}),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json() as { terminal?: TerminalInfo };
+    return data.terminal || null;
   }
 
-  // ---- Interactive PTY (/terminal slash command) ----
-  /** `label` + `command` are only honoured on the fresh-spawn path —
-   *  re-attaches preserve whatever the server already has. They let
-   *  bubble-driven respawns (after a bridge restart wiped the original
-   *  PTY) reclaim their identity so MCP lookups by name still work. */
-  execShell(sessionId: string, procId: string, cwd: string, cols: number, rows: number, opts?: { label?: string; command?: string }) {
-    this.send({ type: 'exec_shell', sessionId, procId, cwd, cols, rows, label: opts?.label, command: opts?.command });
+  /** Kill + remove a terminal. Close === kill. The dock drops the tab when the
+   *  matching `terminal_removed` broadcast arrives. */
+  async deleteTerminal(sessionId: string, procId: string): Promise<void> {
+    const base = await this.sessionBase(sessionId);
+    await authedFetch(`${base}/session/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(procId)}`, { method: 'DELETE' });
+  }
+
+  // ---- Terminal live I/O (WS) ----
+
+  /** Re-attach a viewer to a live PTY (tab switch / remount / reload). Never
+   *  spawns — the server replays the authoritative buffer + resizes. */
+  attachTerminal(sessionId: string, procId: string, cols: number, rows: number) {
+    this.send({ type: 'terminal_attach', sessionId, procId, cols, rows });
   }
 
   sendTerminalInput(sessionId: string, procId: string, data: string) {
@@ -862,8 +1166,9 @@ export class ClaudeClient {
     this.send({ type: 'terminal_resize', sessionId, procId, cols, rows });
   }
 
+  /** Kill a terminal (alias for deleteTerminal — close === kill). */
   killTerminal(sessionId: string, procId: string) {
-    this.send({ type: 'terminal_kill', sessionId, procId });
+    void this.deleteTerminal(sessionId, procId);
   }
 
   /** Subscribe to raw terminal_data chunks for a specific procId. Used by
@@ -938,7 +1243,15 @@ export class ClaudeClient {
       groupCwd?: string;
     } = {},
   ): Promise<SessionInfo> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions`, {
+    const remoteId = opts.remoteId ?? null;
+    // Remote sessions are created DIRECTLY on the remote bridge (through its
+    // tunnel) — the remote is just a normal bridge, so no remoteId in the body.
+    let base = this.serverUrl;
+    if (remoteId) {
+      this.ensureRemoteConn(remoteId);
+      base = (await this.ensureRemoteBaseUp(remoteId)) ?? this.serverUrl;
+    }
+    const resp = await authedFetch(`${base}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -947,22 +1260,33 @@ export class ClaudeClient {
         model: opts.model,
         permissionMode: opts.permissionMode,
         provider: opts.provider,
-        remoteId: opts.remoteId ?? null,
         group_cwd: opts.groupCwd,
       }),
     });
     if (!resp.ok) throw new Error(`Failed to create session: ${resp.status}`);
-    return resp.json();
+    const session = await resp.json() as SessionInfo;
+    if (remoteId) {
+      // Record the mapping so subsequent REST/WS route to this remote; the
+      // remote's `sessions` broadcast will surface it in the merged list.
+      this.sessionRemote.set(session.id, remoteId);
+      const meta = this.remoteMeta.get(remoteId);
+      session.remoteId = remoteId;
+      session.remoteColor = meta?.color ?? null;
+      session.remoteName = meta?.name ?? null;
+    }
+    return session;
   }
 
   async resumeSession(sessionId: string): Promise<SessionInfo> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/resume`, { method: 'POST' });
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}/resume`, { method: 'POST' });
     if (!resp.ok) throw new Error(`Failed to resume: ${resp.status}`);
     return resp.json();
   }
 
   async renameSession(sessionId: string, name: string): Promise<SessionInfo> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}`, {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -972,20 +1296,23 @@ export class ClaudeClient {
   }
 
   async stopSession(sessionId: string): Promise<void> {
-    await authedFetch(`${this.serverUrl}/sessions/${sessionId}/stop`, { method: 'POST' });
+    const base = await this.sessionBase(sessionId);
+    await authedFetch(`${base}/sessions/${sessionId}/stop`, { method: 'POST' });
   }
 
   /** Restart the provider for a session in place — closes and re-spawns it
    *  with the same id so conversation history is preserved. Used to pick up
    *  MCP-config changes (added/removed servers only load at spawn time). */
   async restartSession(sessionId: string): Promise<SessionInfo> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/restart`, { method: 'POST' });
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}/restart`, { method: 'POST' });
     if (!resp.ok) throw new Error(`Failed to restart: ${resp.status}`);
     return resp.json();
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    await authedFetch(`${this.serverUrl}/sessions/${sessionId}`, { method: 'DELETE' });
+    const base = await this.sessionBase(sessionId);
+    await authedFetch(`${base}/sessions/${sessionId}`, { method: 'DELETE' });
   }
 
   /** Permanently remove a session: drops it from the registry and deletes
@@ -998,7 +1325,8 @@ export class ClaudeClient {
   ): Promise<{ ok: boolean; worktree?: { removed: boolean; method: string }; history?: boolean }> {
     const params = new URLSearchParams({ purge: '1' });
     if (opts.worktree) params.set('worktree', '1');
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}?${params}`, { method: 'DELETE' });
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}?${params}`, { method: 'DELETE' });
     if (!resp.ok) return { ok: false };
     return resp.json();
   }
@@ -1026,7 +1354,8 @@ export class ClaudeClient {
     sessionId: string,
     updates: { permissionMode?: string; name?: string; status?: 'open' | 'archived' },
   ): Promise<SessionInfo> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}`, {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(updates),
@@ -1055,7 +1384,8 @@ export class ClaudeClient {
    *  external bridges hold a reference to the session id. The next user
    *  message starts a fresh Claude conversation. */
   async clearSessionMessages(sessionId: string): Promise<void> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/clear`, {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}/clear`, {
       method: 'POST',
     });
     if (!resp.ok) throw new Error(`Failed to clear: ${resp.status}`);
@@ -1086,7 +1416,7 @@ export class ClaudeClient {
   }
 
   async listDirs(prefix: string): Promise<string[]> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/ls?prefix=${encodeURIComponent(prefix)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/ls?prefix=${encodeURIComponent(prefix)}`));
     if (!resp.ok) return [];
     return resp.json();
   }
@@ -1102,13 +1432,13 @@ export class ClaudeClient {
   private _userHomeCache: string | null = null;
 
   async listFiles(dirPath: string): Promise<{ name: string; path: string; type: 'file' | 'dir' }[]> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/files?path=${encodeURIComponent(dirPath)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/files?path=${encodeURIComponent(dirPath)}`));
     if (!resp.ok) return [];
     return resp.json();
   }
 
   async readFile(path: string): Promise<{ path: string; content: string } | null> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return null;
     return resp.json();
   }
@@ -1117,7 +1447,7 @@ export class ClaudeClient {
    *  an <img src>. Used by the image preview tab — an <img> can't carry the
    *  Authorization header itself, so we read the blob here and inline it. */
   async readFileDataUrl(path: string): Promise<string | null> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return null;
     const blob = await resp.blob();
     return await new Promise<string | null>((resolve) => {
@@ -1129,7 +1459,7 @@ export class ClaudeClient {
   }
 
   async writeFile(path: string, content: string): Promise<boolean> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-content`), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, content }),
@@ -1141,7 +1471,7 @@ export class ClaudeClient {
    *  remote session `withActiveRemote` routes this through the SSH tunnel, so
    *  the bytes are read on the remote machine. Returns null on failure. */
   async readFileBytes(path: string): Promise<{ bytes: ArrayBuffer; mime: string } | null> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return null;
     const mime = resp.headers.get('content-type') || 'application/octet-stream';
     return { bytes: await resp.arrayBuffer(), mime };
@@ -1151,7 +1481,7 @@ export class ClaudeClient {
    *  remote session this is proxied over the SSH tunnel, so the file lands on
    *  the remote filesystem. */
   async uploadFileBytes(path: string, bytes: ArrayBuffer | Uint8Array): Promise<boolean> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-raw?path=${encodeURIComponent(path)}`), {
       method: 'PUT',
       headers: { 'content-type': 'application/octet-stream' },
       body: bytes as BodyInit,
@@ -1162,7 +1492,7 @@ export class ClaudeClient {
   /** Persist a large pasted snippet under ~/.codiby/<sessionId>/<uuid><.ext>.
    *  Returns the absolute path + generated filename, or null on failure. */
   async saveSnippet(sessionId: string, content: string, ext?: string): Promise<{ path: string; name: string; uuid: string } | null> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/snippet`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/snippet`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId, content, ext }),
@@ -1172,14 +1502,14 @@ export class ClaudeClient {
   }
 
   async deletePath(path: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`), { method: 'DELETE' });
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`), { method: 'DELETE' });
     if (resp.ok) return { ok: true };
     const data = await resp.json().catch(() => ({})) as { error?: string };
     return { ok: false, error: data.error || `HTTP ${resp.status}` };
   }
 
   async renamePath(from: string, to: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-rename`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-rename`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ from, to }),
@@ -1190,7 +1520,7 @@ export class ClaudeClient {
   }
 
   async createFile(path: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-new`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-new`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, kind: 'file' }),
@@ -1201,7 +1531,7 @@ export class ClaudeClient {
   }
 
   async createDir(path: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-new`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-new`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, kind: 'dir' }),
@@ -1224,7 +1554,7 @@ export class ClaudeClient {
 
   async readFileOriginal(path: string, base?: string | null): Promise<string> {
     const baseParam = base ? `&base=${encodeURIComponent(base)}` : '';
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-original?path=${encodeURIComponent(path)}${baseParam}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-original?path=${encodeURIComponent(path)}${baseParam}`));
     if (!resp.ok) return '';
     const data = await resp.json();
     return data.content || '';
@@ -1235,20 +1565,20 @@ export class ClaudeClient {
     worktrees?: { path: string; branch: string }[];
     package_manager?: string; has_env?: boolean;
   }> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`));
     if (!resp.ok) return { is_git: false };
     return resp.json();
   }
 
   async getGitModified(root: string, base?: string | null): Promise<{ path: string; staged: boolean; untracked?: boolean; additions?: number; deletions?: number }[]> {
     const baseParam = base ? `&base=${encodeURIComponent(base)}` : '';
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}${baseParam}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-modified?root=${encodeURIComponent(root)}${baseParam}`));
     if (!resp.ok) return [];
     return resp.json();
   }
 
   async gitStage(root: string, files: string[], unstage = false): Promise<boolean> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-stage`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-stage`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ root, files, unstage }),
@@ -1257,7 +1587,7 @@ export class ClaudeClient {
   }
 
   async listBranches(cwd: string): Promise<{ current: string; local: string[]; remote: string[] }> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-branches?cwd=${encodeURIComponent(cwd)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-branches?cwd=${encodeURIComponent(cwd)}`));
     if (!resp.ok) return { current: '', local: [], remote: [] };
     return resp.json();
   }
@@ -1271,7 +1601,7 @@ export class ClaudeClient {
      *  as a failure. */
     alreadyInWorktree?: { path: string; branch: string };
   }> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/git-checkout`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-checkout`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cwd, branch }),
@@ -1287,7 +1617,7 @@ export class ClaudeClient {
     const params = new URLSearchParams({ root, q: query });
     params.set('case', opts.caseSensitive ? 'sensitive' : 'insensitive');
     if (opts.ignore && opts.ignore.trim()) params.set('ignore', opts.ignore.trim());
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/search?${params}`), { signal: opts.signal });
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/search?${params}`), { signal: opts.signal });
     if (!resp.ok) return [];
     const data = await resp.json();
     return data.results || [];
@@ -1333,59 +1663,36 @@ export class ClaudeClient {
     return resp.json().catch(() => ({ ok: resp.ok }));
   }
 
-  async listProcesses(sessionId: string): Promise<{ id: string; pid: number; command: string; cwd: string; startedAt: number; exitCode?: number | null; kind?: 'oneshot' | 'pty'; output?: string; children: { pid: number; command: string }[] }[]> {
-    const resp = await authedFetch(`${this.serverUrl}/processes?sessionId=${sessionId}`);
-    if (!resp.ok) return [];
-    return resp.json();
-  }
-
   // ---------------------------------------------------------------------------
-  // Port forwards (remote sessions only). The local bridge owns the SSH
-  // ControlMaster, so add/list/remove all hit the local server even when the
-  // session lives on a remote.
+  // Port forwards (remote sessions only). Electron main owns the SSH
+  // ControlMaster now, so add/list/remove go through main IPC keyed by the
+  // session's remoteId. No-op for local sessions.
   // ---------------------------------------------------------------------------
 
   async listPortForwards(sessionId: string): Promise<{ localPort: number; remotePort: number; label?: string }[]> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards`);
-    if (!resp.ok) return [];
-    return resp.json();
+    const remoteId = this.sessionRemote.get(sessionId);
+    if (!remoteId) return [];
+    return (await getNative()?.invoke<{ localPort: number; remotePort: number; label?: string }[]>('remote_forward_list', { remoteId })) ?? [];
   }
 
   async addPortForward(
     sessionId: string,
     body: { remotePort: number; localPort?: number | null; label?: string },
   ): Promise<{ localPort: number; remotePort: number; label?: string }> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+    const remoteId = this.sessionRemote.get(sessionId);
+    if (!remoteId) throw new Error('Port forwards are only available for remote sessions');
+    const native = getNative();
+    if (!native) throw new Error('Port forwards require the desktop app');
+    const { localPort } = await native.invoke<{ localPort: number }>('remote_forward_add', {
+      remoteId, remotePort: body.remotePort, localPort: body.localPort ?? null, label: body.label,
     });
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({})) as { error?: string };
-      throw new Error(data.error || `HTTP ${resp.status}`);
-    }
-    return resp.json();
+    return { localPort, remotePort: body.remotePort, label: body.label };
   }
 
   async removePortForward(sessionId: string, localPort: number, remotePort: number): Promise<void> {
-    await authedFetch(`${this.serverUrl}/sessions/${sessionId}/port-forwards/${localPort}/${remotePort}`, { method: 'DELETE' });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Dismissed shells — bridge-owned list of terminal procIds the user has
-  // explicitly closed. The frontend asks at session load (so it knows what
-  // to hide) and DELETEs to add a new entry.
-  // ---------------------------------------------------------------------------
-
-  async listDismissedShells(sessionId: string): Promise<string[]> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${sessionId}/shells/dismissed`);
-    if (!resp.ok) return [];
-    const data = await resp.json() as { dismissed?: string[] };
-    return data.dismissed || [];
-  }
-
-  async dismissShell(sessionId: string, procId: string): Promise<void> {
-    await authedFetch(`${this.serverUrl}/sessions/${sessionId}/shells/${encodeURIComponent(procId)}`, { method: 'DELETE' });
+    const remoteId = this.sessionRemote.get(sessionId);
+    if (!remoteId) return;
+    await getNative()?.invoke('remote_forward_remove', { remoteId, localPort, remotePort });
   }
 
   // ---------------------------------------------------------------------------
@@ -1549,7 +1856,7 @@ export class ClaudeClient {
   }
 
   async getFileIndex(root: string): Promise<{ name: string; path: string; rel: string; type?: 'file' | 'dir' }[]> {
-    const resp = await authedFetch(withActiveRemote(`${this.serverUrl}/file-index?root=${encodeURIComponent(root)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-index?root=${encodeURIComponent(root)}`));
     if (!resp.ok) return [];
     return resp.json();
   }
@@ -1637,7 +1944,8 @@ export class ClaudeClient {
 
   destroy() {
     this.destroyed = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.tunnelStatusUnlisten?.();
+    this.tunnelStatusUnlisten = null;
     if (typeof document !== 'undefined') {
       if (this.visibilityHandler) {
         document.removeEventListener('visibilitychange', this.visibilityHandler);
@@ -1652,6 +1960,8 @@ export class ClaudeClient {
         this.pageShowHandler = null;
       }
     }
-    this.ws?.close();
+    this.localConn.destroy();
+    for (const [rid, c] of this.remoteConns) { c.destroy(); this.releaseRemote(rid); }
+    this.remoteConns.clear();
   }
 }
