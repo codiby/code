@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { corsHeaders } from '../config';
+import { corsHeaders } from '../config/config';
 
 function refExists(cwd: string, ref: string): boolean {
   try {

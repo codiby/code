@@ -2,7 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
-import { corsHeaders } from '../config';
+import { corsHeaders } from '../config/config';
 import { detectPackageManager } from './files';
 
 const pExec = promisify(exec);

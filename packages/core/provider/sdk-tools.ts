@@ -14,17 +14,17 @@ import { dirname, extname, join } from 'path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
-import { log } from '../logger';
-import { addMessage } from '../state';
-import type { ChatMessage } from '../state';
-import { sessions, saveSessions } from '../sessions';
-import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host';
+import { log } from '../lib/logger';
+import { addMessage } from '../session/state';
+import type { ChatMessage } from '../session/state';
+import { sessions, saveSessions } from '../session/sessions';
+import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host/index';
 import { cdpRequest } from './browser-cdp';
 import { trackedProcesses } from '../handlers/processes';
 import { createTerminal, removeTerminal } from '../handlers/terminals';
 import type { TrackedProcess } from '../types';
-import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../portless';
-import { buildInjectedActionEnv, configuredActionUrl, getGlobalTld, worktreePrefix } from '../action-env';
+import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../integrations/portless';
+import { buildInjectedActionEnv, configuredActionUrl, getGlobalTld, worktreePrefix } from '../process/action-env';
 import type { PortlessConfig, TabGroupInfo } from '../../ui/src/lib/tab-groups';
 
 /** Resolve a tracked process for the current session by procId OR name. */

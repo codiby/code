@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { rgPath as bundledRgPath } from '@vscode/ripgrep';
-import { corsHeaders } from '../config';
+import { corsHeaders } from '../config/config';
 
 export type CaseMode = 'smart' | 'sensitive' | 'insensitive';
 

@@ -5,7 +5,7 @@
  * CDP messages between frontend WebSocket clients and the debug target.
  */
 
-import { log, logError } from '../logger';
+import { log, logError } from '../lib/logger';
 
 // ---------------------------------------------------------------------------
 // Types

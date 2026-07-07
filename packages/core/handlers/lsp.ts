@@ -8,8 +8,8 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
-import { log, logError } from '../logger';
-import { sessions } from '../sessions';
+import { log, logError } from '../lib/logger';
+import { sessions } from '../session/sessions';
 
 // ---------------------------------------------------------------------------
 // Language server registry

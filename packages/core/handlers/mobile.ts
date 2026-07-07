@@ -10,10 +10,10 @@
  * needs these — it receives the token via the QR code fragment.
  */
 
-import { corsHeaders, getLanIp, loadOrCreateMobileToken, regenerateMobileToken, PORT, resolveTls } from '../config';
-import { notify } from '../notify';
-import { loadTailscaleSettings } from '../storage';
-import { getTailscaleHostname } from '../tailscale';
+import { corsHeaders, getLanIp, loadOrCreateMobileToken, regenerateMobileToken, PORT, resolveTls } from '../config/config';
+import { notify } from '../integrations/notify';
+import { loadTailscaleSettings } from '../session/storage';
+import { getTailscaleHostname } from '../network/tailscale';
 
 function pairResponse(token: string) {
   const lanIp = getLanIp();

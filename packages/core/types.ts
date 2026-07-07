@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'child_process';
 import type { ProviderSession } from './provider/types';
-import type { PtyHandle } from './pty';
+import type { PtyHandle } from './process/pty';
 
 /** A configured remote — points at an entry in the user's ~/.ssh/config. */
 export type Remote = {

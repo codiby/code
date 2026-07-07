@@ -7,8 +7,8 @@ import { getProvider } from './registry';
 import { createBridgeEvents } from './bridge';
 import type { BridgeDeps } from './bridge';
 import { buildSessionSdkMcpServer } from './sdk-tools';
-import { loadPreferences } from '../storage';
-import { startSessionWatcher } from '../watcher';
+import { loadPreferences } from '../session/storage';
+import { startSessionWatcher } from '../session/watcher';
 import type { Session } from '../types';
 import type { McpServerSpec, PermissionMode, SpawnOptions } from './types';
 

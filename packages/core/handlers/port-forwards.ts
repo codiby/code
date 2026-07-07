@@ -9,13 +9,13 @@
  * ControlMaster (multiplexed on top of the existing master).
  */
 
-import { corsHeaders } from '../config';
-import { resolveSessionRemote, proxyHttpToRemote } from '../gateway';
+import { corsHeaders } from '../config/config';
+import { resolveSessionRemote, proxyHttpToRemote } from '../network/gateway';
 import {
   addPortForward as sshAddForward,
   removePortForward as sshRemoveForward,
   listActiveForwards,
-} from '../ssh-tunnel';
+} from '../network/ssh-tunnel';
 
 function badRequest(msg: string): Response {
   return Response.json({ error: msg }, { status: 400, headers: corsHeaders });

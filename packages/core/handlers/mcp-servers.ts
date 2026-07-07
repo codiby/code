@@ -19,8 +19,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
-import { corsHeaders, PORT } from '../config';
-import { log, logError } from '../logger';
+import { corsHeaders, PORT } from '../config/config';
+import { log, logError } from '../lib/logger';
 
 const USER_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
 const PROJECT_CONFIG_FILENAME = '.mcp.json';

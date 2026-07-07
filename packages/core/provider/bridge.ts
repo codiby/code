@@ -7,14 +7,14 @@
  */
 
 import { randomUUID } from 'crypto';
-import { ACCEPT_EDITS_TOOLS, ALWAYS_AUTO_APPROVE_TOOLS, MAIN_SESSION_ID, PLAN_DENY_TOOLS, PLAN_READ_ONLY_TOOLS, USER_INTERACTION_TOOLS } from '../config';
-import { log, logError } from '../logger';
-import { saveSessions } from '../sessions';
-import { addMessage, getSessionState, updateSessionState, updateUIState } from '../state';
-import type { ChatMessage, PermissionRequest } from '../state';
+import { ACCEPT_EDITS_TOOLS, ALWAYS_AUTO_APPROVE_TOOLS, MAIN_SESSION_ID, PLAN_DENY_TOOLS, PLAN_READ_ONLY_TOOLS, USER_INTERACTION_TOOLS } from '../config/config';
+import { log, logError } from '../lib/logger';
+import { saveSessions } from '../session/sessions';
+import { addMessage, getSessionState, updateSessionState, updateUIState } from '../session/state';
+import type { ChatMessage, PermissionRequest } from '../session/state';
 import type { Session } from '../types';
-import { notify } from '../notify';
-import { updateWorkingWithTool } from '../telegram';
+import { notify } from '../integrations/notify';
+import { updateWorkingWithTool } from '../integrations/telegram';
 import { setClaudeModels } from '../handlers/claude-info';
 import type { PermissionDecision, PermissionRequestDetail, ProviderEvents } from './types';
 

@@ -22,7 +22,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { CODIBY_DIR } from '../config';
+import { CODIBY_DIR } from '../config/config';
 import type { ProviderModelInfo } from '../provider/types';
 
 const CACHE_FILE = join(CODIBY_DIR, 'ui-claude-models.json');

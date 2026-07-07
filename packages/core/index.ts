@@ -10,13 +10,13 @@ import { dirname, join, extname } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 
-import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, CODIBY_DIR, loadOrCreateMobileToken, getLanIp, resolveTls } from './config';
+import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, CODIBY_DIR, loadOrCreateMobileToken, getLanIp, resolveTls } from './config/config';
 import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } from './handlers/mobile';
-import { notifyPermissionResolved } from './notify';
-import { log, registerGlobalErrorHandlers } from './logger';
-import { sessions, loadSessions, saveSessions, sessionToJSON, setStatusBroadcaster } from './sessions';
-import { loadRemotes, getRemote } from './remotes';
-import { migrateToCodiby } from './migrate-to-codiby';
+import { notifyPermissionResolved } from './integrations/notify';
+import { log, registerGlobalErrorHandlers } from './lib/logger';
+import { sessions, loadSessions, saveSessions, sessionToJSON, setStatusBroadcaster } from './session/sessions';
+import { loadRemotes, getRemote } from './network/remotes';
+import { migrateToCodiby } from './lib/migrate-to-codiby';
 import {
   handleListRemotes,
   handleAddRemote,
@@ -27,20 +27,20 @@ import {
 // Remote traffic is no longer proxied by bun — the renderer connects directly
 // to each remote's tunnelled bridge (Electron main owns the SSH tunnels), so
 // the former gateway/ssh-tunnel imports are gone.
-import { getMergedRemoteGroups, isRemoteGroupId } from './remote-groups-cache';
+import { getMergedRemoteGroups, isRemoteGroupId } from './network/remote-groups-cache';
 import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import { handleListMcpServers, handleAddMcpServer, handleRemoveMcpServer } from './handlers/mcp-servers';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
-import { ClaudeAdapter } from './provider/adapters/ClaudeAdapter';
-import { CodexAdapter } from './provider/adapters/CodexAdapter';
-import { OpenCodeAdapter } from './provider/adapters/OpenCodeAdapter';
+import { ClaudeAdapter } from './provider/adapters/claude';
+import { CodexAdapter } from './provider/adapters/codex';
+import { OpenCodeAdapter } from './provider/adapters/opencode';
 import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
-import { startProcessMonitor, pokeProcessMonitor } from './process-monitor';
+import { startProcessMonitor, pokeProcessMonitor } from './process/process-monitor';
 import { trackedProcesses, restoreProcessRegistry } from './handlers/processes';
 import {
   setTerminalBroadcaster,
@@ -56,11 +56,11 @@ import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree } from './handlers/worktree';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
-import { registerShutdownHandlers } from './shutdown';
-import { startTelegramBot, notifyTelegramIfMainSession, restartTelegramBot, isTelegramBotRunning, setTelegramBroadcaster } from './telegram';
-import { ensureMcpConfig } from './ensure-mcp-config';
-import * as pluginHost from './plugin-host';
-import { handleMcpRequest, setMcpDeps } from './mcp';
+import { registerShutdownHandlers } from './lib/shutdown';
+import { startTelegramBot, notifyTelegramIfMainSession, restartTelegramBot, isTelegramBotRunning, setTelegramBroadcaster } from './integrations/telegram';
+import { ensureMcpConfig } from './mcp/ensure-mcp-config';
+import * as pluginHost from './plugin-host/index';
+import { handleMcpRequest, setMcpDeps } from './mcp/mcp';
 import {
   getSessionState,
   updateSessionState,
@@ -69,14 +69,14 @@ import {
   updateUIState,
   getStateForClient,
   clearSessionState,
-} from './state';
-import type { ChatMessage } from './state';
-import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './storage';
-import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './claude-settings';
-import { createDocsApp } from './swagger';
+} from './session/state';
+import type { ChatMessage } from './session/state';
+import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './session/storage';
+import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './config/claude-settings';
+import { createDocsApp } from './api/swagger';
 import { Hono } from 'hono';
-import { transcribeAudioBuffer } from './deepgram';
-import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './tailscale';
+import { transcribeAudioBuffer } from './integrations/deepgram';
+import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './network/tailscale';
 import {
   getPortlessCliStatus,
   runAction as portlessRunAction,
@@ -94,8 +94,8 @@ import {
   stopProxy as stopPortlessProxy,
   trustCA as trustPortlessCA,
   type ProxyMode,
-} from './portless';
-import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './action-env';
+} from './integrations/portless';
+import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './process/action-env';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -107,9 +107,9 @@ import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './
 registerGlobalErrorHandlers('server');
 
 // Register provider adapters before loading sessions (so default provider exists)
-registerProvider(ClaudeAdapter);
-registerProvider(CodexAdapter);
-registerProvider(OpenCodeAdapter);
+registerProvider(new ClaudeAdapter());
+registerProvider(new CodexAdapter());
+registerProvider(new OpenCodeAdapter());
 
 // `--spawned-by=app|service` (or `CODIBY_SPAWN_MODE=app|service`) tells the
 // server who launched it. Used purely for telemetry and the PATH-enrichment
@@ -200,7 +200,7 @@ function broadcastSessionList() {
  *  no longer bun's concern — the renderer gets it from Electron main. */
 function broadcastRemoteList() {
   // Lazy require avoids circular import at module load.
-  const { listRemotes } = require('./remotes') as typeof import('./remotes');
+  const { listRemotes } = require('./network/remotes') as typeof import('./network/remotes');
   const list = listRemotes();
   const data = JSON.stringify({ type: 'remotes', remotes: list });
   for (const ws of frontendClients) {

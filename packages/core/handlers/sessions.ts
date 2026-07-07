@@ -2,16 +2,16 @@ import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
 import { existsSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
-import { sessions, saveSessions, sessionToJSON } from '../sessions';
+import { sessions, saveSessions, sessionToJSON } from '../session/sessions';
 import { startProviderSession } from '../provider/lifecycle';
-import { corsHeaders, CWD, PORT, MAIN_SESSION_ID } from '../config';
-import { log, logError } from '../logger';
+import { corsHeaders, CWD, PORT, MAIN_SESSION_ID } from '../config/config';
+import { log, logError } from '../lib/logger';
 import { trackedProcesses, killProcessTree, saveProcessRegistry } from './processes';
 import { killSessionLsp } from './lsp';
 import { DEFAULT_PROVIDER } from '../provider/registry';
 import { clearPendingDecisionsForSession } from '../provider/bridge';
-import { deleteSessionData, clearMessages } from '../storage';
-import { stopSessionWatcher } from '../watcher';
+import { deleteSessionData, clearMessages } from '../session/storage';
+import { stopSessionWatcher } from '../session/watcher';
 import type { Session } from '../types';
 
 /** True when `cwd` matches the worktree convention `<repo-parent>/.wt/<branch>`

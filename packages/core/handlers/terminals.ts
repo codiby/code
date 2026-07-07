@@ -17,8 +17,8 @@
  */
 
 import { randomUUID } from 'crypto';
-import { log } from '../logger';
-import { spawnPty } from '../pty';
+import { log } from '../lib/logger';
+import { spawnPty } from '../process/pty';
 import type { TerminalInfo, TrackedProcess } from '../types';
 import {
   trackedProcesses,
@@ -27,7 +27,7 @@ import {
   addToGraveyard,
   killTrackedProcess,
 } from './processes';
-import { pokeProcessMonitor } from '../process-monitor';
+import { pokeProcessMonitor } from '../process/process-monitor';
 
 // ---------------------------------------------------------------------------
 // Broadcast wiring. Set once at startup from index.ts so this module can push

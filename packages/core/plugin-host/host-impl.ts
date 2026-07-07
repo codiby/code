@@ -14,7 +14,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { log as bridgeLog } from '../logger';
+import { log as bridgeLog } from '../lib/logger';
 import type {
   HttpMethod,
   PluginManifest,

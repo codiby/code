@@ -21,7 +21,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { pathToFileURL } from 'url';
-import { log as bridgeLog } from '../logger';
+import { log as bridgeLog } from '../lib/logger';
 import {
   PLUGINS_ROOT,
   createPluginServerHost,

@@ -6,7 +6,7 @@
  * touch the tunnel: status is merged in by the renderer from main.
  */
 
-import { corsHeaders } from '../config';
+import { corsHeaders } from '../config/config';
 import {
   remotes,
   listRemotes,
@@ -15,7 +15,7 @@ import {
   removeRemote,
   validateRemoteInput,
   type AddRemoteInput,
-} from '../remotes';
+} from '../network/remotes';
 
 function badRequest(msg: string): Response {
   return Response.json({ error: msg }, { status: 400, headers: corsHeaders });

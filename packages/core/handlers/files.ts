@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync }
 import { execFileSync } from 'child_process';
 import { basename, dirname, join, resolve, sep } from 'path';
 import { platform } from 'os';
-import { corsHeaders } from '../config';
+import { corsHeaders } from '../config/config';
 
 /** True when `s` ends with a path separator for the current OS (either `/` or,
  *  on Windows, `\`). The directory-autocomplete API treats a trailing separator

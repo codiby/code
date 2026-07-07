@@ -1,8 +1,8 @@
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { corsHeaders, CODIBY_DIR } from '../config';
-import { log } from '../logger';
+import { corsHeaders, CODIBY_DIR } from '../config/config';
+import { log } from '../lib/logger';
 import type { TrackedProcess } from '../types';
 
 export const trackedProcesses = new Map<string, TrackedProcess>();
