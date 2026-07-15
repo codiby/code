@@ -735,6 +735,8 @@ export class ClaudeClient {
   // user brings the app back to the foreground.
   private visibilityHandler: (() => void) | null = null;
   private pageHideHandler: (() => void) | null = null;
+  /** Debounce timer for the background socket-teardown (see visibilityHandler). */
+  private bgCloseTimer: ReturnType<typeof setTimeout> | null = null;
   private pageShowHandler: (() => void) | null = null;
 
   constructor(serverUrl: string, callbacks: ClientCallbacks) {
@@ -783,13 +785,29 @@ export class ClaudeClient {
         this.localConn.closeForBackground();
         for (const c of this.remoteConns.values()) c.closeForBackground();
       };
+      // Tearing every socket down the instant the window is hidden — and
+      // reopening on return — makes each session's online indicator flicker on
+      // a quick alt-tab / focus change. Debounce the teardown so only a
+      // genuinely-backgrounded window (hidden for a while) closes its sockets;
+      // a brief hide keeps them open, so `reconnect()` becomes a no-op and the
+      // indicators stay steady. The immediate bfcache path is still covered by
+      // `pagehide` below.
+      const BACKGROUND_CLOSE_DELAY_MS = 30_000;
+      const cancelBgClose = () => {
+        if (this.bgCloseTimer) { clearTimeout(this.bgCloseTimer); this.bgCloseTimer = null; }
+      };
       this.visibilityHandler = () => {
         if (this.destroyed) return;
-        if (document.visibilityState === 'visible') reconnect();
-        else closeForBackground();
+        if (document.visibilityState === 'visible') {
+          cancelBgClose();
+          reconnect();
+        } else {
+          cancelBgClose();
+          this.bgCloseTimer = setTimeout(() => { this.bgCloseTimer = null; closeForBackground(); }, BACKGROUND_CLOSE_DELAY_MS);
+        }
       };
       document.addEventListener('visibilitychange', this.visibilityHandler);
-      this.pageHideHandler = () => closeForBackground();
+      this.pageHideHandler = () => { cancelBgClose(); closeForBackground(); };
       this.pageShowHandler = () => reconnect();
       window.addEventListener('pagehide', this.pageHideHandler);
       window.addEventListener('pageshow', this.pageShowHandler);
@@ -890,7 +908,16 @@ export class ClaudeClient {
     const rid = this.sessionRemote.get(sessionId);
     if (!rid) return this.serverUrl;
     this.ensureRemoteConn(rid);
-    return (await this.ensureRemoteBaseUp(rid)) ?? this.serverUrl;
+    // A remote session must NEVER fall back to the local bridge: the local
+    // server doesn't own the session, so routing there returns 404 (the
+    // reported "GET http://127.0.0.1:<local>/sessions/<id>/terminals" bug).
+    // Prefer the freshly-acquired tunnel base, else the port the tunnel-status
+    // push already cached; if neither is ready, throw so best-effort callers
+    // (fetchTerminals) skip and retry once the tunnel is up — the WS snapshot /
+    // `terminal_created` broadcast refills the dock.
+    const base = (await this.ensureRemoteBaseUp(rid)) ?? this.remoteBase(rid);
+    if (!base) throw new Error(`Remote ${rid} tunnel not ready for session ${sessionId}`);
+    return base;
   }
 
   /** Merge each connection's last session list into one and emit it. */
@@ -920,18 +947,26 @@ export class ClaudeClient {
 
     switch (type) {
       case 'sessions': {
-        // Each connection reports its own session list. Tag remote sessions
-        // with their remoteId + display metadata, record the sessionId→remote
-        // mapping (used to route later REST/WS), then emit the merged list.
+        // Each connection reports its own session list. Record the
+        // sessionId→remote mapping so later REST/WS route to the right bridge.
         const sessions = (msg.sessions as SessionInfo[]) || [];
-        if (remoteId) {
-          const meta = this.remoteMeta.get(remoteId);
-          for (const s of sessions) {
-            this.sessionRemote.set(s.id, remoteId);
-            s.remoteId = remoteId;
-            s.remoteColor = meta?.color ?? null;
-            s.remoteName = meta?.name ?? null;
-          }
+        for (const s of sessions) {
+          // A session is remote if the reporting connection is a remote OR the
+          // payload itself carries a remoteId (e.g. a cached/aggregated entry
+          // surfaced over the local connection). Registering BOTH cases keeps
+          // `sessionRemote` authoritative so a remote session never falls
+          // through to the local bridge — which 404s (the terminal-open bug).
+          const rid = remoteId ?? s.remoteId ?? null;
+          if (!rid) continue;
+          this.sessionRemote.set(s.id, rid);
+          // Ensure a direct connection/tunnel exists so `sessionBase` can
+          // resolve the remote's port even when the session arrived via the
+          // local connection.
+          this.ensureRemoteConn(rid);
+          const meta = this.remoteMeta.get(rid);
+          s.remoteId = rid;
+          s.remoteColor = meta?.color ?? s.remoteColor ?? null;
+          s.remoteName = meta?.name ?? s.remoteName ?? null;
         }
         this.sessionsByConn.set(remoteId ?? '', sessions);
         this.emitMergedSessions();
@@ -2094,6 +2129,7 @@ export class ClaudeClient {
     this.destroyed = true;
     this.tunnelStatusUnlisten?.();
     this.tunnelStatusUnlisten = null;
+    if (this.bgCloseTimer) { clearTimeout(this.bgCloseTimer); this.bgCloseTimer = null; }
     if (typeof document !== 'undefined') {
       if (this.visibilityHandler) {
         document.removeEventListener('visibilitychange', this.visibilityHandler);
