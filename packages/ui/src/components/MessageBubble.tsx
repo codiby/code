@@ -1019,6 +1019,28 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
   const text = message.content || '';
   const firstLine = text.split('\n').find((l) => l.trim()) ?? '';
   const preview = firstLine.length > 90 ? firstLine.slice(0, 89) + '…' : firstLine;
+  // Live block: the reasoning is still streaming in. Show it always-expanded
+  // with a pulsing sparkle + caret (the old bottom-anchored preview look),
+  // rather than the collapsed "Thought" chip it settles into once the block
+  // completes.
+  if (message.streaming) {
+    return (
+      <div className="py-1">
+        <div className="flex items-start gap-1.5 text-[12px] text-zinc-500">
+          <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-70 text-violet-300/70 animate-pulse" />
+          <span className="font-medium uppercase tracking-wide text-[10px] mt-[3px] shrink-0">
+            Thinking
+          </span>
+        </div>
+        <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
+          <p className="text-[12px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
+            {text}
+            <span className="inline-block ml-0.5 w-1.5 h-3 bg-zinc-500/70 align-middle animate-pulse" />
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="py-1">
       <button

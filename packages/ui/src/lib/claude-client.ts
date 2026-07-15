@@ -92,6 +92,52 @@ export interface McpServerInput {
 }
 
 // ---------------------------------------------------------------------------
+// Skills (markdown skill docs across claude / opencode / .agent conventions)
+// ---------------------------------------------------------------------------
+
+export type SkillScope = 'user' | 'project';
+export type SkillSource = 'claude' | 'opencode' | 'agent';
+export type SkillFormat = 'dir' | 'file';
+
+/** Summary shape returned by the list endpoint. */
+export interface SkillSummary {
+  id: string;
+  name: string;
+  source: SkillSource;
+  scope: SkillScope;
+  format: SkillFormat;
+  description: string;
+  allowedTools: string[];
+  path: string;
+}
+
+/** Full skill (detail read) — adds the raw markdown and the body-after-frontmatter. */
+export interface SkillDetail extends SkillSummary {
+  content: string;
+  body: string;
+}
+
+/** Payload for creating a skill. */
+export interface SkillCreateInput {
+  name: string;
+  description?: string;
+  body?: string;
+  content?: string;
+  source?: SkillSource;
+  format?: SkillFormat;
+  allowedTools?: string[];
+}
+
+/** Payload for updating a skill (field-level patch, or full `content` replace). */
+export interface SkillUpdateInput {
+  name?: string;
+  description?: string;
+  body?: string;
+  content?: string;
+  allowedTools?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Mobile auth token (bearer token used by phones on the LAN)
 // ---------------------------------------------------------------------------
 
@@ -172,6 +218,17 @@ export interface ChatMessage {
   /** True when the underlying block was `redacted_thinking` (content is a
    *  placeholder; the real reasoning is encrypted by the API). */
   thinkingRedacted?: boolean;
+  /**
+   * Local-only flag: this message is the live, still-growing block of the
+   * current turn (assistant text or `isThinking` reasoning). While true its
+   * `content` is replaced in place on each stream delta and the bubble renders
+   * with the "live" look (pulsing sparkle / caret, auto-expanded thinking).
+   * Flipped to `false` when the matching permanent block arrives, or frozen in
+   * place on interrupt/turn-end. Replaces the old side-channel
+   * `partialText`/`partialThinking` strings so streaming content lives in the
+   * single `messages` array and never re-anchors to the bottom.
+   */
+  streaming?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;
@@ -217,7 +274,7 @@ export interface ChatMessage {
 
 /**
  * A terminal as a first-class resource. Fetched from
- * `GET /session/:id/terminals` on connect and kept in sync via the
+ * `GET /sessions/:id/terminals` on connect and kept in sync via the
  * `terminal_created` / `terminal_removed` broadcasts. The terminals dock
  * renders straight from a list of these — terminals are no longer inferred
  * from chat messages. `id === procId`.
@@ -624,6 +681,23 @@ class Conn {
     try { this.ws?.close(); } catch {}
     this.ws = null;
   }
+}
+
+/** A browsable per-session resource — pasted image, generated mockup, file. */
+export interface SessionResource {
+  id: string;
+  sessionId: string;
+  name: string;
+  kind: 'image' | 'mockup' | 'snippet' | 'file' | 'other' | string;
+  mime: string;
+  ext: string;
+  size: number;
+  createdAt: number;
+  updatedAt: number;
+  /** Absolute on-disk path. */
+  path: string;
+  /** Serve path for the raw blob, relative to the server root. */
+  url: string;
 }
 
 export class ClaudeClient {
@@ -1119,7 +1193,7 @@ export class ClaudeClient {
   /** List every terminal for a session. Fetched on connect + on demand. */
   async fetchTerminals(sessionId: string): Promise<TerminalInfo[]> {
     const base = await this.sessionBase(sessionId);
-    const resp = await authedFetch(`${base}/session/${encodeURIComponent(sessionId)}/terminals`);
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/terminals`);
     if (!resp.ok) return [];
     const data = await resp.json() as { terminals?: TerminalInfo[] };
     return data.terminals || [];
@@ -1133,7 +1207,7 @@ export class ClaudeClient {
     opts?: { command?: string; cwd?: string; cols?: number; rows?: number; terminalName?: string },
   ): Promise<TerminalInfo | null> {
     const base = await this.sessionBase(sessionId);
-    const resp = await authedFetch(`${base}/session/${encodeURIComponent(sessionId)}/terminals`, {
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/terminals`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(opts || {}),
@@ -1147,7 +1221,7 @@ export class ClaudeClient {
    *  matching `terminal_removed` broadcast arrives. */
   async deleteTerminal(sessionId: string, procId: string): Promise<void> {
     const base = await this.sessionBase(sessionId);
-    await authedFetch(`${base}/session/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(procId)}`, { method: 'DELETE' });
+    await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(procId)}`, { method: 'DELETE' });
   }
 
   // ---- Terminal live I/O (WS) ----
@@ -1661,6 +1735,80 @@ export class ClaudeClient {
     if (cwd) params.set('cwd', cwd);
     const resp = await authedFetch(`${this.serverUrl}/mcp-servers/${encodeURIComponent(name)}?${params}`, { method: 'DELETE' });
     return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Skills
+  // -------------------------------------------------------------------------
+
+  /** List skills for a scope. `root` (the project cwd) is required for 'project'. */
+  async listSkills(scope: SkillScope, root?: string | null): Promise<SkillSummary[]> {
+    const params = new URLSearchParams({ scope });
+    if (root) params.set('root', root);
+    const resp = await authedFetch(`${this.serverUrl}/skills?${params}`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  /** Read one skill in full (includes raw markdown `content`). */
+  async getSkill(id: string): Promise<SkillDetail | null> {
+    const resp = await authedFetch(`${this.serverUrl}/skills/${encodeURIComponent(id)}`);
+    if (!resp.ok) return null;
+    return resp.json();
+  }
+
+  /** Create a skill in the given scope. `root` required for 'project'. */
+  async createSkill(scope: SkillScope, root: string | null, input: SkillCreateInput): Promise<SkillDetail | { error: string }> {
+    const params = new URLSearchParams({ scope });
+    if (root) params.set('root', root);
+    const resp = await authedFetch(`${this.serverUrl}/skills?${params}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+  }
+
+  /** Patch a skill by its opaque id. */
+  async updateSkill(id: string, patch: SkillUpdateInput): Promise<SkillDetail | { error: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/skills/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    return resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+  }
+
+  /** Delete a skill by its opaque id. */
+  async deleteSkill(id: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Session resources — pasted images, generated mockups, uploaded files.
+  // -------------------------------------------------------------------------
+
+  /** List a session's resources, newest first. Optionally filter by kind. */
+  async listResources(sessionId: string, kind?: string): Promise<SessionResource[]> {
+    const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/resources${qs}`);
+    if (!resp.ok) return [];
+    return resp.json().catch(() => []);
+  }
+
+  /** Delete a single resource (blob + manifest entry). */
+  async deleteResource(sessionId: string, rid: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(
+      `${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/resources/${encodeURIComponent(rid)}`,
+      { method: 'DELETE' },
+    );
+    return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  /** Token-authed URL for a resource's raw bytes — safe to use as `<img src>`. */
+  resourceRawUrl(sessionId: string, rid: string): string {
+    return withToken(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/resources/${encodeURIComponent(rid)}/raw`);
   }
 
   // ---------------------------------------------------------------------------

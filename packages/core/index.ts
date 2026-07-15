@@ -40,6 +40,8 @@ import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
+import { handleListSkills, handleGetSkill, handleCreateSkill, handleUpdateSkill, handleDeleteSkill } from './handlers/skills';
+import { handleListResources, handleGetResource, handleGetResourceRaw, createResource, handleUpdateResource, handleDeleteResource, purgeSessionResources, saveResource } from './handlers/resources';
 import { startProcessMonitor, pokeProcessMonitor } from './process/process-monitor';
 import { trackedProcesses, restoreProcessRegistry } from './handlers/processes';
 import {
@@ -401,6 +403,28 @@ function maybeAutoGroupSession(sessionId: string, cwd: string) {
   updatePreferences({ tabGroups: groups, tabGroupMap: map });
 }
 
+const IMG_MIME_EXT: Record<string, string> = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
+};
+
+/**
+ * File images attached to a chat message under the session's browsable
+ * resources so they surface in the Resources panel. Best-effort — a storage
+ * failure must never break message delivery.
+ */
+function fileImagesAsResources(sessionId: string, images?: { media_type: string; data: string }[]): void {
+  if (!images?.length) return;
+  const stamp = Date.now();
+  images.forEach((img, i) => {
+    const ext = IMG_MIME_EXT[img.media_type] || 'png';
+    try {
+      saveResource(sessionId, { data: img.data, name: `image-${stamp}-${i + 1}.${ext}`, kind: 'image', mime: img.media_type });
+    } catch (e) {
+      log(`fileImagesAsResources: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  });
+}
+
 /**
  * Send a user message to a session — shared between the frontend WebSocket
  * (`send_message`), the HTTP endpoint (`POST /sessions/:id/messages`), and
@@ -437,6 +461,7 @@ async function sendMessageToSession(
   if (addMessage(sessionId, userMsg)) {
     broadcastToSession(sessionId, { type: 'message', sessionId, message: userMsg });
   }
+  fileImagesAsResources(sessionId, images);
 
   updateSessionState(sessionId, s => ({ ...s, isStreaming: true }));
   broadcastToSession(sessionId, { type: 'status', sessionId, status: 'streaming' });
@@ -587,6 +612,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (addMessage(sessionId, userMsg)) {
       broadcastToSession(sessionId, { type: 'message', sessionId, message: userMsg });
     }
+    fileImagesAsResources(sessionId, images);
 
     // Intercept /model command — switch model via provider session.
     const modelMatch = msgText.match(/^\/model(?:\s+(.+))?$/);
@@ -773,7 +799,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 
   // ---- terminal_attach -----------------------------------------------------
   // Re-attach a viewer to a live PTY (tab switch / bubble remount / reload).
-  // Terminals are CREATED over REST (`POST /session/:id/terminals`), so this
+  // Terminals are CREATED over REST (`POST /sessions/:id/terminals`), so this
   // never spawns — it only replays the authoritative buffer + resizes.
   if (type === 'terminal_attach') {
     const { sessionId, procId, cols, rows } = msg as { sessionId: string; procId: string; cols?: number; rows?: number };
@@ -810,7 +836,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   }
 
   // Terminal lifecycle (create / kill) is handled over REST — see the
-  // `/session/:id/terminals` CRUD routes below. The WS carries live I/O only.
+  // `/sessions/:id/terminals` CRUD routes below. The WS carries live I/O only.
 
   // ---- update_ui_state -----------------------------------------------------
   if (type === 'update_ui_state') {
@@ -1111,13 +1137,13 @@ app.patch('/sessions/:id', async (c) => {
 
 // List every terminal for a session. The UI fetches this as soon as it
 // subscribes so open terminals repopulate the dock on (re)connect.
-app.get('/session/:id/terminals', (c) => {
+app.get('/sessions/:id/terminals', (c) => {
   return Response.json({ terminals: listTerminals(c.req.param('id')) }, { headers: corsHeaders });
 });
 
 // Create a terminal. Spawns the PTY, then broadcasts `terminal_created` — the
 // UI adds the tab only when that broadcast arrives (never optimistically).
-app.post('/session/:id/terminals', async (c) => {
+app.post('/sessions/:id/terminals', async (c) => {
   const sessionId = c.req.param('id');
   let body: { command?: string; cwd?: string; cols?: number; rows?: number; label?: string; terminalName?: string } = {};
   try { body = await c.req.raw.json() as typeof body; } catch {}
@@ -1148,7 +1174,7 @@ app.post('/session/:id/terminals', async (c) => {
 });
 
 // Read one terminal. `?output=1` also returns the buffered scrollback.
-app.get('/session/:id/terminals/:procId', (c) => {
+app.get('/sessions/:id/terminals/:procId', (c) => {
   const sessionId = c.req.param('id');
   const procId = c.req.param('procId');
   const info = getTerminal(sessionId, procId);
@@ -1159,7 +1185,7 @@ app.get('/session/:id/terminals/:procId', (c) => {
 });
 
 // Delete (kill) a terminal. Close === kill; broadcasts `terminal_removed`.
-app.delete('/session/:id/terminals/:procId', (c) => {
+app.delete('/sessions/:id/terminals/:procId', (c) => {
   const removed = removeTerminal(c.req.param('id'), c.req.param('procId'));
   if (!removed) return Response.json({ error: 'not found' }, { status: 404, headers: corsHeaders });
   return Response.json({ ok: true }, { headers: corsHeaders });
@@ -1186,6 +1212,8 @@ app.delete('/sessions/:id', async (c) => {
   const purge = url.searchParams.get('purge') === '1';
   const removeWorktree = url.searchParams.get('worktree') === '1';
   const resp = handleDeleteSession(sid, purge, removeWorktree);
+  // Drop the session's resource folder (photos/mockups/…) along with it.
+  purgeSessionResources(sid);
   broadcastSessionList();
   return resp;
 });
@@ -1219,6 +1247,69 @@ app.delete('/remotes/:id', async (c) => {
   return resp;
 });
 app.post('/remotes/:id/test', (c) => handleTestRemote(c.req.param('id')));
+
+// ── Skills ─────────────────────────────────────────────────────────────────
+// CRUD over skills from every agent convention (claude / opencode / .agent),
+// at user or project scope. `source` is a field on each object, not a route
+// segment; a skill is addressed by the opaque `id` the list returns.
+app.get('/skills', (c) => {
+  const q = new URL(c.req.url).searchParams;
+  return handleListSkills(q.get('scope'), q.get('root'));
+});
+app.get('/skills/:id', (c) => handleGetSkill(c.req.param('id')));
+app.post('/skills', async (c) => {
+  const q = new URL(c.req.url).searchParams;
+  let body: any = {};
+  try { body = await c.req.raw.json(); } catch {}
+  return handleCreateSkill(q.get('scope'), q.get('root'), body);
+});
+app.put('/skills/:id', async (c) => {
+  let body: any = {};
+  try { body = await c.req.raw.json(); } catch {}
+  return handleUpdateSkill(c.req.param('id'), body);
+});
+app.delete('/skills/:id', (c) => handleDeleteSkill(c.req.param('id')));
+
+// ── Session resources ────────────────────────────────────────────────────────
+// Everything a session accumulates that isn't chat — photos, mockups, snippets,
+// uploaded files — stored under ~/.codiby/sessions/<id>/{images,mockups,…}/.
+app.get('/sessions/:id/resources', (c) => {
+  const kind = new URL(c.req.url).searchParams.get('kind');
+  return handleListResources(c.req.param('id'), kind);
+});
+app.get('/sessions/:id/resources/:rid', (c) => handleGetResource(c.req.param('id'), c.req.param('rid')));
+app.get('/sessions/:id/resources/:rid/raw', (c) => handleGetResourceRaw(c.req.param('id'), c.req.param('rid')));
+app.post('/sessions/:id/resources', async (c) => {
+  const sid = c.req.param('id');
+  const ct = c.req.raw.headers.get('content-type') || '';
+  // Multipart: real binary file upload from a file picker.
+  if (ct.includes('multipart/form-data')) {
+    try {
+      const form = await c.req.raw.formData();
+      const file = form.get('file');
+      if (!(file instanceof File)) return Response.json({ error: 'file field required' }, { status: 400, headers: corsHeaders });
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      return createResource(sid, {
+        bytes,
+        name: (form.get('name') as string) || file.name,
+        kind: (form.get('kind') as string) || undefined,
+        mime: (form.get('mime') as string) || file.type || undefined,
+      });
+    } catch (e: any) {
+      return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+    }
+  }
+  // JSON: base64 `data` (photos) or text `content` (mockups/snippets).
+  let body: any = {};
+  try { body = await c.req.raw.json(); } catch {}
+  return createResource(sid, body);
+});
+app.patch('/sessions/:id/resources/:rid', async (c) => {
+  let body: any = {};
+  try { body = await c.req.raw.json(); } catch {}
+  return handleUpdateResource(c.req.param('id'), c.req.param('rid'), body);
+});
+app.delete('/sessions/:id/resources/:rid', (c) => handleDeleteResource(c.req.param('id'), c.req.param('rid')));
 
 // ── Files ──────────────────────────────────────────────────────────────────
 app.get('/ls', (c) => {

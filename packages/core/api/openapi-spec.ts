@@ -461,7 +461,7 @@ export const openApiSpec: OpenApiSpec = {
     // ───────────────────────── Terminals (CRUD) ─────────────────────────
     // Single source of truth for terminal lifecycle, shared by the UI and the
     // in-process MCP tools. Live I/O stays on the /ws multiplexer.
-    '/session/{id}/terminals': {
+    '/sessions/{id}/terminals': {
       get: {
         tags: ['Terminals'],
         summary: 'List a session\'s terminals',
@@ -476,7 +476,7 @@ export const openApiSpec: OpenApiSpec = {
         responses: { 200: corsResponse, 500: errorResponse('spawn failed') },
       },
     },
-    '/session/{id}/terminals/{procId}': {
+    '/sessions/{id}/terminals/{procId}': {
       get: {
         tags: ['Terminals'],
         summary: 'Read one terminal (append ?output=1 for the buffer)',

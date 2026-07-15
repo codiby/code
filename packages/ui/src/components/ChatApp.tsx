@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Send as SendIcon, Sparkles, PanelsTopLeft, PanelTop, PanelLeft, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -23,6 +23,8 @@ import { useFileMention, FileMentionList } from './FileMentionPicker';
 import { CommandPalette, type PaletteAction } from './CommandPalette';
 import { ChatFindWidget } from './ChatFindWidget';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { SkillsModal } from './SkillsModal';
+import { ResourcesPanel } from './ResourcesPanel';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { PortlessActionToast } from './PortlessActionToast';
@@ -30,7 +32,7 @@ import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
-import { PRDetail, type PRInfo } from './PRDetail';
+import { PRDetail } from './PRDetail';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
 import { tryInvokeNative } from '../lib/native';
@@ -69,7 +71,6 @@ import {
   type SessionActivity,
   type SessionInfo,
   type SessionInitInfo,
-  type SessionState,
   type SupportedModel,
   type TerminalInfo,
 } from '../lib/claude-client';
@@ -77,11 +78,10 @@ import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
 import { type MockupComment } from '../lib/mockup-inspector';
 import { MockupPanel } from './MockupPanel';
-import { BrowserPanel, useBrowserPreviewBounds } from './BrowserPanel';
-import { PlanPanel, type PlanComment } from './PlanPanel';
+import { BrowserPanel } from './BrowserPanel';
+import { PlanPanel } from './PlanPanel';
 import {
   ChatFocusLayout,
-  loadInitialWorkspaces,
   persistWorkspaces,
   reconcileWorkspaceLayout,
   sameLayout,
@@ -92,6 +92,12 @@ import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
 import { GroupComposer } from './GroupComposer';
+import { AskUserQuestionForm } from './chat/AskUserQuestionForm';
+import { SearchPanel } from './search/SearchPanel';
+import { FocusBrowserAnchor } from './browser/FocusBrowserAnchor';
+import { useAppStore } from '../lib/store';
+import { persistPrefs } from '../lib/store/persist-prefs';
+import type { LocalSessionState } from '../lib/session-state';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
  *  Using `… || []` at the JSX site allocates a fresh array on every render
@@ -100,343 +106,11 @@ import { GroupComposer } from './GroupComposer';
  *  was wiping its inspector's local state every render. */
 const NO_BROWSER_COMMENTS: MockupComment[] = [];
 
-type PendingMessage = {
-  id: string;
-  text: string;
-  images?: { media_type: string; data: string }[];
-};
-
-// Local UI extensions on top of server SessionState
-type LocalSessionState = SessionState & {
-  contextTokens: number;
-  pendingMessages: PendingMessage[];
-  // Live HTML mockup preview shown in the side panel. UI-only — the bridge
-  // server doesn't track this field, so the merge in `onSessionState` must
-  // preserve `openMockup`/`lastMockup` from the existing local state.
-  openMockup: { name: string; html: string } | null;
-  // Most recent mockup, kept after the user closes the panel so the chat
-  // header can offer a one-click "reopen" button.
-  lastMockup: { name: string; html: string } | null;
-  // Inspector comments per mockup name. Keyed by mockup name so they
-  // survive `mockup_edit` re-broadcasts and tab switches.
-  mockupComments: Record<string, MockupComment[]>;
-  mockupInspect: boolean;
-  // Live browser previews opened by `browser_open` — UI-only, same caveat
-  // as `openMockup` so the `onSessionState` merge has to preserve them.
-  // `browsers` is keyed by the model-supplied `name` (e.g. "qa-admin-
-  // workflow"); multiple can coexist in a single session, each surfaced as
-  // its own tab in the PanelsWorkspace. `openSeq` per
-  // entry is bumped on every `open_browser` broadcast so the panel re-runs
-  // its open effect when the same name is re-broadcast (retry after error,
-  // reopen from chat-header chip).
-  browsers: Record<string, { url: string; title: string; openSeq: number; cookieJar: string }>;
-  /** Which browser name is currently revealed / focused. Tracks the visible
-   *  browser panel tab and drives the focus-mode anchor + header-chip
-   *  highlight. `null` when no browser is open. Matches a key in `browsers`. */
-  activeBrowserName: string | null;
-  /** Inspector comments, keyed by `name` then by URL — same name surviving
-   *  navigations + matching the per-page-mounted dot lifecycle. */
-  browserComments: Record<string, Record<string, MockupComment[]>>;
-  /** Per-name inspect-mode toggle. Switching tabs preserves per-tab state. */
-  browserInspect: Record<string, boolean>;
-  /** Images pasted into the composer, awaiting the next send. Per-session so
-   *  the focus-mode layout can show separate paste buffers in each pane. */
-  pastedImages: { media_type: string; data: string; preview: string }[];
-  // ExitPlanMode plan rendered in the side panel. UI-only — same merge
-  // caveat as `openMockup`. `planRequestId` tracks the most recent perm
-  // request id we auto-opened for so we don't reopen the panel after the
-  // user closes it manually while permission is still pending.
-  openPlan: { content: string; allowedPrompts?: { tool: string; prompt: string }[] } | null;
-  lastPlan: { content: string; allowedPrompts?: { tool: string; prompt: string }[] } | null;
-  planComments: PlanComment[];
-  planRequestId: string | null;
-};
-
-type AskQuestion = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
-
-function AskUserQuestionForm({ questions, onSubmit }: { questions: AskQuestion[]; onSubmit: (answers: Record<string, string>) => void }) {
-  // Per-question state. `selections[i]` is the chosen option label OR the
-  // typed custom text when `customMode[i]` is true. Claude's AskUserQuestion
-  // tool keys answers by question text (its tool_result formatter looks up
-  // `answers[question.question]`), so translate at the submit boundary.
-  const [selections, setSelections] = useState<Record<string, string>>({});
-  const [customMode, setCustomMode] = useState<Record<string, boolean>>({});
-
-  const buildAnswers = (sels: Record<string, string>): Record<string, string> => {
-    const out: Record<string, string> = {};
-    for (const [key, val] of Object.entries(sels)) {
-      const q = questions[Number(key)]?.question;
-      const trimmed = val.trim();
-      if (q && trimmed) out[q] = trimmed;
-    }
-    return out;
-  };
-
-  const handleSelect = (qIdx: number, label: string) => {
-    const key = String(qIdx);
-    setCustomMode(prev => ({ ...prev, [key]: false }));
-    setSelections(prev => ({ ...prev, [key]: label }));
-    if (questions.length === 1) {
-      onSubmit(buildAnswers({ [key]: label }));
-    }
-  };
-
-  const handleEnterCustom = (qIdx: number) => {
-    const key = String(qIdx);
-    setCustomMode(prev => ({ ...prev, [key]: true }));
-    setSelections(prev => ({ ...prev, [key]: '' }));
-  };
-
-  const handleCustomChange = (qIdx: number, text: string) => {
-    const key = String(qIdx);
-    setSelections(prev => ({ ...prev, [key]: text }));
-  };
-
-  const submitCustomSingle = (qIdx: number) => {
-    const key = String(qIdx);
-    const val = (selections[key] || '').trim();
-    if (!val) return;
-    onSubmit(buildAnswers({ [key]: val }));
-  };
-
-  const allAnswered = questions.every((_, i) => (selections[String(i)] || '').trim());
-
-  return (
-    <div className="space-y-3 mb-2">
-      {questions.map((q, i) => {
-        const key = String(i);
-        const isCustom = customMode[key] === true;
-        const selected = !isCustom ? selections[key] : undefined;
-        return (
-          <div key={i}>
-            {q.header && (
-              <span className="inline-block text-[10px] font-semibold text-violet-400 bg-violet-400/10 px-1.5 py-0.5 rounded mb-1">
-                {q.header}
-              </span>
-            )}
-            <p className="text-[12px] text-zinc-300 leading-relaxed mb-1.5">{q.question}</p>
-            {q.options && q.options.length > 0 && (
-              <div className="space-y-1">
-                {q.options.map((opt, j) => (
-                  <button
-                    key={j}
-                    onClick={() => handleSelect(i, opt.label)}
-                    className={`w-full text-left px-3 py-2 rounded-lg border transition-all ${
-                      selected === opt.label
-                        ? 'border-violet-400/50 bg-violet-500/10 ring-1 ring-violet-400/20'
-                        : 'border-border hover:border-zinc-600 hover:bg-surface-light/50'
-                    }`}
-                  >
-                    <div className="flex items-start gap-2">
-                      <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                        selected === opt.label ? 'border-violet-400' : 'border-zinc-600'
-                      }`}>
-                        {selected === opt.label && <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />}
-                      </span>
-                      <div>
-                        <span className="text-[12px] font-medium text-zinc-200">{opt.label}</span>
-                        {opt.description && <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">{opt.description}</p>}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-                {isCustom ? (
-                  <div className="flex items-stretch gap-1">
-                    <input
-                      autoFocus
-                      type="text"
-                      value={selections[key] || ''}
-                      onChange={(e) => handleCustomChange(i, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && questions.length === 1) {
-                          e.preventDefault();
-                          submitCustomSingle(i);
-                        } else if (e.key === 'Escape') {
-                          e.preventDefault();
-                          setCustomMode(prev => ({ ...prev, [key]: false }));
-                          setSelections(prev => ({ ...prev, [key]: '' }));
-                        }
-                      }}
-                      placeholder="Type your own answer…"
-                      className="flex-1 px-3 py-2 rounded-lg border border-violet-400/50 bg-violet-500/10 ring-1 ring-violet-400/20 text-[12px] text-zinc-100 placeholder:text-zinc-500 outline-none"
-                    />
-                    {questions.length === 1 && (
-                      <button
-                        type="button"
-                        disabled={!(selections[key] || '').trim()}
-                        onClick={() => submitCustomSingle(i)}
-                        className="px-3 rounded-lg text-[12px] bg-violet-600/20 text-violet-300 hover:bg-violet-600/30 disabled:opacity-40 transition-colors"
-                      >
-                        Send
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleEnterCustom(i)}
-                    className="w-full text-left px-3 py-2 rounded-lg border border-dashed border-border text-[12px] text-zinc-500 hover:text-zinc-300 hover:border-zinc-600 transition-colors"
-                  >
-                    + Other (write your own answer)
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-      {questions.length > 1 && (
-        <button
-          disabled={!allAnswered}
-          onClick={() => onSubmit(buildAnswers(selections))}
-          className="px-3 py-1 rounded text-[12px] bg-violet-600/15 text-violet-400 hover:bg-violet-600/25 transition-colors disabled:opacity-40"
-        >
-          Submit answers
-        </button>
-      )}
-    </div>
-  );
-}
-
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 const MOD_KEY = IS_MAC ? '⌘' : 'Ctrl';
 
 // Extensions that open in the image preview tab instead of the text editor.
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg']);
-
-function SearchPanel({ client, rootPath, onFileOpen, onClose }: { client: ClaudeClient | null; rootPath: string | null; onFileOpen: (path: string, line?: number) => void; onClose: () => void }) {
-  const [query, setQuery] = useState('');
-  const [ignore, setIgnore] = useState('');
-  const [caseSensitive, setCaseSensitive] = useState(false);
-  const [results, setResults] = useState<{ file: string; line: number; text: string }[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
-  const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => { inputRef.current?.focus(); }, []);
-
-  const doSearch = (q: string, cs: boolean, ig: string) => {
-    if (!client || !rootPath || !q.trim()) {
-      abortRef.current?.abort();
-      setResults([]);
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      client.searchFiles(rootPath, q.trim(), { caseSensitive: cs, ignore: ig, signal: ctrl.signal })
-        .then(r => { if (!ctrl.signal.aborted) { setResults(r); setSearching(false); } })
-        .catch(() => { if (!ctrl.signal.aborted) { setResults([]); setSearching(false); } });
-    }, 150);
-  };
-
-  // Re-run when the user toggles case sensitivity or edits the ignore globs
-  // so the result set updates in place (VS Code-style).
-  useEffect(() => {
-    if (query.trim()) doSearch(query, caseSensitive, ignore);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caseSensitive, ignore]);
-
-  const grouped = useMemo(() => {
-    const map = new Map<string, { file: string; line: number; text: string }[]>();
-    for (const r of results) {
-      const relFile = rootPath && r.file.startsWith('./') ? r.file.slice(2) : r.file;
-      let arr = map.get(relFile);
-      if (!arr) { arr = []; map.set(relFile, arr); }
-      arr.push(r);
-    }
-    return Array.from(map, ([file, items]) => ({ file, items }));
-  }, [results, rootPath]);
-
-  const toggleFile = (file: string) => {
-    setCollapsedFiles(prev => {
-      const next = new Set(prev);
-      if (next.has(file)) next.delete(file); else next.add(file);
-      return next;
-    });
-  };
-
-  return (
-    <div className="rounded-[11px] border border-[#1e1f24] bg-[#141519] overflow-hidden flex-1 flex flex-col min-h-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_1px_2px_rgba(0,0,0,0.25)]">
-      <div className="flex items-center gap-[9px] h-[34px] px-[11px] shrink-0">
-        <span className="flex w-[15px] h-[15px] items-center justify-center shrink-0 text-[#7c5cff]">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
-        </span>
-        <span className="text-[10.5px] font-semibold tracking-[0.07em] uppercase text-[#9aa0a8]">Search</span>
-        <button className="ml-auto w-[22px] h-[22px] rounded-[6px] flex items-center justify-center text-[#4f525a] hover:text-[#9aa0a8] hover:bg-[#191a1f] transition-colors" onClick={onClose} aria-label="Close search">&#x2715;</button>
-      </div>
-      <div className="h-px mx-[11px] bg-[linear-gradient(90deg,transparent,#26272d_12%,#26272d_88%,transparent)]" />
-      <div className="px-2 py-2 border-b border-border shrink-0 space-y-1.5">
-        <div className="relative">
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={e => { setQuery(e.target.value); doSearch(e.target.value, caseSensitive, ignore); }}
-            onKeyDown={e => { if (e.key === 'Escape') onClose(); }}
-            placeholder="Search in files..."
-            className="w-full bg-surface border border-border rounded pl-2 pr-7 py-1 text-[12px] text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-zinc-500"
-          />
-          <button
-            type="button"
-            onClick={() => setCaseSensitive(v => !v)}
-            title={caseSensitive ? 'Match Case (on)' : 'Match Case (off)'}
-            aria-pressed={caseSensitive}
-            className={`absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded text-[10px] font-semibold flex items-center justify-center transition-colors ${caseSensitive ? 'bg-violet-600/30 text-violet-300 ring-1 ring-violet-500/40' : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface-light/50'}`}
-          >
-            Aa
-          </button>
-        </div>
-        <input
-          value={ignore}
-          onChange={e => setIgnore(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Escape') onClose(); }}
-          placeholder="files to exclude (e.g. *.lock, dist/**)"
-          className="w-full bg-surface border border-border rounded px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-zinc-500"
-        />
-      </div>
-      <div className="flex-1 overflow-y-auto">
-        {searching && <p className="text-[11px] text-zinc-600 text-center py-4">Searching...</p>}
-        {!searching && query && grouped.length === 0 && <p className="text-[11px] text-zinc-600 text-center py-4">No results</p>}
-        {grouped.map(({ file, items }) => {
-          const collapsed = collapsedFiles.has(file);
-          const Chev = collapsed ? ChevronRight : ChevronDown;
-          const filename = file.split('/').pop() || file;
-          const dir = file.slice(0, file.length - filename.length);
-          return (
-            <div key={file} className="border-b border-border/30">
-              <button
-                type="button"
-                onClick={() => toggleFile(file)}
-                className="w-full flex items-center gap-1 px-1.5 py-1 hover:bg-surface-light/40 text-left"
-              >
-                <Chev className="w-3 h-3 text-zinc-500 shrink-0" strokeWidth={2.5} />
-                <span className="text-[11px] text-zinc-300 truncate">{filename}</span>
-                {dir && <span className="text-[10px] text-zinc-600 truncate">{dir.replace(/\/$/, '')}</span>}
-                <span className="ml-auto text-[10px] text-zinc-500 shrink-0 px-1 rounded bg-surface-light/40">{items.length}</span>
-              </button>
-              {!collapsed && items.map((r, i) => (
-                <div
-                  key={i}
-                  className="flex items-baseline gap-2 pl-6 pr-2 py-0.5 hover:bg-surface-light/50 cursor-pointer transition-colors"
-                  onClick={() => onFileOpen(rootPath ? `${rootPath}/${file}` : file, r.line)}
-                >
-                  <span className="text-[10px] text-zinc-600 shrink-0 tabular-nums">{r.line}</span>
-                  <span className="text-[10px] text-zinc-400 font-mono truncate leading-snug flex-1">{r.text}</span>
-                </div>
-              ))}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // Shared chime helper — used by both the desktop ChatApp and the mobile UI
 // so the audio cue on permission requests / turn completion is identical.
@@ -449,34 +123,57 @@ const SESSION_ACCENT_PALETTE = [
   '#f87171', '#c084fc', '#38bdf8', '#fb7185',
 ];
 
-// When a turn is interrupted (barge-in send or Stop), the text/thinking that has
-// streamed so far lives only in the live `partialText`/`partialThinking` preview —
-// the SDK never re-delivers a completed block for the aborted turn. Snapshot that
-// content into permanent messages so it isn't wiped when the preview is cleared.
-function carriedStreamMessages(s: { partialText: string; partialThinking: string }): ChatMessage[] {
-  const carried: ChatMessage[] = [];
-  if (s.partialThinking) {
-    carried.push({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: s.partialThinking,
-      timestamp: Date.now(),
-      isThinking: true,
-    });
+// Streaming content lives directly in the `messages` array as a message flagged
+// `streaming: true` — one per in-flight block (text and/or thinking). Only one
+// block of each kind grows at a time, so we locate the live placeholder by its
+// `streaming` flag plus the `isThinking` discriminator rather than threading a
+// block id through the stream.
+//
+// The server sends the FULL accumulated text on each delta (replace semantics),
+// so an upsert that overwrites `content` is exactly right.
+function upsertStreamingBlock(
+  messages: ChatMessage[],
+  kind: 'text' | 'thinking',
+  content: string,
+): ChatMessage[] {
+  const wantThinking = kind === 'thinking';
+  const idx = messages.findIndex(m => m.streaming && !!m.isThinking === wantThinking);
+  if (idx === -1) {
+    // Don't materialise an empty placeholder (a stray empty delta shouldn't
+    // spawn a blank bubble).
+    if (!content) return messages;
+    return [
+      ...messages,
+      {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content,
+        timestamp: Date.now(),
+        ...(wantThinking ? { isThinking: true } : {}),
+        streaming: true,
+      },
+    ];
   }
-  if (s.partialText) {
-    carried.push({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: s.partialText,
-      timestamp: Date.now(),
-    });
-  }
-  return carried;
+  const next = messages.slice();
+  next[idx] = { ...next[idx]!, content };
+  return next;
+}
+
+// Settle every still-growing block in place (used on interrupt / barge-in /
+// turn end). The content keeps its exact slot in the array — it never
+// re-anchors to the bottom, and no snapshot-with-new-id dance is needed because
+// the streaming message IS already the permanent message.
+function freezeStreaming(messages: ChatMessage[]): ChatMessage[] {
+  if (!messages.some(m => m.streaming)) return messages;
+  return messages.map(m => (m.streaming ? { ...m, streaming: false } : m));
 }
 
 export function ChatApp() {
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  // Session state now lives in the store (sessionsSlice). The store setters
+  // keep the exact `useState` signature, so the onSessionState reducer and
+  // every lifecycle handler below are unchanged — they just write to the store.
+  const sessions = useAppStore(s => s.sessions);
+  const setSessions = useAppStore(s => s.setSessions);
   // Session lifecycle is per-session and persisted server-side (status:
   // 'open' | 'archived'). The set below is derived from the sessions list
   // so callers that need O(1) membership lookups keep working without us
@@ -487,68 +184,63 @@ export function ChatApp() {
   );
   const archivedIdsRef = useRef(archivedSessionIds);
   useEffect(() => { archivedIdsRef.current = archivedSessionIds; }, [archivedSessionIds]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const activeId = useAppStore(s => s.activeId);
+  const setActiveId = useAppStore(s => s.setActiveId);
   // Ctrl+Tab switcher — open flag + currently-highlighted index. `ids` is
   // the frozen, tab-bar-ordered list the switcher renders for the lifetime
   // of one open cycle (see `buildSwitcherIds`).
   const [switcher, setSwitcher] = useState<{ open: boolean; idx: number; ids: string[] }>({
     open: false, idx: 0, ids: [],
   });
-  const [tabOrder, setTabOrder] = useState<string[]>([]);
-  const [tabGroups, setTabGroups] = useState<Record<string, TabGroupInfo>>({});
-  const [tabGroupMap, setTabGroupMap] = useState<Record<string, string>>({});
-  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
-  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  // Sidebar tab ordering, project groups, pinning and expansion now live in
+  // the Zustand store (tabGroupsSlice). The store setters keep the exact
+  // `useState` signature (value or `prev => next` updater), so every handler
+  // and the persistPrefs calls below are unchanged.
+  const tabOrder = useAppStore(s => s.tabOrder);
+  const setTabOrder = useAppStore(s => s.setTabOrder);
+  const tabGroups = useAppStore(s => s.tabGroups);
+  const setTabGroups = useAppStore(s => s.setTabGroups);
+  const tabGroupMap = useAppStore(s => s.tabGroupMap);
+  const setTabGroupMap = useAppStore(s => s.setTabGroupMap);
+  const pinnedSessionIds = useAppStore(s => s.pinnedSessionIds);
+  const setPinnedSessionIds = useAppStore(s => s.setPinnedSessionIds);
+  const expandedGroupIds = useAppStore(s => s.expandedGroupIds);
+  const setExpandedGroupIds = useAppStore(s => s.setExpandedGroupIds);
   /** Group focused in the sidebar. When set, the main pane renders the
    *  inline new-session composer (GroupComposer) instead of the active
    *  session's chat body. Cleared as soon as a session is selected. */
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const selectedGroupId = useAppStore(s => s.selectedGroupId);
+  const setSelectedGroupId = useAppStore(s => s.setSelectedGroupId);
   // Active top-level view in the main pane. 'sessions-board' shows the board;
   // selecting any session or group snaps it back to 'sessions'.
   const [activeNavView, setActiveNavView] = useState<'sessions' | 'sessions-board'>('sessions');
-  const [autoGroupSessions, setAutoGroupSessions] = useState(false);
-  // When true, action-style browser_* SDK tools (click/type/scroll/…) bring
-  // the targeted preview to the front before they run, so the user actually
-  // sees the action happen. Per-project override lives on TabGroupInfo and
-  // wins over this global default. Defaults to true on first launch.
-  const [autoFocusBrowserOnAction, setAutoFocusBrowserOnAction] = useState(true);
-  // Hides the Telegram bot's "main-session" pseudo-tab from the sidebar /
-  // tab bar. The tab itself is non-closable from the regular UI; this
-  // settings-only toggle is the user's escape hatch.
-  const [showTelegramSession, setShowTelegramSession] = useState(true);
-  // When true, sending a message while the agent is mid-response cancels
-  // the in-flight turn and ships the new message immediately. When false,
-  // the message is appended to the per-session queue and drains after the
-  // current turn finishes. Defaults to true — barging-in is the more
-  // common intent than calmly queueing follow-ups.
-  const [interruptOnSend, setInterruptOnSend] = useState(true);
-  // When true, each session gets a stable accent color that tints its
-  // focus-mode pane (header, border, chat background) and its message cards
-  // so panes are distinguishable at a glance. Purely cosmetic — some people
-  // prefer the plain look, so it's a toggle. Defaults on.
-  const [colorChatBySession, setColorChatBySession] = useState(true);
-  // When true, the accent also washes the whole chat background (in addition
-  // to the message bubbles). Off by default — the wash reads as heavy for some.
-  const [tintChatBackground, setTintChatBackground] = useState(false);
-  // Per-session accent color overrides (sessionId → hex). Absence means the
-  // color is auto-derived (remote color, else a deterministic palette hue).
-  const [sessionAccents, setSessionAccents] = useState<Record<string, string>>({});
-  // Global env vars (apply to every Bash tool call + user terminal, on
-  // top of process.env, with per-project envVars layered last). Persisted
-  // alongside other prefs in ~/.codiby/ui-preferences.json.
-  const [globalEnvVars, setGlobalEnvVars] = useState<ProjectEnvVar[]>([]);
+  // Server-persisted UI preferences now live in the Zustand store
+  // (preferencesSlice). Read them here as fine-grained selectors so the rest
+  // of ChatApp keeps referencing the same variable names; writes go through
+  // the slice actions (setPreference / setSessionAccent / setGlobalEnvVars),
+  // which update the store and persist to the server in one step.
+  //   - autoGroupSessions: auto-place new sessions into a project group.
+  //   - autoFocusBrowserOnAction: bring a browser preview to front before an
+  //     action-style browser_* tool runs. Per-project override wins.
+  //   - showTelegramSession: show the Telegram bot pseudo-tab.
+  //   - interruptOnSend: sending mid-turn barges in vs. queues.
+  //   - colorChatBySession / tintChatBackground: per-session accent tinting.
+  //   - sessionAccents: per-session accent overrides (sessionId → hex).
+  //   - globalEnvVars: env layered onto every Bash tool call / user terminal.
+  const autoGroupSessions = useAppStore(s => s.autoGroupSessions);
+  const autoFocusBrowserOnAction = useAppStore(s => s.autoFocusBrowserOnAction);
+  const showTelegramSession = useAppStore(s => s.showTelegramSession);
+  const interruptOnSend = useAppStore(s => s.interruptOnSend);
+  const colorChatBySession = useAppStore(s => s.colorChatBySession);
+  const tintChatBackground = useAppStore(s => s.tintChatBackground);
+  const sessionAccents = useAppStore(s => s.sessionAccents);
+  const globalEnvVars = useAppStore(s => s.globalEnvVars);
+  const setPreference = useAppStore(s => s.setPreference);
+  const setSessionAccent = useAppStore(s => s.setSessionAccent);
+  const setGlobalEnvVars = useAppStore(s => s.setGlobalEnvVars);
+  const hydratePreferences = useAppStore(s => s.hydratePreferences);
 
   // Preferences are loaded inside the client connection effect below (before WS connect)
-
-  const persistPrefs = (patch: Record<string, unknown>) => {
-    resolveServerUrl().then(base =>
-      fetch(`${base}/preferences`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      }).catch(() => {})
-    );
-  };
 
   /** Close a terminal — close === kill. DELETEs the terminal resource; the
    *  dock drops the tab when the `terminal_removed` broadcast lands (which
@@ -912,32 +604,40 @@ export function ChatApp() {
     });
   };
 
-  const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
+  const statuses = useAppStore(s => s.statuses);
+  const setStatuses = useAppStore(s => s.setStatuses);
   /** Per-session running child processes + listening ports, pushed by the
    *  server's `session_activity`. Drives the sidebar badges. A session drops
    *  out of the map (badges hidden) once it reports fully idle. */
-  const [sessionActivity, setSessionActivity] = useState<Record<string, SessionActivity>>({});
+  const sessionActivity = useAppStore(s => s.sessionActivity);
+  const setSessionActivity = useAppStore(s => s.setSessionActivity);
   /** Tunnel status per remote, pushed by the server's `remote.status`
    *  broadcasts. Drives the offline state on the chat-header forwards chip. */
-  const [remoteStatuses, setRemoteStatuses] = useState<Record<string, { status: 'connecting' | 'online' | 'reconnecting' | 'offline'; lastError: string | null }>>({});
+  const remoteStatuses = useAppStore(s => s.remoteStatuses);
+  const setRemoteStatuses = useAppStore(s => s.setRemoteStatuses);
   // Terminals as first-class resources, keyed by sessionId. Fetched from the
   // bridge on connect (`onTerminalsSnapshot`) and kept in sync via the
   // `terminal_created` / `terminal_removed` / `terminal_exit` broadcasts. The
   // terminals dock renders straight from this — terminals are never inferred
   // from chat messages, and a create only shows up once its broadcast lands.
-  const [terminals, setTerminals] = useState<Record<string, TerminalInfo[]>>({});
+  // Terminals dock state now lives in the store (terminalsSlice).
+  const terminals = useAppStore(s => s.terminals);
+  const setTerminals = useAppStore(s => s.setTerminals);
   // Bottom Terminals panel — collapsed means the panel is a single status
   // strip with no xterm body shown; expanded means full tabbed UI. Starts
   // collapsed (VSCode-style); opening/spawning a shell auto-expands it.
-  const [terminalsPanelExpanded, setTerminalsPanelExpanded] = useState<boolean>(false);
+  const terminalsPanelExpanded = useAppStore(s => s.terminalsPanelExpanded);
+  const setTerminalsPanelExpanded = useAppStore(s => s.setTerminalsPanelExpanded);
   // The terminals dock is authored inside the chat panel (so it keeps all its
   // closures) but portaled into this host, which sits below the panels and
   // spans the full content width — VSCode-style, outside the file panels.
-  const [termDockHost, setTermDockHost] = useState<HTMLDivElement | null>(null);
+  const termDockHost = useAppStore(s => s.termDockHost);
+  const setTermDockHost = useAppStore(s => s.setTermDockHost);
   /** Whether keyboard focus is inside the terminals dock — drives the same
    *  blue focus ring the workspace panels use. Tracked via a capture-phase
    *  pointer/focus listener since the xterm canvas doesn't bubble React focus. */
-  const [terminalsFocused, setTerminalsFocused] = useState(false);
+  const terminalsFocused = useAppStore(s => s.terminalsFocused);
+  const setTerminalsFocused = useAppStore(s => s.setTerminalsFocused);
   useEffect(() => {
     if (!termDockHost) return;
     const onDown = (e: Event) => setTerminalsFocused(termDockHost.contains(e.target as Node));
@@ -950,34 +650,42 @@ export function ChatApp() {
   }, [termDockHost]);
   /** Maximize toggles the panel height between the default ~340px and a
    *  much taller 70vh — handy when watching a noisy dev server. */
-  const [terminalsPanelMaximized, setTerminalsPanelMaximized] = useState<boolean>(false);
+  const terminalsPanelMaximized = useAppStore(s => s.terminalsPanelMaximized);
+  const setTerminalsPanelMaximized = useAppStore(s => s.setTerminalsPanelMaximized);
   /** User-resizable panel height in pixels. Persisted via prefs. Clamped
    *  to [120, viewportHeight * 0.85] at runtime. */
-  const [terminalsPanelHeight, setTerminalsPanelHeight] = useState<number>(340);
+  const terminalsPanelHeight = useAppStore(s => s.terminalsPanelHeight);
+  const setTerminalsPanelHeight = useAppStore(s => s.setTerminalsPanelHeight);
   /** True while the user is dragging the splitter — used to show an overlay
    *  that prevents iframes/xterm from eating mousemove events. */
-  const [panelResizing, setPanelResizing] = useState<boolean>(false);
+  const panelResizing = useAppStore(s => s.panelResizing);
+  const setPanelResizing = useAppStore(s => s.setPanelResizing);
   /** Per-session, per-shell custom display names. Persisted via the
    *  prefs system so renames survive across reloads. Falls back to the
    *  message's `terminalName` then to a derived value. */
-  const [shellRenames, setShellRenames] = useState<Record<string, Record<string, string>>>({});
+  const shellRenames = useAppStore(s => s.shellRenames);
+  const setShellRenames = useAppStore(s => s.setShellRenames);
   /** Global Portless TLD — applies to every project (portless's proxy
    *  serves one TLD at a time, so this can't be per-project). */
-  const [portlessTld, setPortlessTld] = useState<string>('localhost');
+  const portlessTld = useAppStore(s => s.portlessTld);
+  const setPortlessTld = useAppStore(s => s.setPortlessTld);
   /** When non-null, the tab with this shellId renders an inline rename
    *  input instead of its display name. */
-  const [renamingShellId, setRenamingShellId] = useState<string | null>(null);
+  const renamingShellId = useAppStore(s => s.renamingShellId);
+  const setRenamingShellId = useAppStore(s => s.setRenamingShellId);
   /** Cross-action env vars taskr injected into each PTY at spawn time.
    *  Keyed by procId. Populated by the `terminal_env_injected` WS event. */
-  const [injectedEnvByProc, setInjectedEnvByProc] = useState<Record<string, Record<string, string>>>({});
+  const injectedEnvByProc = useAppStore(s => s.injectedEnvByProc);
+  const setInjectedEnvByProc = useAppStore(s => s.setInjectedEnvByProc);
   /** Status-strip env popover state — which terminal's env is open. */
-  const [envPopoverProcId, setEnvPopoverProcId] = useState<string | null>(null);
+  const envPopoverProcId = useAppStore(s => s.envPopoverProcId);
+  const setEnvPopoverProcId = useAppStore(s => s.setEnvPopoverProcId);
   /** Right-click context menu state for the tab strip. */
-  const [tabContextMenu, setTabContextMenu] = useState<
-    { shellId: string; procId: string; running: boolean; x: number; y: number } | null
-  >(null);
+  const tabContextMenu = useAppStore(s => s.tabContextMenu);
+  const setTabContextMenu = useAppStore(s => s.setTabContextMenu);
   // Server is the source of truth for session state. This map is populated only by server messages.
-  const [sessionStates, setSessionStates] = useState<Record<string, LocalSessionState>>({});
+  const sessionStates = useAppStore(s => s.sessionStates);
+  const setSessionStates = useAppStore(s => s.setSessionStates);
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
   const subscribedRef = useRef(new Set<string>());
@@ -989,15 +697,18 @@ export function ChatApp() {
   // modal hides the OpenCode option). Populated from opencode's
   // provider.list, so it reflects whichever providers the user has
   // authenticated for.
-  const [opencodeInfo, setOpencodeInfo] = useState<{ available: boolean; models: Array<{ id: string; label: string; providerName: string }> } | null>(null);
+  const opencodeInfo = useAppStore(s => s.opencodeInfo);
+  const setOpencodeInfo = useAppStore(s => s.setOpencodeInfo);
   // Cached snapshot of the Claude Agent SDK's supportedModels(), shared by
   // every Claude picker. Populated lazily from `/providers/claude/info`; the
   // server fills the cache as soon as any Claude session reports its list.
   // Stays an empty array on first launch when no Claude session has booted yet.
-  const [claudeModels, setClaudeModels] = useState<SupportedModel[]>([]);
+  const claudeModels = useAppStore(s => s.claudeModels);
+  const setClaudeModels = useAppStore(s => s.setClaudeModels);
   // Per-message-id set of interactive terminals the user has minimized via the
   // shells badge bar or bubble header. Transient UI state; not persisted.
-  const [minimizedShells, setMinimizedShells] = useState<Set<string>>(new Set());
+  const minimizedShells = useAppStore(s => s.minimizedShells);
+  const setMinimizedShells = useAppStore(s => s.setMinimizedShells);
   const toggleShellMinimized = useCallback((msgId: string) => {
     setMinimizedShells(prev => {
       const next = new Set(prev);
@@ -1008,8 +719,10 @@ export function ChatApp() {
   // Which interactive terminal's xterm is currently visible in the sticky bottom
   // panel. Switching the active shell keeps all the others mounted (hidden) so
   // scrollback + running processes survive. Per-session via a map keyed by sessionId.
-  const [activeShellBySession, setActiveShellBySession] = useState<Record<string, string>>({});
-  const [visibleMessageCount, setVisibleMessageCount] = useState(200);
+  const activeShellBySession = useAppStore(s => s.activeShellBySession);
+  const setActiveShellBySession = useAppStore(s => s.setActiveShellBySession);
+  const visibleMessageCount = useAppStore(s => s.visibleMessageCount);
+  const setVisibleMessageCount = useAppStore(s => s.setVisibleMessageCount);
   const [showNewSession, setShowNewSession] = useState(false);
   const [worktreeForGroup, setWorktreeForGroup] = useState<{
     groupId: string;
@@ -1018,11 +731,18 @@ export function ChatApp() {
     packageManager?: string;
     worktrees?: { path: string; branch: string }[];
   } | null>(null);
-  const [turnCompleteIds, setTurnCompleteIds] = useState<Set<string>>(new Set());
+  const turnCompleteIds = useAppStore(s => s.turnCompleteIds);
+  const setTurnCompleteIds = useAppStore(s => s.setTurnCompleteIds);
   const [showPalette, setShowPalette] = useState(false);
   // ⌘F in-chat find widget (VSCode-style). Searches the active session's
   // rendered message stream via the CSS Custom Highlight API.
   const [findOpen, setFindOpen] = useState(false);
+  // Session resources drawer (images, mockups, files) — opened from the chat
+  // header chip. `resourcesRefresh` is bumped on ws events (new image/mockup)
+  // so an open drawer refetches without a manual reload.
+  const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [resourcesRefresh, setResourcesRefresh] = useState(0);
+  const [resourceCount, setResourceCount] = useState(0);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   // Search-as-a-card: when true the FileExplorer panel swaps its cards for the
   // search card. Driven from here so ⌘⇧F can toggle it.
@@ -1036,38 +756,60 @@ export function ChatApp() {
     setTabRequest({ card, nonce: ++tabNonceRef.current });
   }, []);
   const [projectSettings, setProjectSettings] = useState<{ open: boolean; sectionId?: string }>({ open: false });
+  const [showSkills, setShowSkills] = useState(false);
   // Keyboard-shortcut overrides (command id → chord, or null to force-unbind);
   // defaults live in the keybinding registry. Hydrated from the bridge and kept
   // live across windows via the `onKeybindings` websocket broadcast.
-  const [kbOverrides, setKbOverrides] = useState<KeybindingOverrides>({});
+  // Keybinding overrides now live in the store (keybindingsSlice).
+  const kbOverrides = useAppStore(s => s.kbOverrides);
+  const setKbOverrides = useAppStore(s => s.setKbOverrides);
   const [showShortcuts, setShowShortcuts] = useState(false);
   // Tracks whether a plugin's <PluginDetailView /> is currently visible. Updated
   // from the codiby-code:linked-item-changed event so the right panel can claim space.
   const [pluginDetailOpen, setPluginDetailOpen] = useState(false);
-  const [prLinks, setPrLinks] = useState<Record<string, { prNumber: number; title: string; url: string; headRefName: string; state: string }>>({});
-  const [showPrDropdown, setShowPrDropdown] = useState(false);
-  const [sessionPrs, setSessionPrs] = useState<{ number: number; title: string; headRefName: string; state: string; url: string; isDraft: boolean }[]>([]);
-  const [openPR, setOpenPR] = useState<PRInfo | null>(null);
+  // Pull-request state now lives in the store (prSlice).
+  const prLinks = useAppStore(s => s.prLinks);
+  const setPrLinks = useAppStore(s => s.setPrLinks);
+  const showPrDropdown = useAppStore(s => s.showPrDropdown);
+  const setShowPrDropdown = useAppStore(s => s.setShowPrDropdown);
+  const sessionPrs = useAppStore(s => s.sessionPrs);
+  const setSessionPrs = useAppStore(s => s.setSessionPrs);
+  const openPR = useAppStore(s => s.openPR);
+  const setOpenPR = useAppStore(s => s.setOpenPR);
 
   const gitModifiedCacheRef = useRef<Record<string, GitModifiedState>>({});
-  const [gitModified, setGitModified] = useState<GitModifiedState>({ staged: new Set(), unstaged: new Set(), untracked: new Set(), stats: new Map() });
+  // Git working-tree state now lives in the store (gitSlice).
+  const gitModified = useAppStore(s => s.gitModified);
+  const setGitModified = useAppStore(s => s.setGitModified);
   // Changes-section comparison mode: 'vs-main' lists everything this branch
   // changed relative to the base branch (merge-base); 'uncommitted' is the
   // classic staged/unstaged/untracked working-tree view. The resolved base
   // branch name (main/master/…) is detected per workspace. Refs mirror them so
   // refreshGitModified / diff handlers read the current value without re-binding.
-  const [changesCompare, setChangesCompare] = useState<'vs-main' | 'uncommitted'>('vs-main');
-  const [baseBranch, setBaseBranch] = useState<string>('main');
+  const changesCompare = useAppStore(s => s.changesCompare);
+  const setChangesCompare = useAppStore(s => s.setChangesCompare);
+  const baseBranch = useAppStore(s => s.baseBranch);
+  const setBaseBranch = useAppStore(s => s.setBaseBranch);
   const changesCompareRef = useRef(changesCompare);
   changesCompareRef.current = changesCompare;
   const baseBranchRef = useRef(baseBranch);
   baseBranchRef.current = baseBranch;
-  const [client, setClient] = useState<ClaudeClient | null>(null);
+  // Connection-level state now lives in the store (clientSlice).
+  const client = useAppStore(s => s.client);
+  const setClient = useAppStore(s => s.setClient);
   const clientRef = useRef<ClaudeClient | null>(null);
   // Live mirror of `activeId` readable from long-lived client callbacks
   // (which capture the value at construction time otherwise).
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
+  // Keep the Resources chip badge in sync with the active session's resource
+  // count. Cheap (reads a manifest); refetched on ws-driven `resourcesRefresh`.
+  useEffect(() => {
+    let cancelled = false;
+    if (!client || !activeId) { setResourceCount(0); return; }
+    void client.listResources(activeId).then(r => { if (!cancelled) setResourceCount(r.length); });
+    return () => { cancelled = true; };
+  }, [client, activeId, resourcesRefresh]);
   const serverUrlRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const permRequestRef = useRef<HTMLDivElement>(null);
@@ -1090,28 +832,22 @@ export function ChatApp() {
   // the current IDE-style layout (sidebar + editor + chat); "focus" hides the
   // IDE chrome and tiles multiple chats. Wiring of the actual mode-switching
   // comes in follow-up steps — for now this just drives the title bar pill.
-  const [layoutMode, setLayoutMode] = useState<'standard' | 'horizontal' | 'focus'>(() => {
-    try {
-      const v = localStorage.getItem('claude-ui-layout-mode');
-      if (v === 'focus' || v === 'horizontal' || v === 'standard') return v;
-      return 'standard';
-    } catch { return 'standard'; }
-  });
+  // Layout mode + focus-mode workspace state now live in the store
+  // (workspacesSlice); initial values are seeded there from localStorage.
+  const layoutMode = useAppStore(s => s.layoutMode);
+  const setLayoutMode = useAppStore(s => s.setLayoutMode);
   const changeLayoutMode = useCallback((mode: 'standard' | 'horizontal' | 'focus') => {
     setLayoutMode(mode);
     try { localStorage.setItem('claude-ui-layout-mode', mode); } catch {}
-  }, []);
+  }, [setLayoutMode]);
 
-  // Workspace state for focus mode. Lifted here (rather than living inside
-  // ChatFocusLayout) so the title bar can surface workspace-level actions
-  // ("add active chat to workspace", "new chat in workspace") next to the
-  // layout-mode pill.
-  const [focusWorkspaces, setFocusWorkspaces] = useState<Workspace[]>(() => {
-    return loadInitialWorkspaces([]).workspaces;
-  });
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => {
-    return loadInitialWorkspaces([]).activeId;
-  });
+  // Workspace state for focus mode. Lifted out of ChatFocusLayout so the title
+  // bar can surface workspace-level actions ("add active chat to workspace",
+  // "new chat in workspace") next to the layout-mode pill.
+  const focusWorkspaces = useAppStore(s => s.focusWorkspaces);
+  const setFocusWorkspaces = useAppStore(s => s.setFocusWorkspaces);
+  const activeWorkspaceId = useAppStore(s => s.activeWorkspaceId);
+  const setActiveWorkspaceId = useAppStore(s => s.setActiveWorkspaceId);
   const activeWorkspace = useMemo(
     () => focusWorkspaces.find(w => w.id === activeWorkspaceId) ?? focusWorkspaces[0]!,
     [focusWorkspaces, activeWorkspaceId],
@@ -1403,10 +1139,20 @@ export function ChatApp() {
         onSessionState: (sid, state) => {
           setSessionStates(prev => {
             const existing = prev[sid];
-            // Merge messages: keep any local messages not in server state
+            // Merge messages: keep any local messages not in server state.
+            // Drop local streaming placeholders — the authoritative in-flight
+            // block is re-derived below from the server's partial* fields, so
+            // keeping the old placeholder would duplicate it.
             const serverMsgIds = new Set((state.messages || []).map((m: any) => m.id));
-            const localOnly = existing?.messages?.filter(m => !serverMsgIds.has(m.id)) || [];
-            const mergedMessages = [...(state.messages || []), ...localOnly];
+            const localOnly = existing?.messages?.filter(m => !serverMsgIds.has(m.id) && !m.streaming) || [];
+            let mergedMessages = [...(state.messages || []), ...localOnly];
+            // The server still tracks the live block as `partialText` /
+            // `partialThinking` (the wire format is unchanged). On reconnect
+            // mid-turn, fold those back into the unified array as streaming
+            // items so the desktop renders them from `messages` like everything
+            // else.
+            if (state.partialThinking) mergedMessages = upsertStreamingBlock(mergedMessages, 'thinking', state.partialThinking);
+            if (state.partialText) mergedMessages = upsertStreamingBlock(mergedMessages, 'text', state.partialText);
             return {
               ...prev,
               [sid]: {
@@ -1451,6 +1197,8 @@ export function ChatApp() {
         },
 
         onMessage: (sid, msg) => {
+          // Images posted into the session are also filed as resources.
+          if (msg.images?.length) setResourcesRefresh(n => n + 1);
           setSessionStates(prev => {
             const s = prev[sid] || emptyLocalState();
             // Deduplicate by ID — message may already exist from session_state restore
@@ -1468,7 +1216,20 @@ export function ChatApp() {
               if (idx !== -1) {
                 const next = [...s.messages];
                 next[idx] = msg;
-                return { ...prev, [sid]: { ...s, messages: next, partialText: '', partialThinking: msg.isThinking ? '' : s.partialThinking, contextTokens } };
+                return { ...prev, [sid]: { ...s, messages: next, contextTokens } };
+              }
+            }
+            // Completed assistant text/thinking block: adopt the live streaming
+            // placeholder in its existing slot (now settled) instead of
+            // appending a duplicate. The preview and the permanent bubble are
+            // the SAME array item, so there's nothing to reconcile or clear.
+            const isPlainAssistant = msg.role === 'assistant' && !msg.toolName && !msg.isToolResult;
+            if (isPlainAssistant) {
+              const idx = s.messages.findIndex(m => m.streaming && !!m.isThinking === !!msg.isThinking);
+              if (idx !== -1) {
+                const next = [...s.messages];
+                next[idx] = msg;
+                return { ...prev, [sid]: { ...s, messages: next, contextTokens } };
               }
             }
             return {
@@ -1476,12 +1237,6 @@ export function ChatApp() {
               [sid]: {
                 ...s,
                 messages: [...s.messages, msg],
-                partialText: '',
-                // Clear the live thinking preview only when the matching
-                // permanent isThinking message arrives — otherwise an
-                // unrelated tool_use or text message would wipe a thought
-                // that's still streaming above it.
-                partialThinking: msg.isThinking ? '' : s.partialThinking,
                 contextTokens,
               },
             };
@@ -1491,14 +1246,14 @@ export function ChatApp() {
         onPartialText: (sid, text) => {
           setSessionStates(prev => {
             const s = prev[sid] || emptyLocalState();
-            return { ...prev, [sid]: { ...s, partialText: text } };
+            return { ...prev, [sid]: { ...s, messages: upsertStreamingBlock(s.messages, 'text', text) } };
           });
         },
 
         onPartialThinking: (sid, text) => {
           setSessionStates(prev => {
             const s = prev[sid] || emptyLocalState();
-            return { ...prev, [sid]: { ...s, partialThinking: text } };
+            return { ...prev, [sid]: { ...s, messages: upsertStreamingBlock(s.messages, 'thinking', text) } };
           });
         },
 
@@ -1536,7 +1291,10 @@ export function ChatApp() {
             setSessionStates(prev => {
               const s = prev[sid] || emptyLocalState();
               wasStreaming = !!s.isStreaming;
-              return { ...prev, [sid]: { ...s, isStreaming: false, wasInterrupted: false, partialText: '', partialThinking: '' } };
+              // Settle any block still flagged streaming (normally all permanent
+              // blocks have already adopted their placeholders by now — this is
+              // a safety net so a dropped final block isn't lost).
+              return { ...prev, [sid]: { ...s, isStreaming: false, wasInterrupted: false, messages: freezeStreaming(s.messages) } };
             });
             if (wasStreaming) playChime();
             setTurnCompleteIds(prev => new Set(prev).add(sid));
@@ -1553,9 +1311,10 @@ export function ChatApp() {
             // knows to retry instead of staring at a stale orange forever.
             setSessionStates(prev => {
               const s = prev[sid] || emptyLocalState();
-              // Keep any text/thinking that streamed before the turn died instead
-              // of discarding it along with the "thinking" preview.
-              return { ...prev, [sid]: { ...s, isStreaming: false, messages: [...s.messages, ...carriedStreamMessages(s)], partialText: '', partialThinking: '', wasInterrupted: true } };
+              // Keep any text/thinking that streamed before the turn died by
+              // freezing the in-flight blocks in place (they're already in the
+              // array — no snapshot needed).
+              return { ...prev, [sid]: { ...s, isStreaming: false, messages: freezeStreaming(s.messages), wasInterrupted: true } };
             });
           }
         },
@@ -1663,6 +1422,8 @@ export function ChatApp() {
             diffView: null,
             // Resources coexist as tabs now: editor/browser tabs stay open.
           }));
+          // A mockup was just filed under the session's resources.
+          setResourcesRefresh(n => n + 1);
         },
 
         // Server-initiated "open browser preview" — triggered by the
@@ -1756,30 +1517,8 @@ export function ChatApp() {
           if (Array.isArray(prefs.pinnedSessionIds)) {
             setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
           }
-          if (typeof prefs.autoGroupSessions === 'boolean') {
-            setAutoGroupSessions(prefs.autoGroupSessions);
-          }
-          if (typeof prefs.autoFocusBrowserOnAction === 'boolean') {
-            setAutoFocusBrowserOnAction(prefs.autoFocusBrowserOnAction);
-          }
-          if (typeof prefs.showTelegramSession === 'boolean') {
-            setShowTelegramSession(prefs.showTelegramSession);
-          }
-          if (typeof prefs.interruptOnSend === 'boolean') {
-            setInterruptOnSend(prefs.interruptOnSend);
-          }
-          if (typeof prefs.colorChatBySession === 'boolean') {
-            setColorChatBySession(prefs.colorChatBySession);
-          }
-          if (typeof prefs.tintChatBackground === 'boolean') {
-            setTintChatBackground(prefs.tintChatBackground);
-          }
-          if (prefs.sessionAccents && typeof prefs.sessionAccents === 'object') {
-            setSessionAccents(prefs.sessionAccents as Record<string, string>);
-          }
-          if (Array.isArray(prefs.globalEnvVars)) {
-            setGlobalEnvVars(prefs.globalEnvVars as ProjectEnvVar[]);
-          }
+          // Toggles + accents + global env vars are owned by preferencesSlice.
+          hydratePreferences(prefs);
           if (prefs.shellRenames && typeof prefs.shellRenames === 'object') {
             setShellRenames(prefs.shellRenames as Record<string, Record<string, string>>);
           }
@@ -2093,7 +1832,11 @@ export function ChatApp() {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [activeId, active.messages.length, active.partialText, active.partialThinking]);
+    // `active.messages` gets a fresh array reference on every stream delta
+    // (upsertStreamingBlock returns a new array), so depending on the array
+    // itself keeps the view pinned as the live block grows — the length alone
+    // wouldn't change while a single block streams.
+  }, [activeId, active.messages]);
 
 
   // The composer textarea autosizes via inline `style.height` set in its
@@ -2327,30 +2070,11 @@ export function ChatApp() {
     setShowNewSession(true);
   };
 
-  const handleToggleAutoGroup = (next: boolean) => {
-    setAutoGroupSessions(next);
-    persistPrefs({ autoGroupSessions: next });
-  };
-
-  const handleToggleAutoFocusBrowserOnAction = (next: boolean) => {
-    setAutoFocusBrowserOnAction(next);
-    persistPrefs({ autoFocusBrowserOnAction: next });
-  };
-
-  const handleToggleInterruptOnSend = (next: boolean) => {
-    setInterruptOnSend(next);
-    persistPrefs({ interruptOnSend: next });
-  };
-
-  const handleToggleColorChatBySession = (next: boolean) => {
-    setColorChatBySession(next);
-    persistPrefs({ colorChatBySession: next });
-  };
-
-  const handleToggleTintChatBackground = (next: boolean) => {
-    setTintChatBackground(next);
-    persistPrefs({ tintChatBackground: next });
-  };
+  const handleToggleAutoGroup = (next: boolean) => setPreference('autoGroupSessions', next);
+  const handleToggleAutoFocusBrowserOnAction = (next: boolean) => setPreference('autoFocusBrowserOnAction', next);
+  const handleToggleInterruptOnSend = (next: boolean) => setPreference('interruptOnSend', next);
+  const handleToggleColorChatBySession = (next: boolean) => setPreference('colorChatBySession', next);
+  const handleToggleTintChatBackground = (next: boolean) => setPreference('tintChatBackground', next);
 
   const handleCreateSession = async (cwd: string, provider?: string, remoteId?: string | null) => {
     const c = clientRef.current;
@@ -2945,12 +2669,11 @@ export function ChatApp() {
         updateLocalState(sid, s => ({
           ...s,
           isStreaming: false,
-          // Preserve whatever streamed before the barge-in (committed ahead of
-          // the new user message to keep the timeline order) — the incoming
-          // `interrupted` status would otherwise wipe the live preview.
-          messages: [...s.messages.filter(m => !m.isPending), ...carriedStreamMessages(s), pendingMsg],
-          partialText: '',
-          partialThinking: '',
+          // Freeze whatever streamed before the barge-in in place, then append
+          // the new user message at the end. The frozen thinking/text keeps its
+          // slot in the timeline — it never re-anchors to the bottom — and the
+          // new message sits below it.
+          messages: [...freezeStreaming(s.messages).filter(m => !m.isPending), pendingMsg],
           pendingMessages: [{ id: pendingId, text: effectiveText, images }],
         }));
       } else {
@@ -3002,9 +2725,10 @@ export function ChatApp() {
       ...s,
       isStreaming: false,
       pendingMessages: [],
-      // Also strip the queued bubbles from the message list — Stop is a
-      // definite cancellation; we don't want them to keep sitting there.
-      messages: s.messages.filter(m => !m.isPending),
+      // Freeze the in-flight block in place (keep what streamed so far) and
+      // strip the queued bubbles — Stop is a definite cancellation, so we don't
+      // want them to keep sitting there.
+      messages: freezeStreaming(s.messages).filter(m => !m.isPending),
     }));
   };
 
@@ -3902,9 +3626,13 @@ export function ChatApp() {
   useEffect(() => { refreshGitModified(); }, [changesCompare, baseBranch, refreshGitModified]);
 
   // Fetch git branch for status bar
-  const [gitBranch, setGitBranch] = useState<string | null>(null);
-  const [branchMenu, setBranchMenu] = useState<{ local: string[]; remote: string[]; current: string; rect: DOMRect } | null>(null);
-  const [branchFilter, setBranchFilter] = useState('');
+  // Git branch + switcher state now live in the store (gitSlice).
+  const gitBranch = useAppStore(s => s.gitBranch);
+  const setGitBranch = useAppStore(s => s.setGitBranch);
+  const branchMenu = useAppStore(s => s.branchMenu);
+  const setBranchMenu = useAppStore(s => s.setBranchMenu);
+  const branchFilter = useAppStore(s => s.branchFilter);
+  const setBranchFilter = useAppStore(s => s.setBranchFilter);
   const branchBtnRef = useRef<HTMLButtonElement>(null);
   const branchInputRef = useRef<HTMLInputElement>(null);
 
@@ -4441,13 +4169,8 @@ export function ChatApp() {
 
   /** Set (or clear, when color is null) a session's accent override. */
   const handlePickSessionAccent = useCallback((sid: string, color: string | null) => {
-    setSessionAccents(prev => {
-      const next = { ...prev };
-      if (color) next[sid] = color; else delete next[sid];
-      persistPrefs({ sessionAccents: next });
-      return next;
-    });
-  }, []);
+    setSessionAccent(sid, color);
+  }, [setSessionAccent]);
 
   // Render a composer for any given session. Used by both layouts: the
   // standard chat tree renders the active session's composer inline; the
@@ -4538,7 +4261,7 @@ export function ChatApp() {
         style={accent && tintChatBackground ? { backgroundColor: `${accent}0d` } : undefined}
         className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1"
       >
-        {cs.messages.length === 0 && !cs.partialText && (
+        {cs.messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <p className="text-zinc-600 text-sm">
               {status === 'connecting' ? 'Connecting to Claude...' :
@@ -4581,7 +4304,7 @@ export function ChatApp() {
               return <AgentBubble key={item.agent.id} agent={item.agent} children={item.children} onOpenTerminal={handleOpenTerminal} />;
             }
             if ('toolRun' in item) {
-              const hasContentAfter = i < grouped.length - 1 || !!cs.partialText;
+              const hasContentAfter = i < grouped.length - 1;
               return (
                 <ToolRunBubble
                   key={item.items[0]!.id}
@@ -4626,32 +4349,12 @@ export function ChatApp() {
             );
           });
         })()}
-        {cs.partialThinking && (
-          <div className="py-1">
-            <div className="flex items-start gap-1.5 text-[12px] text-zinc-500">
-              <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-70 text-violet-300/70 animate-pulse" />
-              <span className="font-medium uppercase tracking-wide text-[10px] mt-[3px] shrink-0">
-                Thinking
-              </span>
-            </div>
-            <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
-              <p className="text-[12px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-                {cs.partialThinking}
-                <span className="inline-block ml-0.5 w-1.5 h-3 bg-zinc-500/70 align-middle animate-pulse" />
-              </p>
-            </div>
-          </div>
-        )}
-        {cs.partialText && (
-          <div className="py-1">
-            <p className="text-[13px] text-zinc-300 whitespace-pre-wrap break-words leading-relaxed">
-              {cs.partialText}
-            </p>
-          </div>
-        )}
-        {/* Queued user messages — rendered after the live preview so they sit
-            below the in-flight assistant turn (thinking/text) they follow,
-            preserving timeline order. */}
+        {/* Live thinking/text is no longer a bottom-anchored side channel — it
+            renders inline in the grouped list above as `streaming` messages, so
+            nothing extra goes here. */}
+        {/* Queued user messages — rendered after the in-flight assistant turn so
+            they sit below the thinking/text they follow, preserving timeline
+            order. */}
         {cs.messages.filter(m => m.isPending).map((m, idx, arr) => (
           <div key={m.id} id={`msg-${m.id}`}>
             <MessageBubble
@@ -4892,15 +4595,6 @@ export function ChatApp() {
               className="flex items-center gap-2 mr-2 min-w-0 shrink"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             >
-              {explorerCollapsed && (
-                <button
-                  className="text-zinc-600 hover:text-zinc-300 text-sm"
-                  onClick={() => setExplorerCollapsed(false)}
-                  title="Show file explorer"
-                >
-                  &#x2630;
-                </button>
-              )}
               {activeSession?.provider && (
                 <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-light text-zinc-300 font-semibold">
                   {activeSession.provider === 'claudeAgent' ? 'Claude'
@@ -5166,7 +4860,7 @@ export function ChatApp() {
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
           </button>
           <div
-            className={`${IS_MAC ? 'mr-3' : 'mr-36'} flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5`}
+            className="mr-1.5 flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <button
@@ -5203,6 +4897,21 @@ export function ChatApp() {
               <LayoutGrid className="w-3.5 h-3.5" />
             </button>
           </div>
+          {/* File-explorer panel toggle — pinned to the far right of the
+              titlebar, since the Explorer is docked on the right of the chat. */}
+          {activeNavView === 'sessions' && (
+            <button
+              onClick={() => setExplorerCollapsed(c => !c)}
+              title={explorerCollapsed ? 'Show file explorer' : 'Hide file explorer'}
+              aria-label={explorerCollapsed ? 'Show file explorer' : 'Hide file explorer'}
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              className={`${IS_MAC ? 'mr-3' : 'mr-36'} w-7 h-6 flex items-center justify-center rounded-md transition-colors ${
+                explorerCollapsed ? 'text-zinc-500 hover:text-zinc-200 hover:bg-surface-light' : 'text-zinc-200 bg-surface-light'
+              }`}
+            >
+              <PanelRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
         {layoutMode === 'focus' ? (
           <div className="flex-1 flex min-h-0 min-w-0 pt-9 relative">
@@ -5289,45 +4998,12 @@ export function ChatApp() {
               onToggleCollapsed={toggleTabsCollapsed}
               activeNavView={activeNavView}
               onSelectNavView={setActiveNavView}
+              onOpenSkills={() => setShowSkills(true)}
+              onOpenSettings={() => setProjectSettings({ open: true })}
             />
           )}
-          {/* Side Panel: Explorer (cards) — Search now lives inside it as a card,
-              Settings moved to the titlebar, the old Activity Bar is gone.
-              Hidden in group mode: a group tab is selected to compose a new
-              session, but `activeId` still points at the last opened session,
-              so the tree would show stale files from a possibly-different folder. */}
-          {activeNavView === 'sessions' && activeId && !(selectedGroupId && tabGroups[selectedGroupId]) && (
-          <FileExplorer
-            client={client}
-            rootPath={explorerRoot}
-            collapsed={explorerCollapsed}
-            onToggle={() => setExplorerCollapsed(c => !c)}
-            onFileOpen={handleFileOpen}
-            onFileDiff={handleFileDiff}
-            onFileDiffFullView={handleFileDiffFullView}
-            gitModified={gitModified}
-            activeFilePath={openFile?.path ?? null}
-            activeDiffPath={diffView?.path ?? null}
-            changesCompare={changesCompare}
-            onChangesCompareChange={setChangesCompare}
-            baseBranch={baseBranch}
-            activeSessionId={activeId}
-            onOpenTerminal={(command) => {
-              const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
-              if (msg) { if (activeId) updateLocalState(activeId, s => ({ ...s, openTerminalId: msg.id, diffView: null })); }
-            }}
-            onStartReview={handleStartReview}
-            onRefreshGit={refreshGitModified}
-            tools={active.initInfo?.tools}
-            sessionName={activeSession?.name}
-            searchActive={searchActive}
-            onSearchActiveChange={setSearchActive}
-            requestedTab={tabRequest}
-            renderSearchCard={(onClose) => (
-              <SearchPanel client={client} rootPath={explorerRoot} onFileOpen={handleFileOpen} onClose={onClose} />
-            )}
-          />
-          )}
+          {/* Side Panel (Explorer) is rendered on the RIGHT, after the chat
+              content — see below. */}
 
           <div className="flex-1 flex flex-col min-w-0">
             {activeNavView === 'sessions-board' ? (
@@ -5472,13 +5148,32 @@ export function ChatApp() {
                           <button
                             type="button"
                             className="w-full text-[11px] text-zinc-400 hover:text-zinc-100 bg-surface-light/40 hover:bg-surface-light rounded py-1 transition-colors"
-                            onClick={() => updateLocalState(activeId, s => ({ ...s, todos: [] }))}
+                            onClick={() => {
+                              updateLocalState(activeId, s => ({ ...s, todos: [] }));
+                              // Persist the clear on the bridge too — otherwise the
+                              // server keeps the todos snapshot and re-broadcasts it
+                              // on the next reconnect (which fires on window refocus
+                              // via visibilitychange), reopening the panel.
+                              clientRef.current?.updateUIState(activeId, { todos: [] });
+                            }}
                           >
                             Close
                           </button>
                         </div>
                       )}
                     </div>
+                  )}
+
+                  {/* Session resources drawer — pasted images, generated
+                      mockups, files. Opened from the Resources chip above. */}
+                  {resourcesOpen && activeId && (
+                    <ResourcesPanel
+                      open={resourcesOpen}
+                      onClose={() => setResourcesOpen(false)}
+                      client={client}
+                      sessionId={activeId}
+                      refreshKey={resourcesRefresh}
+                    />
                   )}
                   </div>
 
@@ -6442,6 +6137,29 @@ export function ChatApp() {
                       onTabDoubleClick={(tabId) => {
                         if (activeId && tabId.startsWith('editor:')) pinEditor(activeId, tabId.slice('editor:'.length));
                       }}
+                      renderTabBarExtra={(node) => {
+                        // Resources chip lives in the tab strip of the panel that
+                        // holds the chat tab — chrome, not floating over messages.
+                        if (!activeId || !node.tabIds.includes('chat')) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setResourcesOpen(o => !o)}
+                            title="Session resources"
+                            className={`inline-flex items-center gap-1.5 h-[22px] pl-1.5 pr-2 rounded-md border text-[11px] font-semibold transition-colors ${
+                              resourcesOpen
+                                ? 'bg-surface-lighter border-violet-500 text-zinc-100'
+                                : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
+                            }`}
+                          >
+                            <LayoutGrid size={13} className="text-violet-300" />
+                            <span>Resources</span>
+                            {resourceCount > 0 && (
+                              <span className="text-[9.5px] font-bold text-violet-300 bg-violet-500/18 rounded-full px-1.5 py-px leading-none">{resourceCount}</span>
+                            )}
+                          </button>
+                        );
+                      }}
                     />
                   );
                 })()}
@@ -6456,6 +6174,45 @@ export function ChatApp() {
             </>
             )}
           </div>
+
+          {/* Side Panel: Explorer (cards) — now docked on the RIGHT of the chat
+              content. Search lives inside it as a card, Settings moved to the
+              titlebar, the old Activity Bar is gone. Hidden in group mode: a
+              group tab is selected to compose a new session, but `activeId`
+              still points at the last opened session, so the tree would show
+              stale files from a possibly-different folder. */}
+          {activeNavView === 'sessions' && activeId && !(selectedGroupId && tabGroups[selectedGroupId]) && (
+          <FileExplorer
+            client={client}
+            rootPath={explorerRoot}
+            collapsed={explorerCollapsed}
+            onToggle={() => setExplorerCollapsed(c => !c)}
+            onFileOpen={handleFileOpen}
+            onFileDiff={handleFileDiff}
+            onFileDiffFullView={handleFileDiffFullView}
+            gitModified={gitModified}
+            activeFilePath={openFile?.path ?? null}
+            activeDiffPath={diffView?.path ?? null}
+            changesCompare={changesCompare}
+            onChangesCompareChange={setChangesCompare}
+            baseBranch={baseBranch}
+            activeSessionId={activeId}
+            onOpenTerminal={(command) => {
+              const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);
+              if (msg) { if (activeId) updateLocalState(activeId, s => ({ ...s, openTerminalId: msg.id, diffView: null })); }
+            }}
+            onStartReview={handleStartReview}
+            onRefreshGit={refreshGitModified}
+            tools={active.initInfo?.tools}
+            sessionName={activeSession?.name}
+            searchActive={searchActive}
+            onSearchActiveChange={setSearchActive}
+            requestedTab={tabRequest}
+            renderSearchCard={(onClose) => (
+              <SearchPanel client={client} rootPath={explorerRoot} onFileOpen={handleFileOpen} onClose={onClose} />
+            )}
+          />
+          )}
         </div>
         )}
 
@@ -6630,15 +6387,9 @@ export function ChatApp() {
           tintChatBackground={tintChatBackground}
           onToggleTintChatBackground={handleToggleTintChatBackground}
           showTelegramSession={showTelegramSession}
-          onToggleShowTelegramSession={(next) => {
-            setShowTelegramSession(next);
-            persistPrefs({ showTelegramSession: next });
-          }}
+          onToggleShowTelegramSession={(next) => setPreference('showTelegramSession', next)}
           globalEnvVars={globalEnvVars}
-          onChangeGlobalEnvVars={(next) => {
-            setGlobalEnvVars(next);
-            persistPrefs({ globalEnvVars: next });
-          }}
+          onChangeGlobalEnvVars={(next) => setGlobalEnvVars(next)}
           portlessTld={portlessTld}
           onChangePortlessTld={(next) => {
             const v = next.trim() || 'localhost';
@@ -6662,6 +6413,12 @@ export function ChatApp() {
             setTabGroups(newGroups);
             persistPrefs({ tabGroups: newGroups });
           }}
+        />
+        <SkillsModal
+          open={showSkills}
+          onClose={() => setShowSkills(false)}
+          client={client}
+          projectRoot={sessions.find(s => s.id === activeId)?.cwd ?? null}
         />
         <PortlessActionToast />
         {tabContextMenu && (() => {
@@ -7030,28 +6787,3 @@ export function ChatApp() {
  *  takes over — the webview snaps cleanly into the right pane instead of
  *  being stuck at stale or zero bounds. The webview itself is hidden here
  *  (`visible: false`) so it doesn't render over the focus grid. */
-function FocusBrowserAnchor(props: {
-  label: string;
-  url: string;
-  title: string;
-  openSeq: number;
-  cookieJar: string;
-}) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  useBrowserPreviewBounds({
-    hostRef,
-    label: props.label,
-    url: props.url,
-    title: props.title,
-    openSeq: props.openSeq,
-    cookieJar: props.cookieJar,
-    visible: false,
-  });
-  return (
-    <div
-      ref={hostRef}
-      aria-hidden
-      className="absolute inset-0 pointer-events-none invisible"
-    />
-  );
-}

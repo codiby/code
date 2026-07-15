@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  Cog, Antenna,
+  Cog, Antenna, Sparkles, Settings,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -92,6 +92,9 @@ interface Props {
   activeNavView?: 'sessions' | 'sessions-board';
   /** Switch the main pane to a top-level view. */
   onSelectNavView?: (view: 'sessions' | 'sessions-board') => void;
+  /** Footer actions pinned to the bottom of the sidebar. */
+  onOpenSkills?: () => void;
+  onOpenSettings?: () => void;
 }
 
 const COLOR_MAP: Record<string, { dot: string; bg: string; border: string; ring: string; text: string }> = {
@@ -704,7 +707,8 @@ export const TabBar = memo(function TabBar(props: Props) {
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onSelectGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
-    activeNavView = 'sessions', onSelectNavView } = props;
+    activeNavView = 'sessions', onSelectNavView,
+    onOpenSkills, onOpenSettings } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
   // every other parent re-render (memoized parent + memoized TabBar).
@@ -1044,6 +1048,26 @@ export const TabBar = memo(function TabBar(props: Props) {
               );
             })}
         </div>
+      </div>
+
+      {/* Footer — fixed actions pinned to the bottom of the sidebar. */}
+      <div className="flex flex-col gap-0.5 px-2 py-2 border-t border-border shrink-0">
+        <button
+          type="button"
+          onClick={onOpenSkills}
+          className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
+        >
+          <Sparkles size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
+          <span>Skills</span>
+        </button>
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
+        >
+          <Settings size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
+          <span>Settings</span>
+        </button>
       </div>
 
       {/* Group dropdown menu */}

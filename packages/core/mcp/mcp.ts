@@ -16,7 +16,8 @@ import type { ChatMessage } from '../session/state';
 import { createWorktree, applyWorktreeSetup } from '../handlers/worktree';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
-import { extname } from 'path';
+import { extname, basename } from 'path';
+import { saveResource } from '../handlers/resources';
 import {
   IMAGE_MEDIA_TYPES,
   mockupsFor,
@@ -500,7 +501,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         // resource): run the command through the user's login shell, collect
         // stdout+stderr with a 30s cap, and return it. Runs as a plain child
         // process — it isn't a managed terminal, so it doesn't go through the
-        // /session/:id/terminals CRUD.
+        // /sessions/:id/terminals CRUD.
         const shell = process.env.SHELL || '/bin/sh';
         const init = 'source ~/.zprofile 2>/dev/null; source ~/.zshrc 2>/dev/null; ';
         const proc = Bun.spawn([shell, '-c', init + (args!.command as string)], {
@@ -905,6 +906,13 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (addMessage(uiSessionId, msg)) {
           _deps.broadcastToSession(uiSessionId, { type: 'message', sessionId: uiSessionId, message: msg });
         }
+        // Also file the image under the session's browsable resources so it
+        // shows up in the Resources panel. Never let this fail the post.
+        try {
+          saveResource(uiSessionId, { data: buf.toString('base64'), name: basename(path), kind: 'image', mime: mediaType });
+        } catch (e) {
+          log(`ui_post_image_to_session: failed to register resource: ${e instanceof Error ? e.message : String(e)}`);
+        }
         const sizeKb = Math.max(1, Math.round(buf.length / 1024));
         const tail = caption ? ` — "${caption}"` : '';
         return { content: [{ type: 'text', text: `Posted ${mediaType} (${sizeKb} KB) from ${path}${tail}.` }] };
@@ -927,6 +935,14 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `Mockup "${name}" rendered but failed to persist to disk: ${err}` }], isError: true };
         }
         _deps.broadcastToSession(uiSessionId, { type: 'open_mockup', sessionId: uiSessionId, name, html });
+        // Register (or overwrite) the mockup in the session's resources so it's
+        // browsable in the Resources panel; dedupe by name to mirror the
+        // in-place overwrite semantics of mockup_write.
+        try {
+          saveResource(uiSessionId, { content: html, name: `${name}.html`, kind: 'mockup', mime: 'text/html' }, { dedupeByName: true });
+        } catch (e) {
+          log(`ui_mockup_write: failed to register resource: ${e instanceof Error ? e.message : String(e)}`);
+        }
         const sizeKb = Math.max(1, Math.round(Buffer.byteLength(html, 'utf8') / 1024));
         return { content: [{ type: 'text', text: `Mockup "${name}" rendered and saved (${sizeKb} KB).` }] };
       }
@@ -976,6 +992,11 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `Mockup "${name}" updated in memory but failed to persist to disk: ${err}` }], isError: true };
         }
         _deps.broadcastToSession(uiSessionId, { type: 'open_mockup', sessionId: uiSessionId, name, html: next });
+        try {
+          saveResource(uiSessionId, { content: next, name: `${name}.html`, kind: 'mockup', mime: 'text/html' }, { dedupeByName: true });
+        } catch (e) {
+          log(`ui_mockup_edit: failed to register resource: ${e instanceof Error ? e.message : String(e)}`);
+        }
         return { content: [{ type: 'text', text: `Mockup "${name}" updated (${count} replacement${count === 1 ? '' : 's'}) and saved.` }] };
       }
       case 'ui_mockup_read': {

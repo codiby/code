@@ -19,6 +19,9 @@ export interface PanelProps {
   onSplit: (dir: 'row' | 'col') => void;
   /** Double-click a tab pill — used to pin a preview tab. */
   onPin?: (tabId: string) => void;
+  /** Host-rendered actions pinned to the right of this panel's tab strip
+   *  (e.g. the session Resources chip on the chat panel). */
+  renderTabBarExtra?: (node: PanelNode) => ReactNode;
 }
 
 function TabPill({
@@ -53,7 +56,7 @@ function TabPill({
   );
 }
 
-export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit, onPin }: PanelProps) {
+export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit, onPin, renderTabBarExtra }: PanelProps) {
   const orderedTabs = node.tabIds.map((id) => tabs.get(id)).filter((t): t is Tab => !!t);
   // Resolve the active tab against the *live* tab set, falling back to the last
   // surviving tab. When a tab is closed the host drops it from `tabs` a render
@@ -88,6 +91,11 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
           ))}
         </div>
         <div className="flex-1" />
+        {renderTabBarExtra && (
+          <div className="flex items-center shrink-0 mr-0.5" onMouseDown={(e) => e.stopPropagation()}>
+            {renderTabBarExtra(node)}
+          </div>
+        )}
         {canSplit && (
           <div className="flex items-center gap-0.5 shrink-0">
             <button
