@@ -218,7 +218,7 @@ export function PlanPanel({
   }, [popup, comments, onSetComments, closePopup]);
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 relative bg-surface">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 relative bg-surface">
       <div
         className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface-light"
         onDoubleClick={onToggleFullWidth}
@@ -232,7 +232,7 @@ export function PlanPanel({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 pt-6 pb-24">
           {blocks.length === 0 ? (
             <p className="text-[12px] text-zinc-500">No plan content</p>

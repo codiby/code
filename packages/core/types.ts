@@ -132,7 +132,7 @@ export interface TrackedProcess {
 
 /**
  * Wire shape for a terminal as a first-class resource. Served by the
- * `/session/:id/terminals` CRUD endpoints and broadcast to subscribed
+ * `/sessions/:id/terminals` CRUD endpoints and broadcast to subscribed
  * frontend clients on `terminal_created` / `terminal_removed`. The frontend
  * terminals dock renders straight from a list of these — terminals are no
  * longer inferred from chat messages.

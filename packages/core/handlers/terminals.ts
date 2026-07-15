@@ -2,7 +2,7 @@
  * Terminals as a first-class resource.
  *
  * This is the SINGLE spawn/list/attach/kill path shared by:
- *   - the REST CRUD endpoints (`/session/:id/terminals`) the UI drives, and
+ *   - the REST CRUD endpoints (`/sessions/:id/terminals`) the UI drives, and
  *   - the in-process MCP tools (`spawn_terminal`, `actions_run`).
  *
  * Both used to build PTYs by hand in three different places; now everything

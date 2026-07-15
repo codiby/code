@@ -17,6 +17,8 @@ export interface RenderCtx {
   onCloseTab: (tab: Tab) => void;
   /** Double-click a tab pill (e.g. pin a preview editor tab). */
   onPin?: (tabId: string) => void;
+  /** Host-rendered actions pinned to the right of a panel's tab strip. */
+  renderTabBarExtra?: (node: LayoutNode & { type: 'panel' }) => ReactNode;
   /** Set by handles so the workspace can drop a pointer-eating overlay. */
   setResizing: (v: boolean) => void;
 }
@@ -34,6 +36,7 @@ export function NodeView({ node, ctx }: { node: LayoutNode; ctx: RenderCtx }) {
         onFocus={() => ctx.store.focusPanel(node.id)}
         onSplit={(dir) => node.activeTabId && ctx.store.splitPanelWithTab(node.id, node.activeTabId, dir)}
         onPin={ctx.onPin}
+        renderTabBarExtra={ctx.renderTabBarExtra}
       />
     );
   }

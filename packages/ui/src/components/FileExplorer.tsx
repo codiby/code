@@ -17,8 +17,6 @@ import {
   GitPullRequest,
   Lock,
   Minus,
-  PanelLeftClose,
-  PanelLeftOpen,
   Play,
   Plug,
   Plus,
@@ -408,9 +406,13 @@ function FileNode({ entry, depth, parentPath }: { entry: FileEntry; depth: numbe
 const GREEN_STATUS = '#5cc98c';
 function statusTint(hex: string): string { return `${hex}21`; }
 
-/** Pro card surface — flat tone, hairline border, a 1px top sheen and a
- *  whisper of elevation. No heavy drop shadow. Shared by every section card. */
-const CARD_CLS = 'rounded-[11px] border border-[#1e1f24] bg-[#141519] overflow-hidden shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_1px_2px_rgba(0,0,0,0.25)]';
+/** The panel is a single card now (the icon rail is its header). This class
+ *  draws that outer card's chrome — hairline border, flat tone, a 1px top sheen
+ *  and a whisper of elevation. */
+const PANEL_CARD_CLS = 'rounded-[11px] border border-[#1e1f24] bg-[#141519] overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_1px_2px_rgba(0,0,0,0.25)]';
+/** Section wrappers carry no chrome of their own — they stack inside the outer
+ *  PANEL_CARD_CLS, which supplies the border/background/elevation. */
+const CARD_CLS = 'overflow-hidden shrink-0';
 
 /** Hairline divider under a card header — fades at both ends. */
 function CardDivider() {
@@ -1706,9 +1708,8 @@ interface RailItem { key: string; title: string; color: string; icon: React.Reac
  *  are tabs, one per card. Clicking a tab shows that card below; the active tab
  *  is highlighted. Tabs can be dragged to reorder (persisted as the card order).
  *  When collapsed the rail stacks vertically. */
-function PanelRail({ collapsed, onToggleCollapse, items, activeKey, onSelect, onReorder, searchActive, onToggleSearch }: {
+function PanelRail({ collapsed, items, activeKey, onSelect, onReorder, searchActive, onToggleSearch }: {
   collapsed: boolean;
-  onToggleCollapse: () => void;
   items: RailItem[];
   activeKey: string;
   onSelect: (key: string) => void;
@@ -1746,10 +1747,14 @@ function PanelRail({ collapsed, onToggleCollapse, items, activeKey, onSelect, on
         onDrop={e => { if (drag && drag !== it.key) { e.preventDefault(); onReorder(drag, it.key, over?.pos ?? 'before'); } reset(); }}
         title={it.title}
         aria-label={it.title}
-        className={`relative w-[32px] h-[28px] rounded-[8px] flex items-center justify-center transition-colors shrink-0 ${isActive ? 'bg-[#1f2025]' : 'opacity-60 hover:opacity-100 hover:bg-[#191a1f]'} ${drag === it.key ? '!opacity-40' : ''}`}
+        className={`relative h-[28px] rounded-[8px] flex items-center justify-center gap-[6px] transition-colors shrink-0 ${isActive ? 'bg-[#1f2025] px-[9px]' : 'w-[32px] opacity-60 hover:opacity-100 hover:bg-[#191a1f]'} ${drag === it.key ? '!opacity-40' : ''}`}
         style={{ color: it.color }}
       >
         {it.icon}
+        {/* Active tab expands to show its label. */}
+        {isActive && !collapsed && (
+          <span className="text-[11px] font-semibold tracking-[0.02em] whitespace-nowrap text-[#e6e7ea]">{it.title}</span>
+        )}
         {it.badge ? (
           <span
             className="absolute top-0 right-[1px] min-w-[13px] h-[13px] px-[3px] rounded-[7px] text-[8.5px] font-bold font-mono flex items-center justify-center text-[#0b0c0e]"
@@ -1758,13 +1763,6 @@ function PanelRail({ collapsed, onToggleCollapse, items, activeKey, onSelect, on
             {it.badge}
           </span>
         ) : null}
-        {/* Active indicator: bottom bar (horizontal) / left bar (collapsed) */}
-        {isActive && (
-          <span
-            className={`rounded-full ${collapsed ? 'absolute left-[1px] top-1/2 -translate-y-1/2 w-[2px] h-[16px]' : 'absolute bottom-[1px] left-1/2 -translate-x-1/2 h-[2px] w-[16px]'}`}
-            style={{ background: it.color }}
-          />
-        )}
         {showBefore && <span className={`${lineBase} ${collapsed ? '-top-[3px]' : '-left-[3px]'} rounded-full bg-[#7c5cff] pointer-events-none`} />}
         {showAfter && <span className={`${lineBase} ${collapsed ? '-bottom-[3px]' : '-right-[3px]'} rounded-full bg-[#7c5cff] pointer-events-none`} />}
       </button>
@@ -1777,27 +1775,18 @@ function PanelRail({ collapsed, onToggleCollapse, items, activeKey, onSelect, on
   const rest = items.filter(it => it.key !== 'files');
   return (
     <div
-      className={`rounded-[10px] border border-[#1e1f24] bg-[#141519] shrink-0 flex p-[5px] ${collapsed ? 'flex-col gap-[3px] items-center' : 'items-center gap-[3px]'}`}
+      className={`shrink-0 flex p-[5px] ${collapsed ? 'flex-col gap-[3px] items-center' : 'items-center gap-[3px]'}`}
     >
-      <button
-        onClick={onToggleCollapse}
-        title={collapsed ? 'Expand panel' : 'Collapse panel'}
-        aria-label={collapsed ? 'Expand panel' : 'Collapse panel'}
-        className="relative w-[32px] h-[28px] rounded-[8px] flex items-center justify-center text-[#6b6e76] hover:text-[#e6e7ea] hover:bg-[#191a1f] transition-colors shrink-0"
-      >
-        {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-      </button>
-      <span className={`bg-[#1e1f24] shrink-0 ${collapsed ? 'h-px w-[16px] my-[3px]' : 'w-px h-[16px] mx-[3px]'}`} />
       {filesItem && renderTab(filesItem)}
       {/* Search: a toggle, not a tab — its card replaces the others */}
       <button
         onClick={onToggleSearch}
         title="Search in files"
         aria-label="Search in files"
-        className={`relative w-[32px] h-[28px] rounded-[8px] flex items-center justify-center transition-colors shrink-0 ${searchActive ? 'text-[#e6e7ea] bg-[#7c5cff]/[0.14]' : 'text-[#6b6e76] hover:text-[#9aa0a8] hover:bg-[#191a1f]'}`}
+        className={`relative h-[28px] rounded-[8px] flex items-center justify-center gap-[6px] transition-colors shrink-0 ${searchActive ? 'text-[#e6e7ea] bg-[#7c5cff]/[0.14] px-[9px]' : 'w-[32px] text-[#6b6e76] hover:text-[#9aa0a8] hover:bg-[#191a1f]'}`}
       >
         <Search size={15} />
-        {searchActive && <span className="absolute bottom-[2px] left-1/2 -translate-x-1/2 w-[13px] h-[2px] rounded-full bg-current" />}
+        {searchActive && !collapsed && <span className="text-[11px] font-semibold tracking-[0.02em] whitespace-nowrap">Search</span>}
       </button>
       <span className={`bg-[#1e1f24] shrink-0 ${collapsed ? 'h-px w-[16px] my-[3px]' : 'w-px h-[16px] mx-[3px]'}`} />
       {rest.map(renderTab)}
@@ -1835,9 +1824,11 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
 
   // Rail state: whether the cards are collapsed down to just the rail, plus the
   // live counts the Processes / PRs cards report so the rail can badge them.
-  const [cardsCollapsed, setCardsCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem('cardsCollapsed') === '1'; } catch { return false; }
-  });
+  // The old 50px icon-rail collapse was replaced by the titlebar Show/Hide
+  // Explorer toggle (which hides the whole right-docked panel). Keep this state
+  // at false so the surrounding layout logic still resolves; there's no longer a
+  // rail-collapse control to flip it.
+  const [cardsCollapsed, setCardsCollapsed] = useState<boolean>(false);
   const [processCount, setProcessCount] = useState(0);
   const [prCount, setPrCount] = useState(0);
   const cardsScrollRef = useRef<HTMLDivElement>(null);
@@ -1871,14 +1862,6 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
       const idx = next.indexOf(to);
       if (idx === -1) return prev;
       next.splice(pos === 'before' ? idx : idx + 1, 0, from);
-      return next;
-    });
-  }, []);
-
-  const toggleCardsCollapsed = useCallback(() => {
-    setCardsCollapsed(v => {
-      const next = !v;
-      try { localStorage.setItem('cardsCollapsed', next ? '1' : '0'); } catch {}
       return next;
     });
   }, []);
@@ -2122,7 +2105,9 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
     const startW = sidebarWidth;
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
-      setSidebarWidth(startW + (ev.clientX - startX));
+      // Panel is docked on the right, so its resize grip is on the LEFT edge:
+      // dragging left (clientX decreasing) grows the panel.
+      setSidebarWidth(startW - (ev.clientX - startX));
     };
     const onUp = () => {
       dragging.current = false;
@@ -2146,7 +2131,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
         {/* Resize handle (hidden while collapsed — width is fixed) */}
         {!collapsed && !cardsCollapsed && (
           <div
-            className="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-[#7c5cff]/40 active:bg-[#7c5cff]/60 transition-colors"
+            className="absolute top-0 left-0 w-1 h-full cursor-col-resize z-10 hover:bg-[#7c5cff]/40 active:bg-[#7c5cff]/60 transition-colors"
             onMouseDown={onResizeStart}
           />
         )}
@@ -2165,65 +2150,58 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
           />
         )}
 
-        {/* Icon rail — the former sidebar, now a card. Always present so the
-            collapse toggle survives even when every card is hidden. */}
-        <div className="p-[7px] shrink-0">
-          <PanelRail
-            collapsed={cardsCollapsed}
-            onToggleCollapse={toggleCardsCollapsed}
-            items={railItems}
-            activeKey={searchActive ? '' : activeTab}
-            onSelect={selectTab}
-            onReorder={reorderCards}
-            searchActive={searchActive}
-            onToggleSearch={toggleSearch}
-          />
-        </div>
-
-        {/* Search card replaces the other cards while active. */}
-        {!cardsCollapsed && searchActive && renderSearchCard && (
-          <div className="flex-1 min-h-0 flex flex-col px-[7px] pb-[7px]">
-            {renderSearchCard(() => onSearchActiveChange?.(false))}
+        {/* The whole panel is one full-height card: the icon rail is its
+            header, a hairline divider sits under it, and the active section
+            (or the search card) fills the rest. */}
+        {!cardsCollapsed && (
+          <div className={`flex-1 min-h-0 flex flex-col m-[7px] ${PANEL_CARD_CLS}`}>
+            <PanelRail
+              collapsed={cardsCollapsed}
+              items={railItems}
+              activeKey={searchActive ? '' : activeTab}
+              onSelect={selectTab}
+              onReorder={reorderCards}
+              searchActive={searchActive}
+              onToggleSearch={toggleSearch}
+            />
+            <CardDivider />
+            <div ref={cardsScrollRef} className="flex-1 min-h-0 flex flex-col overflow-y-auto">
+              {searchActive && renderSearchCard ? (
+                renderSearchCard(() => onSearchActiveChange?.(false))
+              ) : (() => {
+                const cardNodes: Record<string, React.ReactNode> = {
+                  processes: <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} onCountChange={setProcessCount} />,
+                  changes: <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} baseBranch={baseBranch} />,
+                  prs: <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} onCountChange={setPrCount} />,
+                  // Tools + MCP unified in one tab: the Tools chips (when present)
+                  // stacked above the MCP servers list.
+                  toolsmcp: (
+                    <div className="flex flex-col gap-[7px]">
+                      {tools && tools.length > 0 ? <ToolsSection tools={tools} /> : null}
+                      <McpServersSection client={client} rootPath={rootPath} sessionId={activeSessionId} />
+                    </div>
+                  ),
+                  files: (
+                    <FileTreeSection
+                      rootPath={rootPath}
+                      entries={entries}
+                      onNewAtRoot={handleNewAtRoot}
+                      onUpload={isRemote && rootPath ? () => handleUploadTo(rootPath) : undefined}
+                      height={filesHeight}
+                      onHeightChange={setFilesHeight}
+                    />
+                  ),
+                };
+                // Resolve the active tab against the cards that actually exist
+                // right now, falling back to the first in order (so an
+                // emptied/hidden tab never leaves a blank panel).
+                const visible = cardOrder.filter(id => cardNodes[id]);
+                const active = visible.includes(activeTab) ? activeTab : visible[0];
+                return active ? cardNodes[active] : null;
+              })()}
+            </div>
           </div>
         )}
-
-        {/* Tabbed card panel: the rail is the tab bar, and only the active
-            card renders here. Tools is omitted when empty. */}
-        {!cardsCollapsed && !searchActive && (() => {
-          const cardNodes: Record<string, React.ReactNode> = {
-            processes: <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} onCountChange={setProcessCount} />,
-            changes: <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} baseBranch={baseBranch} />,
-            prs: <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} onCountChange={setPrCount} />,
-            // Tools + MCP unified in one tab: the Tools chips (when present)
-            // stacked above the MCP servers card.
-            toolsmcp: (
-              <div className="flex flex-col gap-[7px]">
-                {tools && tools.length > 0 ? <ToolsSection tools={tools} /> : null}
-                <McpServersSection client={client} rootPath={rootPath} sessionId={activeSessionId} />
-              </div>
-            ),
-            files: (
-              <FileTreeSection
-                rootPath={rootPath}
-                entries={entries}
-                onNewAtRoot={handleNewAtRoot}
-                onUpload={isRemote && rootPath ? () => handleUploadTo(rootPath) : undefined}
-                height={filesHeight}
-                onHeightChange={setFilesHeight}
-              />
-            ),
-          };
-          // Resolve the active tab against the cards that actually exist right
-          // now, falling back to the first in order (so an emptied/hidden tab
-          // never leaves a blank panel).
-          const visible = cardOrder.filter(id => cardNodes[id]);
-          const active = visible.includes(activeTab) ? activeTab : visible[0];
-          return (
-            <div ref={cardsScrollRef} className="flex-1 min-h-0 flex flex-col px-[7px] pb-[7px] overflow-y-auto">
-              {active ? cardNodes[active] : null}
-            </div>
-          );
-        })()}
 
         {/* Right-click context menu */}
         {menu && (

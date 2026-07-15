@@ -10,13 +10,14 @@
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
-import { dirname, extname, join } from 'path';
+import { basename, dirname, extname, join } from 'path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
 import { log } from '../lib/logger';
 import { addMessage } from '../session/state';
 import type { ChatMessage } from '../session/state';
+import { saveResource } from '../handlers/resources';
 import { sessions, saveSessions } from '../session/sessions';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host/index';
 import { cdpRequest } from './browser-cdp';
@@ -386,6 +387,12 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (addMessage(sessionId, msg)) {
             deps.broadcastToSession(sessionId, { type: 'message', sessionId, message: msg });
           }
+          // Also file the image under the session's browsable resources.
+          try {
+            saveResource(sessionId, { data: buf.toString('base64'), name: basename(args.path), kind: 'image', mime: mediaType });
+          } catch (e) {
+            log(`post_image_to_session: failed to register resource: ${e instanceof Error ? e.message : String(e)}`);
+          }
           const sizeKb = Math.max(1, Math.round(buf.length / 1024));
           const tail = args.caption ? ` — "${args.caption}"` : '';
           return { content: [{ type: 'text', text: `Posted ${mediaType} (${sizeKb} KB) from ${args.path}${tail}.` }] };
@@ -416,6 +423,12 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             name,
             html: args.html,
           });
+          // Register (or overwrite) the mockup in the session's resources.
+          try {
+            saveResource(sessionId, { content: args.html, name: `${name}.html`, kind: 'mockup', mime: 'text/html' }, { dedupeByName: true });
+          } catch (e) {
+            log(`mockup_write: failed to register resource: ${e instanceof Error ? e.message : String(e)}`);
+          }
           const sizeKb = Math.max(1, Math.round(Buffer.byteLength(args.html, 'utf8') / 1024));
           return { content: [{ type: 'text', text: `Mockup "${name}" rendered and saved (${sizeKb} KB).` }] };
         },
@@ -475,6 +488,11 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             name,
             html: next,
           });
+          try {
+            saveResource(sessionId, { content: next, name: `${name}.html`, kind: 'mockup', mime: 'text/html' }, { dedupeByName: true });
+          } catch (e) {
+            log(`mockup_edit: failed to register resource: ${e instanceof Error ? e.message : String(e)}`);
+          }
           return { content: [{ type: 'text', text: `Mockup "${name}" updated (${count} replacement${count === 1 ? '' : 's'}) and saved.` }] };
         },
       ),
@@ -952,7 +970,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           }
 
           // Spawn through the shared terminal resource path — the SAME code
-          // the UI's `POST /session/:id/terminals` uses. The command is
+          // the UI's `POST /sessions/:id/terminals` uses. The command is
           // auto-typed on the PTY's first byte; a `terminal_created` broadcast
           // makes the terminal appear in the user's dock. No chat message: a
           // terminal is a first-class resource, discovered from the terminals

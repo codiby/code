@@ -57,7 +57,7 @@ interface Props {
  * Live interactive PTY terminal.
  *
  * The terminal is a first-class server resource (see `TerminalInfo`), created
- * over `POST /session/:id/terminals` by the user (`/terminal`, the dock's
+ * over `POST /sessions/:id/terminals` by the user (`/terminal`, the dock's
  * "new" button) or by an MCP tool (`spawn_terminal`, `actions_run`). This
  * component only renders + drives an already-created terminal: it mounts an
  * xterm.js instance, RE-ATTACHES to the server-side PTY (`attachTerminal` —
