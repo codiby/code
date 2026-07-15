@@ -20,7 +20,7 @@ import { BypassWarningModal, shouldWarnBypass } from './BypassWarningModal';
 import { BrowserUrlModal } from './BrowserUrlModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
 import { useFileMention, FileMentionList } from './FileMentionPicker';
-import { CommandPalette, type PaletteAction } from './CommandPalette';
+import { CommandPalette, type PaletteAction, type PaletteMode } from './CommandPalette';
 import { ChatFindWidget } from './ChatFindWidget';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { SkillsModal } from './SkillsModal';
@@ -734,6 +734,7 @@ export function ChatApp() {
   const turnCompleteIds = useAppStore(s => s.turnCompleteIds);
   const setTurnCompleteIds = useAppStore(s => s.setTurnCompleteIds);
   const [showPalette, setShowPalette] = useState(false);
+  const [paletteMode, setPaletteMode] = useState<PaletteMode>('commands');
   // ⌘F in-chat find widget (VSCode-style). Searches the active session's
   // rendered message stream via the CSS Custom Highlight API.
   const [findOpen, setFindOpen] = useState(false);
@@ -3234,7 +3235,15 @@ export function ChatApp() {
 
   const commandHandlersRef = useRef<Record<string, () => void>>({});
   commandHandlersRef.current = {
-    'command-palette': () => setShowPalette(p => !p),
+    'command-palette': () => {
+      if (showPalette && paletteMode === 'commands') setShowPalette(false);
+      else { setPaletteMode('commands'); setShowPalette(true); }
+    },
+    'file-switcher': () => {
+      if (showPalette && paletteMode === 'files') setShowPalette(false);
+      else { setPaletteMode('files'); setShowPalette(true); }
+    },
+    'toggle-sidebar': () => toggleTabsCollapsed(),
     'toggle-explorer': () => setExplorerCollapsed(c => !c),
     'toggle-terminals': () => toggleTerminalsRef.current(),
     'new-terminal': () => spawnNewTerminalRef.current(),
@@ -3695,6 +3704,7 @@ export function ChatApp() {
   const paletteActions: PaletteAction[] = [
     { id: 'new-session', label: 'New Session', chord: kbBindings['new-session'] ?? undefined, section: 'Sessions', onRun: () => setShowNewSession(true) },
     { id: 'focus-input', label: 'Focus Chat Input', chord: kbBindings['focus-chat-input'] ?? undefined, section: 'Navigation', onRun: () => inputRef.current?.focus() },
+    { id: 'toggle-sidebar', label: tabsCollapsed ? 'Show Sessions Sidebar' : 'Hide Sessions Sidebar', chord: kbBindings['toggle-sidebar'] ?? undefined, section: 'Navigation', onRun: () => toggleTabsCollapsed() },
     { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', chord: kbBindings['toggle-explorer'] ?? undefined, section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
     { id: 'toggle-terminals', label: terminalsPanelExpanded ? 'Collapse Terminals' : 'Expand Terminals', chord: kbBindings['toggle-terminals'] ?? undefined, section: 'Navigation', onRun: () => toggleTerminals() },
     { id: 'close-editor', label: 'Close Editor / Tab', chord: kbBindings['close-tab'] ?? undefined, section: 'Navigation', onRun: () => closePanelRef.current() },
@@ -3863,6 +3873,18 @@ export function ChatApp() {
         // Focus the chat input
         setTimeout(() => inputRef.current?.focus(), 50);
       },
+    });
+
+    // Cmd+K: open the Command Palette. Monaco reserves Cmd+K as a chord leader
+    // (Cmd+K Cmd+S, etc.) and swallows the keydown before it bubbles to the
+    // window-level keybinding handler, so we bind it explicitly here and route
+    // to the same handler the global registry uses. (Cmd+P isn't a Monaco chord,
+    // so the file switcher already works without this.)
+    editor.addAction({
+      id: 'open-command-palette',
+      label: 'Command Palette',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
+      run: () => { commandHandlersRef.current['command-palette']?.(); },
     });
 
     // --- Fix with AI (quick fix + context menu) ---
@@ -4211,22 +4233,8 @@ export function ChatApp() {
           if (!clientRef.current) return;
           const prevModel = sess?.model ?? null;
           if (prevModel === (modelId || null)) return;
-          if (modelId) clientRef.current.setModel(sid, modelId);
+          clientRef.current.setModel(sid, modelId);
           setSessions(prev => prev.map(x => x.id === sid ? { ...x, model: modelId || null } : x));
-          // Log the switch inline so the chat reflects which model handled
-          // which turns. Resolve a friendly label from the session's models
-          // (falling back to the global list, then the raw id).
-          const models = (s.supportedModels && s.supportedModels.length > 0) ? s.supportedModels : claudeModels;
-          const label = modelId ? (models.find(m => m.id === modelId)?.label || modelId) : 'default';
-          updateLocalState(sid, st => ({
-            ...st,
-            messages: [...st.messages, {
-              id: crypto.randomUUID(),
-              role: 'system' as const,
-              content: `Modelo cambiado a ${label}`,
-              timestamp: Date.now(),
-            }],
-          }));
         }}
         onSelectPermissionMode={(mode) => {
           if (!clientRef.current) return;
@@ -4732,8 +4740,8 @@ export function ChatApp() {
             <>
               <div className="flex-1" />
               <button
-                onClick={() => setShowPalette(true)}
-                title="Search sessions, files, commands (⌘P)"
+                onClick={() => { setPaletteMode('commands'); setShowPalette(true); }}
+                title="Commands (⌘K) · Go to file (⌘P)"
                 className="group absolute left-1/2 -translate-x-1/2 h-6 w-[420px] max-w-[40vw] px-2.5 flex items-center gap-2 bg-surface hover:bg-surface-light border border-border hover:border-border-light rounded-md transition-colors"
                 style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               >
@@ -6537,10 +6545,14 @@ export function ChatApp() {
         )}
         <CommandPalette
           isOpen={showPalette}
+          mode={paletteMode}
+          onModeChange={setPaletteMode}
           onClose={() => setShowPalette(false)}
           actions={paletteActions}
           fileIndex={fileIndex}
           onFileOpen={handleFileOpen}
+          commandChord={kbBindings['command-palette'] ?? undefined}
+          filesChord={kbBindings['file-switcher'] ?? undefined}
         />
         <CtrlTabSwitcher
           open={switcher.open}

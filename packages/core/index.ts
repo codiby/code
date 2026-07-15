@@ -857,6 +857,15 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (session.providerSession) {
       try { await session.providerSession.setModel(session.model); } catch {}
     }
+    const modelChangedMessage: ChatMessage = {
+      id: randomUUID(),
+      role: 'system',
+      content: `Modelo cambiado a ${session.model ?? 'default'}`,
+      timestamp: Date.now(),
+    };
+    if (addMessage(sessionId, modelChangedMessage)) {
+      broadcastToSession(sessionId, { type: 'message', sessionId, message: modelChangedMessage });
+    }
     // Notify all subscribed clients
     broadcastToSession(sessionId, {
       type: 'session_state',
