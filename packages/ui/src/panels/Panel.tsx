@@ -31,12 +31,15 @@ function TabPill({
     <div
       onMouseDown={onActivate}
       onDoubleClick={onPin}
-      // Active pill: its open bottom (`-mb-px`, no bottom border, panel bg) sits
-      // on top of the strip's bottom border and merges into the body below — the
-      // focus outline routes up and around the tab, Chrome/Edge style.
-      className={`group flex items-center gap-1.5 h-full px-2.5 rounded-t-md text-[12px] whitespace-nowrap cursor-default select-none border-b-0 ${
+      // Active pill: bordered on top/sides only; the ::after strip paints
+      // surface-colored over the tab bar's bottom border so the pill's open
+      // bottom merges into the body (Chrome/Edge style). The pseudo-element is
+      // load-bearing: a -mb-px overlap alone does NOT reliably cover the strip
+      // border (h-full inside a definite-height flex row + zoom rounding can
+      // leave the pill flush above the border line, re-exposing the seam).
+      className={`group flex items-center gap-1.5 h-full px-2.5 rounded-t-lg text-[12px] whitespace-nowrap cursor-default select-none border-b-0 ${
         active
-          ? `relative z-10 -mb-px bg-surface text-zinc-100 border-t border-x ${focused ? 'border-blue-500/60' : 'border-blue-500/25'}`
+          ? `relative z-10 -mb-px bg-surface text-zinc-100 border-t border-x after:content-[''] after:absolute after:left-0 after:right-0 after:-bottom-0.5 after:h-1 after:bg-surface ${focused ? 'border-blue-500/60' : 'border-blue-500/25'}`
           : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
       }`}
       title={tab.title}
@@ -123,7 +126,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
         onMouseDownCapture={onFocus}
         className={`flex flex-col min-w-0 min-h-0 h-full w-full rounded-lg overflow-hidden bg-surface border ${edge}`}
       >
-        <div className="flex items-stretch h-[34px] shrink-0 px-1 gap-0.5 border-b border-border bg-base">
+        <div className="flex items-stretch h-[28px] shrink-0 px-1 gap-0.5 border-b border-border bg-base">
           {barExtras}
         </div>
         <div className="flex-1 min-h-0 min-w-0 relative">{body}</div>
@@ -131,15 +134,18 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
     );
   }
 
-  // Chrome/Edge tabs: the strip's bottom edge is the panel's top border. The
-  // active pill breaks that line and its open bottom merges into the body, so a
-  // single continuous outline runs up and around the active tab.
+  // Chrome/Edge tabs: the body is a fully rounded bordered box; the strip is a
+  // borderless row floating above it. The active pill's surface-colored ::after
+  // erases the body's top border underneath it, so a single continuous outline
+  // runs up and around the active tab with rounded corners at all four joints.
+  // Strip pl-2 (= the 8px --radius) keeps the first pill — and its ::after
+  // eraser — clear of the body's top-left corner curve.
   return (
     <div
       onMouseDownCapture={onFocus}
       className="flex flex-col min-w-0 min-h-0 h-full w-full"
     >
-      <div className={`flex items-stretch h-[34px] shrink-0 px-1 gap-0.5 rounded-t-lg bg-base border-b ${edge}`}>
+      <div className="flex items-stretch h-[28px] shrink-0 pl-2 pr-1 gap-0.5 bg-base">
         {/* No overflow clip here: overflow-x-auto forces overflow-y to clip,
             which would shave off the active pill's 1px overhang and re-expose
             the seam under the tab. Tabs truncate (max-w) instead of scrolling. */}
@@ -159,7 +165,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
         {barExtras}
       </div>
 
-      <div className={`flex-1 min-h-0 min-w-0 relative rounded-b-lg overflow-hidden bg-surface border border-t-0 ${edge}`}>
+      <div className={`flex-1 min-h-0 min-w-0 relative rounded-lg overflow-hidden bg-surface border ${edge}`}>
         {body}
       </div>
     </div>

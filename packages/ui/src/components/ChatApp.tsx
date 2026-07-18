@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Sun, Moon } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Sun, Moon, Eraser } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -29,6 +29,7 @@ import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { PortlessActionToast } from './PortlessActionToast';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
+import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
@@ -839,6 +840,9 @@ export function ChatApp() {
   const client = useAppStore(s => s.client);
   const setClient = useAppStore(s => s.setClient);
   const clientRef = useRef<ClaudeClient | null>(null);
+  // Imperative handles for each mounted terminal bubble (keyed by shell id) so
+  // the Terminals panel toolbar can clear the active terminal.
+  const shellTermHandles = useRef<Map<string, TerminalBubbleHandle>>(new Map());
   // Live mirror of `activeId` readable from long-lived client callbacks
   // (which capture the value at construction time otherwise).
   const activeIdRef = useRef<string | null>(null);
@@ -5620,6 +5624,16 @@ export function ChatApp() {
                               <Plus className="w-3 h-3" />
                               new
                             </button>
+                            {activeShellId && (
+                              <button
+                                type="button"
+                                onClick={() => { try { shellTermHandles.current.get(activeShellId)?.clear(); } catch {} }}
+                                className="h-6 w-6 rounded inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-surface-light"
+                                title="Clear terminal"
+                              >
+                                <Eraser className="w-3 h-3" />
+                              </button>
+                            )}
                             <span className="w-1 h-1 rounded-full bg-zinc-700 mx-1.5" />
                             <button
                               type="button"
@@ -5665,6 +5679,10 @@ export function ChatApp() {
                             >
                               {clientRef.current && (
                                 <InteractiveTerminalBubble
+                                  ref={(h) => {
+                                    if (h) shellTermHandles.current.set(sh.id, h);
+                                    else shellTermHandles.current.delete(sh.id);
+                                  }}
                                   terminal={sh}
                                   sessionId={activeId}
                                   client={clientRef.current}
@@ -5900,7 +5918,13 @@ export function ChatApp() {
                       title={b.title}
                       openSeq={b.openSeq}
                       cookieJar={b.cookieJar}
-                      obscured={showPalette || projectSettings.open || switcher.open}
+                      // The preview is a NATIVE child view overlaid on the
+                      // window — DOM modals can never z-index above it. Any
+                      // full-screen overlay ChatApp can open must be listed
+                      // here so the native view hides while it's up.
+                      obscured={showPalette || projectSettings.open || switcher.open
+                        || browserUrlModalOpen || showNewSession || showShortcuts
+                        || showSkills || pendingBypassSessionId !== null || !!worktreeForGroup}
                       inspect={!!active.browserInspect[name]}
                       comments={commentsForActive}
                       // Mounting means this browser's tab is the active one —

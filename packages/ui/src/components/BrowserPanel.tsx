@@ -30,6 +30,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@heroui/react';
+import { ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Globe, RotateCw, Send } from 'lucide-react';
 import type { MockupComment } from '../lib/mockup-inspector';
 import { getNative, isNative, tryInvokeNative } from '../lib/native';
 
@@ -262,7 +263,7 @@ export function useBrowserPreviewBounds(args: {
 
 export function BrowserPanel({
   label, url, title, openSeq, cookieJar, inspect, comments, obscured,
-  onSetInspect, onSetComments, onSendToChat, onWriteToChat, onClose,
+  onSetInspect, onSetComments, onSendToChat, onWriteToChat,
   onUrlChanged, onMountFocus,
 }: BrowserPanelProps) {
   // The page's *actual* current URL, fed by the `url-changed` relay event.
@@ -442,92 +443,95 @@ export function BrowserPanel({
 
   return (
     <div className="flex-1 flex flex-col min-w-0 relative">
-      <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface gap-2">
-        <div className="flex items-center gap-1.5 truncate cursor-default min-w-0">
-          <span className="text-[10px] text-sky-400 shrink-0">◐</span>
-          <span className="text-[12px] font-mono text-sky-300 shrink-0">browser ·</span>
-          <span className="text-[12px] font-mono text-zinc-300 truncate" title={currentUrl || url}>{title || url}</span>
+      {/* Navigation row: back / forward / reload / address input. Submit
+          coerces bare hosts to https:// and routes through the Rust
+          navigate command (which validates the URL before eval'ing into
+          the webview). */}
+      {/* Same height and surface as the tab strip pill (34px, bg-surface) so
+          the active tab flows into this row as one continuous piece. */}
+      <div className="flex items-center gap-0.5 px-2 h-[34px] border-b border-border shrink-0 bg-surface">
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          isDisabled={!windowOpen}
+          className="w-[26px] h-[26px] min-w-0 p-0 rounded-full flex items-center justify-center text-zinc-500 hover:text-zinc-200 hover:bg-zinc-500/15 transition-colors disabled:opacity-30"
+          onPress={goBack}
+          aria-label="Back"
+        ><ChevronLeft size={15} /></Button>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          isDisabled={!windowOpen}
+          className="w-[26px] h-[26px] min-w-0 p-0 rounded-full flex items-center justify-center text-zinc-500 hover:text-zinc-200 hover:bg-zinc-500/15 transition-colors disabled:opacity-30"
+          onPress={goForward}
+          aria-label="Forward"
+        ><ChevronRight size={15} /></Button>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          isDisabled={!windowOpen}
+          className="w-[26px] h-[26px] min-w-0 p-0 rounded-full flex items-center justify-center text-zinc-500 hover:text-zinc-200 hover:bg-zinc-500/15 transition-colors disabled:opacity-30"
+          onPress={reload}
+          aria-label="Reload"
+        ><RotateCw size={13} /></Button>
+        {/* Omnibox: tonal pill that lifts to a focused ring while typing. */}
+        <div className="flex-1 min-w-0 mx-1 h-[26px] flex items-center gap-1.5 px-2.5 rounded-full bg-surface-light border border-transparent transition-colors focus-within:bg-surface focus-within:border-blue-500/50 focus-within:ring-[3px] focus-within:ring-blue-500/15">
+          <Globe size={13} className="text-zinc-500 shrink-0" />
+          <input
+            type="text"
+            value={addressInput}
+            onChange={(e) => { addressEditingRef.current = true; setAddressInput(e.target.value); }}
+            onFocus={(e) => { addressEditingRef.current = true; e.currentTarget.select(); }}
+            onBlur={() => { addressEditingRef.current = false; setAddressInput(currentUrl || url); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); submitAddress(); }
+              else if (e.key === 'Escape') { e.preventDefault(); setAddressInput(currentUrl || url); addressEditingRef.current = false; (e.currentTarget as HTMLInputElement).blur(); }
+            }}
+            placeholder="https://…"
+            className="flex-1 min-w-0 bg-transparent text-[12px] text-zinc-200 focus:outline-none placeholder:text-zinc-600"
+            spellCheck={false}
+            aria-label="Address bar"
+          />
         </div>
-        <div className="flex items-center gap-1 shrink-0">
+        {/* One slot, two personalities: Inspect toggles element-picking; once
+            the first comment lands it morphs into the Send control (send /
+            write-to-chat). Sending clears comments, which morphs it back. */}
+        {comments.length > 0 ? (
+          <SendCommentsButton
+            count={comments.length}
+            onSend={sendToChat}
+            onWrite={writeToChat}
+          />
+        ) : (
           <Button
             size="sm"
             variant="ghost"
-            className={`text-[11px] px-2 py-0.5 h-auto rounded transition-colors ${
+            className={`h-[26px] px-2.5 min-w-0 rounded-full text-[11.5px] flex items-center gap-1.5 whitespace-nowrap transition-colors ${
               inspect
-                ? 'bg-sky-500/20 text-sky-200 hover:bg-sky-500/30'
-                : 'text-zinc-500 hover:text-sky-300'
+                ? 'bg-sky-500/20 text-sky-300 hover:bg-sky-500/30'
+                : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-500/15'
             }`}
             onPress={() => onSetInspect(!inspect)}
             isDisabled={!windowOpen}
             aria-label={inspect ? 'Exit inspect mode' : 'Pick elements to comment on'}
           >
-            {inspect ? '◉ Inspecting' : '◉ Inspect'}
+            <Crosshair size={13} />
+            {inspect ? 'Inspecting…' : 'Inspect'}
           </Button>
-          {comments.length > 0 && (
-            <SendCommentsButton
-              count={comments.length}
-              onSend={sendToChat}
-              onWrite={writeToChat}
-            />
-          )}
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-[11px] px-2 py-0.5 h-auto rounded text-zinc-500 hover:text-sky-300"
-            onPress={openExternal}
-            aria-label="Open in real browser"
-          >
-            ↗
-          </Button>
-          <Button isIconOnly size="sm" variant="ghost" className="text-zinc-500 hover:text-zinc-200 text-sm px-1 h-auto min-w-0" onPress={onClose} aria-label="Close browser preview">
-            <span>×</span>
-          </Button>
-        </div>
-      </div>
-      {/* Navigation row: back / forward / reload / address input. Submit
-          coerces bare hosts to https:// and routes through the Rust
-          navigate command (which validates the URL before eval'ing into
-          the webview). */}
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-border shrink-0 bg-surface-light">
+        )}
         <Button
+          isIconOnly
           size="sm"
           variant="ghost"
-          isDisabled={!windowOpen}
-          className="text-[12px] px-1.5 py-0.5 h-auto rounded text-zinc-400 hover:text-sky-300 disabled:opacity-30"
-          onPress={goBack}
-          aria-label="Back"
-        >◀</Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          isDisabled={!windowOpen}
-          className="text-[12px] px-1.5 py-0.5 h-auto rounded text-zinc-400 hover:text-sky-300 disabled:opacity-30"
-          onPress={goForward}
-          aria-label="Forward"
-        >▶</Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          isDisabled={!windowOpen}
-          className="text-[12px] px-1.5 py-0.5 h-auto rounded text-zinc-400 hover:text-sky-300 disabled:opacity-30"
-          onPress={reload}
-          aria-label="Reload"
-        >↻</Button>
-        <input
-          type="text"
-          value={addressInput}
-          onChange={(e) => { addressEditingRef.current = true; setAddressInput(e.target.value); }}
-          onFocus={(e) => { addressEditingRef.current = true; e.currentTarget.select(); }}
-          onBlur={() => { addressEditingRef.current = false; setAddressInput(currentUrl || url); }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); submitAddress(); }
-            else if (e.key === 'Escape') { e.preventDefault(); setAddressInput(currentUrl || url); addressEditingRef.current = false; (e.currentTarget as HTMLInputElement).blur(); }
-          }}
-          placeholder="https://…"
-          className="flex-1 min-w-0 bg-[#0f172a]/60 text-[12px] font-mono text-zinc-200 rounded px-2 py-0.5 border border-border focus:border-sky-500/50 focus:outline-none placeholder:text-zinc-600"
-          spellCheck={false}
-          aria-label="Address bar"
-        />
+          className="w-[26px] h-[26px] min-w-0 p-0 rounded-full flex items-center justify-center text-zinc-500 hover:text-zinc-200 hover:bg-zinc-500/15 transition-colors"
+          onPress={openExternal}
+          aria-label="Open in real browser"
+        >
+          <ArrowUpRight size={15} />
+        </Button>
       </div>
       {/* The native child webview is overlaid on top of this div in screen
           coordinates. Keep it visually empty so the OS surface is what the
@@ -578,25 +582,28 @@ function SendCommentsButton({
   }, [open]);
 
   return (
-    <div ref={ref} className="relative inline-flex items-stretch">
+    <div ref={ref} className="relative inline-flex items-stretch h-[26px] rounded-full bg-sky-500/20 text-sky-300">
       <Button
         size="sm"
         variant="ghost"
-        className="text-[11px] pl-2 pr-1.5 py-0.5 h-auto rounded-l text-sky-300 hover:bg-sky-500/20 transition-colors border border-r-0 border-transparent hover:border-sky-500/30"
+        className="h-full pl-2.5 pr-1 min-w-0 rounded-l-full text-[11.5px] flex items-center gap-1.5 whitespace-nowrap hover:bg-sky-500/30 transition-colors"
         onPress={onSend}
         aria-label={count > 0 ? 'Send these comments to chat now and clear the dots' : 'Send the current URL to chat'}
       >
-        {count > 0 ? `Send ${count} to chat` : 'Send to chat'}
+        <Send size={12} />
+        Send
+        <span className="bg-sky-500 text-white text-[10px] font-bold leading-none rounded-full px-[5px] py-[2.5px]">{count}</span>
       </Button>
       <Button
+        isIconOnly
         size="sm"
         variant="ghost"
-        className="text-[11px] px-1 py-0.5 h-auto rounded-r text-sky-300 hover:bg-sky-500/20 transition-colors border border-l-0 border-transparent hover:border-sky-500/30"
+        className="h-full px-1 pr-1.5 min-w-0 rounded-r-full flex items-center justify-center hover:bg-sky-500/30 transition-colors"
         onPress={() => setOpen(o => !o)}
         aria-label="More options"
         aria-expanded={open}
       >
-        ▾
+        <ChevronDown size={12} />
       </Button>
       {open && (
         <div className="absolute top-full right-0 mt-1 z-20 min-w-[180px] bg-[#1f1f1f] border border-border-light rounded-md shadow-xl overflow-hidden">

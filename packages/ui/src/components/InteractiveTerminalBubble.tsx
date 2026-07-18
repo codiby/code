@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, memo } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { useEffect, useRef, useState, memo, forwardRef, useImperativeHandle } from 'react';
+import { ChevronDown, ChevronRight, Eraser } from 'lucide-react';
 import type { TerminalInfo } from '../lib/claude-client';
 import type { ClaudeClient } from '../lib/claude-client';
 import { useAppStore } from '../lib/store';
@@ -109,6 +109,12 @@ interface Props {
   hideHeader?: boolean;
 }
 
+/** Imperative handle so an outer toolbar (e.g. the Terminals panel strip)
+ *  can clear the active terminal without owning the xterm instance. */
+export interface TerminalBubbleHandle {
+  clear: () => void;
+}
+
 /**
  * Live interactive PTY terminal.
  *
@@ -121,11 +127,14 @@ interface Props {
  * back into xterm. Any auto-run command is typed by the server on the PTY's
  * first byte, so the bubble never sends it.
  */
-function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized, onToggleMinimize, hidden, onClose, hideHeader }: Props) {
+const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized, onToggleMinimize, hidden, onClose, hideHeader }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<TerminalInstance | null>(null);
   const fitRef = useRef<FitAddonInstance | null>(null);
   const didAttachRef = useRef(false);
+
+  // Right-click context menu anchor (viewport coords), null when closed.
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   const theme = useAppStore(s => s.theme);
   const termBg = termBgFor(theme);
@@ -293,6 +302,61 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
     try { client.killTerminal(sessionId, procId); } catch {}
   };
 
+  // Wipe the xterm viewport + scrollback, keeping the current prompt line.
+  // Purely client-side (the server's replay buffer is untouched) — refocus
+  // so the user can keep typing right after clearing.
+  const clearTerminal = () => {
+    const term = termRef.current;
+    if (!term) return;
+    try { term.clear(); } catch {}
+    try { if (!exited) term.focus(); } catch {}
+  };
+
+  useImperativeHandle(ref, () => ({ clear: clearTerminal }), [exited]);
+
+  const openContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  // Dismiss the menu on any outside interaction (click, another right-click,
+  // scroll, resize, Escape).
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null); };
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const contextMenu = menu ? (
+    <div
+      className="fixed z-[9999] min-w-[168px] rounded-md border border-border-light bg-surface-light py-1 shadow-xl"
+      style={{ top: menu.y, left: menu.x }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+    >
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-zinc-300 hover:bg-surface-lighter hover:text-zinc-100"
+        onClick={() => { clearTerminal(); setMenu(null); }}
+      >
+        <Eraser className="w-3.5 h-3.5" />
+        Clear terminal
+      </button>
+    </div>
+  ) : null;
+
   // When we come back from minimized OR from hidden (shell switch), the
   // container just re-gained layout. Refit xterm to its visible size —
   // ResizeObserver alone doesn't fire when `display` toggles between
@@ -332,23 +396,28 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
   // just be duplicated chrome. Render only the xterm container.
   if (hideHeader) {
     return (
-      <div
-        ref={containerRef}
-        style={{
-          height: '100%',
-          width: '100%',
-          background: termBg,
-          padding: '6px 8px',
-          overflow: 'hidden',
-          touchAction: 'pan-y',
-          display: hidden ? 'none' : undefined,
-        }}
-      />
+      <>
+        <div
+          ref={containerRef}
+          onContextMenu={openContextMenu}
+          style={{
+            height: '100%',
+            width: '100%',
+            background: termBg,
+            padding: '6px 8px',
+            overflow: 'hidden',
+            touchAction: 'pan-y',
+            display: hidden ? 'none' : undefined,
+          }}
+        />
+        {contextMenu}
+      </>
     );
   }
 
   return (
     <div className="py-1" style={hidden ? { display: 'none' } : undefined}>
+      {contextMenu}
       <div
         className={`rounded-lg border overflow-hidden ${exited ? 'border-border-light' : 'border-green-900/50'}`}
         style={{ background: termBg, opacity: exited ? 0.85 : undefined }}
@@ -375,6 +444,13 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
               </>
             )}
           </span>
+          <button
+            className="text-zinc-500 hover:text-zinc-100 shrink-0 p-0.5 rounded hover:bg-surface-lighter transition-colors"
+            onClick={(e) => { e.stopPropagation(); clearTerminal(); }}
+            title="Clear terminal"
+          >
+            <Eraser size={12} />
+          </button>
           {exited ? (
             <>
               <span className={`text-[10px] font-mono shrink-0 ${exitCode === 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -409,6 +485,7 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
         {/* Keep xterm mounted when minimized (preserves scrollback/cursor) — just hide visually. */}
         <div
           ref={containerRef}
+          onContextMenu={openContextMenu}
           className="px-2 py-2"
           style={{
             height: minimized ? 0 : 280,
@@ -421,6 +498,6 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
       </div>
     </div>
   );
-}
+});
 
 export const InteractiveTerminalBubble = memo(InteractiveTerminalBubbleImpl);
