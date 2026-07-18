@@ -151,9 +151,16 @@ function upsertStreamingBlock(
         timestamp: Date.now(),
         ...(wantThinking ? { isThinking: true } : {}),
         streaming: true,
+        // Survives freezeStreaming (which only strips `streaming`) so the
+        // permanent server copy can still adopt this slot after an interrupt.
+        placeholder: true,
       },
     ];
   }
+  // Empty content is the server's "preview consumed or discarded" signal —
+  // drop the block instead of leaving a blank bubble behind. (Deltas never
+  // shrink to empty: the server always sends the full accumulated text.)
+  if (!content) return [...messages.slice(0, idx), ...messages.slice(idx + 1)];
   const next = messages.slice();
   next[idx] = { ...next[idx]!, content };
   return next;
@@ -1176,9 +1183,16 @@ export function ChatApp() {
             // Merge messages: keep any local messages not in server state.
             // Drop local streaming placeholders — the authoritative in-flight
             // block is re-derived below from the server's partial* fields, so
-            // keeping the old placeholder would duplicate it.
+            // keeping the old placeholder would duplicate it. Frozen previews
+            // (placeholder without a seq) go too: the server either committed
+            // that content as a real message on interrupt (already in
+            // `state.messages` under its own id) or discarded it, and keeping
+            // the local twin would pin a seq-less ghost to the bottom of the
+            // timeline on every re-subscribe.
             const serverMsgIds = new Set((state.messages || []).map((m: any) => m.id));
-            const localOnly = existing?.messages?.filter(m => !serverMsgIds.has(m.id) && !m.streaming) || [];
+            const localOnly = existing?.messages?.filter(m =>
+              !serverMsgIds.has(m.id) && !m.streaming && !(m.placeholder && m.seq == null)
+            ) || [];
             let mergedMessages = [...(state.messages || []), ...localOnly];
             // The server still tracks the live block as `partialText` /
             // `partialThinking` (the wire format is unchanged). On reconnect
@@ -1266,7 +1280,27 @@ export function ChatApp() {
             // the SAME array item, so there's nothing to reconcile or clear.
             const isPlainAssistant = msg.role === 'assistant' && !msg.toolName && !msg.isToolResult;
             if (isPlainAssistant) {
-              const idx = s.messages.findIndex(m => m.streaming && !!m.isThinking === !!msg.isThinking);
+              let idx = s.messages.findIndex(m => m.streaming && !!m.isThinking === !!msg.isThinking);
+              if (idx === -1) {
+                // Frozen preview: an interrupt ran freezeStreaming before this
+                // permanent copy landed (the server commits the preview in its
+                // interrupt handler; the broadcast arrives a beat after the
+                // local freeze). `placeholder` survives the freeze, and the
+                // content check — the permanent copy always equals or extends
+                // the preview — keeps a stale orphan from an older turn from
+                // swallowing an unrelated message. Newest match wins.
+                for (let i = s.messages.length - 1; i >= 0; i--) {
+                  const m = s.messages[i]!;
+                  if (
+                    m.placeholder && m.seq == null &&
+                    !!m.isThinking === !!msg.isThinking &&
+                    (msg.content.startsWith(m.content) || m.content.startsWith(msg.content))
+                  ) {
+                    idx = i;
+                    break;
+                  }
+                }
+              }
               if (idx !== -1) {
                 const next = [...s.messages];
                 next[idx] = msg;
@@ -2779,7 +2813,14 @@ export function ChatApp() {
     };
     updateLocalState(sid, s => ({
       ...s,
-      messages: [...s.messages, userMsg],
+      // Retire the adoption marker on any frozen preview before the new turn
+      // starts: its permanent copy landed (or never will) within a beat of
+      // the interrupt, and leaving the flag set would let a future assistant
+      // message with a matching prefix get swallowed into an old slot.
+      messages: [
+        ...s.messages.map(m => (m.placeholder && !m.streaming ? { ...m, placeholder: undefined } : m)),
+        userMsg,
+      ],
       isStreaming: true,
       wasInterrupted: false,
       partialText: '',

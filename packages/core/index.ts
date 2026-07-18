@@ -464,7 +464,10 @@ async function sendMessageToSession(
   }
   fileImagesAsResources(sessionId, images);
 
-  updateSessionState(sessionId, s => ({ ...s, isStreaming: true }));
+  // Clear `wasInterrupted` like the WS send path does — a new turn is
+  // starting, and the bridge gates streaming deltas and thinking commits on
+  // that flag, so leaving it set after a stop would silence this turn.
+  updateSessionState(sessionId, s => ({ ...s, isStreaming: true, wasInterrupted: false }));
   broadcastToSession(sessionId, { type: 'status', sessionId, status: 'streaming' });
 
   try {
@@ -775,17 +778,47 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     // no live provider (SDK crashed silently, runtime hung past onExit, etc.).
     // Always force-clear server state below; only call provider.interrupt()
     // when the runtime is actually around.
-    if (session.providerSession) {
-      try { await session.providerSession.interrupt(); } catch (err) {
-        log(`[${sessionId.slice(0, 8)}] interrupt failed: ${err}`);
-      }
+    // Preserve whatever streamed before the stop. The in-flight thinking/text
+    // previews only exist as `partial*` state — the SDK's late flush of the
+    // aborted assistant message is dropped by the bridge (`wasInterrupted`
+    // gates `onThinking`), so without a commit here the content the user
+    // watched stream would vanish from the transcript, and the client's
+    // frozen preview bubble — having no `seq` — would sort to the bottom of
+    // the timeline forever. Thinking precedes text within a round, so commit
+    // in that order. All of this happens BEFORE the interrupt() await: a
+    // barge-in's send_message frame can be processed during that await, and
+    // the preserved content must take its `seq` slots ahead of the new user
+    // message.
+    const stateAtStop = getSessionState(sessionId);
+    const preserved: ChatMessage[] = [];
+    if (stateAtStop.partialThinking?.trim()) {
+      preserved.push({ id: randomUUID(), role: 'assistant', content: stateAtStop.partialThinking, timestamp: Date.now(), isThinking: true });
+    }
+    if (stateAtStop.partialText?.trim()) {
+      preserved.push({ id: randomUUID(), role: 'assistant', content: stateAtStop.partialText, timestamp: Date.now() });
+    }
+    for (const m of preserved) {
+      if (addMessage(sessionId, m)) broadcastToSession(sessionId, { type: 'message', sessionId, message: m });
     }
     // Authoritatively flip the session out of "streaming" and notify viewers.
     // Without this the SDK can keep emitting in-flight tool events for a beat
     // after interrupt(), each of which re-arms `isStreaming` in the bridge —
     // leaving the Stop button visible but ineffective. The bridge guards on
-    // `wasInterrupted` (set here) so those late events stop re-arming.
-    updateSessionState(sessionId, s => ({ ...s, isStreaming: false, partialText: '', wasInterrupted: true }));
+    // `wasInterrupted` (set here) so those late events stop re-arming, and
+    // `onThinking` drops the aborted turn's flush (whether it lands during
+    // the interrupt() await below or after) instead of duplicating the
+    // preview committed above.
+    updateSessionState(sessionId, s => ({ ...s, isStreaming: false, partialText: '', partialThinking: '', wasInterrupted: true }));
+    // Retire the transient previews on every viewer: the desktop has already
+    // adopted them into the permanent bubbles broadcast above, and mobile
+    // renders them straight from these fields.
+    broadcastToSession(sessionId, { type: 'partial_thinking', sessionId, text: '' });
+    broadcastToSession(sessionId, { type: 'partial_text', sessionId, text: '' });
+    if (session.providerSession) {
+      try { await session.providerSession.interrupt(); } catch (err) {
+        log(`[${sessionId.slice(0, 8)}] interrupt failed: ${err}`);
+      }
+    }
     // Pair every in-flight tool_use with a synthetic error result so the
     // per-tool "running" dot clears in the UI. Without this, an interrupted
     // Bash (etc.) shows an amber pulse forever — `anyRunning` keys off

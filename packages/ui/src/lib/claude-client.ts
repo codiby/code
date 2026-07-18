@@ -230,6 +230,15 @@ export interface ChatMessage {
    * single `messages` array and never re-anchors to the bottom.
    */
   streaming?: boolean;
+  /**
+   * Local-only marker for a bubble born as a streaming preview. Unlike
+   * `streaming` it survives freezeStreaming, so when an interrupt settles the
+   * preview before its permanent server copy arrives (the server commits the
+   * preview in its interrupt handler), `onMessage` can still adopt this slot
+   * instead of appending a duplicate. Retired on the next user send; never
+   * persisted server-side.
+   */
+  placeholder?: boolean;
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;

@@ -94,6 +94,13 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onThinking(block) {
+      // Post-interrupt flush of the aborted turn: the interrupt handler
+      // already committed the streamed preview as a permanent message, so
+      // committing this block too would duplicate the thought — with a fresh
+      // UUID, past the id dedup — at the bottom of the transcript. The flag
+      // clears on the next user send / turn completion, so live turns are
+      // never gated here.
+      if (getSessionState(session.id).wasInterrupted) return;
       // A thinking block usually precedes text/tool_use within the same
       // Anthropic Message, but in case the bridge has any pending streaming
       // text (rare — partial deltas should have been overwritten by the
