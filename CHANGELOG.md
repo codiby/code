@@ -5,6 +5,69 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] — 2026-07-18
+
+### Added
+
+- **Light and dark themes.** A toggle in the workspace titlebar (next to the
+  terminal icon) switches the whole UI — chat, panels, editors and mobile —
+  between the classic dark look and a new light theme. The choice persists
+  across sessions.
+- **Rebindable keyboard shortcuts.** Every global command now lives in a
+  central registry with a shortcuts editor window; overrides persist to
+  `~/.codiby/keybindings.json` and the command palette shows the live chords.
+- **Markdown-native composer.** The chat input renders fenced code blocks with
+  syntax highlighting as you type, auto-detects the language of pasted code,
+  and keeps fence/selection behavior predictable while editing.
+- **Session Resources drawer.** A chip in the chat header opens a panel listing
+  everything the session produced or received — screenshots, mockups, posted
+  images — so you can reopen any of them without scrolling the transcript.
+- **Compose and retry on closed remote sessions.** Messages written to a
+  disconnected session are staged with a "sending" indicator, ship on their own
+  once the session reconnects, and offer a Retry button if delivery times out.
+- **Clear button for terminals.** The Terminals dock toolbar can now wipe the
+  active terminal's scrollback in one click.
+- **Syntax highlighting for `.env` files.** Dotenv content is tokenized in code
+  blocks and the editor like any other language.
+
+### Changed
+
+- **Browser panel chrome redesigned.** The preview's two stacked bars are now a
+  single toolbar: round back/forward/reload buttons, an omnibox-style address
+  pill with a focus ring, and one slot that morphs between Inspect and
+  Send-comments as you work.
+- **Command palette polish.** ⌘K commands and ⌘P session switching are two
+  modes of one palette — you can hop between them from inside it, entries carry
+  section icons and key-cap hints, and an empty query shows recent sessions
+  instead of a blank list.
+- **Windowed transcripts.** The chat keeps a working window of the conversation
+  in memory and pages older messages in on demand ("Show older messages"),
+  so long-running sessions no longer grow the renderer's memory without bound.
+- **Git operations off the event loop.** Status and branch queries run outside
+  the bridge's request path, so heavy repos no longer stall the UI.
+- **Bridge crash forensics.** The sidecar now persists its stderr and traps
+  fatal signals into the app log, so crashes leave a post-mortem trail instead
+  of vanishing.
+- **Internal restructure.** The repo is now a bun-workspaces monorepo
+  (`core` / `ui` / `desktop` / `mobile`), the provider runtimes are adapter
+  classes, and ChatApp state lives in a Zustand store.
+
+### Fixed
+
+- **Interrupting the agent no longer strands its thoughts.** Stopping a turn
+  mid-stream used to pin the thinking bubbles to the bottom of the chat,
+  duplicate them after a follow-up message, and silently drop the half-spoken
+  text. The streamed thinking and text are now committed in place — in stream
+  order, ahead of any barged-in message — and survive reloads and re-subscribes
+  exactly where they happened.
+- **WebSocket connection leak on duplicated terminals.** Re-subscribing a
+  session could orphan its previous socket, piling up dead connections in the
+  bridge. The connection layer now reconciles by key and closes the stale one.
+- **Native browser preview no longer covers overlays.** The preview is a native
+  view that ignores DOM z-index; it now hides beneath every full-screen surface
+  (new-session modal, shortcuts, skills, bypass prompt, worktree picker) instead
+  of floating over them.
+
 ## [0.23.0] — 2026-06-10
 
 ### Added
