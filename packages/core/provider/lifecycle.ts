@@ -7,10 +7,11 @@ import { getProvider } from './registry';
 import { createBridgeEvents } from './bridge';
 import type { BridgeDeps } from './bridge';
 import { buildSessionSdkMcpServer } from './sdk-tools';
+import { loadExternalMcpServers } from '../mcp/mcp-config';
 import { loadPreferences } from '../session/storage';
 import { startSessionWatcher } from '../session/watcher';
 import type { Session } from '../types';
-import type { McpServerSpec, PermissionMode, SpawnOptions } from './types';
+import type { EffortLevel, McpServerSpec, PermissionMode, SpawnOptions } from './types';
 
 // Wired lazily from index.ts to avoid circular imports.
 let bridgeDeps: BridgeDeps | null = null;
@@ -24,9 +25,11 @@ export function startProviderSession(session: Session, port: number, resumeSessi
     throw new Error('Provider bridge not initialized — call setBridgeDeps() first.');
   }
 
-  const adapter = getProvider(session.provider || 'claudeAgent');
+  const adapter = getProvider(session.provider || 'claude');
 
+  const externalMcpServers = loadExternalMcpServers(session.cwd).servers;
   const mcpServers: Record<string, McpServerSpec> = {
+    ...externalMcpServers,
     'codiby-code': {
       // Streamable HTTP — matches WebStandardStreamableHTTPServerTransport
       // on the server side. Previously set to `sse`, which made the native
@@ -55,6 +58,7 @@ export function startProviderSession(session: Session, port: number, resumeSessi
     cwd: session.cwd,
     model: session.model,
     permissionMode,
+    effort: (session.effort as EffortLevel | null) ?? null,
     resumeSessionId: resumeSessionId ?? null,
     mcpServers,
   };

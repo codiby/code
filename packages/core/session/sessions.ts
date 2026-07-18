@@ -12,7 +12,7 @@ export function saveSessions() {
     id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt,
     updatedAt: s.updatedAt,
     claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands,
-    model: s.model, permissionMode: s.permissionMode, provider: s.provider,
+    model: s.model, permissionMode: s.permissionMode, effort: s.effort, provider: s.provider,
     remoteId: s.remoteId,
     portForwards: s.portForwards,
     status: s.status,
@@ -30,11 +30,11 @@ export function saveSessions() {
  *  preferences — both map to `archived` (closed tabs collapse into the
  *  archived state going forward) — and strip those arrays from prefs once
  *  every session has been stamped. */
-function migrateLegacyStatus(persisted: PersistedSession[]): {
+function migrateLegacySessions(persisted: PersistedSession[]): {
   data: PersistedSession[];
   migrated: boolean;
 } {
-  const needsMigration = persisted.some(p => !p.status);
+  const needsMigration = persisted.some(p => !p.status || p.provider === 'claudeAgent');
   if (!needsMigration) return { data: persisted, migrated: false };
 
   const prefs = loadPreferences();
@@ -44,9 +44,10 @@ function migrateLegacyStatus(persisted: PersistedSession[]): {
   const archived = new Set(Array.isArray(archivedRaw) ? (archivedRaw as string[]) : []);
 
   const data = persisted.map<PersistedSession>(p => {
-    if (p.status) return p;
+    const provider = p.provider === 'claudeAgent' ? 'claude' : p.provider;
+    if (p.status && provider === p.provider) return p;
     const isHidden = closed.has(p.id) || archived.has(p.id);
-    return { ...p, status: isHidden ? 'archived' : 'open' };
+    return { ...p, provider, status: p.status ?? (isHidden ? 'archived' : 'open') };
   });
 
   if ('closedSessionIds' in prefs || 'archivedSessionIds' in prefs) {
@@ -62,7 +63,7 @@ function migrateLegacyStatus(persisted: PersistedSession[]): {
 export function loadSessions() {
   try {
     const raw: PersistedSession[] = JSON.parse(readFileSync(SESSIONS_FILE, 'utf-8'));
-    const { data, migrated } = migrateLegacyStatus(raw);
+    const { data, migrated } = migrateLegacySessions(raw);
     for (const p of data) {
       const status: SessionStatus = p.status ?? 'open';
       sessions.set(p.id, {
@@ -75,6 +76,7 @@ export function loadSessions() {
         savedCommands: p.savedCommands || [],
         model: p.model || null,
         permissionMode: p.permissionMode || 'default',
+        effort: p.effort || null,
         provider: p.provider || DEFAULT_PROVIDER,
         browserWs: new Set(),
         providerSession: null,
@@ -145,6 +147,7 @@ export function sessionToJSON(s: Session, port: number) {
     saved_commands: s.savedCommands || [],
     model: s.model || null,
     permission_mode: s.permissionMode || 'default',
-    provider: s.provider || 'claudeAgent',
+    effort: s.effort || null,
+    provider: s.provider || 'claude',
   };
 }

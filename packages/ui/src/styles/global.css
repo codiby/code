@@ -23,6 +23,175 @@ html {
   color-scheme: dark;
 }
 
+/* ---------------------------------------------------------------------------
+   Light theme. The app is authored dark-first: the chrome uses the semantic
+   color-base/surface/border tokens above, while most text and incidental
+   surfaces use Tailwind neutral zinc ramp (and white) as literal utilities.
+   Since Tailwind v4 exposes every used palette color as a CSS variable that
+   the utilities reference, we can re-theme the whole app from here (no
+   per-component edits) by:
+     1. redefining the semantic tokens for a light surface hierarchy, and
+     2. inverting the zinc/neutral ramp so text-zinc-200 (light-on-dark)
+        becomes dark-on-light, bg-zinc-900 becomes a light surface, etc.
+   Accent colors (emerald/blue/amber) are intentionally left alone: they read
+   well on both backgrounds. Toggled via the light class on <html> (see the
+   ChatApp theme effect and the boot script in index.html). */
+html.light {
+  color-scheme: light;
+
+  /* Semantic surface hierarchy (variant C — "soft"): the app read too stark
+     with everything on pure #fff, so content sits on a warm off-white and
+     chrome/wells step down through greys, giving depth without hard contrast.
+       base            = recessed wells / inputs / page gutter (darkest light)
+       surface         = main content surface (chat, panels, cards)
+       surface-light   = hover / subtle raise
+       surface-lighter = active / selected raise */
+  --color-base: #e9eaee;            /* mockup C: page */
+  --color-surface: #fcfcfd;         /* mockup C: content */
+  --color-surface-light: #eceef3;   /* mockup C: hover */
+  --color-surface-lighter: #e0e2e8; /* mockup C: border/active raise */
+  --color-border: #e0e2e8;          /* mockup C: border */
+  --color-border-light: #eaecf0;    /* mockup C: border-soft */
+
+  /* Zinc ramp remap, calibrated by actual usage rather than a naive symmetric
+     inversion: in this app zinc-300..600 are almost entirely TEXT (160/221/404/
+     243 uses) while zinc-700..950 are almost entirely BACKGROUNDS/BORDERS. So
+     the text shades must stay dark enough to read on white (a plain inversion
+     pushed zinc-600 to ~#a1a1aa, which washed out 243 muted-text spots), and
+     only the 700+ shades go light. Brighter dark-mode text = more prominent →
+     darker here; dimmer → lighter but still legible. */
+  --color-zinc-50: #18181b;
+  --color-zinc-100: #272a31;  /* mockup C: txt (primary) */
+  --color-zinc-200: #383b42;
+  --color-zinc-300: #474b53;
+  --color-zinc-400: #545861;  /* mockup C: txt2 (secondary) */
+  --color-zinc-500: #62666e;
+  --color-zinc-600: #787c84;  /* mockup C: txt3 (muted) */
+  --color-zinc-700: #c9cbd1;  /* bg/border tier begins */
+  --color-zinc-800: #e2e4e8;
+  --color-zinc-900: #eff1f4;
+  --color-zinc-950: #f6f7f9;
+
+  --color-neutral-50: #171717;
+  --color-neutral-100: #262626;
+  --color-neutral-200: #404040;
+  --color-neutral-300: #525252;
+  --color-neutral-400: #6b7280;
+  --color-neutral-500: #737373;
+  --color-neutral-600: #a3a3a3;
+  --color-neutral-700: #d4d4d4;
+  --color-neutral-800: #e5e5e5;
+  --color-neutral-900: #f2f2f2;
+  --color-neutral-950: #f8f9fb;
+
+  /* Keep white as white: text-white is overwhelmingly used ON saturated colour
+     buttons (violet/green/blue) where it MUST stay white. The bg-white/N hover
+     overlays are re-tinted to dark films below so hover/selected feedback still
+     shows on light surfaces. */
+  --color-white: #ffffff;
+}
+
+/* The page background is painted directly (see `body` below) — keep it in
+   step with the active theme. */
+html.light body {
+  background: var(--color-base);
+}
+
+/* The composer is authored for a dark canvas: a translucent dark-glass fill
+   (an arbitrary `bg-[rgba(...)]` utility the ramp inversion cannot reach) plus
+   additive ambient "spots". On light, swap to light glass and calm the glow so
+   the input reads as a clean white field instead of a grey blob. The
+   `.composer-glass-frame` selector beats the co-located bg utility on
+   specificity, so no !important is needed. */
+html.light .composer-glass-frame {
+  background: #ffffff;  /* solid white card — pops on the off-white content */
+}
+html.light .composer-spot {
+  opacity: 0.22;
+  mix-blend-mode: normal;
+  filter: blur(10px) saturate(1.2);
+}
+
+/* Chrome surfaces painted with arbitrary dark-hex utilities (bg-[#…]) that
+   neither the semantic tokens nor the ramp inversion can reach: the sessions
+   sidebar / tab bar (#131418), the file-explorer & search panels (#141519,
+   #101116, #1e1f24, …), and assorted cards. Remapped to a light surface
+   hierarchy here. IMPORTANT: #0d0d0d is deliberately excluded — it is the code
+   block background, whose One-Dark syntax palette only reads on a dark fill,
+   so code blocks stay dark in light mode (GitHub-style). Mobile keeps its own
+   always-dark document, so its hexes are irrelevant here. */
+html.light .bg-\[\#0d0e12\],
+html.light .bg-\[\#0e0f12\],
+html.light .bg-\[\#101116\] {
+  background-color: #e9eaee;  /* recessed toolbars / inset wells — mockup C page */
+}
+html.light .bg-\[\#131418\],
+html.light .bg-\[\#141414\],
+html.light .bg-\[\#141519\],
+html.light .bg-\[\#191a1f\],
+html.light .bg-\[\#1a1a1a\],
+html.light .bg-\[\#1c1c1e\],
+html.light .bg-\[\#1c1d21\],
+html.light .bg-\[\#1c1d22\],
+html.light .bg-\[\#1c1d23\],
+html.light .bg-\[\#1e1f24\],
+html.light .bg-\[\#1f1f1f\],
+html.light .bg-\[\#1f2025\],
+html.light .bg-\[\#202023\],
+html.light .bg-\[\#26272d\] {
+  background-color: #f6f7f9;  /* chrome (sidebar, file/search panels) — grey, not stark white */
+}
+html.light .bg-\[\#2a2a2a\],
+html.light .bg-\[\#2a2b30\] {
+  background-color: #e0e2e8;
+}
+/* Dark navy accent surface (slate-900) → a light slate tint. */
+html.light .bg-\[\#0f172a\] {
+  background-color: #eef2f8;
+}
+/* Dividers/borders. zinc-500/600 double as text (kept dark for readability
+   above) AND as borders; as dividers on white those dark values read as harsh
+   lines, so soften the *border* utilities only — the matching text utilities
+   keep their dark colour since they are a different class. Also covers the dark
+   arbitrary-hex borders on the now-light panels. */
+html.light .border-zinc-500,
+html.light .border-zinc-600,
+html.light .border-\[\#1e1f24\],
+html.light .border-\[\#2a2b30\],
+html.light .border-\[\#131418\],
+html.light .border-\[\#26272d\],
+html.light .border-\[\#3a3b40\] {
+  border-color: #e5e7eb;
+}
+
+/* Arbitrary light-grey TEXT hexes (bright/muted text authored for a dark
+   canvas) — invisible or washed out on white, so flip them to the same dark
+   text tiers as the zinc ramp above. Only neutral greys are remapped; coloured
+   accent text (teal/red/blue/gold) is left alone since it usually sits on a
+   matching coloured chip where it still reads. */
+html.light .text-\[\#e6e7ea\],
+html.light .text-\[\#eef0f2\] {
+  color: #272a31;  /* mockup C: txt (primary), matches zinc-100 */
+}
+html.light .text-\[\#c4c6cc\] {
+  color: #474b53;  /* prominent secondary, matches zinc-300 */
+}
+html.light .text-\[\#9aa0a8\] {
+  color: #62666e;  /* muted, matches zinc-500 */
+}
+html.light .text-\[\#8a8c93\] {
+  color: #787c84;  /* mockup C: txt3, matches zinc-600 */
+}
+
+/* bg-white/N overlays are dark-first hover/selected highlights (a faint light
+   film on a dark surface). With white kept white they would vanish on a light
+   surface, so re-tint them as equally-faint DARK films to preserve the same
+   hover/selected feedback. */
+html.light .bg-white\/5  { background-color: rgba(17, 18, 20, 0.04); }
+html.light .bg-white\/10 { background-color: rgba(17, 18, 20, 0.06); }
+html.light .bg-white\/15 { background-color: rgba(17, 18, 20, 0.09); }
+html.light .bg-white\/20 { background-color: rgba(17, 18, 20, 0.12); }
+
 /* In-chat find widget (⌘F) match highlighting. Painted via the CSS Custom
  * Highlight API so matches light up without mutating the rendered markdown
  * DOM — no React reconciliation fights, no broken streaming. `chat-find`

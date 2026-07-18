@@ -545,7 +545,7 @@ export function MobileApp() {
     const originalName = old.name;
     const inheritedModel = old.model ?? null;
     const inheritedPermissionMode = old.permission_mode || 'default';
-    const inheritedProvider = old.provider || 'claudeAgent';
+    const inheritedProvider = old.provider || 'claude';
     const groupId = tabGroupMap[activeId];
     const oldId = activeId;
 
@@ -626,6 +626,15 @@ export function MobileApp() {
     if (!c) return;
     setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, model } : s)));
     c.setModel(sessionId, model || '');
+  };
+
+  /** Change reasoning effort (Claude only). The bridge respawns the provider
+   *  with resume — effort is a spawn-time SDK option with no runtime setter. */
+  const setEffortForSession = (sessionId: string, effort: string | null) => {
+    const c = clientRef.current;
+    if (!c) return;
+    setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, effort } : s)));
+    c.setEffort(sessionId, effort || '');
   };
 
   // Screen wake lock — opt-in toggle on the launchpad keeps the display from
@@ -896,6 +905,7 @@ export function MobileApp() {
           onPermissionModeChange={setPermissionModeForActive}
           modelOptions={activeModelOptions}
           onModelChange={(model) => activeId && setModelForSession(activeId, model)}
+          onEffortChange={(effort) => activeId && setEffortForSession(activeId, effort)}
           mockups={activeMockups}
           openMockup={openMockup}
           onOpenMockup={openMockupModal}

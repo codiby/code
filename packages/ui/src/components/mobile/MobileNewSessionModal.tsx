@@ -16,16 +16,26 @@ const PROVIDER_KEY = 'claude-ui-last-provider';
 const MAX_RECENT = 10;
 
 const PROVIDER_OPTIONS = [
-  { key: 'claudeAgent', label: 'Claude' },
+  { key: 'claude', label: 'Claude' },
   { key: 'codex', label: 'Codex' },
   { key: 'opencode', label: 'OpenCode' },
 ] as const;
 type ProviderKey = typeof PROVIDER_OPTIONS[number]['key'];
 
+/** Claude Agent SDK effort levels — the selector only renders for the
+ *  Claude provider; other backends have no effort concept. */
+const EFFORT_OPTIONS = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'X-High' },
+  { id: 'max', label: 'Max' },
+] as const;
+
 function getLastProvider(available: ReadonlyArray<{ key: string }>): ProviderKey {
   const v = localStorage.getItem(PROVIDER_KEY);
   if (available.some(o => o.key === v)) return v as ProviderKey;
-  return 'claudeAgent';
+  return 'claude';
 }
 
 function getRecentDirs(): string[] {
@@ -89,6 +99,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
   const [worktreeOpen, setWorktreeOpen] = useState(false);
   const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider(availableProviders));
   const [model, setModel] = useState('');
+  const [effort, setEffort] = useState('');
 
   const loadDir = useCallback(async (path: string) => {
     setLoading(true);
@@ -116,6 +127,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
     setError(null);
     setName('');
     setModel('');
+    setEffort('');
     setProvider(getLastProvider(availableProviders));
     setTab('browse');
     let cancelled = false;
@@ -131,6 +143,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
 
   useEffect(() => {
     setModel('');
+    setEffort('');
   }, [provider]);
 
   const navigate = (path: string) => {
@@ -147,7 +160,13 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
     setCreating(true);
     setError(null);
     try {
-      const session = await client.createSession(cwd || '/', { name: name.trim() || undefined, provider, model: model || null });
+      const session = await client.createSession(cwd || '/', {
+        name: name.trim() || undefined,
+        provider,
+        model: model || null,
+        // Claude-only spawn option — never forwarded for other providers.
+        effort: provider === 'claude' && effort ? effort : null,
+      });
       addRecentDir(cwd);
       localStorage.setItem(PROVIDER_KEY, provider);
       onCreated(session.id, cwd || '/');
@@ -422,6 +441,33 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
             </SelectPopover>
           </Select>
         </label>
+        {provider === 'claude' && (
+          <label className="flex items-center gap-2 min-w-0">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Effort</span>
+            <Select
+              aria-label="Effort"
+              selectedKey={effort || 'default'}
+              onSelectionChange={(key) => setEffort(key === 'default' ? '' : String(key))}
+              className="flex-1 min-w-0"
+            >
+              <SelectTrigger className="min-h-0 h-10 py-0 px-2.5 rounded-lg bg-white/5 border border-white/10 text-[13px] text-zinc-200 shadow-none">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopover>
+                <ListBox>
+                  <ListBoxItem key="default" id="default" textValue="Default">
+                    <span className="text-xs">Default</span>
+                  </ListBoxItem>
+                  {EFFORT_OPTIONS.map((o) => (
+                    <ListBoxItem key={o.id} id={o.id} textValue={o.label}>
+                      <span className="text-xs">{o.label}</span>
+                    </ListBoxItem>
+                  ))}
+                </ListBox>
+              </SelectPopover>
+            </Select>
+          </label>
+        )}
         <TextField value={name} onChange={setName} aria-label="Session name">
           <Input
             placeholder="Session name (optional)"

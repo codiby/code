@@ -78,7 +78,7 @@ async function main() {
     body: JSON.stringify({
       cwd: '/tmp',
       name: `repro-${Date.now()}`,
-      provider: 'claudeAgent',
+      provider: 'claude',
       remoteId: remote.id,
     }),
   }, 15_000);

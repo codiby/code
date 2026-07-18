@@ -18,4 +18,4 @@ export function listProviders(): string[] {
   return [...adapters.keys()];
 }
 
-export const DEFAULT_PROVIDER = 'claudeAgent';
+export const DEFAULT_PROVIDER = 'claude';

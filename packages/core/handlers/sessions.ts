@@ -60,6 +60,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   let name = '';
   let model: string | null = null;
   let permissionMode = 'default';
+  let effort: string | null = null;
   let provider = DEFAULT_PROVIDER;
   // Hint forwarded by the client when a session is being spawned in a
   // worktree — used by the autogroup step in the outer route handler to
@@ -71,6 +72,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     if (body.name && typeof body.name === 'string') name = body.name;
     if (body.model && typeof body.model === 'string') model = body.model;
     if (body.permissionMode && typeof body.permissionMode === 'string') permissionMode = body.permissionMode;
+    if (body.effort && typeof body.effort === 'string') effort = body.effort;
     if (body.provider && typeof body.provider === 'string') provider = body.provider;
     if (body.group_cwd && typeof body.group_cwd === 'string') groupCwd = body.group_cwd;
   } catch {}
@@ -93,6 +95,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     savedCommands: [],
     model,
     permissionMode,
+    effort,
     provider,
     remoteId: null,
     portForwards: [],

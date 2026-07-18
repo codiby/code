@@ -15,6 +15,9 @@ export type PermissionMode =
   | 'bypassPermissions'
   | 'plan';
 
+/** Reasoning-effort level. Claude-only today; other adapters ignore it. */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export type ImageInput = {
   media_type: string;
   data: string;
@@ -37,6 +40,10 @@ export type SpawnOptions = {
   cwd: string;
   model: string | null;
   permissionMode: PermissionMode;
+  /** Reasoning effort. Spawn-time only — the Claude Agent SDK has no runtime
+   *  setter, so changing it on a live session requires a respawn-with-resume
+   *  (see the `set_effort` handler in index.ts). Null/undefined → SDK default. */
+  effort?: EffortLevel | null;
   /** Provider-specific resume token (e.g. a Claude session UUID). */
   resumeSessionId?: string | null;
   mcpServers?: Record<string, McpServerSpec>;

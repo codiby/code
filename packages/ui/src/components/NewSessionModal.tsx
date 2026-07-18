@@ -28,7 +28,7 @@ const RECENT_KEY = 'claude-ui-recent-dirs';
 const PROVIDER_KEY = 'claude-ui-last-provider';
 const MAX_RECENT = 10;
 const PROVIDER_OPTIONS = [
-  { key: 'claudeAgent', label: 'Claude' },
+  { key: 'claude', label: 'Claude' },
   { key: 'codex', label: 'Codex' },
   { key: 'opencode', label: 'OpenCode' },
 ] as const;
@@ -37,7 +37,7 @@ type ProviderKey = typeof PROVIDER_OPTIONS[number]['key'];
 function getLastProvider(available: ReadonlyArray<{ key: string }>): ProviderKey {
   const v = localStorage.getItem(PROVIDER_KEY);
   if (available.some(o => o.key === v)) return v as ProviderKey;
-  return 'claudeAgent';
+  return 'claude';
 }
 
 function getRecentDirs(): string[] {

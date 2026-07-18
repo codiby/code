@@ -46,8 +46,21 @@ interface ActiveLike {
 interface ActiveSessionLike {
   model?: string | null;
   permission_mode?: string;
+  /** Reasoning-effort level. Claude-only; null/absent → provider default. */
+  effort?: string | null;
   provider?: string;
 }
+
+/** Effort levels the Claude Agent SDK accepts (`Options.effort`). Shown only
+ *  when the session's provider is Claude — other providers have no effort
+ *  concept, so the dropdown is hidden entirely for them. */
+const EFFORT_OPTIONS = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'X-High' },
+  { id: 'max', label: 'Max' },
+] as const;
 
 interface OpencodeInfoLike {
   models?: { id: string; providerName: string; label: string }[];
@@ -93,6 +106,8 @@ interface Props {
   onInterrupt: () => void;
   onSelectModel: (modelId: string) => void;
   onSelectPermissionMode: (mode: string) => void;
+  /** Claude-only: change the reasoning effort. Empty string → default. */
+  onSelectEffort?: (effort: string) => void;
   /** Optional callback fired when the textarea gains focus — host uses this
    *  to mirror "focused pane" → "active session". */
   onFocus?: () => void;
@@ -107,7 +122,7 @@ export function ChatComposer(props: Props) {
     input, onChangeInput, pastedImages, onChangePastedImages,
     active, activeSession, connectionStatus, opencodeInfo, claudeModels,
     slashCommands, client, cwd,
-    onSend, onInterrupt, onSelectModel, onSelectPermissionMode, onFocus,
+    onSend, onInterrupt, onSelectModel, onSelectPermissionMode, onSelectEffort, onFocus,
     onRegisterSnippet, autoFocus,
   } = props;
 
@@ -355,6 +370,10 @@ export function ChatComposer(props: Props) {
   };
   const refs = input.match(/@[\w.\/\-:]+/g);
   const isOpenCode = activeSession?.provider === 'opencode';
+  // Effort is a Claude Agent SDK concept — hide the dropdown for every other
+  // provider. Sessions always carry a provider (server defaults to 'claude'),
+  // so a missing value only happens for hosts that never set one.
+  const isClaude = (activeSession?.provider ?? 'claude') === 'claude';
   const ocModels = isOpenCode ? (opencodeInfo?.models ?? null) : undefined;
   const ocLoading = isOpenCode && opencodeInfo === null;
   // Prefer this session's own SDK-reported list once it lands, then fall
@@ -548,6 +567,32 @@ export function ChatComposer(props: Props) {
                   </ListBox>
                 </SelectPopover>
               </Select>
+
+              {isClaude && onSelectEffort && (
+                <Select
+                  aria-label="Effort"
+                  selectedKey={activeSession?.effort || 'default'}
+                  onSelectionChange={(key) => {
+                    onSelectEffort(key === 'default' ? '' : String(key));
+                  }}
+                  className="w-28"
+                >
+                  <SelectTrigger className={triggerCls}>
+                    <SelectValue className="min-w-0 flex-1 truncate" />
+                    <SelectIndicator className="size-3.5 shrink-0" />
+                  </SelectTrigger>
+                  <SelectPopover>
+                    <ListBox>
+                      <ListBoxItem key="default" id="default" textValue="Effort"><span className="text-xs">Effort</span></ListBoxItem>
+                      {EFFORT_OPTIONS.map(o => (
+                        <ListBoxItem key={o.id} id={o.id} textValue={o.label}>
+                          <span className="text-xs">{o.label}</span>
+                        </ListBoxItem>
+                      ))}
+                    </ListBox>
+                  </SelectPopover>
+                </Select>
+              )}
 
               <Select
                 aria-label="Permission mode"

@@ -6,6 +6,7 @@
  * to. All state lives on the bridges; the client is a stateless viewer.
  */
 import { getNative } from './native';
+import { Conn } from './conn';
 
 export async function resolveServerUrl(): Promise<string> {
   const native = (typeof window !== 'undefined') ? window.codiby : null;
@@ -323,6 +324,8 @@ export interface SessionInfo {
   saved_commands: string[];
   model: string | null;
   permission_mode: string;
+  /** Reasoning-effort level (Claude only). Null/absent → provider default. */
+  effort?: string | null;
   provider?: string;
   /** Remote workstation this session lives on (null = local). */
   remoteId?: string | null;
@@ -571,116 +574,6 @@ export interface PortlessProxyActionResult {
    *  target port. `funnelConflict` flags the Tailscale-Funnel-on-:443 case so
    *  the UI can offer a one-click "Disable Funnel & retry". */
   conflict?: { port: number; funnelConflict: boolean };
-}
-
-type ConnStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
-
-/**
- * One WebSocket connection to a bridge — the local bun sidecar, or a remote
- * reached directly through its SSH tunnel (a plain `127.0.0.1:<tunnelPort>`
- * base). Owns its own reconnect loop and subscription set so the ClaudeClient
- * can hold a collection: one local + one per active remote. The remote base
- * can change when the tunnel respawns on a new local port — `setBase()` and
- * the reconnect path both re-derive it.
- */
-class Conn {
-  ws: WebSocket | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  readonly activeSubs = new Set<string>();
-  private closed = false;
-  private base: string | null;
-
-  constructor(
-    readonly remoteId: string | null,
-    base: string | null,
-    private readonly hooks: {
-      /** Re-derive the http base (remote: current tunnel port). Null if not ready. */
-      resolveBase: () => Promise<string | null>;
-      token: () => string | null;
-      onMessage: (msg: Record<string, unknown>, remoteId: string | null) => void;
-      onStatus: (remoteId: string | null, status: ConnStatus) => void;
-    },
-  ) {
-    this.base = base;
-    void this.connect();
-  }
-
-  /** Point at a new base (e.g. the tunnel came online on a fresh port). */
-  setBase(base: string | null) {
-    if (base && base !== this.base) {
-      this.base = base;
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) this.reopenSoon(0);
-    }
-  }
-
-  private async connect() {
-    if (this.closed) return;
-    if (!this.base) {
-      this.base = await this.hooks.resolveBase();
-      if (this.closed) return;
-    }
-    if (!this.base) { this.reopenSoon(2000); return; }
-    const token = this.hooks.token();
-    const wsBase = this.base.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
-    const url = token ? `${wsBase}?t=${encodeURIComponent(token)}` : wsBase;
-    this.hooks.onStatus(this.remoteId, 'connecting');
-    const ws = new WebSocket(url);
-    this.ws = ws;
-    ws.onopen = () => {
-      this.hooks.onStatus(this.remoteId, 'connected');
-      for (const sid of this.activeSubs) {
-        try { ws.send(JSON.stringify({ type: 'subscribe', sessionId: sid })); } catch {}
-      }
-    };
-    ws.onmessage = (event) => {
-      try { this.hooks.onMessage(JSON.parse(event.data), this.remoteId); } catch {}
-    };
-    ws.onclose = () => {
-      this.hooks.onStatus(this.remoteId, 'disconnected');
-      if (!this.closed) {
-        // Re-derive the base on reconnect — a remote tunnel may have respawned
-        // on a different local port.
-        this.base = null;
-        this.reopenSoon(2000);
-      }
-    };
-    ws.onerror = () => { this.hooks.onStatus(this.remoteId, 'error'); };
-  }
-
-  private reopenSoon(delay: number) {
-    if (this.closed) return;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; void this.connect(); }, delay);
-  }
-
-  send(msg: object) {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
-  }
-  subscribe(sessionId: string) { this.activeSubs.add(sessionId); this.send({ type: 'subscribe', sessionId }); }
-  unsubscribe(sessionId: string) { this.activeSubs.delete(sessionId); this.send({ type: 'unsubscribe', sessionId }); }
-
-  /** Close the socket for bfcache/background without forgetting subs. */
-  closeForBackground() {
-    try { this.ws?.close(); } catch {}
-    this.ws = null;
-    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-  }
-  /** Reopen if the socket isn't open (foreground / pageshow). */
-  reopen() {
-    if (this.closed) return;
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      try { this.ws?.close(); } catch {}
-      this.ws = null;
-      this.base = null;
-      void this.connect();
-    }
-  }
-  destroy() {
-    this.closed = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    try { this.ws?.close(); } catch {}
-    this.ws = null;
-  }
 }
 
 /** A browsable per-session resource — pasted image, generated mockup, file. */
@@ -1336,6 +1229,12 @@ export class ClaudeClient {
     this.send({ type: 'set_permission_mode', sessionId, mode });
   }
 
+  /** Change the reasoning effort for a Claude session. Empty string → default.
+   *  Takes effect via a server-side respawn-with-resume (spawn-time SDK option). */
+  setEffort(sessionId: string, effort: string) {
+    this.send({ type: 'set_effort', sessionId, effort });
+  }
+
   // ---------------------------------------------------------------------------
   // REST endpoints (still needed for file ops, git, etc.)
   // ---------------------------------------------------------------------------
@@ -1344,6 +1243,7 @@ export class ClaudeClient {
     cwd?: string,
     opts: {
       name?: string; model?: string | null; permissionMode?: string;
+      effort?: string | null;
       provider?: string; remoteId?: string | null;
       /** Override the path used for server-side autogrouping. Defaults to
        *  `cwd`. Set when the session is spawned in a worktree so it lands
@@ -1368,6 +1268,7 @@ export class ClaudeClient {
         name: opts.name,
         model: opts.model,
         permissionMode: opts.permissionMode,
+        effort: opts.effort,
         provider: opts.provider,
         group_cwd: opts.groupCwd,
       }),
@@ -1552,6 +1453,15 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  /** Page of chat history strictly older than `beforeSeq`, oldest-first.
+   *  The store only keeps a window of each transcript; the "Show older"
+   *  button pulls earlier slices from the server's JSONL-backed state. */
+  async fetchOlderMessages(sessionId: string, beforeSeq: number, limit = 200): Promise<{ messages: ChatMessage[]; hasMore: boolean }> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/sessions/${sessionId}/messages?before_seq=${beforeSeq}&limit=${limit}`));
+    if (!resp.ok) throw new Error(`Failed to load older messages: ${resp.status}`);
+    return resp.json();
+  }
+
   /** Fetch a file's raw bytes (with auth) and return a `data:` URL suitable for
    *  an <img src>. Used by the image preview tab — an <img> can't carry the
    *  Authorization header itself, so we read the blob here and inline it. */
@@ -1672,6 +1582,7 @@ export class ClaudeClient {
   async getGitInfo(path: string): Promise<{
     is_git: boolean; branch?: string; top_level?: string;
     worktrees?: { path: string; branch: string }[];
+    parent_branch?: string | null;
     package_manager?: string; has_env?: boolean;
   }> {
     const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`));

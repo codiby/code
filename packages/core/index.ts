@@ -37,7 +37,7 @@ import { CodexAdapter } from './provider/adapters/codex';
 import { OpenCodeAdapter } from './provider/adapters/opencode';
 import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
-import { resolvePermissionDecision } from './provider/bridge';
+import { resolvePermissionDecision, clearPendingDecisionsForSession } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleListSkills, handleGetSkill, handleCreateSkill, handleUpdateSkill, handleDeleteSkill } from './handlers/skills';
@@ -70,6 +70,7 @@ import {
   healOrphanedToolUses,
   updateUIState,
   getStateForClient,
+  getOlderMessages,
   clearSessionState,
 } from './session/state';
 import type { ChatMessage } from './session/state';
@@ -875,6 +876,46 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     return;
   }
 
+  // ---- set_effort ----------------------------------------------------------
+  // Reasoning effort is a spawn-time SDK option (the Agent SDK's Query has no
+  // setEffort control request, unlike setModel), so applying a change to a
+  // live session means respawning the provider with the resume token — same
+  // path as a manual restart, history preserved.
+  if (type === 'set_effort') {
+    const { sessionId, effort } = msg as { sessionId: string; effort: string };
+    if (!sessionId) return;
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+    const next = effort && EFFORT_LEVELS.includes(effort) ? effort : null;
+    if (session.effort === next) return;
+    session.effort = next;
+    saveSessions();
+    if (session.providerSession) {
+      try { await session.providerSession.close(); } catch {}
+      session.providerSession = null;
+      clearPendingDecisionsForSession(sessionId, 'Effort changed — session restarting');
+      if (session.claudeSessionId) {
+        session.replayDone = false;
+        startProviderSession(session, PORT, session.claudeSessionId);
+      } else {
+        session.replayDone = true;
+        startProviderSession(session, PORT);
+      }
+    }
+    const effortChangedMessage: ChatMessage = {
+      id: randomUUID(),
+      role: 'system',
+      content: `Effort cambiado a ${session.effort ?? 'default'}`,
+      timestamp: Date.now(),
+    };
+    if (addMessage(sessionId, effortChangedMessage)) {
+      broadcastToSession(sessionId, { type: 'message', sessionId, message: effortChangedMessage });
+    }
+    broadcastSessionList();
+    return;
+  }
+
   // ---- set_permission_mode -------------------------------------------------
   if (type === 'set_permission_mode') {
     const { sessionId, mode } = msg as { sessionId: string; mode: string };
@@ -1143,6 +1184,23 @@ app.patch('/sessions/:id', async (c) => {
 // ── Terminals (CRUD) ─────────────────────────────────────────────────────────
 // Single source of truth for terminal lifecycle, shared by the UI and the MCP
 // tools. Live I/O stays on the /ws multiplexer (terminal_input / terminal_data).
+
+// Page of chat history older than `before_seq`. Subscribe replays only the
+// last MAX_CLIENT_MESSAGES; the "Show older" button pages the rest in from
+// here so the renderer never holds the full transcript.
+app.get('/sessions/:id/messages', (c) => {
+  const sessionId = c.req.param('id');
+  if (!sessions.has(sessionId)) {
+    return Response.json({ error: 'session not found' }, { status: 404, headers: corsHeaders });
+  }
+  const url = new URL(c.req.url);
+  const beforeSeq = Number(url.searchParams.get('before_seq'));
+  if (!Number.isFinite(beforeSeq)) {
+    return Response.json({ error: 'before_seq required' }, { status: 400, headers: corsHeaders });
+  }
+  const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+  return Response.json(getOlderMessages(sessionId, beforeSeq, limit), { headers: corsHeaders });
+});
 
 // List every terminal for a session. The UI fetches this as soon as it
 // subscribes so open terminals repopulate the dock on (re)connect.
@@ -2308,6 +2366,17 @@ setMcpDeps({
   updatePreferences,
   loadPreferences,
   maybeAutoGroupSession,
+  async setSessionPermissionMode(sessionId, mode) {
+    const session = sessions.get(sessionId);
+    if (!session) return false;
+    session.permissionMode = mode;
+    saveSessions();
+    if (session.providerSession) {
+      try { await session.providerSession.setPermissionMode(mode); } catch {}
+    }
+    broadcastSessionList();
+    return true;
+  },
 });
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);

@@ -25,15 +25,18 @@ export interface PanelProps {
 }
 
 function TabPill({
-  tab, active, onActivate, onClose, onPin,
-}: { tab: Tab; active: boolean; onActivate: () => void; onClose: () => void; onPin?: () => void }) {
+  tab, active, focused, onActivate, onClose, onPin,
+}: { tab: Tab; active: boolean; focused: boolean; onActivate: () => void; onClose: () => void; onPin?: () => void }) {
   return (
     <div
       onMouseDown={onActivate}
       onDoubleClick={onPin}
+      // Active pill: its open bottom (`-mb-px`, no bottom border, panel bg) sits
+      // on top of the strip's bottom border and merges into the body below — the
+      // focus outline routes up and around the tab, Chrome/Edge style.
       className={`group flex items-center gap-1.5 h-full px-2.5 rounded-t-md text-[12px] whitespace-nowrap cursor-default select-none border-b-0 ${
         active
-          ? 'bg-surface text-zinc-100 border border-border'
+          ? `relative z-10 -mb-px bg-surface text-zinc-100 border-t border-x ${focused ? 'border-blue-500/60' : 'border-blue-500/25'}`
           : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
       }`}
       title={tab.title}
@@ -69,53 +72,95 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
     ?? orderedTabs[orderedTabs.length - 1];
   const activeTabId = activeTab?.id ?? null;
   const canSplit = node.tabIds.length > 1;
+  // A lone, non-closable tab (the Chat panel / group composer) draws a pill
+  // that just labels the panel with itself — a redundant "Chat" tab that reads
+  // as a stray, misaligned chip. Suppress the pill in that case; the header bar
+  // still renders for the Resources chip and split controls.
+  const hidePills = orderedTabs.length === 1 && orderedTabs[0]?.closable === false;
 
+  // The focus outline is blue always, brighter when this panel holds focus and
+  // fainter when it doesn't — so it reads as "active" without going invisible.
+  const edge = focused ? 'border-blue-500/60' : 'border-blue-500/25';
+
+  // Split / Resources controls shared by both layouts (pill-less chat panel and
+  // the Chrome/Edge tabbed panel).
+  const barExtras = (
+    <>
+      <div className="flex-1" />
+      {renderTabBarExtra && (
+        <div className="flex items-center shrink-0 mr-0.5" onMouseDown={(e) => e.stopPropagation()}>
+          {renderTabBarExtra(node)}
+        </div>
+      )}
+      {canSplit && (
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            className="text-zinc-500 hover:text-zinc-200 px-1.5 text-[12px]"
+            title="Split right (move active tab)"
+            onClick={() => activeTab && onSplit('row')}
+          >⬌</button>
+          <button
+            className="text-zinc-500 hover:text-zinc-200 px-1.5 text-[12px]"
+            title="Split down (move active tab)"
+            onClick={() => activeTab && onSplit('col')}
+          >⬍</button>
+        </div>
+      )}
+    </>
+  );
+
+  const body = (
+    activeTab ? renderTab(activeTab) : (
+      <div className="h-full flex items-center justify-center text-[12px] text-zinc-600">Empty panel</div>
+    )
+  );
+
+  // Chat / group-composer panel: a lone non-closable tab draws no pill, so there
+  // is nothing to wrap — keep the classic closed rounded frame.
+  if (hidePills) {
+    return (
+      <div
+        onMouseDownCapture={onFocus}
+        className={`flex flex-col min-w-0 min-h-0 h-full w-full rounded-lg overflow-hidden bg-surface border ${edge}`}
+      >
+        <div className="flex items-stretch h-[34px] shrink-0 px-1 gap-0.5 border-b border-border bg-base">
+          {barExtras}
+        </div>
+        <div className="flex-1 min-h-0 min-w-0 relative">{body}</div>
+      </div>
+    );
+  }
+
+  // Chrome/Edge tabs: the strip's bottom edge is the panel's top border. The
+  // active pill breaks that line and its open bottom merges into the body, so a
+  // single continuous outline runs up and around the active tab.
   return (
     <div
       onMouseDownCapture={onFocus}
-      className={`flex flex-col min-w-0 min-h-0 h-full w-full rounded-lg overflow-hidden bg-surface border ${
-        focused ? 'border-blue-500/60' : 'border-border'
-      }`}
+      className="flex flex-col min-w-0 min-h-0 h-full w-full"
     >
-      <div className="flex items-stretch h-[34px] shrink-0 px-1 gap-0.5 border-b border-border bg-base">
-        <div className="flex items-stretch gap-0.5 min-w-0 overflow-x-auto no-scrollbar">
+      <div className={`flex items-stretch h-[34px] shrink-0 px-1 gap-0.5 rounded-t-lg bg-base border-b ${edge}`}>
+        {/* No overflow clip here: overflow-x-auto forces overflow-y to clip,
+            which would shave off the active pill's 1px overhang and re-expose
+            the seam under the tab. Tabs truncate (max-w) instead of scrolling. */}
+        <div className="flex items-stretch gap-0.5 min-w-0">
           {orderedTabs.map((t) => (
             <TabPill
               key={t.id}
               tab={t}
               active={t.id === activeTabId}
+              focused={focused}
               onActivate={() => onActivate(t.id)}
               onClose={() => onClose(t)}
               onPin={onPin ? () => onPin(t.id) : undefined}
             />
           ))}
         </div>
-        <div className="flex-1" />
-        {renderTabBarExtra && (
-          <div className="flex items-center shrink-0 mr-0.5" onMouseDown={(e) => e.stopPropagation()}>
-            {renderTabBarExtra(node)}
-          </div>
-        )}
-        {canSplit && (
-          <div className="flex items-center gap-0.5 shrink-0">
-            <button
-              className="text-zinc-500 hover:text-zinc-200 px-1.5 text-[12px]"
-              title="Split right (move active tab)"
-              onClick={() => activeTab && onSplit('row')}
-            >⬌</button>
-            <button
-              className="text-zinc-500 hover:text-zinc-200 px-1.5 text-[12px]"
-              title="Split down (move active tab)"
-              onClick={() => activeTab && onSplit('col')}
-            >⬍</button>
-          </div>
-        )}
+        {barExtras}
       </div>
 
-      <div className="flex-1 min-h-0 min-w-0 relative">
-        {activeTab ? renderTab(activeTab) : (
-          <div className="h-full flex items-center justify-center text-[12px] text-zinc-600">Empty panel</div>
-        )}
+      <div className={`flex-1 min-h-0 min-w-0 relative rounded-b-lg overflow-hidden bg-surface border border-t-0 ${edge}`}>
+        {body}
       </div>
     </div>
   );

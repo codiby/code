@@ -224,7 +224,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       // Snapshot the Claude list to the global cache so non-session pickers
       // (project settings, new-session modals) can surface the SDK's models
       // even when no live session is around to ask.
-      if (session.provider === 'claudeAgent') setClaudeModels(models);
+      if (session.provider === 'claude') setClaudeModels(models);
     },
 
     async onPermissionRequest(req: PermissionRequestDetail): Promise<PermissionDecision> {
@@ -260,35 +260,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         return { allow: true };
       }
 
-      // Prompt the user via WebSocket and await their response
-      const permRequest: PermissionRequest = {
-        requestId: req.requestId,
-        toolName: req.toolName,
-        displayName: req.displayName,
-        description: req.description,
-        input: inputRecord,
-        title: req.title,
-      };
-      updateSessionState(session.id, s => ({ ...s, permRequest }));
-      deps.broadcastToSession(session.id, { type: 'permission_request', sessionId: session.id, request: permRequest });
-
-      // Fire a mobile/Telegram notification so the user can act remotely.
-      // Build a short summary from the most useful field of `input`.
-      try {
-        const summary = summariseToolInput(req.toolName, inputRecord);
-        // Don't await — keeps permission flow snappy.
-        notify({
-          type: 'permission_request',
-          requestId: req.requestId,
-          sessionId: session.id,
-          toolName: req.toolName,
-          summary: req.title || req.description || summary,
-        });
-      } catch {}
-
-      return new Promise<PermissionDecision>((resolve) => {
-        pendingDecisions.set(req.requestId, { sessionId: session.id, resolve });
-      });
+      return requestPermissionDecision(session, deps, { ...req, input: inputRecord });
     },
 
     onTurnComplete(info) {
@@ -385,6 +357,42 @@ type PendingDecision = {
 };
 
 const pendingDecisions = new Map<string, PendingDecision>();
+
+/**
+ * Surface a provider-agnostic approval request. HTTP MCP tools use this path
+ * too, so their approval UI and remote notifications match native SDK tools.
+ */
+export function requestPermissionDecision(
+  session: Session,
+  deps: BridgeDeps,
+  req: PermissionRequestDetail,
+): Promise<PermissionDecision> {
+  const permRequest: PermissionRequest = {
+    requestId: req.requestId,
+    toolName: req.toolName,
+    displayName: req.displayName,
+    description: req.description,
+    input: req.input || {},
+    title: req.title,
+  };
+  updateSessionState(session.id, s => ({ ...s, permRequest }));
+  deps.broadcastToSession(session.id, { type: 'permission_request', sessionId: session.id, request: permRequest });
+
+  try {
+    const summary = summariseToolInput(req.toolName, permRequest.input);
+    notify({
+      type: 'permission_request',
+      requestId: req.requestId,
+      sessionId: session.id,
+      toolName: req.toolName,
+      summary: req.title || req.description || summary,
+    });
+  } catch {}
+
+  return new Promise<PermissionDecision>((resolve) => {
+    pendingDecisions.set(req.requestId, { sessionId: session.id, resolve });
+  });
+}
 
 export function resolvePermissionDecision(
   requestId: string,

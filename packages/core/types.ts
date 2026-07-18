@@ -59,6 +59,9 @@ export type Session = {
   savedCommands: string[];
   model: string | null;
   permissionMode: string;
+  /** Reasoning-effort level (Claude only). Null → provider default. Applied
+   *  at spawn time; changing it live respawns the provider with resume. */
+  effort: string | null;
   provider: string;
   /** Null for local sessions; otherwise the Remote.id this session lives on. */
   remoteId: string | null;
@@ -79,6 +82,7 @@ export type PersistedSession = {
   savedCommands?: string[];
   model?: string | null;
   permissionMode?: string;
+  effort?: string | null;
   provider?: string;
   remoteId?: string | null;
   portForwards?: PortForward[];

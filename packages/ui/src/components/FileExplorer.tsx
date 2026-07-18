@@ -119,12 +119,12 @@ interface Props {
   /** Path of the file currently shown in the diff viewer — highlighted in the
    *  Changes list so the user can see which change they're looking at. */
   activeDiffPath?: string | null;
-  /** Changes comparison mode + its base branch, plus the setter for the
-   *  in-section toggle. 'vs-main' shows branch changes vs the base branch;
-   *  'uncommitted' shows the working-tree (staged/unstaged/untracked) view. */
+  /** Changes comparison mode plus the setter for the in-section toggle.
+   *  'vs-main' ("Branch") shows everything the branch introduced since its
+   *  fork point; 'uncommitted' shows the working-tree
+   *  (staged/unstaged/untracked) view. */
   changesCompare?: 'vs-main' | 'uncommitted';
   onChangesCompareChange?: (mode: 'vs-main' | 'uncommitted') => void;
-  baseBranch?: string;
   activeSessionId: string | null;
   onOpenTerminal?: (command: string) => void;
   onStartReview?: () => void;
@@ -525,9 +525,10 @@ function ResizeGrip({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => voi
   );
 }
 
-/** Segmented Uncommitted / vs-<base> toggle — replaces the old <select>. One
- *  tap, no dropdown, base branch rendered in the accent mono. */
-function CompareToggle({ mode, onChange, baseBranch }: { mode: 'vs-main' | 'uncommitted'; onChange: (m: 'vs-main' | 'uncommitted') => void; baseBranch?: string }) {
+/** Segmented Uncommitted / Branch toggle — replaces the old <select>. One
+ *  tap, no dropdown. "Branch" lists everything introduced since the branch
+ *  was created (fork-point diff, base resolved server-side). */
+function CompareToggle({ mode, onChange }: { mode: 'vs-main' | 'uncommitted'; onChange: (m: 'vs-main' | 'uncommitted') => void }) {
   return (
     <div
       className="mx-[11px] mt-[9px] mb-[5px] flex bg-[#101116] border border-[#1e1f24] rounded-[9px] p-[3px]"
@@ -541,7 +542,7 @@ function CompareToggle({ mode, onChange, baseBranch }: { mode: 'vs-main' | 'unco
             onClick={() => onChange(m)}
             className={`flex-1 text-[11px] font-semibold py-[5px] leading-[13px] rounded-md transition-colors ${active ? 'bg-[#1e1f24] text-[#e6e7ea] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]' : 'text-[#6b6e76] hover:text-[#9aa0a8]'}`}
           >
-            {m === 'uncommitted' ? 'Uncommitted' : <>vs <span className="font-mono text-[10.5px] text-[#7c5cff]">{baseBranch || 'main'}</span></>}
+            {m === 'uncommitted' ? 'Uncommitted' : 'Branch'}
           </button>
         );
       })}
@@ -549,7 +550,7 @@ function CompareToggle({ mode, onChange, baseBranch }: { mode: 'vs-main' | 'unco
   );
 }
 
-function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView, onStartReview, client, onRefresh, activeDiffPath, compareMode, onCompareModeChange, baseBranch }: { gitModified: GitModifiedState; rootPath: string | null; onFileDiff: (path: string) => void; onFileDiffFullView?: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void; activeDiffPath?: string | null; compareMode: 'vs-main' | 'uncommitted'; onCompareModeChange?: (mode: 'vs-main' | 'uncommitted') => void; baseBranch?: string }) {
+function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView, onStartReview, client, onRefresh, activeDiffPath, compareMode, onCompareModeChange }: { gitModified: GitModifiedState; rootPath: string | null; onFileDiff: (path: string) => void; onFileDiffFullView?: (path: string) => void; onStartReview?: () => void; client: ClaudeClient | null; onRefresh: () => void; activeDiffPath?: string | null; compareMode: 'vs-main' | 'uncommitted'; onCompareModeChange?: (mode: 'vs-main' | 'uncommitted') => void }) {
   const [expanded, setExpanded] = useState(true);
   const vsMain = compareMode === 'vs-main';
   const stagedFiles = [...gitModified.staged].sort();
@@ -699,11 +700,11 @@ function ChangesSection({ gitModified, rootPath, onFileDiff, onFileDiffFullView,
       {expanded && (
         <>
           {onCompareModeChange && (
-            <CompareToggle mode={compareMode} onChange={onCompareModeChange} baseBranch={baseBranch} />
+            <CompareToggle mode={compareMode} onChange={onCompareModeChange} />
           )}
           {totalCount === 0 ? (
             <div className="px-3 pb-2.5 text-[11px] text-[#5e6068]">
-              {vsMain ? `No changes vs ${baseBranch || 'main'}` : 'No uncommitted changes'}
+              {vsMain ? 'No changes in this branch' : 'No uncommitted changes'}
             </div>
           ) : (
             <>
@@ -1794,7 +1795,7 @@ function PanelRail({ collapsed, items, activeKey, onSelect, onReorder, searchAct
   );
 }
 
-export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeDiffPath, changesCompare, onChangesCompareChange, baseBranch, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, searchActive = false, onSearchActiveChange, renderSearchCard, requestedTab, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
+export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeDiffPath, changesCompare, onChangesCompareChange, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, searchActive = false, onSearchActiveChange, renderSearchCard, requestedTab, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>(() => (rootPath ? filesCache.get(rootPath) : null) || []);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const dragging = useRef(false);
@@ -2171,7 +2172,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
               ) : (() => {
                 const cardNodes: Record<string, React.ReactNode> = {
                   processes: <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} onCountChange={setProcessCount} />,
-                  changes: <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} baseBranch={baseBranch} />,
+                  changes: <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} />,
                   prs: <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} onCountChange={setPrCount} />,
                   // Tools + MCP unified in one tab: the Tools chips (when present)
                   // stacked above the MCP servers list.

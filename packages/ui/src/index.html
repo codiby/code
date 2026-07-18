@@ -4,6 +4,20 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Codiby Code</title>
+    <script>
+      // Paint the saved appearance before first render to avoid a theme flash.
+      // Mirrors ChatApp's theme effect; the store re-asserts this once the
+      // server-persisted preference hydrates.
+      try {
+        var t = localStorage.getItem('taskr-theme');
+        if (t === 'light') {
+          var r = document.documentElement;
+          r.classList.remove('dark');
+          r.classList.add('light');
+          r.style.colorScheme = 'light';
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body class="bg-base text-zinc-100">
     <div id="root"></div>

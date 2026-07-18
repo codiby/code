@@ -23,36 +23,62 @@ export async function runShell(cmd: string, cwd?: string, timeout = 5000): Promi
   return stdout as string;
 }
 
-/** Pick a git ref that actually exists for `base`, trying the local branch then
- *  `origin/<base>`. When HEAD is *on* the base branch, comparing to itself is
- *  useless, so prefer the remote (`origin/<base>`) — that surfaces local commits
- *  not yet pushed. Returns null when nothing resolves. */
-async function resolveBaseRef(root: string, base: string): Promise<string | null> {
-  let current = '';
-  try { current = (await runShell('git branch --show-current', root)).trim(); } catch {}
-  const candidates = current && current === base
-    ? [`origin/${base}`, base]
-    : [base, `origin/${base}`];
-  for (const ref of candidates) {
+/** Where the current branch was created, read from its reflog entry
+ *  ("branch: Created from <ref>"). `sha` is the commit the branch started at;
+ *  `parent` is the ref it was cut from when that ref still exists and isn't
+ *  the branch itself / bare HEAD / a raw sha. Returns null when there is no
+ *  creation entry (clones, expired reflogs, detached HEAD). */
+export async function branchOrigin(root: string): Promise<{ sha: string; parent: string | null } | null> {
+  let branch = '';
+  try { branch = (await runShell('git branch --show-current', root)).trim(); } catch {}
+  if (!branch) return null;
+  let entry = '';
+  try {
+    const out = await runShell(`git reflog show --format="%H %gs" ${JSON.stringify('refs/heads/' + branch)}`, root);
+    entry = out.trim().split('\n').pop() || '';
+  } catch {}
+  const m = entry.match(/^([0-9a-f]{40}) branch: Created from (.+)$/i);
+  if (!m) return null;
+  const sha = m[1]!;
+  let parent: string | null = m[2]!.trim().replace(/^refs\/(heads|remotes)\//, '');
+  if (parent === 'HEAD' || parent === branch || /^[0-9a-f]{7,40}$/i.test(parent)) parent = null;
+  if (parent) {
     try {
-      await runShell(`git rev-parse --verify --quiet ${JSON.stringify(ref + '^{commit}')}`, root);
-      return ref;
-    } catch {}
+      await runShell(`git rev-parse --verify --quiet ${JSON.stringify(parent + '^{commit}')}`, root);
+    } catch { parent = null; }
   }
-  return null;
+  return { sha, parent };
 }
 
-/** The commit to diff against for a "vs <base>" comparison: the merge-base of
- *  the resolved base ref and HEAD, so only what HEAD introduced shows up.
- *  Returns null when the base can't be resolved. */
+/** The commit to diff against for a "vs <base>" comparison: the point where
+ *  the current branch actually forked, so only work introduced on the branch
+ *  since it was created shows up. Candidates are the branch's reflog creation
+ *  point (and the ref it was cut from — which may not be `base` at all for
+ *  stacked branches) plus the local and remote tips of `base`; the newest
+ *  merge-base with HEAD wins. Taking the newest keeps a stale ref from
+ *  dragging the fork point back, and advances past upstream commits the
+ *  branch merged in later. When HEAD *is* the base branch the merge-base is
+ *  HEAD itself, so the comparison degrades to uncommitted work only.
+ *  Returns null when nothing resolves. */
 export async function baseDiffRef(root: string, base: string): Promise<string | null> {
-  const ref = await resolveBaseRef(root, base);
-  if (!ref) return null;
-  try {
-    return (await runShell(`git merge-base ${JSON.stringify(ref)} HEAD`, root)).trim() || ref;
-  } catch {
-    return ref;
+  const origin = await branchOrigin(root);
+  const candidates = [base, `origin/${base}`];
+  if (origin?.parent) candidates.push(origin.parent, `origin/${origin.parent}`);
+  if (origin) candidates.push(origin.sha);
+  let best: string | null = null;
+  for (const ref of new Set(candidates)) {
+    let mb = '';
+    try {
+      mb = (await runShell(`git merge-base ${JSON.stringify(ref)} HEAD`, root)).trim();
+    } catch {}
+    if (!mb || mb === best) continue;
+    if (!best) { best = mb; continue; }
+    try {
+      await runShell(`git merge-base --is-ancestor ${JSON.stringify(best)} ${JSON.stringify(mb)}`, root);
+      best = mb;
+    } catch {}
   }
+  return best;
 }
 
 /** Per-file added/deleted line counts from `git diff --numstat <args>`, keyed by
@@ -167,8 +193,18 @@ export async function handleGitInfo(dirPath: string): Promise<Response> {
     const pm = packageManager || detectPackageManager(topLevel);
     const envExists = hasEnv || existsSync(`${topLevel}/.env`);
 
+    // The ref this branch was cut from (reflog), for the "vs <base>" label.
+    // `origin/` is stripped for display; the diff endpoint re-tries both.
+    let parentBranch: string | null = null;
+    try {
+      const origin = await branchOrigin(dirPath);
+      parentBranch = origin?.parent?.replace(/^origin\//, '') || null;
+      if (parentBranch === branch) parentBranch = null;
+    } catch {}
+
     return Response.json({
       is_git: true, branch, top_level: topLevel, worktrees,
+      parent_branch: parentBranch,
       package_manager: pm, has_env: envExists,
     }, { headers: corsHeaders });
   } catch {

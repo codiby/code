@@ -124,6 +124,7 @@ function ensureMainSession(): Session {
       savedCommands: [],
       model: null,
       permissionMode: 'bypassPermissions',
+      effort: null,
       provider: DEFAULT_PROVIDER,
       remoteId: null,
       portForwards: [],

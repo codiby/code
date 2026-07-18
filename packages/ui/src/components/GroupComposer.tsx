@@ -14,7 +14,7 @@ const PROVIDER_KEY = 'claude-ui-last-provider';
 const RECENT_DIRS_KEY = 'claude-ui-recent-dirs';
 
 const PROVIDER_OPTIONS = [
-  { key: 'claudeAgent', label: 'Claude' },
+  { key: 'claude', label: 'Claude' },
   { key: 'codex', label: 'Codex' },
   { key: 'opencode', label: 'OpenCode' },
 ] as const;
@@ -60,6 +60,8 @@ interface Props {
     remoteId?: string | null,
     /** Pasted/dropped screenshots to ship with the first message. */
     images?: { media_type: string; data: string }[],
+    /** Reasoning effort — only forwarded for Claude sessions. */
+    effort?: string,
   ) => void;
   /** Opens the full folder-picker modal (parent-owned). Invoked from the
    *  "Browse for folder…" item at the bottom of the project dropdown. */
@@ -80,10 +82,11 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   const [provider, setProvider] = useState<ProviderKey>(() => {
     const stored = localStorage.getItem(PROVIDER_KEY);
     if (stored && PROVIDER_OPTIONS.some(p => p.key === stored)) return stored as ProviderKey;
-    return 'claudeAgent';
+    return 'claude';
   });
   const [model, setModel] = useState<string>('');
   const [permissionMode, setPermissionMode] = useState<string>('default');
+  const [effort, setEffort] = useState<string>('');
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
   const [showWorktreeForm, setShowWorktreeForm] = useState(false);
   // Parent repo when the user creates a worktree in this composer. Threaded
@@ -246,6 +249,9 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       worktreeOrigin || undefined,
       remoteId ?? null,
       images,
+      // Effort is a Claude-only spawn option; drop it silently if the user
+      // picked one and then switched the provider away from Claude.
+      provider === 'claude' && effort ? effort : undefined,
     );
     setPastedImages([]);
   };
@@ -365,7 +371,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
           pastedImages={pastedImages}
           onChangePastedImages={(val) => setPastedImages(prev => (typeof val === 'function' ? val(prev) : val))}
           active={{ isStreaming: false, permRequest: null, inputHistory: [], supportedModels: undefined }}
-          activeSession={{ model: model || null, permission_mode: permissionMode, provider }}
+          activeSession={{ model: model || null, permission_mode: permissionMode, effort: effort || null, provider }}
           connectionStatus="connected"
           opencodeInfo={opencodeInfo ?? null}
           claudeModels={claudeModels}
@@ -376,6 +382,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
           onInterrupt={() => {}}
           onSelectModel={setModel}
           onSelectPermissionMode={setPermissionMode}
+          onSelectEffort={setEffort}
         />
 
         <div className="flex items-center justify-end text-xs text-zinc-500 px-3 -mt-1">

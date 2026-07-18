@@ -35,7 +35,7 @@ import { ProviderSessionBase } from '../session';
 import { CLAUDE_BIN } from '../../config/config';
 import { log } from '../../lib/logger';
 
-const PROVIDER_NAME = 'claudeAgent';
+const PROVIDER_NAME = 'claude';
 
 /**
  * Extra steering appended to Claude Code's default system prompt. Keeps the
@@ -71,6 +71,15 @@ function toSdkMcpServers(
 }
 
 function toSdkPermissionMode(mode: PermissionMode): SdkPermissionMode {
+  // We drive every permission decision through `canUseTool` (see
+  // bridge.onPermissionRequest), which auto-approves in bypass mode but still
+  // prompts for USER_INTERACTION_TOOLS (AskUserQuestion / ExitPlanMode).
+  // The Claude Code CLI, however, short-circuits the whole `can_use_tool`
+  // round-trip when it runs in `bypassPermissions` — it resolves those tools
+  // itself and auto-rejects AskUserQuestion, never giving the user a chance to
+  // answer. Map bypass to `default` so the CLI keeps routing tool uses through
+  // our callback; the bridge is what actually auto-approves in bypass mode.
+  if (mode === 'bypassPermissions') return 'default' as SdkPermissionMode;
   return mode as SdkPermissionMode;
 }
 
@@ -158,6 +167,8 @@ class ClaudeSession extends ProviderSessionBase {
       canUseTool,
       includePartialMessages: true,
       permissionMode: toSdkPermissionMode(opts.permissionMode),
+      // Use Codiby's HTTP MCP plan tools so every provider follows one flow.
+      disallowedTools: ['EnterPlanMode', 'ExitPlanMode'],
       mcpServers: toSdkMcpServers(opts.mcpServers),
       pathToClaudeCodeExecutable: CLAUDE_BIN,
       // Force Claude to expose its reasoning summaries on every supported
@@ -176,8 +187,15 @@ class ClaudeSession extends ProviderSessionBase {
       },
     };
     if (opts.model) sdkOptions.model = opts.model;
+    // Spawn-time only — the SDK's Query has no setEffort; live changes go
+    // through a respawn-with-resume (see `set_effort` in index.ts).
+    if (opts.effort) sdkOptions.effort = opts.effort;
     if (opts.resumeSessionId) sdkOptions.resume = opts.resumeSessionId;
-    if (opts.permissionMode === 'bypassPermissions') sdkOptions.allowDangerouslySkipPermissions = true;
+    // NOTE: intentionally NOT setting `allowDangerouslySkipPermissions` for
+    // bypass mode. That flag forces the CLI into true bypass, which skips the
+    // `canUseTool` callback and prevents AskUserQuestion from ever prompting.
+    // `toSdkPermissionMode` maps bypass -> 'default' and the bridge handles the
+    // blanket auto-approve, so tool uses stay routed through our callback.
 
     try {
       this.runtime = query({ prompt: this.prompts, options: sdkOptions });
@@ -304,7 +322,7 @@ class ClaudeSession extends ProviderSessionBase {
       // Diagnostic: surface every block type so we can confirm whether the
       // SDK is delivering thinking blocks. Cheap (one short line per
       // assistant message) and easy to remove later.
-      log(`[claudeAgent] blocks=${content.map((b: any) => b?.type ?? 'unknown').join(',')}${parentToolUseId ? ' (sub-agent)' : ''}`);
+      log(`[claude] blocks=${content.map((b: any) => b?.type ?? 'unknown').join(',')}${parentToolUseId ? ' (sub-agent)' : ''}`);
 
       let partialText = '';
       for (const block of content) {

@@ -2,8 +2,30 @@ import type { ProjectEnvVar } from '../../tab-groups';
 import { persistPrefs } from '../persist-prefs';
 import type { SliceCreator } from '../types';
 
+/** Light / dark appearance. Dark is the historical default. */
+export type Theme = 'dark' | 'light';
+
+/** localStorage key mirroring the persisted theme so the boot script in
+ *  index.html can paint the right appearance before React (and the
+ *  server-hydrated preferences) load — avoids a dark→light flash. */
+export const THEME_STORAGE_KEY = 'taskr-theme';
+
+/** Seed the store from the same localStorage mirror the boot script reads, so
+ *  the initial render matches what was painted. Without this the store would
+ *  default to 'dark' and the theme effect would clobber the boot class before
+ *  server preferences hydrate. Server hydration still wins once it arrives. */
+function initialTheme(): Theme {
+  try {
+    return localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
 /** Plain, server-persisted UI preferences (the data half of the slice). */
 export interface PreferencesData {
+  /** App appearance — flips the `dark`/`light` class on <html>. */
+  theme: Theme;
   /** Auto-place newly spawned sessions into a project group. */
   autoGroupSessions: boolean;
   /** Bring a browser preview to the front before an action-style browser_*
@@ -33,6 +55,8 @@ type TogglePrefKey =
   | 'tintChatBackground';
 
 export interface PreferencesSlice extends PreferencesData {
+  /** Switch appearance, mirror it to localStorage, and persist to the server. */
+  setTheme: (theme: Theme) => void;
   /** Set a boolean preference and persist it to the server. */
   setPreference: (key: TogglePrefKey, value: boolean) => void;
   /** Add/remove a per-session accent override (null clears it) and persist. */
@@ -45,6 +69,7 @@ export interface PreferencesSlice extends PreferencesData {
 }
 
 export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get) => ({
+  theme: initialTheme(),
   autoGroupSessions: false,
   autoFocusBrowserOnAction: true,
   showTelegramSession: true,
@@ -53,6 +78,12 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
   tintChatBackground: false,
   sessionAccents: {},
   globalEnvVars: [],
+
+  setTheme: (theme) => {
+    set({ theme });
+    try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch {}
+    persistPrefs({ theme });
+  },
 
   setPreference: (key, value) => {
     set({ [key]: value } as Partial<PreferencesData>);
@@ -73,6 +104,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
 
   hydratePreferences: (prefs) => {
     const patch: Partial<PreferencesData> = {};
+    if (prefs.theme === 'light' || prefs.theme === 'dark') patch.theme = prefs.theme;
     if (typeof prefs.autoGroupSessions === 'boolean') patch.autoGroupSessions = prefs.autoGroupSessions;
     if (typeof prefs.autoFocusBrowserOnAction === 'boolean') patch.autoFocusBrowserOnAction = prefs.autoFocusBrowserOnAction;
     if (typeof prefs.showTelegramSession === 'boolean') patch.showTelegramSession = prefs.showTelegramSession;

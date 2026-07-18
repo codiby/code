@@ -215,7 +215,7 @@ async function main() {
     const resp2 = await fetchWithDeadline(sessionsUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cwd: '/tmp', name: 'test-from-script', provider: 'claudeAgent' }),
+      body: JSON.stringify({ cwd: '/tmp', name: 'test-from-script', provider: 'claude' }),
     }, 10_000);
     const body2 = await resp2.text();
     log(`POST /sessions → ${resp2.status} in ${Date.now() - t1}ms — body: ${body2.slice(0, 300)}`);

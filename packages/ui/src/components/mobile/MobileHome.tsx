@@ -37,7 +37,7 @@ interface Props {
 }
 
 const QUICK_START_PROVIDERS: ReadonlyArray<{ key: string; label: string; tagline: string }> = [
-  { key: 'claudeAgent', label: 'Claude', tagline: 'Anthropic agent' },
+  { key: 'claude', label: 'Claude', tagline: 'Anthropic agent' },
   { key: 'codex', label: 'Codex', tagline: 'OpenAI Codex' },
   { key: 'opencode', label: 'OpenCode', tagline: 'opencode.ai router' },
 ];

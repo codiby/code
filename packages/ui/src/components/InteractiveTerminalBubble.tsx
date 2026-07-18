@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, memo } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { TerminalInfo } from '../lib/claude-client';
 import type { ClaudeClient } from '../lib/claude-client';
+import { useAppStore } from '../lib/store';
 
 // xterm.css is a static side-effect import so Vite unconditionally bundles
 // it into the component's CSS chunk. Without the stylesheet, xterm attaches
@@ -19,6 +20,61 @@ type TerminalCtor = typeof import('@xterm/xterm').Terminal;
 type FitAddonCtor = typeof import('@xterm/addon-fit').FitAddon;
 type TerminalInstance = InstanceType<TerminalCtor>;
 type FitAddonInstance = InstanceType<FitAddonCtor>;
+
+// xterm colours are set in JS (not CSS), so the app-wide light/dark toggle
+// can't reach them via the stylesheet — the terminal carries its own themes,
+// applied on create and swapped live when the app theme flips.
+const DARK_TERM_THEME = {
+  background: '#141414',
+  foreground: '#d4d4d4',
+  cursor: '#d4d4d4',
+  cursorAccent: '#141414',
+  selectionBackground: '#444',
+  black:        '#1e1e1e',
+  red:          '#f87171',
+  green:        '#4ade80',
+  yellow:       '#fbbf24',
+  blue:         '#60a5fa',
+  magenta:      '#c084fc',
+  cyan:         '#22d3ee',
+  white:        '#d4d4d4',
+  brightBlack:  '#71717a',
+  brightRed:    '#fca5a5',
+  brightGreen:  '#86efac',
+  brightYellow: '#fde68a',
+  brightBlue:   '#93c5fd',
+  brightMagenta:'#d8b4fe',
+  brightCyan:   '#67e8f9',
+  brightWhite:  '#f4f4f5',
+};
+// Light theme: background matches the light "content" surface (#fcfcfd) and the
+// ANSI palette is darkened/desaturated so every colour keeps contrast on white
+// (bright yellow/green are unreadable on light, so they map to darker tones).
+const LIGHT_TERM_THEME = {
+  background: '#fcfcfd',
+  foreground: '#272a31',
+  cursor: '#272a31',
+  cursorAccent: '#fcfcfd',
+  selectionBackground: '#d7e3f4',
+  black:        '#24292e',
+  red:          '#cf222e',
+  green:        '#116329',
+  yellow:       '#7d4e00',
+  blue:         '#0969da',
+  magenta:      '#8250df',
+  cyan:         '#1b7c83',
+  white:        '#6e7781',
+  brightBlack:  '#57606a',
+  brightRed:    '#a40e26',
+  brightGreen:  '#1a7f37',
+  brightYellow: '#633c01',
+  brightBlue:   '#0550ae',
+  brightMagenta:'#6639ba',
+  brightCyan:   '#3192aa',
+  brightWhite:  '#24292f',
+};
+const termThemeFor = (t: string) => (t === 'light' ? LIGHT_TERM_THEME : DARK_TERM_THEME);
+const termBgFor = (t: string) => (t === 'light' ? '#fcfcfd' : '#141414');
 
 let xtermModulesPromise: Promise<{ Terminal: TerminalCtor; FitAddon: FitAddonCtor }> | null = null;
 function loadXterm() {
@@ -71,6 +127,15 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
   const fitRef = useRef<FitAddonInstance | null>(null);
   const didAttachRef = useRef(false);
 
+  const theme = useAppStore(s => s.theme);
+  const termBg = termBgFor(theme);
+
+  // Swap the xterm palette live when the app theme flips (the instance persists
+  // across the toggle, so we mutate its options rather than recreating it).
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = termThemeFor(theme);
+  }, [theme]);
+
   const procId = terminal.procId || terminal.id;
   const cwd = terminal.cwd || '/';
   // `command` is "(interactive shell)" for a bare shell — don't surface that.
@@ -96,29 +161,10 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
         allowProposedApi: true,
         scrollback: 5000,
         convertEol: false,
-        theme: {
-          background: '#141414',
-          foreground: '#d4d4d4',
-          cursor: '#d4d4d4',
-          cursorAccent: '#141414',
-          selectionBackground: '#444',
-          black:        '#1e1e1e',
-          red:          '#f87171',
-          green:        '#4ade80',
-          yellow:       '#fbbf24',
-          blue:         '#60a5fa',
-          magenta:      '#c084fc',
-          cyan:         '#22d3ee',
-          white:        '#d4d4d4',
-          brightBlack:  '#71717a',
-          brightRed:    '#fca5a5',
-          brightGreen:  '#86efac',
-          brightYellow: '#fde68a',
-          brightBlue:   '#93c5fd',
-          brightMagenta:'#d8b4fe',
-          brightCyan:   '#67e8f9',
-          brightWhite:  '#f4f4f5',
-        },
+        // Read non-reactively so a theme flip doesn't re-run this mount effect
+        // (which would recreate the terminal). The effect below updates the
+        // live theme instead.
+        theme: termThemeFor(useAppStore.getState().theme),
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -291,7 +337,7 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
         style={{
           height: '100%',
           width: '100%',
-          background: '#141414',
+          background: termBg,
           padding: '6px 8px',
           overflow: 'hidden',
           touchAction: 'pan-y',
@@ -303,7 +349,10 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
 
   return (
     <div className="py-1" style={hidden ? { display: 'none' } : undefined}>
-      <div className={`rounded-lg border overflow-hidden ${exited ? 'border-border-light bg-[#141414]/60' : 'border-green-900/50 bg-[#141414]'}`}>
+      <div
+        className={`rounded-lg border overflow-hidden ${exited ? 'border-border-light' : 'border-green-900/50'}`}
+        style={{ background: termBg, opacity: exited ? 0.85 : undefined }}
+      >
         <div
           className={`flex items-center gap-2 px-3 py-1.5 bg-surface-light border-b border-border-light select-none ${onToggleMinimize ? 'cursor-pointer hover:bg-surface-lighter' : ''}`}
           onClick={onToggleMinimize}
@@ -365,7 +414,7 @@ function InteractiveTerminalBubbleImpl({ terminal, sessionId, client, minimized,
             height: minimized ? 0 : 280,
             padding: minimized ? 0 : undefined,
             overflow: 'hidden',
-            background: '#141414',
+            background: termBg,
             touchAction: 'pan-y',
           }}
         />

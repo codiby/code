@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Sun, Moon } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -159,6 +159,27 @@ function upsertStreamingBlock(
   return next;
 }
 
+// How many messages a session keeps in the store. Rendering already windows
+// to `visibleMessageCount` (200); the store keeps a small margin over that
+// and evicts the rest — the full transcript lives in the server's
+// messages.jsonl and pages back in via `fetchOlderMessages`. Without this cap
+// long-running background sessions accumulate every tool result and base64
+// image for the life of the process, which is what was OOM-killing the
+// renderer at multi-GB working sets.
+const MESSAGE_WINDOW = 240;
+
+/** Drop the oldest persisted messages beyond `cap`. Messages without a `seq`
+ *  (optimistic sends, streaming placeholders, queued messages) are always
+ *  kept — they're transient and the server hasn't acknowledged them yet. */
+function trimMessageWindow(messages: ChatMessage[], cap: number): ChatMessage[] {
+  if (messages.length <= cap) return messages;
+  const persisted = messages
+    .filter(m => typeof m.seq === 'number')
+    .sort((a, b) => a.seq! - b.seq!);
+  const transient = messages.filter(m => typeof m.seq !== 'number');
+  return [...persisted.slice(-Math.max(0, cap - transient.length)), ...transient];
+}
+
 // Settle every still-growing block in place (used on interrupt / barge-in /
 // turn end). The content keeps its exact slot in the array — it never
 // re-anchors to the bottom, and no snapshot-with-new-id dance is needed because
@@ -227,6 +248,8 @@ export function ChatApp() {
   //   - colorChatBySession / tintChatBackground: per-session accent tinting.
   //   - sessionAccents: per-session accent overrides (sessionId → hex).
   //   - globalEnvVars: env layered onto every Bash tool call / user terminal.
+  const theme = useAppStore(s => s.theme);
+  const setTheme = useAppStore(s => s.setTheme);
   const autoGroupSessions = useAppStore(s => s.autoGroupSessions);
   const autoFocusBrowserOnAction = useAppStore(s => s.autoFocusBrowserOnAction);
   const showTelegramSession = useAppStore(s => s.showTelegramSession);
@@ -239,6 +262,17 @@ export function ChatApp() {
   const setSessionAccent = useAppStore(s => s.setSessionAccent);
   const setGlobalEnvVars = useAppStore(s => s.setGlobalEnvVars);
   const hydratePreferences = useAppStore(s => s.hydratePreferences);
+
+  // Reflect the chosen appearance onto <html>: the `light`/`dark` class drives
+  // the CSS-variable palette (styles/global.css) and HeroUI's theming, while
+  // `color-scheme` keeps native form controls / scrollbars in step.
+  useEffect(() => {
+    const root = document.documentElement;
+    const light = theme === 'light';
+    root.classList.toggle('light', light);
+    root.classList.toggle('dark', !light);
+    root.style.colorScheme = light ? 'light' : 'dark';
+  }, [theme]);
 
   // Preferences are loaded inside the client connection effect below (before WS connect)
 
@@ -393,13 +427,14 @@ export function ChatApp() {
     worktreeOrigin?: string,
     remoteId?: string | null,
     images?: { media_type: string; data: string }[],
+    effort?: string,
   ) => {
     const c = clientRef.current;
     if (!c) return;
     const group = tabGroups[groupId];
     if (!group || !cwd) return;
     try {
-      const session = await c.createSession(cwd, { provider, model, permissionMode, groupCwd: worktreeOrigin, remoteId: remoteId ?? null });
+      const session = await c.createSession(cwd, { provider, model, permissionMode, effort, groupCwd: worktreeOrigin, remoteId: remoteId ?? null });
       const newMap = { ...tabGroupMap, [session.id]: groupId };
       setTabGroupMap(newMap);
       let nextGroups = tabGroups;
@@ -434,6 +469,7 @@ export function ChatApp() {
     worktreeOrigin?: string,
     _remoteId?: string | null,
     images?: { media_type: string; data: string }[],
+    effort?: string,
   ) => {
     const c = clientRef.current;
     if (!c || !cwd) return;
@@ -442,7 +478,7 @@ export function ChatApp() {
       // name instead of the worktree branch. Server-side autogroup honors
       // the user's autoGroupSessions preference — if it's off, the session
       // still lands as an ungrouped tab.
-      const session = await c.createSession(cwd, { provider, model, permissionMode, groupCwd: worktreeOrigin });
+      const session = await c.createSession(cwd, { provider, model, permissionMode, effort, groupCwd: worktreeOrigin });
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
       setActiveId(session.id);
@@ -677,9 +713,6 @@ export function ChatApp() {
    *  Keyed by procId. Populated by the `terminal_env_injected` WS event. */
   const injectedEnvByProc = useAppStore(s => s.injectedEnvByProc);
   const setInjectedEnvByProc = useAppStore(s => s.setInjectedEnvByProc);
-  /** Status-strip env popover state — which terminal's env is open. */
-  const envPopoverProcId = useAppStore(s => s.envPopoverProcId);
-  const setEnvPopoverProcId = useAppStore(s => s.setEnvPopoverProcId);
   /** Right-click context menu state for the tab strip. */
   const tabContextMenu = useAppStore(s => s.tabContextMenu);
   const setTabContextMenu = useAppStore(s => s.setTabContextMenu);
@@ -1154,6 +1187,13 @@ export function ChatApp() {
             // else.
             if (state.partialThinking) mergedMessages = upsertStreamingBlock(mergedMessages, 'thinking', state.partialThinking);
             if (state.partialText) mergedMessages = upsertStreamingBlock(mergedMessages, 'text', state.partialText);
+            // Bound the store: the focused session keeps whatever the user has
+            // paged back to; everything else keeps just the window.
+            {
+              const { activeId: curActive, visibleMessageCount: curVisible } = useAppStore.getState();
+              const cap = sid === curActive ? Math.max(MESSAGE_WINDOW, curVisible + 40) : MESSAGE_WINDOW;
+              mergedMessages = trimMessageWindow(mergedMessages, cap);
+            }
             return {
               ...prev,
               [sid]: {
@@ -1233,11 +1273,13 @@ export function ChatApp() {
                 return { ...prev, [sid]: { ...s, messages: next, contextTokens } };
               }
             }
+            const { activeId: curActive, visibleMessageCount: curVisible } = useAppStore.getState();
+            const cap = sid === curActive ? Math.max(MESSAGE_WINDOW, curVisible + 40) : MESSAGE_WINDOW;
             return {
               ...prev,
               [sid]: {
                 ...s,
-                messages: [...s.messages, msg],
+                messages: trimMessageWindow([...s.messages, msg], cap),
                 contextTokens,
               },
             };
@@ -2090,6 +2132,35 @@ export function ChatApp() {
     } catch {}
   };
 
+  // In-flight "Show older" page fetches, keyed by session — a re-click while
+  // a page is loading must not fetch the same slice twice.
+  const olderFetchRef = useRef<Set<string>>(new Set());
+
+  /** Pull the page of history older than `beforeSeq` from the server and
+   *  prepend it to the session's local window. */
+  const loadOlderMessages = async (sid: string, beforeSeq: number) => {
+    const c = clientRef.current;
+    if (!c || olderFetchRef.current.has(sid)) return;
+    olderFetchRef.current.add(sid);
+    try {
+      const { messages } = await c.fetchOlderMessages(sid, beforeSeq, 200);
+      if (messages.length) {
+        setSessionStates(prev => {
+          const s = prev[sid];
+          if (!s) return prev;
+          const have = new Set(s.messages.map(m => m.id));
+          const fresh = messages.filter(m => !have.has(m.id));
+          if (!fresh.length) return prev;
+          return { ...prev, [sid]: { ...s, messages: [...fresh, ...s.messages] } };
+        });
+      }
+    } catch {
+      // Non-fatal — the button stays visible and a re-click retries.
+    } finally {
+      olderFetchRef.current.delete(sid);
+    }
+  };
+
   const handleSelectSession = async (id: string) => {
     const prevId = activeId;
     setActiveId(id);
@@ -2104,9 +2175,15 @@ export function ChatApp() {
     const c = clientRef.current;
     if (!session || !c) return;
 
-    // Unsubscribe from old session if switching
+    // Keep the old session subscribed so we still receive updates — but drop
+    // any paged-back history beyond the window; it lives on the server and
+    // pages back in on demand.
     if (prevId && prevId !== id) {
-      // Keep subscribed so we still receive updates; just switch focus
+      setSessionStates(prev => {
+        const ps = prev[prevId];
+        if (!ps || ps.messages.length <= MESSAGE_WINDOW) return prev;
+        return { ...prev, [prevId]: { ...ps, messages: trimMessageWindow(ps.messages, MESSAGE_WINDOW) } };
+      });
     }
 
     const status = statuses[id];
@@ -2275,7 +2352,7 @@ export function ChatApp() {
     const originalName = old.name;
     const inheritedModel = old.model ?? null;
     const inheritedPermissionMode = old.permission_mode || 'default';
-    const inheritedProvider = old.provider || 'claudeAgent';
+    const inheritedProvider = old.provider || 'claude';
     const groupId = tabGroupMap[targetId];
 
     let fresh;
@@ -3617,15 +3694,21 @@ export function ChatApp() {
     refreshGitModified();
   }, [explorerRoot, refreshGitModified]);
 
-  // Resolve the base branch for the "vs main" comparison, once per workspace.
-  // Prefer the usual trunk names; fall back to the first local branch.
+  // Resolve the base branch for the "vs <base>" comparison, once per
+  // workspace. Prefer the ref this branch was actually cut from (reflog, via
+  // git-info) — stacked branches compare against their real parent, not
+  // main — then the usual trunk names, then the first local branch.
   useEffect(() => {
     if (!explorerRoot || !client) return;
     let cancelled = false;
-    client.listBranches(explorerRoot).then(({ local, remote }) => {
+    Promise.all([
+      client.getGitInfo(explorerRoot),
+      client.listBranches(explorerRoot),
+    ]).then(([info, { local, remote }]) => {
       if (cancelled) return;
       const all = [...local, ...remote];
-      const pick = ['main', 'master', 'develop', 'trunk'].find(b => all.includes(b));
+      const pick = info.parent_branch
+        || ['main', 'master', 'develop', 'trunk'].find(b => all.includes(b));
       setBaseBranch(pick || local[0] || 'main');
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -4240,6 +4323,13 @@ export function ChatApp() {
           if (!clientRef.current) return;
           requestPermissionMode(sid, mode);
         }}
+        onSelectEffort={(effort) => {
+          if (!clientRef.current) return;
+          const prevEffort = sess?.effort ?? null;
+          if (prevEffort === (effort || null)) return;
+          clientRef.current.setEffort(sid, effort);
+          setSessions(prev => prev.map(x => x.id === sid ? { ...x, effort: effort || null } : x));
+        }}
         onFocus={() => { if (sid !== activeId) handleSelectSession(sid); }}
       />
     );
@@ -4278,14 +4368,34 @@ export function ChatApp() {
             </p>
           </div>
         )}
-        {cs.messages.length > visibleMessageCount && (
-          <button
-            className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-            onClick={() => setVisibleMessageCount(prev => prev + 200)}
-          >
-            Show {Math.min(200, cs.messages.length - visibleMessageCount)} older messages ({cs.messages.length - visibleMessageCount} hidden)
-          </button>
-        )}
+        {(() => {
+          // Older history can be hidden in two places: locally (fetched but
+          // beyond the render window) and on the server (evicted from the
+          // store, or never sent — subscribe only replays the last 200).
+          // `seq` is dense per session starting at 1, so the lowest local seq
+          // tells us exactly how many older messages the server still holds.
+          let minSeq = Infinity;
+          for (const m of cs.messages) {
+            if (typeof m.seq === 'number' && m.seq < minSeq) minSeq = m.seq;
+          }
+          const olderOnServer = Number.isFinite(minSeq) ? Math.max(0, minSeq - 1) : 0;
+          const hiddenLocal = Math.max(0, cs.messages.length - visibleMessageCount);
+          const totalHidden = hiddenLocal + olderOnServer;
+          if (totalHidden <= 0) return null;
+          return (
+            <button
+              className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              onClick={() => {
+                setVisibleMessageCount(prev => prev + 200);
+                // Local window doesn't cover the next page — pull the older
+                // slice from the server transcript.
+                if (hiddenLocal < 200 && olderOnServer > 0) loadOlderMessages(sid, minSeq);
+              }}
+            >
+              Show {Math.min(200, totalHidden)} older messages ({totalHidden} hidden)
+            </button>
+          );
+        })()}
         {(() => {
           const grouped = collapseToolRuns(groupMessages(
             [...cs.messages]
@@ -4605,7 +4715,7 @@ export function ChatApp() {
             >
               {activeSession?.provider && (
                 <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-light text-zinc-300 font-semibold">
-                  {activeSession.provider === 'claudeAgent' ? 'Claude'
+                  {activeSession.provider === 'claude' ? 'Claude'
                     : activeSession.provider === 'codex' ? 'Codex'
                     : activeSession.provider === 'opencode' ? 'OpenCode'
                     : activeSession.provider}
@@ -4857,15 +4967,26 @@ export function ChatApp() {
             </div>
           )}
 
-          {/* Right: settings + layout-mode pill (clickable — opt out of drag) */}
+          {/* Right: theme toggle + new-terminal + layout-mode pill (clickable — opt out of drag) */}
           <button
-            onClick={() => setProjectSettings(prev => ({ open: !prev.open }))}
-            title="Settings"
-            aria-label="Settings"
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+            aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            className={`mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border transition-colors ${projectSettings.open ? 'text-zinc-100 ring-1 ring-border-light' : 'text-zinc-500 hover:text-zinc-300'}`}
+            className="mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border text-zinc-500 hover:text-zinc-300 transition-colors"
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
+            {theme === 'light'
+              ? <Moon className="w-4 h-4" strokeWidth={1.75} />
+              : <Sun className="w-4 h-4" strokeWidth={1.75} />}
+          </button>
+          <button
+            onClick={() => spawnNewTerminal()}
+            title="New terminal"
+            aria-label="New terminal"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            className="mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            <Terminal className="w-4 h-4" strokeWidth={1.75} />
           </button>
           <div
             className="mr-1.5 flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5"
@@ -5121,8 +5242,8 @@ export function ChatApp() {
                       remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
                       remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
                       remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
-                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images) =>
-                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images)
+                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
                     />
@@ -5194,9 +5315,6 @@ export function ChatApp() {
                     const activeShellId = hasShells
                       ? (activeShellBySession[activeId] || shells[shells.length - 1]!.id)
                       : null;
-                    const activeShell = hasShells
-                      ? (shells.find(s => s.id === activeShellId) || shells[shells.length - 1]!)
-                      : null;
                     const runningCount = shells.filter(s => s.exitCode === null).length;
                     const idleCount = shells.length - runningCount;
                     // "(interactive shell)" is the server's placeholder command
@@ -5223,9 +5341,10 @@ export function ChatApp() {
                     const spawnNewShellHere = spawnNewTerminal;
 
                     // Collapsed state — thin status bar with counter + chips.
-                    // Always rendered (even with zero shells) so the user
-                    // always has a quick way to spawn or open the panel.
+                    // Hidden entirely when no terminals are open; spawn a new
+                    // one from the header's terminal button (see spawnNewTerminal).
                     if (!terminalsPanelExpanded) {
+                      if (!hasShells) return null;
                       return (
                         <div
                           className={`order-last shrink-0 mx-1.5 mb-1.5 rounded-[12px] border ${terminalsFocused ? 'border-blue-500/60' : 'border-[#2a2b30]'} bg-[image:linear-gradient(180deg,#141519,#101113)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_6px_18px_rgba(0,0,0,0.3)] px-3 py-1.5 flex items-center gap-2.5 transition-colors`}
@@ -5482,88 +5601,6 @@ export function ChatApp() {
                           </div>
                         </div>
 
-                        {/* Status strip for the active terminal — hidden when there are no shells */}
-                        {activeShell && (() => {
-                          const activeProcId = activeShell.procId || activeShell.id;
-                          const injected = activeShell.injectedEnv;
-                          const injectedCount = injected ? Object.keys(injected).length : 0;
-                          return (
-                          <div className="px-3.5 py-1.5 border-b border-border bg-surface/30 flex items-center gap-3 text-[11px] shrink-0 relative">
-                            <span className="font-mono text-violet-300 font-medium">{shellRenames[activeId]?.[activeProcId] || activeShell.terminalName || 'shell'}</span>
-                            {activeShell.terminalUrl && (
-                              <>
-                                <span className="text-zinc-700">/</span>
-                                <a
-                                  href={activeShell.terminalUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="font-mono text-zinc-400 hover:text-violet-300 truncate"
-                                  title={activeShell.terminalUrl}
-                                >
-                                  {activeShell.terminalUrl.replace(/^https?:\/\//, '')}
-                                </a>
-                              </>
-                            )}
-                            {injectedCount > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => setEnvPopoverProcId(prev => prev === activeProcId ? null : activeProcId)}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-mono text-emerald-300 hover:bg-emerald-500/15"
-                                title={`${injectedCount} env vars injected · click to inspect`}
-                              >
-                                <Check className="w-3 h-3" />
-                                env · {injectedCount}
-                              </button>
-                            )}
-                            {envPopoverProcId === activeProcId && injected && (
-                              <>
-                                <div className="fixed inset-0 z-[9998]" onClick={() => setEnvPopoverProcId(null)} />
-                                <div className="absolute left-0 top-full mt-1 z-[9999] w-[420px] rounded-md border border-border-light bg-surface shadow-2xl overflow-hidden">
-                                  <div className="px-3 py-2 border-b border-border bg-surface-light/40 flex items-center gap-2">
-                                    <Check className="w-3 h-3 text-emerald-400" />
-                                    <span className="text-[11.5px] font-medium text-zinc-200">Injected env</span>
-                                    <span className="text-[10.5px] text-zinc-500 ml-auto">at spawn time</span>
-                                  </div>
-                                  <div className="max-h-[260px] overflow-y-auto py-1">
-                                    {Object.entries(injected).map(([k, v]) => (
-                                      <div key={k} className="px-3 py-1 grid grid-cols-[1fr_auto] gap-2 items-center hover:bg-surface-light">
-                                        <span className="font-mono text-[11px] text-violet-300 truncate" title={k}>{k}</span>
-                                        <span className="font-mono text-[11px] text-emerald-300 truncate" title={v}>{v}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                  <div className="px-3 py-1.5 border-t border-border text-[10.5px] text-zinc-500 leading-snug">
-                                    Restart this shell to pick up changes to the source actions' hostnames.
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                            <span className="ml-auto inline-flex items-center gap-3 text-zinc-500 shrink-0">
-                              {activeShell.cwd && (
-                                <span className="font-mono text-[10.5px] truncate max-w-[280px]" title={activeShell.cwd}>
-                                  {(() => {
-                                    const home = (typeof window !== 'undefined' && (window as any).__HOME__) || '';
-                                    const cwd = activeShell.cwd!;
-                                    const s = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
-                                    return s;
-                                  })()}
-                                </span>
-                              )}
-                              {activeShell.exitCode === null ? (
-                                <span className="inline-flex items-center gap-1 text-emerald-400">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                  running
-                                </span>
-                              ) : (
-                                <span className={activeShell.exitCode === 0 ? 'text-zinc-500' : 'text-red-300'}>
-                                  exit {activeShell.exitCode ?? 0}
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                          );
-                        })()}
-
                         {/* xterm body — all shells stay mounted so scrollback/cursor survives tab switching */}
                         <div className="flex-1 min-h-0 relative">
                           {!hasShells && (
@@ -5641,8 +5678,8 @@ export function ChatApp() {
                       remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
                       remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
                       remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
-                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images) =>
-                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images)
+                      onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort) =>
+                        handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
                     />
@@ -6203,7 +6240,6 @@ export function ChatApp() {
             activeDiffPath={diffView?.path ?? null}
             changesCompare={changesCompare}
             onChangesCompareChange={setChangesCompare}
-            baseBranch={baseBranch}
             activeSessionId={activeId}
             onOpenTerminal={(command) => {
               const msg = active.messages.findLast(m => m.isTerminal && m.terminalCommand === command);

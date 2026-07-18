@@ -11,7 +11,7 @@
 import type { ProviderAdapter, ProviderEvents, ProviderSession, SpawnOptions } from './types';
 
 export abstract class Adapter implements ProviderAdapter {
-  /** Stable identifier used as the registry key (e.g. `claudeAgent`). */
+  /** Stable identifier used as the registry key (e.g. `claude`). */
   abstract readonly name: string;
 
   /** Create a running session for this request. */

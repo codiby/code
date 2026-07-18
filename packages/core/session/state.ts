@@ -304,6 +304,17 @@ export function clearSessionState(sessionId: string) {
 
 const MAX_CLIENT_MESSAGES = 200;
 
+/** Page of history strictly older than `beforeSeq`, oldest-first. Backs the
+ *  frontend's "Show older" paging: the client only holds a window of the
+ *  transcript and pulls earlier slices from here on demand. */
+export function getOlderMessages(sessionId: string, beforeSeq: number, limit: number) {
+  const older = getSessionState(sessionId).messages.filter(
+    m => typeof m.seq === 'number' && m.seq < beforeSeq,
+  );
+  const messages = older.slice(-limit);
+  return { messages, hasMore: older.length > messages.length };
+}
+
 export function getStateForClient(sessionId: string) {
   const state = getSessionState(sessionId);
   const msgs = state.messages;

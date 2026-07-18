@@ -77,6 +77,9 @@ interface Props {
   onPermissionModeChange?: (mode: string) => void;
   modelOptions?: Array<{ id: string; label: string }>;
   onModelChange?: (model: string | null) => void;
+  /** Change the reasoning effort of the active session (Claude only —
+   *  the action sheet hides the selector for other providers). */
+  onEffortChange?: (effort: string | null) => void;
   /** All mockups broadcast for the active session — rendered as pills in
    *  the dock row above the composer so the user can re-open any of them. */
   mockups?: { name: string; html: string; comments: MockupComment[] }[];
@@ -113,6 +116,7 @@ export function MobileChat({
   onPermissionModeChange,
   modelOptions,
   onModelChange,
+  onEffortChange,
   mockups,
   openMockup,
   onOpenMockup,
@@ -1285,6 +1289,9 @@ export function MobileChat({
         model={session?.model}
         modelOptions={modelOptions}
         onModelChange={onModelChange}
+        provider={session?.provider}
+        effort={session?.effort}
+        onEffortChange={onEffortChange}
         permissionMode={session?.permission_mode}
         onPermissionModeChange={session ? onPermissionModeChange : undefined}
       />

@@ -125,7 +125,7 @@ export async function refreshRemoteSessions(remoteId: string): Promise<boolean> 
         runtimeStatus: s.runtime_status ?? 'running',
         model: s.model ?? null,
         permissionMode: s.permission_mode ?? 'default',
-        provider: s.provider ?? 'claudeAgent',
+        provider: s.provider ?? 'claude',
         claudeSessionId: s.claude_session_id ?? null,
         portForwards: [],
         cachedAt: Date.now(),

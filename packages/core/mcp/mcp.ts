@@ -31,6 +31,7 @@ import {
   setBrowserPreview,
   getBrowserPreview,
 } from '../provider/sdk-tools';
+import { requestPermissionDecision } from '../provider/bridge';
 
 /** Palette for auto-assigning a tab-group colour when the caller doesn't pick.
  *  Matches the set in ChatApp.tsx#handleCreateGroup so new server-made groups
@@ -67,6 +68,8 @@ type McpDeps = {
   /** Apply the `autoGroupSessions` preference to a freshly-created session.
    *  No-op if the preference is off or the session was already grouped. */
   maybeAutoGroupSession: (sessionId: string, cwd: string) => void;
+  /** Persist and apply a permission mode change for an MCP-owned session. */
+  setSessionPermissionMode: (sessionId: string, mode: 'plan' | 'acceptEdits') => Promise<boolean>;
 };
 
 let _deps: McpDeps | null = null;
@@ -173,6 +176,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Use this to delegate work to a fresh session while the current one stays focused on something else. ' +
         'Returns the new session id, which you pass to ui_send_message.\n\n' +
         '`cwd` is REQUIRED — explicitly choose the directory the new session opens in.\n\n' +
+        'Set `initial_message` to send the first user message immediately after the session is created.\n\n' +
         'To run the session inside a fresh git worktree instead of `cwd` directly, set `worktree`. ' +
         'The worktree is created at `<dirname(cwd)>/.wt/<branch>`. `cwd` is then treated as the SOURCE repo, ' +
         'and the new session\'s actual cwd becomes the worktree path. Omit `worktree` to use `cwd` as-is.\n\n' +
@@ -192,7 +196,8 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: 'string', description: 'Optional session name shown in the tab bar.' },
           model: { type: 'string', description: 'Optional model override (e.g. "opus", "sonnet", "haiku", or a full model id). Leave unset for the default.' },
           permissionMode: { type: 'string', enum: ['default', 'acceptEdits', 'plan', 'bypassPermissions'], description: 'Optional permission mode. Defaults to "default".' },
-          provider: { type: 'string', description: 'Optional provider name. Defaults to the configured default (claudeAgent).' },
+          provider: { type: 'string', description: 'Optional provider name. Defaults to the configured default (claude).' },
+          initial_message: { type: 'string', description: 'Optional first user message to send after creating the session.' },
           group_id: { type: 'string', description: 'Optional tab-group id to add the new session to (from ui_list_tab_groups or ui_create_tab_group).' },
           worktree: {
             type: 'object',
@@ -345,6 +350,25 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     // adapter at MCP-server creation time, so the LLM doesn't need
     // to pass session_id explicitly for these.
     // ---------------------------------------------------------------
+    {
+      name: 'EnterPlanMode',
+      description: 'Enter plan mode for the current session before investigating or proposing a multi-step change. In plan mode, inspect the codebase and present a plan; do not make changes. Call ExitPlanMode with the completed plan when ready for user approval.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
+    {
+      name: 'ExitPlanMode',
+      description: 'Present a completed implementation plan for user approval and leave plan mode if approved. Call only after investigating the codebase. The plan must be actionable and state the files and verification steps.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          plan: { type: 'string', description: 'Completed Markdown implementation plan for the user to review.' },
+        },
+        required: ['plan'],
+      },
+    },
     {
       name: 'ui_open_file_in_editor',
       description: 'Open a file in the editor side-panel of Codiby Code (the chat tab the model is running in). Use when the user would benefit from reviewing a file inline alongside the chat. Optional `line` jumps to a specific line.',
@@ -547,6 +571,10 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!cwd) {
           return { content: [{ type: 'text', text: '`cwd` is required (absolute working directory for the new session).' }], isError: true };
         }
+        const initialMessage = typeof args!.initial_message === 'string' ? args!.initial_message : undefined;
+        if (initialMessage !== undefined && !initialMessage.trim()) {
+          return { content: [{ type: 'text', text: '`initial_message` must not be empty.' }], isError: true };
+        }
 
         const body: Record<string, unknown> = { cwd };
         if (typeof args!.name === 'string') body.name = args!.name;
@@ -613,6 +641,16 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         const resp = await handleCreateSession(req, _deps.port);
         const data = await resp.json() as Record<string, unknown>;
+        const sessionId = typeof data.id === 'string' ? data.id : '';
+        if (initialMessage && sessionId) {
+          const result = await _deps.sendMessageToSession(sessionId, initialMessage);
+          if (!result.ok) {
+            return {
+              content: [{ type: 'text', text: `Spawned session ${sessionId}, but failed to send its initial message: ${result.error ?? 'unknown error'}` }],
+              isError: true,
+            };
+          }
+        }
 
         // Optional group assignment — merge the session id into tabGroupMap.
         // An explicit group_id wins over the autoGroupSessions preference, so
@@ -640,7 +678,8 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const wtSuffix = worktreeInfo ? ` [worktree: ${worktreeInfo.branch} @ ${worktreeInfo.path}]` : '';
         const setupSuffix = worktreeSetupLog.length ? `\nSetup:\n${worktreeSetupLog.map((l) => `  ${l}`).join('\n')}` : '';
-        return { content: [{ type: 'text', text: `Spawned session ${data.id} — ${data.name} (cwd: ${data.cwd})${wtSuffix}${setupSuffix}` }] };
+        const initialMessageSuffix = initialMessage ? '\nInitial message sent.' : '';
+        return { content: [{ type: 'text', text: `Spawned session ${data.id} — ${data.name} (cwd: ${data.cwd})${wtSuffix}${setupSuffix}${initialMessageSuffix}` }] };
       }
       case 'ui_send_message': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
@@ -828,6 +867,39 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `Moved session ${sid} to group "${groups[gid]!.name}" (${gid}).` }] };
       }
       // ----- Per-session UI tools (use uiSessionId from x-session-id) -----
+      case 'EnterPlanMode': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        if (!sessions.has(uiSessionId)) return { content: [{ type: 'text', text: `Session ${uiSessionId} not found.` }], isError: true };
+        await _deps.setSessionPermissionMode(uiSessionId, 'plan');
+        return { content: [{ type: 'text', text: 'Plan mode enabled. Investigate without making changes, then call ExitPlanMode with the completed plan.' }] };
+      }
+      case 'ExitPlanMode': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const session = sessions.get(uiSessionId);
+        if (!session) return { content: [{ type: 'text', text: `Session ${uiSessionId} not found.` }], isError: true };
+        if (session.permissionMode !== 'plan') {
+          return { content: [{ type: 'text', text: 'Enter plan mode before requesting plan approval.' }], isError: true };
+        }
+        const plan = typeof args!.plan === 'string' ? args!.plan.trim() : '';
+        if (!plan) return { content: [{ type: 'text', text: 'plan is required' }], isError: true };
+        const decision = await requestPermissionDecision(session, {
+          broadcastToSession: _deps.broadcastToSession,
+          broadcastSessionList: _deps.broadcastSessionList,
+          notifyTelegramIfMainSession: () => {},
+        }, {
+          requestId: randomUUID(),
+          toolName: 'ExitPlanMode',
+          displayName: 'Exit Plan Mode',
+          title: 'Review implementation plan',
+          input: { plan },
+        });
+        if (!decision.allow) {
+          return { content: [{ type: 'text', text: decision.message || 'The plan was not approved.' }], isError: true };
+        }
+        return { content: [{ type: 'text', text: 'Plan approved. Plan mode disabled; you may now implement the approved plan.' }] };
+      }
       case 'ui_open_file_in_editor': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
         if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };

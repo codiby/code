@@ -16,11 +16,26 @@ interface Props {
   model?: string | null;
   modelOptions?: Array<{ id: string; label: string }>;
   onModelChange?: (model: string | null) => void;
+  /** Provider of the active session — the effort selector only renders for
+   *  Claude (other backends have no effort concept). */
+  provider?: string;
+  /** Current reasoning-effort level ('low' … 'max'), null = default. */
+  effort?: string | null;
+  /** Change handler for effort. null = back to default. */
+  onEffortChange?: (effort: string | null) => void;
   /** Current permission mode of the active session ('default' | 'acceptEdits' | 'plan' | 'bypassPermissions'). */
   permissionMode?: string;
   /** Change handler for permission mode. */
   onPermissionModeChange?: (mode: string) => void;
 }
+
+const EFFORT_OPTIONS = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'X-High' },
+  { id: 'max', label: 'Max' },
+];
 
 const PERMISSION_MODES = [
   { value: 'default', label: 'Default', desc: 'Prompt for every tool' },
@@ -49,7 +64,7 @@ const TILES: Tile[] = [
  * `onAction(id)` and dismisses. Built on HeroUI's `Drawer` so swipe-down /
  * backdrop tap dismiss come for free.
  */
-export function MobileActionSheet({ open, onClose, onAction, sessionName, model, modelOptions = [], onModelChange, permissionMode, onPermissionModeChange }: Props) {
+export function MobileActionSheet({ open, onClose, onAction, sessionName, model, modelOptions = [], onModelChange, provider, effort, onEffortChange, permissionMode, onPermissionModeChange }: Props) {
   return (
     <Drawer isOpen={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <Drawer.Backdrop variant="blur">
@@ -82,6 +97,36 @@ export function MobileActionSheet({ open, onClose, onAction, sessionName, model,
                           {modelOptions.map((m) => (
                             <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
                               <span className="text-xs">{m.label}</span>
+                            </ListBoxItem>
+                          ))}
+                        </ListBox>
+                      </SelectPopover>
+                    </Select>
+                  </label>
+                </div>
+              )}
+              {sessionName && onEffortChange && (provider ?? 'claude') === 'claude' && (
+                <div className="mb-4 rounded-2xl bg-zinc-900/55 border border-white/10 px-3 py-3">
+                  <label className="flex items-center gap-3 min-w-0">
+                    <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Effort</div>
+                    <Select
+                      aria-label="Effort"
+                      selectedKey={effort || 'default'}
+                      onSelectionChange={(key) => onEffortChange(key === 'default' ? null : String(key))}
+                      className="flex-1 min-w-0"
+                    >
+                      <SelectTrigger className="min-h-0 h-9 py-0 px-2.5 rounded-lg bg-white/5 border border-white/10 text-[13px] text-zinc-200 shadow-none flex items-center justify-between gap-2 w-full">
+                        <SelectValue className="truncate text-left" />
+                        <SelectIndicator className="shrink-0 text-zinc-400" />
+                      </SelectTrigger>
+                      <SelectPopover>
+                        <ListBox>
+                          <ListBoxItem key="default" id="default" textValue="Default">
+                            <span className="text-xs">Default</span>
+                          </ListBoxItem>
+                          {EFFORT_OPTIONS.map((o) => (
+                            <ListBoxItem key={o.id} id={o.id} textValue={o.label}>
+                              <span className="text-xs">{o.label}</span>
                             </ListBoxItem>
                           ))}
                         </ListBox>
