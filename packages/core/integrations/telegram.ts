@@ -8,6 +8,7 @@ import { DEFAULT_PROVIDER } from '../provider/registry';
 import { resolvePermissionDecision } from '../provider/bridge';
 import { getSessionState, addMessage, updateSessionState, type ChatMessage } from '../session/state';
 import { loadTelegramSettings } from '../session/storage';
+import { loadPersonalAgentConfig } from './personal-agent';
 import { transcribeAudioFromUrl } from './deepgram';
 import type { Session } from '../types';
 
@@ -746,8 +747,10 @@ export function notifyTelegramIfMainSession(sessionId: string) {
   // The FIRST one may edit the pending "⏳ Claude is working…" ack rather
   // than post a fresh bubble (see sendTelegramResponse).
   let sentAny = false;
+  const { includeThinking } = loadPersonalAgentConfig();
   for (let i = startIdx; i < messages.length; i++) {
     const msg = messages[i];
+    if (msg.isThinking && !includeThinking) continue;
     if (msg.role === 'assistant' && !msg.toolName && !msg.isToolResult && msg.content && msg.content.trim()) {
       sendTelegramResponse(msg.content);
       lastNotifiedMessageId = msg.id;
