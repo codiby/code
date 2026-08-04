@@ -33,8 +33,36 @@ import { getCaret } from '../lib/contenteditable';
 import { RichInput } from './RichInput';
 import { useFileIndex, type FileEntry } from '../lib/fuzzy-file-search';
 import type { ConnectionStatus, ClaudeClient } from '../lib/claude-client';
+import { FILE_REFERENCE_MIME } from '../lib/file-reference-dnd';
 
 export type PastedImage = { media_type: string; data: string; preview: string };
+
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+function imageType(file: File): string {
+  if (file.type) return file.type;
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  return '';
+}
+
+function readImage(file: File, media_type: string): Promise<PastedImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const preview = String(reader.result || '');
+      const comma = preview.indexOf(',');
+      if (comma < 0) { reject(new Error('Invalid image data')); return; }
+      resolve({ media_type, data: preview.slice(comma + 1), preview });
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
 
 interface ActiveLike {
   isStreaming: boolean;
@@ -46,14 +74,12 @@ interface ActiveLike {
 interface ActiveSessionLike {
   model?: string | null;
   permission_mode?: string;
-  /** Reasoning-effort level. Claude-only; null/absent → provider default. */
+  /** Reasoning-effort level; null/absent → provider default. */
   effort?: string | null;
   provider?: string;
 }
 
-/** Effort levels the Claude Agent SDK accepts (`Options.effort`). Shown only
- *  when the session's provider is Claude — other providers have no effort
- *  concept, so the dropdown is hidden entirely for them. */
+/** Reasoning effort levels supported by Claude and OpenCode model variants. */
 const EFFORT_OPTIONS = [
   { id: 'low', label: 'Low' },
   { id: 'medium', label: 'Medium' },
@@ -106,7 +132,7 @@ interface Props {
   onInterrupt: () => void;
   onSelectModel: (modelId: string) => void;
   onSelectPermissionMode: (mode: string) => void;
-  /** Claude-only: change the reasoning effort. Empty string → default. */
+  /** Change the reasoning effort. Empty string → provider default. */
   onSelectEffort?: (effort: string) => void;
   /** Optional callback fired when the textarea gains focus — host uses this
    *  to mirror "focused pane" → "active session". */
@@ -132,6 +158,9 @@ export function ChatComposer(props: Props) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
+  const dropDepthRef = useRef(0);
+  const [dragKind, setDragKind] = useState<'file-reference' | 'image' | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
 
   // Double-ESC to interrupt. First ESC arms; second within the window calls
   // onInterrupt. The armed state drives the visual hint below the composer.
@@ -339,6 +368,68 @@ export function ChatComposer(props: Props) {
     else document.execCommand('insertText', false, pasted);
   };
 
+  const addDroppedImages = async (files: FileList) => {
+    setImageError(null);
+    const images: PastedImage[] = [];
+    const rejected: string[] = [];
+    for (const file of Array.from(files)) {
+      const media_type = imageType(file);
+      if (!ALLOWED_IMAGE_TYPES.has(media_type)) {
+        rejected.push(`${file.name} is not a supported image`);
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        rejected.push(`${file.name} exceeds 10 MB`);
+        continue;
+      }
+      try {
+        images.push(await readImage(file, media_type));
+      } catch {
+        rejected.push(`Could not read ${file.name}`);
+      }
+    }
+    if (images.length) onChangePastedImages(prev => [...prev, ...images]);
+    if (rejected.length) setImageError(rejected[0]!);
+  };
+
+  const dragKindFor = (e: React.DragEvent): 'file-reference' | 'image' | null => {
+    const types = Array.from(e.dataTransfer.types);
+    if (types.includes(FILE_REFERENCE_MIME)) return 'file-reference';
+    return types.includes('Files') ? 'image' : null;
+  };
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    const kind = dragKindFor(e);
+    if (!kind) return;
+    e.preventDefault();
+    dropDepthRef.current += 1;
+    setDragKind(kind);
+  };
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!dragKindFor(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!dragKindFor(e)) return;
+    dropDepthRef.current = Math.max(0, dropDepthRef.current - 1);
+    if (dropDepthRef.current === 0) setDragKind(null);
+  };
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    const kind = dragKindFor(e);
+    if (!kind) return;
+    e.preventDefault();
+    dropDepthRef.current = 0;
+    setDragKind(null);
+    if (kind === 'file-reference') {
+      const referencePath = e.dataTransfer.getData(FILE_REFERENCE_MIME);
+      if (!referencePath) return;
+      const selection = caret();
+      applyEdit(insertText(input, selection.start, selection.end, `@${referencePath} `));
+      return;
+    }
+    void addDroppedImages(e.dataTransfer.files);
+  };
+
   const handleTerminalKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Backspace' && !cmdText) { e.preventDefault(); onChangeInput(''); return; }
     if (e.key === 'Escape' && streaming) {
@@ -374,6 +465,7 @@ export function ChatComposer(props: Props) {
   // provider. Sessions always carry a provider (server defaults to 'claude'),
   // so a missing value only happens for hosts that never set one.
   const isClaude = (activeSession?.provider ?? 'claude') === 'claude';
+  const supportsEffort = isClaude || activeSession?.provider === 'opencode';
   const ocModels = isOpenCode ? (opencodeInfo?.models ?? null) : undefined;
   const ocLoading = isOpenCode && opencodeInfo === null;
   // Prefer this session's own SDK-reported list once it lands, then fall
@@ -390,7 +482,7 @@ export function ChatComposer(props: Props) {
   // loader and delivered when the remote session reconnects.
   const sendDisabled = isTerminalMode
     ? !cmdText.trim() || connectionStatus !== 'connected'
-    : !input.trim();
+    : !input.trim() && pastedImages.length === 0;
   const triggerCls =
     'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
 
@@ -442,6 +534,10 @@ export function ChatComposer(props: Props) {
             <span className="composer-spot composer-spot--b5" />
           </div>
           <div
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
             className={`relative transition-colors ${
               isTerminalMode
                 ? 'rounded-2xl border shadow-lg shadow-black/30 bg-[#141414] border-green-900/50 focus-within:border-green-700/60'
@@ -451,7 +547,12 @@ export function ChatComposer(props: Props) {
               backdropFilter: 'blur(28px) saturate(180%)',
               WebkitBackdropFilter: 'blur(28px) saturate(180%)',
             }}
-          >
+            >
+            {dragKind && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[18px] border-2 border-dashed border-violet-400/70 bg-violet-500/10 text-sm font-medium text-violet-200 pointer-events-none">
+                {dragKind === 'file-reference' ? 'Drop to mention file' : 'Drop images to attach'}
+              </div>
+            )}
             {refs && refs.length > 0 && (
               <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
                 {refs.map((ref, i) => (
@@ -485,6 +586,10 @@ export function ChatComposer(props: Props) {
                   </div>
                 ))}
               </div>
+            )}
+
+            {imageError && (
+              <div role="alert" className="px-3 pt-2.5 text-xs text-amber-300">{imageError}</div>
             )}
 
             <div className="flex items-start px-4 pt-3.5 pb-1">
@@ -568,7 +673,7 @@ export function ChatComposer(props: Props) {
                 </SelectPopover>
               </Select>
 
-              {isClaude && onSelectEffort && (
+              {supportsEffort && onSelectEffort && (
                 <Select
                   aria-label="Effort"
                   selectedKey={activeSession?.effort || 'default'}
@@ -610,6 +715,9 @@ export function ChatComposer(props: Props) {
                     <ListBoxItem key="acceptEdits" id="acceptEdits" textValue="Accept Edits"><span className="text-xs">Accept Edits</span></ListBoxItem>
                     <ListBoxItem key="plan" id="plan" textValue="Plan"><span className="text-xs">Plan</span></ListBoxItem>
                     <ListBoxItem key="bypassPermissions" id="bypassPermissions" textValue="Bypass"><span className="text-xs">Bypass All</span></ListBoxItem>
+                    {/* Loop isn't a plain mode: picking it arms the loop driver
+                        (POST /loop/start) rather than just flipping a flag. */}
+                    <ListBoxItem key="loop" id="loop" textValue="Loop"><span className="text-xs text-cyan-300">🔁 Loop</span></ListBoxItem>
                   </ListBox>
                 </SelectPopover>
               </Select>

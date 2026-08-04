@@ -175,8 +175,17 @@ export function useBrowserPreviewBounds(args: {
   titleRef.current = title;
   const [windowOpen, setWindowOpen] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [imageViewerOpen, setImageViewerOpen] = useState(false);
   const lastBoundsRef = useRef<Bounds | null>(null);
   const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const onImageViewer = (event: Event) => {
+      setImageViewerOpen((event as CustomEvent<boolean>).detail);
+    };
+    document.addEventListener('codiby:image-viewer', onImageViewer);
+    return () => document.removeEventListener('codiby:image-viewer', onImageViewer);
+  }, []);
 
   const pushBoundsIfChanged = useCallback(() => {
     if (rafRef.current != null) return;
@@ -255,8 +264,8 @@ export function useBrowserPreviewBounds(args: {
 
   useEffect(() => {
     if (!windowOpen) return;
-    tryInvokeNative('browser_preview_set_visible', { label, visible });
-  }, [visible, windowOpen, label]);
+    tryInvokeNative('browser_preview_set_visible', { label, visible: visible && !imageViewerOpen });
+  }, [visible, imageViewerOpen, windowOpen, label]);
 
   return { windowOpen, openError };
 }

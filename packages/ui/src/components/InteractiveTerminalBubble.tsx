@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, memo, forwardRef, useImperativeHandle } from 'react';
-import { ChevronDown, ChevronRight, Eraser } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronsDown, ChevronsUp, Eraser, X } from 'lucide-react';
 import type { TerminalInfo } from '../lib/claude-client';
 import type { ClaudeClient } from '../lib/claude-client';
 import { useAppStore } from '../lib/store';
@@ -18,8 +18,10 @@ import '@xterm/xterm/css/xterm.css';
 // Astro's SSR prerender step doesn't try to execute `document.*` code.
 type TerminalCtor = typeof import('@xterm/xterm').Terminal;
 type FitAddonCtor = typeof import('@xterm/addon-fit').FitAddon;
+type SearchAddonCtor = typeof import('@xterm/addon-search').SearchAddon;
 type TerminalInstance = InstanceType<TerminalCtor>;
 type FitAddonInstance = InstanceType<FitAddonCtor>;
+type SearchAddonInstance = InstanceType<SearchAddonCtor>;
 
 // xterm colours are set in JS (not CSS), so the app-wide light/dark toggle
 // can't reach them via the stylesheet — the terminal carries its own themes,
@@ -76,13 +78,14 @@ const LIGHT_TERM_THEME = {
 const termThemeFor = (t: string) => (t === 'light' ? LIGHT_TERM_THEME : DARK_TERM_THEME);
 const termBgFor = (t: string) => (t === 'light' ? '#fcfcfd' : '#141414');
 
-let xtermModulesPromise: Promise<{ Terminal: TerminalCtor; FitAddon: FitAddonCtor }> | null = null;
+let xtermModulesPromise: Promise<{ Terminal: TerminalCtor; FitAddon: FitAddonCtor; SearchAddon: SearchAddonCtor }> | null = null;
 function loadXterm() {
   if (!xtermModulesPromise) {
     xtermModulesPromise = Promise.all([
       import('@xterm/xterm'),
       import('@xterm/addon-fit'),
-    ]).then(([xterm, fit]) => ({ Terminal: xterm.Terminal, FitAddon: fit.FitAddon }));
+      import('@xterm/addon-search'),
+    ]).then(([xterm, fit, search]) => ({ Terminal: xterm.Terminal, FitAddon: fit.FitAddon, SearchAddon: search.SearchAddon }));
   }
   return xtermModulesPromise;
 }
@@ -113,6 +116,7 @@ interface Props {
  *  can clear the active terminal without owning the xterm instance. */
 export interface TerminalBubbleHandle {
   clear: () => void;
+  openSearch: () => void;
 }
 
 /**
@@ -131,7 +135,12 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<TerminalInstance | null>(null);
   const fitRef = useRef<FitAddonInstance | null>(null);
+  const searchAddonRef = useRef<SearchAddonInstance | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const didAttachRef = useRef(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState({ resultIndex: -1, resultCount: 0 });
 
   // Right-click context menu anchor (viewport coords), null when closed.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -158,7 +167,7 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
     let cancelled = false;
     let cleanup: (() => void) | null = null;
 
-    loadXterm().then(({ Terminal, FitAddon }) => {
+    loadXterm().then(({ Terminal, FitAddon, SearchAddon }) => {
       if (cancelled || !containerRef.current) return;
 
       const term = new Terminal({
@@ -176,10 +185,14 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
         theme: termThemeFor(useAppStore.getState().theme),
       });
       const fit = new FitAddon();
+      const search = new SearchAddon();
       term.loadAddon(fit);
+      term.loadAddon(search);
       term.open(containerRef.current);
       termRef.current = term;
       fitRef.current = fit;
+      searchAddonRef.current = search;
+      const searchResultsDisposable = search.onDidChangeResults(setSearchResults);
       try { fit.fit(); } catch {}
 
       // Subscribe to live data BEFORE attaching so we don't miss the replay.
@@ -273,6 +286,7 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
       cleanup = () => {
         try { ro.disconnect(); } catch {}
         try { onDataDisposable.dispose(); } catch {}
+        try { searchResultsDisposable.dispose(); } catch {}
         try { unsubData(); } catch {}
         try { unsubExit(); } catch {}
         try { unsubReset(); } catch {}
@@ -285,6 +299,7 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
         try { term.dispose(); } catch {}
         termRef.current = null;
         fitRef.current = null;
+        searchAddonRef.current = null;
       };
     }).catch((err) => {
       console.error('[InteractiveTerminalBubble] failed to load xterm:', err);
@@ -312,7 +327,45 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
     try { if (!exited) term.focus(); } catch {}
   };
 
-  useImperativeHandle(ref, () => ({ clear: clearTerminal }), [exited]);
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchResults({ resultIndex: -1, resultCount: 0 });
+    try { searchAddonRef.current?.clearDecorations(); } catch {}
+    try { termRef.current?.focus(); } catch {}
+  };
+
+  const search = (direction: 'next' | 'previous', query = searchQuery) => {
+    const addon = searchAddonRef.current;
+    if (!addon || !query) {
+      try { addon?.clearDecorations(); } catch {}
+      setSearchResults({ resultIndex: -1, resultCount: 0 });
+      return;
+    }
+    const options = {
+      incremental: direction === 'next',
+      decorations: {
+        matchBackground: theme === 'light' ? '#fef08a' : '#665c1e',
+        matchOverviewRuler: theme === 'light' ? '#ca8a04' : '#eab308',
+        activeMatchBackground: theme === 'light' ? '#f59e0b' : '#b45309',
+        activeMatchColorOverviewRuler: theme === 'light' ? '#b45309' : '#fb923c',
+      },
+    };
+    try {
+      if (direction === 'previous') addon.findPrevious(query, options);
+      else addon.findNext(query, options);
+    } catch {}
+  };
+
+  const openSearch = () => setSearchOpen(true);
+  useImperativeHandle(ref, () => ({ clear: clearTerminal, openSearch }), [exited]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, [searchOpen]);
 
   const openContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -357,6 +410,43 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
     </div>
   ) : null;
 
+  const searchWidget = searchOpen ? (
+    <div
+      className="absolute right-3 top-2 z-20 flex h-8 items-center overflow-hidden rounded-md border border-border-light bg-surface-light shadow-lg"
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <input
+        ref={searchInputRef}
+        value={searchQuery}
+        onChange={(e) => {
+          const query = e.target.value;
+          setSearchQuery(query);
+          search('next', query);
+        }}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Escape') closeSearch();
+          else if (e.key === 'Enter') search(e.shiftKey ? 'previous' : 'next');
+        }}
+        className="h-full w-52 bg-transparent px-2.5 text-[12px] text-zinc-200 outline-none placeholder:text-zinc-600"
+        placeholder="Find in terminal"
+        aria-label="Find in terminal"
+      />
+      <span className="min-w-12 px-1 text-center text-[10px] tabular-nums text-zinc-500">
+        {searchQuery ? (searchResults.resultCount ? `${searchResults.resultIndex + 1}/${searchResults.resultCount}` : 'No results') : ''}
+      </span>
+      <button type="button" onClick={() => search('previous')} className="h-full w-7 inline-flex items-center justify-center text-zinc-400 hover:bg-surface-lighter hover:text-zinc-100" title="Previous match (Shift+Enter)">
+        <ChevronsUp size={13} />
+      </button>
+      <button type="button" onClick={() => search('next')} className="h-full w-7 inline-flex items-center justify-center text-zinc-400 hover:bg-surface-lighter hover:text-zinc-100" title="Next match (Enter)">
+        <ChevronsDown size={13} />
+      </button>
+      <button type="button" onClick={closeSearch} className="h-full w-7 inline-flex items-center justify-center text-zinc-400 hover:bg-surface-lighter hover:text-zinc-100" title="Close (Escape)">
+        <X size={13} />
+      </button>
+    </div>
+  ) : null;
+
   // When we come back from minimized OR from hidden (shell switch), the
   // container just re-gained layout. Refit xterm to its visible size —
   // ResizeObserver alone doesn't fire when `display` toggles between
@@ -397,19 +487,21 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
   if (hideHeader) {
     return (
       <>
-        <div
-          ref={containerRef}
-          onContextMenu={openContextMenu}
-          style={{
-            height: '100%',
-            width: '100%',
-            background: termBg,
-            padding: '6px 8px',
-            overflow: 'hidden',
-            touchAction: 'pan-y',
-            display: hidden ? 'none' : undefined,
-          }}
-        />
+        <div className="relative h-full w-full" style={{ display: hidden ? 'none' : undefined }}>
+          {searchWidget}
+          <div
+            ref={containerRef}
+            onContextMenu={openContextMenu}
+            style={{
+              height: '100%',
+              width: '100%',
+              background: termBg,
+              padding: '6px 8px',
+              overflow: 'hidden',
+              touchAction: 'pan-y',
+            }}
+          />
+        </div>
         {contextMenu}
       </>
     );
@@ -483,18 +575,21 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
           )}
         </div>
         {/* Keep xterm mounted when minimized (preserves scrollback/cursor) — just hide visually. */}
-        <div
-          ref={containerRef}
-          onContextMenu={openContextMenu}
-          className="px-2 py-2"
-          style={{
-            height: minimized ? 0 : 280,
-            padding: minimized ? 0 : undefined,
-            overflow: 'hidden',
-            background: termBg,
-            touchAction: 'pan-y',
-          }}
-        />
+        <div className="relative">
+          {searchWidget}
+          <div
+            ref={containerRef}
+            onContextMenu={openContextMenu}
+            className="px-2 py-2"
+            style={{
+              height: minimized ? 0 : 280,
+              padding: minimized ? 0 : undefined,
+              overflow: 'hidden',
+              background: termBg,
+              touchAction: 'pan-y',
+            }}
+          />
+        </div>
       </div>
     </div>
   );

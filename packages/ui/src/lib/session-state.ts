@@ -1,6 +1,7 @@
 import type { SessionState } from './claude-client';
 import type { MockupComment } from './mockup-inspector';
 import type { PlanComment } from '../components/PlanPanel';
+import type { LoopState, RequirementProgress, RequirementsSnapshot } from './requirements';
 
 /** A user message composed while the session was offline / mid-turn, staged
  *  locally until it can be delivered. */
@@ -56,4 +57,17 @@ export type LocalSessionState = SessionState & {
   lastPlan: { content: string; allowedPrompts?: { tool: string; prompt: string }[] } | null;
   planComments: PlanComment[];
   planRequestId: string | null;
+  /** Requirements + Target snapshot, pushed by the bridge. Server-owned data,
+   *  but kept here so the panel renders from the same per-session store as
+   *  everything else. Null until the first fetch/broadcast lands. */
+  requirements: RequirementsSnapshot | null;
+  /** Whether the requirements tab is open in the panel workspace. Auto-opens
+   *  the first time a session grows a target or a requirement. */
+  requirementsOpen: boolean;
+  /** Ids executing right now — local echo so a row shows the spinner before
+   *  the server's `requirements` broadcast comes back. */
+  requirementsRunning: string[];
+  /** Loop-mode state, or null when the session has never been looped. */
+  loop: LoopState | null;
+  loopProgress: RequirementProgress | null;
 };

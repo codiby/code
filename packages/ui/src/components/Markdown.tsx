@@ -7,6 +7,7 @@
 import { memo, useCallback } from 'react';
 import { highlightCode, normalizeLang } from '../lib/highlight';
 import { detectLanguage } from '../lib/detect-language';
+import { useAppStore } from '../lib/store';
 
 const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'strong', 'del', 'sub', 'sup', 'kbd', 'mark', 'abbr']);
 
@@ -78,6 +79,31 @@ function snippetBadgeHtml(label: string, path: string): string {
     + `</button>`;
 }
 
+// Chat-bubble glyph used inside session deep-link chips.
+const SESSION_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="inline-block shrink-0" style="opacity:.85"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+
+// Render a `[Label](codiby-session:<id>)` reference (emitted by the agent when it
+// mentions another session) as an inline chip that shows the session *name* and
+// jumps to it on click. The name is resolved live from the store — so a rename is
+// reflected automatically and a stale/id-only label the agent wrote is corrected —
+// falling back to the link's own label, then the id. The UUID stays as the stable
+// anchor on `data-session-id`; clicks are caught by event delegation, which fires a
+// `codiby-code:open-session` event that ChatApp routes to the session switcher.
+function sessionLinkHtml(label: string, id: string): string {
+  const session = useAppStore.getState().sessions.find(s => s.id === id);
+  const name = session?.name || label || id;
+  const idAttr = id.replace(/"/g, '&quot;');
+  if (!session) {
+    // Unknown / not-yet-loaded session — dimmed, non-clickable label. Still far
+    // better than a raw UUID leaking into the message text.
+    return `<span class="inline-flex items-center gap-1 align-baseline rounded-md border border-dashed border-border-light px-1.5 text-zinc-500 italic">`
+      + `${SESSION_ICON}${escapeHtml(name)}</span>`;
+  }
+  return `<button type="button" data-session-open data-session-id="${idAttr}"`
+    + ` class="inline-flex items-center gap-1 align-baseline rounded-md border border-indigo-500/35 bg-indigo-500/15 px-1.5 py-px font-medium text-indigo-300 hover:bg-indigo-500/25 hover:border-indigo-500/60 hover:text-indigo-200 transition-colors cursor-pointer">`
+    + `${SESSION_ICON}<span>${escapeHtml(name)}</span></button>`;
+}
+
 function escapeHtml(text: string): string {
   // Preserve safe HTML tags, escape everything else
   return text.replace(/&/g, '&amp;')
@@ -95,6 +121,8 @@ function renderInline(text: string): string {
   return text
     // Saved-snippet reference badge: [name · sub](codiby-snippet:/abs/path)
     .replace(/\[([^\]]+)\]\(codiby-snippet:([^)]+)\)/g, (_m, label, path) => snippetBadgeHtml(label, path))
+    // Session deep-link chip: [Session Name](codiby-session:<id>)
+    .replace(/\[([^\]]+)\]\(codiby-session:([^)]+)\)/g, (_m, label, id) => sessionLinkHtml(label, id.trim()))
     // Images: ![alt](url)
     .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="max-w-full rounded my-1" />')
     // Links: [text](url)
@@ -311,6 +339,14 @@ export const Markdown = memo(function Markdown({ text, className }: { text: stri
     if (snippet) {
       const path = snippet.getAttribute('data-snippet-path');
       if (path) window.dispatchEvent(new CustomEvent('codiby-code:open-file', { detail: { path } }));
+      return;
+    }
+
+    // Session deep-link chip → ask ChatApp to switch to that session.
+    const sessionChip = target.closest('[data-session-open]');
+    if (sessionChip) {
+      const sessionId = sessionChip.getAttribute('data-session-id');
+      if (sessionId) window.dispatchEvent(new CustomEvent('codiby-code:open-session', { detail: { sessionId } }));
       return;
     }
 

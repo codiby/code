@@ -505,9 +505,8 @@ export function MobileApp() {
     const c = clientRef.current;
     if (!c) return;
     c.unsubscribe(id);
-    c.stopSession(id).catch(() => {});
     setSessionStatusLocal(id, 'archived');
-    c.archiveSession(id).catch(() => {});
+    c.archiveAndStopSession(id).catch(() => {});
     setActiveId((prev) => {
       if (prev !== id) return prev;
       const open = sessions.filter((s) => s.id !== id && s.status === 'open');
@@ -563,13 +562,12 @@ export function MobileApp() {
     }
 
     c.updateSession(oldId, { name: `Cleared: ${originalName}` }).catch(() => {});
-    c.stopSession(oldId).catch(() => {});
     c.unsubscribe(oldId);
 
     setRuntime((prev) => { const next = { ...prev }; delete next[oldId]; return next; });
 
     setSessionStatusLocal(oldId, 'archived');
-    c.archiveSession(oldId).catch(() => {});
+    c.archiveAndStopSession(oldId).catch(() => {});
 
     setTabOrder((prev) => {
       const next = [...prev];
@@ -628,8 +626,7 @@ export function MobileApp() {
     c.setModel(sessionId, model || '');
   };
 
-  /** Change reasoning effort (Claude only). The bridge respawns the provider
-   *  with resume — effort is a spawn-time SDK option with no runtime setter. */
+  /** Change reasoning effort. The bridge respawns the provider with resume. */
   const setEffortForSession = (sessionId: string, effort: string | null) => {
     const c = clientRef.current;
     if (!c) return;

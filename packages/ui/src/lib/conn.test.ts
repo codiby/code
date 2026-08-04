@@ -60,12 +60,17 @@ const openSockets = () => FakeWebSocket.instances.filter(w => w.readyState === F
 const RealWebSocket = globalThis.WebSocket;
 let conn: Conn | null = null;
 
-function makeConn(opts: { base?: string | null; resolveBase?: () => Promise<string | null> } = {}) {
+function makeConn(opts: {
+  base?: string | null;
+  resolveBase?: () => Promise<string | null>;
+  onOpen?: (send: (msg: object) => void) => void;
+} = {}) {
   conn = new Conn(null, opts.base ?? 'http://test', {
     resolveBase: opts.resolveBase ?? (async () => opts.base ?? 'http://test'),
     token: () => null,
     onMessage: () => {},
     onStatus: () => {},
+    onOpen: opts.onOpen,
     reconnectDelayMs: RECONNECT_MS,
   });
   return conn;
@@ -90,6 +95,16 @@ describe('Conn socket lifecycle', () => {
     expect(openSockets().length).toBe(1);
     // Sub was queued before open → replayed by onopen.
     expect(openSockets()[0]!.sent.some(s => s.includes('session-1'))).toBe(true);
+  });
+
+  test('sends capabilities before replaying subscriptions', async () => {
+    const c = makeConn({ onOpen: (send) => send({ type: 'client_capabilities', browserCdp: true }) });
+    c.subscribe('session-1');
+    await settle();
+
+    const sent = openSockets()[0]!.sent.map((message) => JSON.parse(message));
+    expect(sent[0]).toEqual({ type: 'client_capabilities', browserCdp: true });
+    expect(sent[1]).toEqual({ type: 'subscribe', sessionId: 'session-1' });
   });
 
   test('background close does NOT resurrect the socket via the reconnect timer', async () => {

@@ -97,6 +97,15 @@ export function MobileImageViewer({ src, onClose }: Props) {
     return () => { document.body.style.overflow = prev; };
   }, [src]);
 
+  // Electron BrowserViews are native windows that always render above the
+  // renderer. Tell their React hosts to hide the active view while this
+  // DOM-based fullscreen overlay is open.
+  useEffect(() => {
+    if (!src) return;
+    document.dispatchEvent(new CustomEvent('codiby:image-viewer', { detail: true }));
+    return () => document.dispatchEvent(new CustomEvent('codiby:image-viewer', { detail: false }));
+  }, [src]);
+
   if (!src) return null;
 
   const clampPan = (nx: number, ny: number, s: number) => {
@@ -225,14 +234,14 @@ export function MobileImageViewer({ src, onClose }: Props) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[2000] bg-black/95 flex items-center justify-center"
-      style={{ touchAction: 'none' }}
+      className="fixed inset-0 z-[10000] bg-black/95 flex items-center justify-center"
+      style={{ touchAction: 'none', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       onClick={handleBackdropClick}
     >
       <span
         onClick={(e) => e.stopPropagation()}
         className="absolute top-3 right-3 z-10"
-        style={{ top: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
+        style={{ top: 'calc(env(safe-area-inset-top) + 0.75rem)', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         <Button
           isIconOnly

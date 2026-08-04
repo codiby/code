@@ -22,8 +22,7 @@ const PROVIDER_OPTIONS = [
 ] as const;
 type ProviderKey = typeof PROVIDER_OPTIONS[number]['key'];
 
-/** Claude Agent SDK effort levels — the selector only renders for the
- *  Claude provider; other backends have no effort concept. */
+/** Reasoning effort levels supported by Claude and OpenCode model variants. */
 const EFFORT_OPTIONS = [
   { id: 'low', label: 'Low' },
   { id: 'medium', label: 'Medium' },
@@ -164,8 +163,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
         name: name.trim() || undefined,
         provider,
         model: model || null,
-        // Claude-only spawn option — never forwarded for other providers.
-        effort: provider === 'claude' && effort ? effort : null,
+        effort: (provider === 'claude' || provider === 'opencode') && effort ? effort : null,
       });
       addRecentDir(cwd);
       localStorage.setItem(PROVIDER_KEY, provider);
@@ -441,7 +439,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
             </SelectPopover>
           </Select>
         </label>
-        {provider === 'claude' && (
+        {(provider === 'claude' || provider === 'opencode') && (
           <label className="flex items-center gap-2 min-w-0">
             <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Effort</span>
             <Select

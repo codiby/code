@@ -6,6 +6,8 @@ export interface ConnHooks {
   token: () => string | null;
   onMessage: (msg: Record<string, unknown>, remoteId: string | null) => void;
   onStatus: (remoteId: string | null, status: ConnStatus) => void;
+  /** Sent once per connected socket before session subscriptions. */
+  onOpen?: (send: (msg: object) => void) => void;
   /** Reconnect backoff override (tests). Production default: 2000ms. */
   reconnectDelayMs?: number;
 }
@@ -87,6 +89,9 @@ export class Conn {
     ws.onopen = () => {
       if (this.ws !== ws) { try { ws.close(); } catch {} return; }
       this.hooks.onStatus(this.remoteId, 'connected');
+      this.hooks.onOpen?.((msg) => {
+        try { ws.send(JSON.stringify(msg)); } catch {}
+      });
       for (const sid of this.activeSubs) {
         try { ws.send(JSON.stringify({ type: 'subscribe', sessionId: sid })); } catch {}
       }

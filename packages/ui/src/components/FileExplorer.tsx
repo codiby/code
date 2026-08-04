@@ -30,6 +30,7 @@ import {
 import { Button, TextField, Input } from '@heroui/react';
 import type { ClaudeClient, SessionInfo, ConnectionStatus, McpServerView, McpServerScope } from '../lib/claude-client';
 import { getNative } from '../lib/native';
+import { FILE_REFERENCE_MIME } from '../lib/file-reference-dnd';
 
 /** Session-switcher palette — kept inline so this section stays visually
  *  distinct from the rest of the explorer chrome. Mirrors the colors from
@@ -86,6 +87,7 @@ type MenuState = { entry: FileEntry; parentPath: string; x: number; y: number; c
 
 interface ExplorerCtxValue {
   client: ClaudeClient | null;
+  rootPath: string | null;
   onFileOpen: (path: string) => void;
   gitModified: GitModifiedState;
   activeFilePath: string | null;
@@ -359,7 +361,7 @@ function DirNode({ entry, depth, parentPath: _parentPath }: { entry: FileEntry; 
 }
 
 function FileNode({ entry, depth, parentPath }: { entry: FileEntry; depth: number; parentPath: string }) {
-  const { onFileOpen, gitModified, activeFilePath, openMenu, editingPath, cancelRename, commitRename } = useExplorer();
+  const { onFileOpen, rootPath, gitModified, activeFilePath, openMenu, editingPath, cancelRename, commitRename } = useExplorer();
   const isStaged = gitModified.staged.has(entry.path);
   const isUnstaged = gitModified.unstaged.has(entry.path);
   const isUntracked = gitModified.untracked.has(entry.path);
@@ -374,12 +376,22 @@ function FileNode({ entry, depth, parentPath }: { entry: FileEntry; depth: numbe
   const nameColor = isModified ? changeColor : '#c4c6cc';
   // Icon color: changed → status hue; else per-extension tint.
   const iconColorClass = isModified ? '' : getExtColor(entry.name);
+  const referencePath = rootPath && entry.path.startsWith(rootPath === '/' ? '/' : `${rootPath}/`)
+    ? entry.path.slice(rootPath === '/' ? 1 : rootPath.length + 1)
+    : entry.path;
   return (
     <div
+      draggable={!isEditing}
       className={`relative flex items-center gap-1 py-[2px] cursor-pointer transition-colors ${isActive ? 'bg-[#7c5cff24] hover:bg-[#7c5cff33]' : 'hover:bg-[#1c1d21]'}`}
       style={{ paddingLeft: depth * 12 + 8 }}
       onClick={isEditing ? undefined : () => onFileOpen(entry.path)}
       onContextMenu={e => { e.preventDefault(); openMenu(e, entry, parentPath); }}
+      onDragStart={e => {
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData(FILE_REFERENCE_MIME, referencePath);
+        e.dataTransfer.setData('text/plain', `@${referencePath}`);
+      }}
+      title={`Drag to chat to mention ${referencePath}`}
     >
       {isActive && <span className="absolute left-0 top-[2px] bottom-[2px] w-[2.5px] rounded-r bg-[#7c5cff]" />}
       <span className={`w-3 flex items-center justify-center shrink-0 ${iconColorClass}`} style={isModified ? { color: changeColor } : undefined}>
@@ -2092,7 +2104,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   }, [rootPath]);
 
   const ctxValue: ExplorerCtxValue = {
-    client, onFileOpen, gitModified,
+    client, rootPath, onFileOpen, gitModified,
     activeFilePath: activeFilePath ?? null,
     openMenu,
     editingPath, beginRename, cancelRename, commitRename,

@@ -6,7 +6,7 @@
  *
  *   1. Mints a `requestId`.
  *   2. Stores a pending promise in `pending` keyed by that id.
- *   3. Broadcasts a `browser_request` over the session's WS subscription.
+ *   3. Sends a `browser_request` to desktop clients subscribed to the session.
  *   4. Waits up to `timeoutMs` for the corresponding `browser_response`.
  *
  * `handleBrowserResponse` is called from the WS frontend message handler
@@ -48,7 +48,7 @@ export async function cdpRequest(
   name: string,
   action: CdpAction,
   args: Record<string, unknown>,
-  broadcastToSession: (sessionId: string, msg: object) => void,
+  sendBrowserRequest: (sessionId: string, msg: object) => void,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<unknown> {
   const requestId = randomUUID();
@@ -58,7 +58,7 @@ export async function cdpRequest(
       reject(new Error(`browser_${action}(${name}) timed out after ${timeoutMs}ms — is the "${name}" browser preview open in the desktop app?`));
     }, timeoutMs);
     pending.set(requestId, { resolve, reject, timer });
-    broadcastToSession(sessionId, {
+    sendBrowserRequest(sessionId, {
       type: 'browser_request',
       sessionId,
       // `name` identifies which preview within the session this targets.

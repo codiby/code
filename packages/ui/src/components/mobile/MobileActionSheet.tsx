@@ -16,8 +16,7 @@ interface Props {
   model?: string | null;
   modelOptions?: Array<{ id: string; label: string }>;
   onModelChange?: (model: string | null) => void;
-  /** Provider of the active session — the effort selector only renders for
-   *  Claude (other backends have no effort concept). */
+  /** Provider of the active session — only Claude and OpenCode support effort. */
   provider?: string;
   /** Current reasoning-effort level ('low' … 'max'), null = default. */
   effort?: string | null;
@@ -105,7 +104,7 @@ export function MobileActionSheet({ open, onClose, onAction, sessionName, model,
                   </label>
                 </div>
               )}
-              {sessionName && onEffortChange && (provider ?? 'claude') === 'claude' && (
+              {sessionName && onEffortChange && ((provider ?? 'claude') === 'claude' || provider === 'opencode') && (
                 <div className="mb-4 rounded-2xl bg-zinc-900/55 border border-white/10 px-3 py-3">
                   <label className="flex items-center gap-3 min-w-0">
                     <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Effort</div>

@@ -72,6 +72,17 @@ export const RichInput = forwardRef<HTMLDivElement, Props>(function RichInput(pr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
+  // React only honors `autoFocus` on input/textarea/select/button — never on a
+  // contentEditable <div> — so the prop is a no-op here. Focus the editor
+  // ourselves on mount when the host asks for it. This composer is keyed by the
+  // active session, so it remounts on tab switch and after `/clear` spawns a
+  // fresh session; without this the caret would land on <body> instead of the
+  // new empty composer.
+  useLayoutEffect(() => {
+    if (autoFocus) elRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Read the user's edit out of the DOM. If it changed the text, push it up
   // (React re-render → layout effect re-renders + restores). If the text is
   // unchanged but the DOM diverged (e.g. just typed into an un-highlighted

@@ -77,8 +77,7 @@ interface Props {
   onPermissionModeChange?: (mode: string) => void;
   modelOptions?: Array<{ id: string; label: string }>;
   onModelChange?: (model: string | null) => void;
-  /** Change the reasoning effort of the active session (Claude only —
-   *  the action sheet hides the selector for other providers). */
+  /** Change the reasoning effort of the active session. */
   onEffortChange?: (effort: string | null) => void;
   /** All mockups broadcast for the active session — rendered as pills in
    *  the dock row above the composer so the user can re-open any of them. */

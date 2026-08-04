@@ -21,7 +21,7 @@
 
 /** The conditions a command's binding can be gated on. `'always'` is app-wide;
  *  the rest map to a boolean flag supplied at match time via {@link CommandContext}. */
-export type WhenCondition = 'always' | 'terminalsFocused';
+export type WhenCondition = 'always' | 'terminalsFocused' | 'terminalsNotFocused';
 
 /** Runtime flags the active keydown handler feeds to {@link matchCommand} so
  *  condition-gated commands (e.g. `terminalsFocused`) only fire in context. */
@@ -62,8 +62,9 @@ export const COMMANDS: CommandDef[] = [
   { id: 'toggle-explorer',  title: 'Toggle File Explorer', category: 'Navigation', when: 'always', defaultChord: 'mod+b' },
   { id: 'toggle-terminals', title: 'Toggle Terminals',     category: 'Navigation', when: 'always', defaultChord: 'mod+j' },
   { id: 'new-terminal',     title: 'New Terminal',         category: 'Terminal',   when: 'terminalsFocused', defaultChord: 'mod+t' },
+  { id: 'find-in-terminal', title: 'Find in Terminal',     category: 'Terminal',   when: 'terminalsFocused', defaultChord: 'mod+f' },
   { id: 'focus-chat-input', title: 'Focus Chat Input',     category: 'Navigation', when: 'always', defaultChord: 'mod+l' },
-  { id: 'find-in-chat',     title: 'Find in Chat',         category: 'Chat',       when: 'always', defaultChord: 'mod+f' },
+  { id: 'find-in-chat',     title: 'Find in Chat',         category: 'Chat',       when: 'terminalsNotFocused', defaultChord: 'mod+f' },
   { id: 'search-files',     title: 'Search Files',         category: 'Navigation', when: 'always', defaultChord: 'mod+shift+f' },
   { id: 'save-file',        title: 'Save File',            category: 'Editor',     when: 'always', defaultChord: 'mod+s' },
   { id: 'new-file',         title: 'New File',             category: 'Editor',     when: 'always', defaultChord: 'mod+n' },
@@ -157,6 +158,8 @@ export function whenSatisfied(when: WhenCondition, ctx: CommandContext): boolean
   switch (when) {
     case 'terminalsFocused':
       return !!ctx.terminalsFocused;
+    case 'terminalsNotFocused':
+      return !ctx.terminalsFocused;
     case 'always':
     default:
       return true;
@@ -169,6 +172,8 @@ export function whenLabel(when: WhenCondition): string {
   switch (when) {
     case 'terminalsFocused':
       return 'Terminal focused';
+    case 'terminalsNotFocused':
+      return 'Terminal not focused';
     default:
       return when;
   }
@@ -198,8 +203,13 @@ export function findConflict(
   bindings: Record<string, string | null>,
   exceptId: string,
 ): CommandDef | null {
+  const target = COMMANDS.find(c => c.id === exceptId);
   for (const c of COMMANDS) {
-    if (c.id !== exceptId && bindings[c.id] === chord) return c;
+    const mutuallyExclusive = target && (
+      (target.when === 'terminalsFocused' && c.when === 'terminalsNotFocused')
+      || (target.when === 'terminalsNotFocused' && c.when === 'terminalsFocused')
+    );
+    if (c.id !== exceptId && bindings[c.id] === chord && !mutuallyExclusive) return c;
   }
   return null;
 }

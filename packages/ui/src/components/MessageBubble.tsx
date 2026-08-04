@@ -954,10 +954,24 @@ export function ToolRunBubble({
  *  the sub-agent's first tool result (results are rendered as plain
  *  assistant messages with no `toolName`, terminating the old loop). */
 export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: ChatMessage; children: ChatMessage[] })[] {
-  // Index tool results by the id of the tool_use they answer.
+  // Index tool results by the id of the tool_use they answer. AskUserQuestion
+  // produces TWO results for the same tool_use: our synthetic `{"answers":{…}}`
+  // JSON (exact) and the SDK's plain-text "…answered: \"Q\"=\"A\"…". The text one
+  // usually arrives last, but it can't be reparsed when a question or answer
+  // contains a double quote (the "Q"="A" regex mangles the key), which makes the
+  // answered card render as if unanswered. So never let a non-answers result
+  // clobber a synthetic answers-JSON one; otherwise keep last-wins.
+  const isAnswersJson = (m: ChatMessage): boolean => {
+    if (typeof m.content !== 'string') return false;
+    try { const p = JSON.parse(m.content); return !!p && typeof p.answers === 'object'; }
+    catch { return false; }
+  };
   const resultByToolId = new Map<string, ChatMessage>();
   for (const m of messages) {
-    if (m.isToolResult && m.toolUseId) resultByToolId.set(m.toolUseId, m);
+    if (!m.isToolResult || !m.toolUseId) continue;
+    const cur = resultByToolId.get(m.toolUseId);
+    if (cur && isAnswersJson(cur) && !isAnswersJson(m)) continue;
+    resultByToolId.set(m.toolUseId, m);
   }
   const attach = (msg: ChatMessage): ChatMessage => {
     if (!msg.toolName) return msg;

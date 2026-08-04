@@ -5,8 +5,17 @@
  * client routes each session's REST/WS to the connection its remote belongs
  * to. All state lives on the bridges; the client is a stateless viewer.
  */
-import { getNative } from './native';
+import { getNative, isNative } from './native';
 import { Conn } from './conn';
+import { emptyProgress } from './requirements';
+import type {
+  LoopState,
+  Requirement,
+  RequirementEvent,
+  RequirementProgress,
+  RequirementProposal,
+  RequirementsSnapshot,
+} from './requirements';
 
 export async function resolveServerUrl(): Promise<string> {
   const native = (typeof window !== 'undefined') ? window.codiby : null;
@@ -333,7 +342,7 @@ export interface SessionInfo {
   saved_commands: string[];
   model: string | null;
   permission_mode: string;
-  /** Reasoning-effort level (Claude only). Null/absent → provider default. */
+  /** Reasoning-effort level. Null/absent → provider default. */
   effort?: string | null;
   provider?: string;
   /** Remote workstation this session lives on (null = local). */
@@ -457,6 +466,11 @@ type ClientCallbacks = {
    *  the dock repopulates open terminals on connect. */
   onTerminalsSnapshot?: (sessionId: string, terminals: TerminalInfo[]) => void;
   onTodos: (sessionId: string, todos: { content: string; status: string; activeForm?: string }[]) => void;
+  /** Requirements snapshot — pushed by the server before and after every check
+   *  run, and on any mutation from either the agent's tools or the panel. */
+  onRequirements?: (sessionId: string, snapshot: RequirementsSnapshot) => void;
+  /** Loop-mode state changed (armed, iteration advanced, paused, completed). */
+  onLoop?: (sessionId: string, loop: LoopState | null, progress: RequirementProgress) => void;
   onAutoApproved: (sessionId: string, toolName: string, filePath?: string, command?: string) => void;
   onSessionName: (sessionId: string, name: string) => void;
   onInitInfo: (sessionId: string, info: SessionInitInfo) => void;
@@ -653,6 +667,7 @@ export class ClaudeClient {
       token: () => _authToken,
       onMessage: (msg, rid) => this.handleMessage(msg, rid),
       onStatus: (rid, status) => { if (rid === null) this.callbacks.onConnectionChange(status); },
+      onOpen: (send) => send({ type: 'client_capabilities', browserCdp: isNative() }),
     });
 
     // Discover configured remotes and open a direct connection to each.
@@ -767,6 +782,7 @@ export class ClaudeClient {
       token: () => null, // the loopback tunnel is trusted; no bearer needed
       onMessage: (msg, rid) => this.handleMessage(msg, rid),
       onStatus: () => {}, // remote UI status comes from the tunnel-status push
+      onOpen: (send) => send({ type: 'client_capabilities', browserCdp: isNative() }),
     });
     this.remoteConns.set(remoteId, conn);
     // Bring the tunnel up once and point the connection at the resolved port.
@@ -803,6 +819,15 @@ export class ClaudeClient {
     this.ensureRemoteConn(_activeRemoteId);
     const base = await this.ensureRemoteBaseUp(_activeRemoteId);
     return base ? url.replace(this.serverUrl, base) : url;
+  }
+
+  /** Sync http base for a session's bridge from the last-known tunnel port.
+   *  Falls back to the local bridge for local sessions (or before the tunnel
+   *  port is cached). Used where an await isn't possible — e.g. building an
+   *  `<img src>` URL. */
+  private baseForSession(sessionId: string): string {
+    const rid = this.sessionRemote.get(sessionId);
+    return (rid && this.remoteBase(rid)) || this.serverUrl;
   }
 
   /** http base for a specific session's bridge (session-bound REST). */
@@ -928,6 +953,21 @@ export class ClaudeClient {
       }
       case 'todos':
         this.callbacks.onTodos(sessionId, msg.todos as any[]);
+        break;
+      case 'requirements':
+        this.callbacks.onRequirements?.(sessionId, {
+          target: (msg.target as string | null) ?? null,
+          requirements: (msg.requirements as Requirement[]) || [],
+          proposals: (msg.proposals as RequirementProposal[]) || [],
+          progress: (msg.progress as RequirementProgress) || emptyProgress(),
+        });
+        break;
+      case 'loop':
+        this.callbacks.onLoop?.(
+          sessionId,
+          (msg.loop as LoopState | null) ?? null,
+          (msg.progress as RequirementProgress) || emptyProgress(),
+        );
         break;
       case 'auto_approved':
         this.callbacks.onAutoApproved(sessionId, msg.toolName as string, msg.filePath as string | undefined, msg.command as string | undefined);
@@ -1390,6 +1430,16 @@ export class ClaudeClient {
     return this.updateSession(sessionId, { status: 'archived' });
   }
 
+  /** Archive before stopping so the stop broadcast cannot briefly resurface
+   *  the session with its previous open status. */
+  async archiveAndStopSession(sessionId: string): Promise<void> {
+    try {
+      await this.archiveSession(sessionId);
+    } finally {
+      await this.stopSession(sessionId);
+    }
+  }
+
   /** Bring an archived session back into the tab bar (status=open). Does
    *  NOT auto-resume the provider — that happens lazily when the user
    *  focuses the tab or sends a message. */
@@ -1745,25 +1795,151 @@ export class ClaudeClient {
   // -------------------------------------------------------------------------
 
   /** List a session's resources, newest first. Optionally filter by kind. */
+  // ---------------------------------------------------------------------------
+  // Requirements + Loop.
+  //
+  // Approving, waiving, deleting and resolving proposals exist ONLY here: the
+  // agent's MCP tools are append-only by design, so every one of these calls is
+  // a deliberate user action. Mutations return the fresh snapshot, and the
+  // server also broadcasts `requirements` over the WS, so callers can rely on
+  // either path.
+  // ---------------------------------------------------------------------------
+
+  async fetchRequirements(sessionId: string): Promise<RequirementsSnapshot | null> {
+    let base: string;
+    try { base = await this.sessionBase(sessionId); } catch { return null; }
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/requirements`);
+    if (!resp.ok) return null;
+    return resp.json().catch(() => null);
+  }
+
+  private async requirementsCall(
+    sessionId: string,
+    path: string,
+    init?: RequestInit,
+  ): Promise<RequirementsSnapshot | null> {
+    let base: string;
+    try { base = await this.sessionBase(sessionId); } catch { return null; }
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}${path}`, init);
+    if (!resp.ok) return null;
+    return resp.json().catch(() => null);
+  }
+
+  private static jsonInit(method: string, body?: unknown): RequestInit {
+    return {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    };
+  }
+
+  setRequirementsTarget(sessionId: string, target: string) {
+    return this.requirementsCall(sessionId, '/requirements/target', ClaudeClient.jsonInit('PUT', { target }));
+  }
+
+  /** Approve a draft so it becomes binding, or send a locked one back. */
+  setRequirementState(
+    sessionId: string,
+    rid: string,
+    action: 'lock' | 'unlock' | 'waive',
+    reason?: string,
+  ) {
+    return this.requirementsCall(
+      sessionId,
+      `/requirements/${encodeURIComponent(rid)}`,
+      ClaudeClient.jsonInit('PATCH', { action, reason }),
+    );
+  }
+
+  editRequirement(sessionId: string, rid: string, patch: { title?: string; check?: unknown }) {
+    return this.requirementsCall(
+      sessionId,
+      `/requirements/${encodeURIComponent(rid)}`,
+      ClaudeClient.jsonInit('PATCH', patch),
+    );
+  }
+
+  deleteRequirement(sessionId: string, rid: string) {
+    return this.requirementsCall(sessionId, `/requirements/${encodeURIComponent(rid)}`, { method: 'DELETE' });
+  }
+
+  /** Run every check, or just `ids`. Resolves once the server is done. */
+  runRequirements(sessionId: string, ids?: string[]) {
+    return this.requirementsCall(sessionId, '/requirements/run', ClaudeClient.jsonInit('POST', ids ? { ids } : {}));
+  }
+
+  resolveRequirementProposal(sessionId: string, pid: string, decision: 'approve' | 'reject') {
+    return this.requirementsCall(
+      sessionId,
+      `/proposals/${encodeURIComponent(pid)}/${decision}`,
+      ClaudeClient.jsonInit('POST'),
+    );
+  }
+
+  async fetchRequirementEvents(sessionId: string, limit = 200): Promise<RequirementEvent[]> {
+    let base: string;
+    try { base = await this.sessionBase(sessionId); } catch { return []; }
+    const resp = await authedFetch(
+      `${base}/sessions/${encodeURIComponent(sessionId)}/requirements/events?limit=${limit}`,
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json().catch(() => ({})) as { events?: RequirementEvent[] };
+    return data.events || [];
+  }
+
+  /**
+   * Arm / pause / resume / stop Loop mode. Deliberately user-only — there is no
+   * MCP tool for any of these, because loop is bypass permissions plus
+   * unattended auto-continuation.
+   */
+  async loopControl(
+    sessionId: string,
+    action: 'start' | 'pause' | 'resume' | 'stop',
+  ): Promise<{ loop: LoopState | null; progress: RequirementProgress } | null> {
+    let base: string;
+    try { base = await this.sessionBase(sessionId); } catch { return null; }
+    const resp = await authedFetch(
+      `${base}/sessions/${encodeURIComponent(sessionId)}/loop/${action}`,
+      { method: 'POST' },
+    );
+    if (!resp.ok) return null;
+    return resp.json().catch(() => null);
+  }
+
+  async fetchLoop(sessionId: string): Promise<{ loop: LoopState | null; progress: RequirementProgress } | null> {
+    let base: string;
+    try { base = await this.sessionBase(sessionId); } catch { return null; }
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/loop`);
+    if (!resp.ok) return null;
+    return resp.json().catch(() => null);
+  }
+
   async listResources(sessionId: string, kind?: string): Promise<SessionResource[]> {
     const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/resources${qs}`);
+    // Resources live on the bridge that owns the session — route to the
+    // remote's tunnel base, never the local bridge (which has none of them).
+    let base: string;
+    try { base = await this.sessionBase(sessionId); } catch { return []; }
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/resources${qs}`);
     if (!resp.ok) return [];
     return resp.json().catch(() => []);
   }
 
   /** Delete a single resource (blob + manifest entry). */
   async deleteResource(sessionId: string, rid: string): Promise<{ ok: boolean; error?: string }> {
+    const base = await this.sessionBase(sessionId);
     const resp = await authedFetch(
-      `${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/resources/${encodeURIComponent(rid)}`,
+      `${base}/sessions/${encodeURIComponent(sessionId)}/resources/${encodeURIComponent(rid)}`,
       { method: 'DELETE' },
     );
     return resp.json().catch(() => ({ ok: resp.ok }));
   }
 
-  /** Token-authed URL for a resource's raw bytes — safe to use as `<img src>`. */
+  /** Token-authed URL for a resource's raw bytes — safe to use as `<img src>`.
+   *  Sync, so it routes via the session's last-known tunnel base. */
   resourceRawUrl(sessionId: string, rid: string): string {
-    return withToken(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/resources/${encodeURIComponent(rid)}/raw`);
+    const base = this.baseForSession(sessionId);
+    return withToken(`${base}/sessions/${encodeURIComponent(sessionId)}/resources/${encodeURIComponent(rid)}/raw`);
   }
 
   // ---------------------------------------------------------------------------
