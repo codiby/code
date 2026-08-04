@@ -8,7 +8,7 @@
  *     reach for, plus browser-preview / CDP / plugin OAuth handlers.
  *   - on shutdown, kill the sidecar and tear down all preview surfaces.
  */
-import { app, BrowserWindow, ipcMain, shell, dialog, Notification, crashReporter } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification, crashReporter, Menu, clipboard } from 'electron';
 import { join, basename } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -185,6 +185,39 @@ function createMainWindow(): BrowserWindow {
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url).catch(() => {});
     return { action: 'deny' };
+  });
+
+  // Native right-click menu. Electron ships no default context menu, so without
+  // this a right-click on a link (or selected text) does nothing. Build a menu
+  // from the click params: "Copy Link" over links, standard clipboard actions
+  // over selections and editable fields.
+  win.webContents.on('context-menu', (_event, params) => {
+    const items: Electron.MenuItemConstructorOptions[] = [];
+    const linkUrl = params.linkURL;
+
+    if (linkUrl) {
+      items.push(
+        { label: 'Open Link in Browser', click: () => { shell.openExternal(linkUrl).catch(() => {}); } },
+        { label: 'Copy Link', click: () => clipboard.writeText(linkUrl) },
+      );
+    }
+
+    if (params.isEditable) {
+      if (items.length) items.push({ type: 'separator' });
+      items.push(
+        { role: 'cut', enabled: params.editFlags.canCut },
+        { role: 'copy', enabled: params.editFlags.canCopy },
+        { role: 'paste', enabled: params.editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll' },
+      );
+    } else if (params.selectionText) {
+      if (items.length) items.push({ type: 'separator' });
+      items.push({ role: 'copy', enabled: params.editFlags.canCopy });
+    }
+
+    if (!items.length) return;
+    Menu.buildFromTemplate(items).popup({ window: win });
   });
 
   // Browser-preview surfaces are native BrowserViews that live in the main

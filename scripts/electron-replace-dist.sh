@@ -28,8 +28,6 @@ cd "$REPO_ROOT"
 INSTALLED_APP="${CODIBY_APP_PATH:-/Applications/Codiby Code.app}"
 APP_DIST="$INSTALLED_APP/Contents/Resources/dist"
 APP_SERVER="$INSTALLED_APP/Contents/Resources/server.js"
-PROC_PATTERN="Codiby Code.app/Contents/MacOS/Codiby Code"
-SIDECAR_PATTERN="Codiby Code.app/Contents/Resources/server.js"
 
 RELOAD_MODE="reload"   # reload | restart | none
 SKIP_SERVER=0          # --no-server: only swap dist/, leave server.js alone
@@ -46,6 +44,29 @@ done
 step() { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
 fail() { printf '\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# macOS pgrep does not reliably match argv paths containing spaces, so the
+# previous process-path check missed a running "Codiby Code.app" and left its
+# old bun sidecar alive after replacing server.js.
+app_is_running() {
+  [ "$(osascript -e 'application "Codiby Code" is running' 2>/dev/null || true)" = "true" ]
+}
+
+app_pid() {
+  osascript -e 'tell application "System Events" to get unix id of first process whose name is "Codiby Code"' 2>/dev/null || true
+}
+
+sidecar_pid_for_app() {
+  local parent_pid="$1"
+  [ -n "$parent_pid" ] || return 0
+  ps -axo pid=,ppid=,command= | while read -r pid ppid command; do
+    if [ "$ppid" = "$parent_pid" ]; then
+      case "$command" in
+        *"/Contents/Resources/server.js --spawned-by=app") printf '%s\n' "$pid" ;;
+      esac
+    fi
+  done
+}
 
 [ -d "$INSTALLED_APP" ] || fail "installed app not found: $INSTALLED_APP (set CODIBY_APP_PATH to override)"
 [ -d "$INSTALLED_APP/Contents/Resources/dist" ] || fail "app has no Resources/dist — is this a packaged build?"
@@ -109,7 +130,7 @@ fi
 # -----------------------------------------------------------------------------
 # 5. Make the running app pick it up
 # -----------------------------------------------------------------------------
-if ! pgrep -f "$PROC_PATTERN" >/dev/null; then
+if ! app_is_running; then
   step "App not running — nothing to reload"
   info "next launch will load the new bundle"
   printf '\n\033[1;32m== Done — replaced in %s.\033[0m\n' "$INSTALLED_APP"
@@ -135,14 +156,20 @@ case "$RELOAD_MODE" in
     ;;
   restart)
     step "Restarting app"
+    running_app_pid="$(app_pid)"
+    running_sidecar_pid="$(sidecar_pid_for_app "$running_app_pid")"
     osascript -e 'tell application "Codiby Code" to quit' 2>/dev/null || true
     for _ in $(seq 1 24); do
-      pgrep -f "$PROC_PATTERN" >/dev/null || break
+      app_is_running || break
       sleep 0.5
     done
-    pgrep -f "$PROC_PATTERN" >/dev/null && { pkill -TERM -f "$PROC_PATTERN" || true; sleep 1; }
+    if app_is_running; then
+      running_app_pid="$(app_pid)"
+      [ -z "$running_app_pid" ] || kill -TERM "$running_app_pid" 2>/dev/null || true
+      sleep 1
+    fi
     # Reap any orphan bun sidecar so the relaunch gets a clean port.
-    pkill -KILL -f "$SIDECAR_PATTERN" 2>/dev/null || true
+    [ -z "$running_sidecar_pid" ] || kill -KILL "$running_sidecar_pid" 2>/dev/null || true
     open "$INSTALLED_APP"
     info "relaunched"
     ;;
