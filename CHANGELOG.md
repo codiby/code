@@ -5,6 +5,85 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] — 2026-08-04
+
+### Added
+
+- **Requirements: acceptance criteria the server checks, not the agent.** A
+  session now carries a one-line Target plus a list of requirements, each one a
+  shell command or a visual check against a screenshot. The agent declares
+  them; you approve them; the bridge runs them and writes the result. Every row
+  is HMAC-signed and hash-chained, so an agent that edits the database to claim
+  a pass is flagged as tampered instead of believed. Visual checks are graded by
+  a separate one-shot judge with no tools and none of the working session's
+  context.
+- **Loop mode.** Once requirements are approved, the loop re-prompts the agent
+  after every turn until they all pass. It stops on its own budgets — 25
+  iterations, $10, one hour by default — and pauses instead of spinning when the
+  same set keeps failing with nothing changed on disk. A non-dismissible banner
+  above the composer shows the phase, iteration and progress, with pause,
+  resume and stop.
+- **Automations: agent runs on a cron schedule.** Named automations carry their
+  own prompt, working directory, provider, model, permission mode and effort,
+  fire on a cron expression in the timezone you pick, and record every run —
+  status, duration, cost, tokens, result — in a new SQLite store. Runs can be
+  triggered by hand, cancelled mid-flight, and overlapping fires are skipped
+  rather than stacked. Exposed over the bridge API.
+- **Nested tab groups.** Groups now nest without a depth limit, and every
+  per-project setting — env vars, portless actions, requirements config —
+  resolves by walking from the session's group up to the root. A session inside
+  `utilityprofit › Backend › Migraciones` still inherits the repo-level env.
+- **Automatic worktree grouping.** When two or more sessions under the same
+  parent share a working directory, a worktree group materialises around them
+  and evaporates when they drop below two. These groups are derived, never
+  persisted, so project settings keep resolving to the real group. You can drag
+  a session out to opt it back into the flat list, and a switch in project
+  settings turns the whole derivation off.
+- **Drag a file from the explorer into the chat.** Dropping a file on the
+  composer inserts a project-relative `@mention` instead of an absolute path.
+- **Session deep-link chips.** When the agent references another session, the
+  message renders a clickable chip showing that session's live name — renames
+  are reflected automatically — instead of a raw UUID.
+- **Reasoning-effort picker in the composer.** Pick low through max per message
+  on the models that support it, or leave it on the provider default.
+- **Native right-click menu on desktop.** Electron ships no default context
+  menu; links now offer Copy Link and selections and inputs get the standard
+  clipboard actions.
+- **Session management over MCP.** Agents can archive, unarchive, update and
+  delete sessions through four new `ui_*` tools.
+
+### Changed
+
+- **OpenCode sessions gained plan mode and inline questions.** OpenCode's
+  `question` tool is mapped onto Codiby's AskUserQuestion, so it renders as the
+  inline answer form rather than a generic tool card, with duplicate
+  `question.asked` / `question.v2.asked` events collapsed into one prompt. MCP
+  servers are bound per session through the server URL, working around
+  OpenCode's dropped custom headers.
+- **Action env vars stay in Actions.** Portless exports are injected only into
+  processes launched as Actions. Ordinary terminals — the dock's "+", mobile,
+  `/terminal`, restored terminals, the agent's `spawn_terminal` — get a plain
+  shell again, instead of silently overriding whatever your own `.env` and rc
+  files set.
+- **Declaring requirements no longer prompts.** `set_target`,
+  `add_requirements`, `edit_requirement` and `attach_requirement_image` are
+  allowlisted, since a requirement only becomes binding once you approve it.
+  `run_requirements` still goes through the normal permission flow — it
+  executes shell commands. Invoking the plan tool no longer asks twice either;
+  the approval that counts is the one carrying the plan markdown.
+
+### Fixed
+
+- **Terminals no longer open with a mangled line discipline.** `script` copied
+  the outer PTY's raw settings onto the shell's controlling terminal; the shell
+  now starts behind an `stty sane`.
+- **Fullscreen images on mobile stay above the browser preview.** The native
+  preview ignores DOM z-index, so the image viewer now tells it to hide while
+  the overlay is open.
+- **Replacing the dist no longer strands the old sidecar.** macOS `pgrep`
+  doesn't reliably match argv paths with spaces, so a running "Codiby Code.app"
+  went unnoticed and its previous bun sidecar survived the swap.
+
 ## [0.24.0] — 2026-07-18
 
 ### Added
