@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { ACCEPT_EDITS_TOOLS, ALWAYS_AUTO_APPROVE_TOOLS, MAIN_SESSION_ID, PLAN_DENY_TOOLS, PLAN_READ_ONLY_TOOLS, USER_INTERACTION_TOOLS } from '../config/config';
+import { ACCEPT_EDITS_TOOLS, ALWAYS_AUTO_APPROVE_TOOLS, MAIN_SESSION_ID, PLAN_DENY_TOOLS, PLAN_READ_ONLY_TOOLS, touchesProtectedPath, USER_INTERACTION_TOOLS } from '../config/config';
 import { log, logError } from '../lib/logger';
 import { saveSessions } from '../session/sessions';
 import { addMessage, getSessionState, updateSessionState, updateUIState } from '../session/state';
@@ -16,12 +16,16 @@ import type { Session } from '../types';
 import { notify } from '../integrations/notify';
 import { updateWorkingWithTool } from '../integrations/telegram';
 import { setClaudeModels } from '../handlers/claude-info';
-import type { PermissionDecision, PermissionRequestDetail, ProviderEvents } from './types';
+import type { PermissionDecision, PermissionRequestDetail, ProviderEvents, TurnCompleteInfo } from './types';
 
 export type BridgeDeps = {
   broadcastToSession: (sessionId: string, msg: object) => void;
+  sendBrowserRequest: (sessionId: string, msg: object) => void;
   broadcastSessionList: () => void;
   notifyTelegramIfMainSession: (sessionId: string) => void;
+  onTurnComplete?: (sessionId: string, info: TurnCompleteInfo) => void;
+  onError?: (sessionId: string, error: Error) => void;
+  onExit?: (sessionId: string, code: number | null) => void;
 };
 
 export function createBridgeEvents(session: Session, deps: BridgeDeps): ProviderEvents {
@@ -164,6 +168,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         ALWAYS_AUTO_APPROVE_TOOLS.has(tool.name) ||
         (!USER_INTERACTION_TOOLS.has(tool.name) && (
           mode === 'bypassPermissions' ||
+          mode === 'loop' ||
           (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(tool.name)) ||
           (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(tool.name))
         ));
@@ -247,6 +252,30 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         };
       }
 
+      // Auto-deny: anything reaching for the requirements ledger or its
+      // signing key. Signature verification would catch the edit afterwards,
+      // but denying here keeps the attempt in the transcript where the user
+      // can see it.
+      if (touchesProtectedPath(inputRecord)) {
+        log(`[${sid8}] Auto-denied ${req.toolName} (protected path)`);
+        return {
+          allow: false,
+          message: 'Denied: the requirements database and its signing key are off limits. Requirement outcomes are written by the server only — use run_requirements.',
+        };
+      }
+
+      // Auto-deny: loop mode + a tool whose only purpose is to hand control
+      // back. In every other mode these prompt; here they would be the escape
+      // hatch out of a loop the user asked to run unattended, so the agent is
+      // told to decide for itself and keep going.
+      if (mode === 'loop' && USER_INTERACTION_TOOLS.has(req.toolName)) {
+        log(`[${sid8}] Auto-denied ${req.toolName} (loop mode)`);
+        return {
+          allow: false,
+          message: `Denied: this session is in Loop mode. You cannot hand control back to the user or ask for confirmation. Pick the most reasonable option, state your choice in the chat, and keep working — the turn will be re-injected until the session's approved requirements pass.`,
+        };
+      }
+
       // Auto-allow by mode (or always-allow list for safe in-process tools).
       // USER_INTERACTION_TOOLS (AskUserQuestion, ExitPlanMode) always prompt —
       // even in bypassPermissions — because their whole job is to hand control
@@ -255,6 +284,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         ALWAYS_AUTO_APPROVE_TOOLS.has(req.toolName) ||
         (!USER_INTERACTION_TOOLS.has(req.toolName) && (
           mode === 'bypassPermissions' ||
+          mode === 'loop' ||
           (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(req.toolName)) ||
           (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(req.toolName))
         ));
@@ -271,6 +301,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onTurnComplete(info) {
+      deps.onTurnComplete?.(session.id, info);
       if (info.resultText) {
         const chatMsg: ChatMessage = {
           id: randomUUID(),
@@ -304,6 +335,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onError(err) {
+      deps.onError?.(session.id, err);
       logError(`[${sid8}] Provider error: ${err.message}`);
       // If a turn was in flight when the runtime errored, the indicator is
       // about to go dark — flag it as interrupted so the UI can show "last
@@ -325,6 +357,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         return;
       }
       log(`[${sid8}] Provider session exited with code ${code}`);
+      deps.onExit?.(session.id, code);
       session.ready = false;
       session.runtimeStatus = 'stopped';
       session.providerSession = null;

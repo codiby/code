@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'child_process';
 import type { ProviderSession } from './provider/types';
 import type { PtyHandle } from './process/pty';
+import type { LoopState } from './loop/types';
 
 /** A configured remote — points at an entry in the user's ~/.ssh/config. */
 export type Remote = {
@@ -59,7 +60,7 @@ export type Session = {
   savedCommands: string[];
   model: string | null;
   permissionMode: string;
-  /** Reasoning-effort level (Claude only). Null → provider default. Applied
+  /** Reasoning-effort level. Null → provider default. Applied
    *  at spawn time; changing it live respawns the provider with resume. */
   effort: string | null;
   provider: string;
@@ -67,6 +68,10 @@ export type Session = {
   remoteId: string | null;
   /** Port forwards opened while this session has at least one pane visible. */
   portForwards: PortForward[];
+  /** Loop-mode progress. Null unless the session has been put into `loop`
+   *  permission mode at least once. Persisted so a bridge restart doesn't
+   *  silently drop an in-flight loop's iteration/cost budget. */
+  loopState: LoopState | null;
 };
 
 export type PersistedSession = {
@@ -86,6 +91,7 @@ export type PersistedSession = {
   provider?: string;
   remoteId?: string | null;
   portForwards?: PortForward[];
+  loopState?: LoopState | null;
 };
 
 export interface TrackedProcess {

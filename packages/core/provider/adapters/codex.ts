@@ -61,7 +61,8 @@ function mapPermissionMode(mode: PermissionMode): { approvalPolicy: ApprovalMode
   // and vary the sandbox tightness by the requested mode.
   switch (mode) {
     case 'plan': return { approvalPolicy: 'never', sandboxMode: 'read-only' };
-    case 'bypassPermissions': return { approvalPolicy: 'never', sandboxMode: 'danger-full-access' };
+    case 'bypassPermissions':
+    case 'loop': return { approvalPolicy: 'never', sandboxMode: 'danger-full-access' };
     case 'acceptEdits':
     case 'default':
     default: return { approvalPolicy: 'never', sandboxMode: 'workspace-write' };

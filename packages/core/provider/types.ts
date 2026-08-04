@@ -13,9 +13,16 @@ export type PermissionMode =
   | 'default'
   | 'acceptEdits'
   | 'bypassPermissions'
-  | 'plan';
+  | 'plan'
+  /**
+   * Loop — bypass-equivalent on permissions, but the session cannot hand
+   * control back: tools whose job is to ask the user are auto-denied, and the
+   * loop driver re-prompts after every turn until the session's approved
+   * requirements pass. See `loop/driver.ts`.
+   */
+  | 'loop';
 
-/** Reasoning-effort level. Claude-only today; other adapters ignore it. */
+/** Reasoning-effort level. Claude uses it directly; OpenCode maps it to a model variant. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ImageInput = {
@@ -40,9 +47,8 @@ export type SpawnOptions = {
   cwd: string;
   model: string | null;
   permissionMode: PermissionMode;
-  /** Reasoning effort. Spawn-time only — the Claude Agent SDK has no runtime
-   *  setter, so changing it on a live session requires a respawn-with-resume
-   *  (see the `set_effort` handler in index.ts). Null/undefined → SDK default. */
+  /** Reasoning effort. Claude requires a respawn to apply it; OpenCode maps it
+   *  to a per-prompt model variant. Null/undefined → provider default. */
   effort?: EffortLevel | null;
   /** Provider-specific resume token (e.g. a Claude session UUID). */
   resumeSessionId?: string | null;

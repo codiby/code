@@ -54,6 +54,11 @@ const CODIBY_CODE_SYSTEM_PROMPT_APPEND = [
   '- This applies to EVERY first message, including greetings ("hi", "hello"), chitchat, vague questions, or one-word inputs. Do not skip the rename because the message looks low-stakes — derive the best name you can from whatever the user said (e.g. "Greeting", "Quick Question").',
   '- Treat the call as final. Do not call the tool a second time even if the task evolves; the user can rename manually later.',
   '- Names must fit a narrow sidebar tab — aim for ≤ 24 characters. Format: "{TICKET-ID} {3-4 word Title Case description}", omitting the ticket id if none was mentioned.',
+  '',
+  'Referencing sessions (Codiby Code-specific):',
+  '- Whenever you mention another session, NEVER print its raw session id (e.g. "20657ea8-01d5-417e-ad2f-3b18077f9d42"). Instead write a markdown deep-link: `[Session Name](codiby-session:<id>)`, where `<id>` is the full session id and the link text is the session\'s name.',
+  '- The UI renders this as a clickable chip that shows the session name and switches to that session on click. If you do not know the name, use `ui_list_sessions` to look it up; if it is still unknown, use a short label like "Session <first-8-chars>" as the link text — the UI resolves the real name from the id at render time.',
+  '- This applies everywhere a session id would otherwise appear: prose, lists, and tables. The id belongs only inside the `codiby-session:` link target, never in the visible text.',
 ].join('\n');
 
 function toSdkMcpServers(
@@ -79,7 +84,9 @@ function toSdkPermissionMode(mode: PermissionMode): SdkPermissionMode {
   // itself and auto-rejects AskUserQuestion, never giving the user a chance to
   // answer. Map bypass to `default` so the CLI keeps routing tool uses through
   // our callback; the bridge is what actually auto-approves in bypass mode.
-  if (mode === 'bypassPermissions') return 'default' as SdkPermissionMode;
+  // `loop` is bypass with the escape hatches nailed shut, so it maps the same
+  // way — the bridge is what auto-approves and what auto-denies AskUserQuestion.
+  if (mode === 'bypassPermissions' || mode === 'loop') return 'default' as SdkPermissionMode;
   return mode as SdkPermissionMode;
 }
 

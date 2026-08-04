@@ -45,6 +45,7 @@ export function startProviderSession(session: Session, port: number, resumeSessi
       type: 'sdk',
       server: buildSessionSdkMcpServer(session.id, {
         broadcastToSession: bridgeDeps.broadcastToSession,
+        sendBrowserRequest: bridgeDeps.sendBrowserRequest,
         broadcastSessionList: bridgeDeps.broadcastSessionList,
         loadPreferences,
       }),

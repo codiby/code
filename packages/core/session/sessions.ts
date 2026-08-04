@@ -16,6 +16,7 @@ export function saveSessions() {
     remoteId: s.remoteId,
     portForwards: s.portForwards,
     status: s.status,
+    loopState: s.loopState,
   }));
   try {
     mkdirSync(CODIBY_DIR, { recursive: true });
@@ -87,6 +88,11 @@ export function loadSessions() {
         replayDone: false,
         remoteId: p.remoteId ?? null,
         portForwards: p.portForwards ?? [],
+        // A loop that was mid-flight when the bridge died is not resumed
+        // automatically — it comes back paused so the user decides.
+        loopState: p.loopState
+          ? { ...p.loopState, phase: p.loopState.phase === 'looping' ? 'paused' : p.loopState.phase }
+          : null,
       });
     }
     log(`[persist] Loaded ${data.length} sessions`);
@@ -149,5 +155,6 @@ export function sessionToJSON(s: Session, port: number) {
     permission_mode: s.permissionMode || 'default',
     effort: s.effort || null,
     provider: s.provider || 'claude',
+    loop_state: s.loopState ?? null,
   };
 }

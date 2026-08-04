@@ -129,6 +129,7 @@ function ensureMainSession(): Session {
       provider: DEFAULT_PROVIDER,
       remoteId: null,
       portForwards: [],
+      loopState: null,
     };
     sessions.set(MAIN_SESSION_ID, session);
     saveSessions();
