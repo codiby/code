@@ -86,7 +86,48 @@ export const PLAN_DENY_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash']
  */
 export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   'mcp__codiby-code-sdk__rename_session',
+  // Invoking the plan tool is not the decision point — the tool's own handler
+  // (mcp.ts) raises a second, richer permission request carrying the plan
+  // markdown, and that's what the user actually approves or rejects. Prompting
+  // for the invocation too would make every plan take two approvals: a bare
+  // "run this tool?" followed by the real plan review.
+  'mcp__codiby-code__ExitPlanMode',
+  // Declaring a target or a requirement has no side effects outside the
+  // requirements panel, and a requirement only becomes binding once the user
+  // approves it. `run_requirements` is deliberately NOT here — it executes
+  // shell commands and goes through the normal permission flow.
+  'mcp__codiby-code-sdk__set_target',
+  'mcp__codiby-code-sdk__add_requirements',
+  'mcp__codiby-code-sdk__edit_requirement',
+  'mcp__codiby-code-sdk__attach_requirement_image',
+  'mcp__codiby-code-sdk__propose_change',
 ]);
+
+/**
+ * Paths the agent must never touch through a tool. The requirements database
+ * and its signing key are the ledger the agent is being graded against —
+ * signature verification catches edits after the fact, this stops the obvious
+ * attempt up front and makes it visible in the transcript.
+ */
+export const PROTECTED_PATH_PATTERNS: RegExp[] = [
+  /\.codiby\/database\.sqlite/,
+  /\.codiby\/requirements\.key/,
+];
+
+/**
+ * True when a tool invocation appears to read or write a protected path.
+ * Deliberately crude and string-based: it runs over the raw tool input, so a
+ * `bash -lc` one-liner mentioning the file trips it just as a Read would.
+ */
+export function touchesProtectedPath(input: unknown): boolean {
+  let serialized: string;
+  try {
+    serialized = typeof input === 'string' ? input : JSON.stringify(input ?? '');
+  } catch {
+    return false;
+  }
+  return PROTECTED_PATH_PATTERNS.some(pattern => pattern.test(serialized));
+}
 
 /**
  * Tools whose entire purpose is to hand control back to the user. Even in

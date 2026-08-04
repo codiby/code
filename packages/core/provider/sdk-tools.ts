@@ -13,6 +13,7 @@ import { homedir } from 'os';
 import { basename, dirname, extname, join } from 'path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { inheritFromChain, sessionGroupChain } from '../config/group-chain';
 
 import { log } from '../lib/logger';
 import { addMessage } from '../session/state';
@@ -25,6 +26,15 @@ import { trackedProcesses } from '../handlers/processes';
 import { createTerminal, removeTerminal } from '../handlers/terminals';
 import type { TrackedProcess } from '../types';
 import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../integrations/portless';
+import {
+  addRequirements,
+  createProposal,
+  editRequirement,
+  setRequirementImage,
+  setTarget,
+} from '../requirements/repository';
+import { broadcastRequirements, formatRunSummary, runRequirements, storeRequirementImage } from '../requirements/runner';
+import type { RequirementInput, RequirementPatch } from '../requirements/types';
 import { buildInjectedActionEnv, configuredActionUrl, getGlobalTld, worktreePrefix } from '../process/action-env';
 import type { PortlessConfig, TabGroupInfo } from '../../ui/src/lib/tab-groups';
 
@@ -228,6 +238,7 @@ function notOpen(name: string) {
 
 export type SdkToolDeps = {
   broadcastToSession: (sessionId: string, msg: object) => void;
+  sendBrowserRequest: (sessionId: string, msg: object) => void;
   broadcastSessionList: () => void;
   /** Read the current ui-preferences.json blob. Used by the per-session
    *  resolution of `autoFocusBrowserOnAction` (global default + per-project
@@ -241,12 +252,13 @@ export type SdkToolDeps = {
 function resolveSessionGroup(sessionId: string, deps: SdkToolDeps): { groupId: string; group: any } | null {
   const prefs = deps.loadPreferences();
   const map = (prefs.tabGroupMap as Record<string, string> | undefined) || {};
-  const groupId = map[sessionId];
-  if (!groupId) return null;
   const groups = (prefs.tabGroups as Record<string, any> | undefined) || {};
-  const group = groups[groupId];
+  // Nested groups inherit: use the nearest ancestor that configures portless,
+  // falling back to the session's own group.
+  const chain = sessionGroupChain(groups, map, sessionId);
+  const group = chain.find((g: any) => g.portless) ?? chain[0];
   if (!group) return null;
-  return { groupId, group };
+  return { groupId: group.id, group };
 }
 
 /** Resolve whether action-style browser_* tools should bring the targeted
@@ -256,12 +268,12 @@ function resolveSessionGroup(sessionId: string, deps: SdkToolDeps): { groupId: s
 function resolveAutoFocusBrowser(sessionId: string, deps: SdkToolDeps): boolean {
   const prefs = deps.loadPreferences();
   const map = (prefs.tabGroupMap as Record<string, string> | undefined) || {};
-  const groupId = map[sessionId];
-  if (groupId) {
-    const groups = (prefs.tabGroups as Record<string, { autoFocusBrowserOnAction?: boolean }> | undefined) || {};
-    const override = groups[groupId]?.autoFocusBrowserOnAction;
-    if (typeof override === 'boolean') return override;
-  }
+  const groups = (prefs.tabGroups as Record<string, { autoFocusBrowserOnAction?: boolean; parentId?: string | null }> | undefined) || {};
+  const override = inheritFromChain(
+    sessionGroupChain(groups, map, sessionId),
+    g => (typeof g.autoFocusBrowserOnAction === 'boolean' ? g.autoFocusBrowserOnAction : undefined),
+  );
+  if (typeof override === 'boolean') return override;
   const global = prefs.autoFocusBrowserOnAction;
   if (typeof global === 'boolean') return global;
   return true;
@@ -616,7 +628,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = (await cdpRequest(sessionId, name, 'snapshot', {}, deps.broadcastToSession)) as { url: string; title: string; yaml: string };
+            const r = (await cdpRequest(sessionId, name, 'snapshot', {}, deps.sendBrowserRequest)) as { url: string; title: string; yaml: string };
             const head = `URL: ${r.url}\nTitle: ${r.title}\n\n`;
             return { content: [{ type: 'text', text: head + (r.yaml || '(empty accessibility tree)') }] };
           } catch (e) {
@@ -635,7 +647,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = (await cdpRequest(sessionId, name, 'take_screenshot', {}, deps.broadcastToSession)) as { format: string; data: string };
+            const r = (await cdpRequest(sessionId, name, 'take_screenshot', {}, deps.sendBrowserRequest)) as { format: string; data: string };
             const buf = Buffer.from(r.data, 'base64');
             const ext = (r.format || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
             const file = join(SCREENSHOTS_ROOT, sessionId, `${name}-${Date.now()}.${ext}`);
@@ -666,7 +678,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            await cdpRequest(sessionId, name, 'click', { ref: args.ref, button: args.button, doubleClick: args.doubleClick }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'click', { ref: args.ref, button: args.button, doubleClick: args.doubleClick }, deps.sendBrowserRequest);
             const tag = (args.doubleClick ? 'double-' : '') + `${args.button ?? 'left'}-clicked`;
             return { content: [{ type: 'text', text: `${tag} ${args.ref} in "${name}".` }] };
           } catch (e) {
@@ -687,7 +699,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            await cdpRequest(sessionId, name, 'hover', { ref: args.ref }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'hover', { ref: args.ref }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: `Hovered ${args.ref} in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -713,7 +725,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            await cdpRequest(sessionId, name, 'type', { ref: args.ref, text: args.text, submit: args.submit }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'type', { ref: args.ref, text: args.text, submit: args.submit }, deps.sendBrowserRequest);
             const tail = args.submit ? ' and pressed Enter' : '';
             return { content: [{ type: 'text', text: `Typed ${JSON.stringify(args.text).slice(0, 80)} into ${args.ref} in "${name}"${tail}.` }] };
           } catch (e) {
@@ -734,7 +746,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            await cdpRequest(sessionId, name, 'press_key', { key: args.key }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'press_key', { key: args.key }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: `Pressed ${args.key} in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -755,7 +767,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            await cdpRequest(sessionId, name, 'select_option', { ref: args.ref, values: args.values }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'select_option', { ref: args.ref, values: args.values }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: `Selected ${JSON.stringify(args.values)} on ${args.ref} in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -777,7 +789,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            await cdpRequest(sessionId, name, 'scroll', { ref: args.ref, x: args.x, y: args.y }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'scroll', { ref: args.ref, x: args.x, y: args.y }, deps.sendBrowserRequest);
             const where = args.ref ? `ref=${args.ref}` : `(${args.x ?? 0}, ${args.y ?? 0})`;
             return { content: [{ type: 'text', text: `Scrolled "${name}" to ${where}.` }] };
           } catch (e) {
@@ -799,7 +811,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            await cdpRequest(sessionId, name, 'navigate', { action: args.action, url: args.url }, deps.broadcastToSession);
+            await cdpRequest(sessionId, name, 'navigate', { action: args.action, url: args.url }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: args.action === 'goto' ? `"${name}" navigating to ${args.url}.` : `"${name}" navigation: ${args.action}.` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -826,7 +838,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = (await cdpRequest(sessionId, name, 'evaluate', { function: args.function, ref: args.ref }, deps.broadcastToSession)) as { value: unknown };
+            const r = (await cdpRequest(sessionId, name, 'evaluate', { function: args.function, ref: args.ref }, deps.sendBrowserRequest)) as { value: unknown };
             return { content: [{ type: 'text', text: JSON.stringify(r.value, null, 2) ?? 'undefined' }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -855,7 +867,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            await cdpRequest(sessionId, name, 'wait_for', { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs }, deps.broadcastToSession, (args.timeoutMs ?? 5000) + 2000);
+            await cdpRequest(sessionId, name, 'wait_for', { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs }, deps.sendBrowserRequest, (args.timeoutMs ?? 5000) + 2000);
             return { content: [{ type: 'text', text: `Wait condition met in "${name}".` }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -874,7 +886,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = await cdpRequest(sessionId, name, 'console_messages', { tail: args.tail ?? 50 }, deps.broadcastToSession);
+            const r = await cdpRequest(sessionId, name, 'console_messages', { tail: args.tail ?? 50 }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -893,7 +905,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
-            const r = await cdpRequest(sessionId, name, 'network_requests', { tail: args.tail ?? 50 }, deps.broadcastToSession);
+            const r = await cdpRequest(sessionId, name, 'network_requests', { tail: args.tail ?? 50 }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
           } catch (e) {
             return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
@@ -918,7 +930,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           maybeFocusBrowser(sessionId, name, deps);
           try {
-            const r = (await cdpRequest(sessionId, name, 'handle_dialog', { accept: args.accept, promptText: args.promptText }, deps.broadcastToSession)) as { ok: true; handled: { type: string; message: string } | null };
+            const r = (await cdpRequest(sessionId, name, 'handle_dialog', { accept: args.accept, promptText: args.promptText }, deps.sendBrowserRequest)) as { ok: true; handled: { type: string; message: string } | null };
             const text = r.handled
               ? `${args.accept ? 'Accepted' : 'Dismissed'} ${r.handled.type} in "${name}": ${r.handled.message}`
               : 'No dialog was pending.';
@@ -976,18 +988,16 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           // terminal is a first-class resource, discovered from the terminals
           // list, not inferred from message history.
           //
-          // Inject env from every configured action in this session's project
-          // so the spawned command sees `API_URL`, `WEB_URL`, etc. — no
-          // source-action exclusion since `spawn_terminal` is session-scoped.
-          const spawnTermGroup = resolveSessionGroup(sessionId, deps)?.group as TabGroupInfo | undefined;
-          const spawnTermEnv = buildInjectedActionEnv(spawnTermGroup, getGlobalTld(deps.loadPreferences()), undefined, args.cwd);
+          // No cross-action env injection: `spawn_terminal` is an ordinary
+          // terminal, not an Action. Portless exports are reserved for
+          // `actions_run` and the Project Settings run path, so a command
+          // typed here behaves exactly like one typed in the dock.
           const spawnResult = createTerminal({
             sessionId,
             cwd: args.cwd,
             command: args.command,
             label,
             terminalName: label,
-            injectedEnv: spawnTermEnv,
           });
           if (!spawnResult.ok) {
             return { content: [{ type: 'text', text: spawnResult.error }], isError: true };
@@ -1341,6 +1351,203 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           }
           const names = targets.map(t => t.label!.slice('Action · '.length)).join(', ');
           return { content: [{ type: 'text', text: `Stopped ${stopped} action${stopped === 1 ? '' : 's'}: ${names}.` }] };
+        },
+      ),
+      tool(
+        'set_target',
+        [
+          'Set the session Target: one short, plain-language description of what this session is trying to build, written for the user rather than for you.',
+          '',
+          'Call it early, as soon as you understand the ask, and update it if the goal genuinely changes. It is shown at the top of the Requirements panel.',
+        ].join('\n'),
+        {
+          target: z.string().min(1).max(2000).describe('Two or three sentences at most. Plain language, no implementation detail.'),
+        },
+        async (args) => {
+          setTarget(sessionId, args.target.trim(), 'agent');
+          broadcastRequirements(sessionId);
+          return { content: [{ type: 'text', text: `Target set: ${args.target.trim()}` }] };
+        },
+      ),
+      tool(
+        'add_requirements',
+        [
+          'Append verifiable requirements to this session. Each one is a check the server can run on its own — no self-assessment.',
+          '',
+          'Two kinds:',
+          '- `command` — a shell command run in the session cwd. Exit 0 passes. Use for typechecks, tests, linters, build steps.',
+          '- `visual` — a screenshot plus a prompt, graded by a separate judge model. Use for UI work. Attach the image with `image` (an absolute path, e.g. what browser_take_screenshot returns) and set `capture.browser` to the name of the preview so each run grades a fresh screenshot against it.',
+          '',
+          'This tool only APPENDS. You cannot delete or reorder requirements, and once the user approves one you cannot edit it either — use propose_change to ask. Write checks you are willing to be held to: a command that cannot fail is worse than no requirement at all.',
+          '',
+          'Requirements start as drafts and do not count until the user approves them.',
+        ].join('\n'),
+        {
+          requirements: z.array(z.object({
+            title: z.string().min(1).max(200).describe('Short statement of what must be true, e.g. "Typecheck is clean".'),
+            check: z.union([
+              z.object({
+                type: z.literal('command'),
+                command: z.string().min(1).max(2000).describe('Shell command run via `bash -lc` in the session cwd.'),
+                timeoutMs: z.number().int().min(1000).max(900000).optional().describe('Timeout in ms. Defaults to 120000.'),
+              }),
+              z.object({
+                type: z.literal('visual'),
+                prompt: z.string().min(1).max(2000).describe('What the judge must verify in the screenshot. Be specific and falsifiable.'),
+                image: z.string().min(1).describe('Absolute path to a PNG/JPEG, or base64 data. Serves as the reference design.'),
+                capture: z.object({
+                  browser: z.string().optional().describe('Name of the browser preview to re-screenshot on every run.'),
+                  url: z.string().optional().describe('URL to navigate the preview to before capturing.'),
+                }).optional(),
+              }),
+            ]).describe('How this requirement is verified.'),
+          })).min(1).max(20),
+        },
+        async (args) => {
+          const prepared: RequirementInput[] = [];
+          for (const item of args.requirements) {
+            if (item.check.type === 'visual') {
+              try {
+                const stored = await storeRequirementImage(sessionId, `ref-${Date.now()}-${prepared.length}`, item.check.image);
+                prepared.push({ ...item, check: { ...item.check, image: stored } } as RequirementInput);
+              } catch (e) {
+                return {
+                  content: [{ type: 'text', text: `Could not read the image for "${item.title}": ${e instanceof Error ? e.message : String(e)}` }],
+                  isError: true,
+                };
+              }
+            } else {
+              prepared.push(item as RequirementInput);
+            }
+          }
+          const created = addRequirements(sessionId, prepared, 'agent');
+          broadcastRequirements(sessionId);
+          const lines = created.map(r => `[${r.id}] ${r.title} (${r.kind}, draft)`);
+          return {
+            content: [{
+              type: 'text',
+              text: `Added ${created.length} requirement(s):\n${lines.join('\n')}\n\nThey are drafts until the user approves them.`,
+            }],
+          };
+        },
+      ),
+      tool(
+        'edit_requirement',
+        'Edit a requirement you added. Only works while it is still a draft — once the user approves it, use propose_change instead.',
+        {
+          id: z.string().min(1).describe('Requirement id (`req_…`).'),
+          title: z.string().min(1).max(200).optional(),
+          check: z.union([
+            z.object({
+              type: z.literal('command'),
+              command: z.string().min(1).max(2000),
+              timeoutMs: z.number().int().min(1000).max(900000).optional(),
+            }),
+            z.object({
+              type: z.literal('visual'),
+              prompt: z.string().min(1).max(2000),
+              image: z.string().min(1),
+              capture: z.object({
+                browser: z.string().optional(),
+                url: z.string().optional(),
+              }).optional(),
+            }),
+          ]).optional(),
+        },
+        async (args) => {
+          const patch: Record<string, unknown> = {};
+          if (args.title) patch.title = args.title;
+          if (args.check) {
+            if (args.check.type === 'visual') {
+              const stored = await storeRequirementImage(sessionId, `ref-${args.id}-${Date.now()}`, args.check.image);
+              patch.check = { ...args.check, image: stored };
+            } else {
+              patch.check = args.check;
+            }
+          }
+          const result = editRequirement(sessionId, args.id, patch as RequirementPatch, 'agent');
+          if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
+          broadcastRequirements(sessionId);
+          return { content: [{ type: 'text', text: `Updated [${result.requirement.id}] ${result.requirement.title}.` }] };
+        },
+      ),
+      tool(
+        'attach_requirement_image',
+        'Replace the reference image of a visual requirement without touching the rest of its definition. Draft requirements only.',
+        {
+          id: z.string().min(1).describe('Requirement id (`req_…`).'),
+          image: z.string().min(1).describe('Absolute path to a PNG/JPEG, or base64 data.'),
+        },
+        async (args) => {
+          let stored: string;
+          try {
+            stored = await storeRequirementImage(sessionId, `ref-${args.id}-${Date.now()}`, args.image);
+          } catch (e) {
+            return { content: [{ type: 'text', text: `Could not read the image: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+          }
+          const result = setRequirementImage(sessionId, args.id, stored, 'agent');
+          if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
+          broadcastRequirements(sessionId);
+          return { content: [{ type: 'text', text: `Attached a new reference image to [${args.id}].` }] };
+        },
+      ),
+      tool(
+        'propose_change',
+        [
+          'Ask the user to edit, delete or waive a requirement they already approved. This does NOT apply the change — it queues a proposal they can accept or reject, and the requirement stays in force until they decide.',
+          '',
+          'Use it when a requirement turned out to be wrong or impossible, and say plainly why. Do not use it to lower the bar on something you simply have not managed to satisfy yet.',
+        ].join('\n'),
+        {
+          id: z.string().min(1).describe('Requirement id (`req_…`).'),
+          action: z.enum(['edit', 'delete', 'waive']).describe('What you are asking for.'),
+          reason: z.string().min(1).max(1000).describe('Why. The user reads this verbatim before deciding.'),
+          payload: z.object({
+            title: z.string().min(1).max(200).optional(),
+            check: z.union([
+              z.object({
+                type: z.literal('command'),
+                command: z.string().min(1).max(2000),
+                timeoutMs: z.number().int().min(1000).max(900000).optional(),
+              }),
+              z.object({
+                type: z.literal('visual'),
+                prompt: z.string().min(1).max(2000),
+                image: z.string().min(1),
+                capture: z.object({ browser: z.string().optional(), url: z.string().optional() }).optional(),
+              }),
+            ]).optional(),
+          }).optional().describe('Required for `edit`: the exact change you are proposing.'),
+        },
+        async (args) => {
+          const result = createProposal(sessionId, args.id, {
+            action: args.action,
+            reason: args.reason,
+            payload: args.payload as RequirementPatch | undefined,
+          });
+          if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
+          broadcastRequirements(sessionId);
+          return {
+            content: [{
+              type: 'text',
+              text: `Proposed to ${args.action} [${args.id}]. It is pending the user's decision — the requirement still counts until they resolve it.`,
+            }],
+          };
+        },
+      ),
+      tool(
+        'run_requirements',
+        [
+          'Run the session\'s requirement checks on the server and report back which pass. Commands execute in the session cwd; visual checks are graded by a separate judge model that cannot see this conversation.',
+          '',
+          'You do not decide the outcome — this is the only way to learn whether a requirement is met. Run it after any change that could affect a requirement, and before you claim work is done.',
+        ].join('\n'),
+        {
+          ids: z.array(z.string()).optional().describe('Requirement ids to run. Omit to run all of them.'),
+        },
+        async (args) => {
+          const summary = await runRequirements(sessionId, args.ids);
+          return { content: [{ type: 'text', text: formatRunSummary(summary) }] };
         },
       ),
       // Plugin-contributed SDK tools — already prefixed with `<pluginId>_`

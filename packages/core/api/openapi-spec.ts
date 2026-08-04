@@ -88,6 +88,9 @@ export const openApiSpec: OpenApiSpec = {
     { name: 'Debug', description: 'Chrome DevTools Protocol bridging' },
     { name: 'Mobile', description: 'Pairing & push notifications' },
     { name: 'Plugins', description: 'Sideloaded plugin manifests' },
+    { name: 'Automations', description: 'Cron-based scheduled agent sessions and run history' },
+    { name: 'Requirements', description: 'Per-session target + machine-verifiable acceptance criteria' },
+    { name: 'Loop', description: 'Loop mode — the session cannot stop until its requirements pass' },
     { name: 'WebSockets', description: 'Realtime channels (informational)' },
   ],
 
@@ -110,6 +113,51 @@ export const openApiSpec: OpenApiSpec = {
         type: 'object',
         properties: { error: { type: 'string' } },
         required: ['error'],
+      },
+      RequirementCheck: {
+        oneOf: [
+          {
+            type: 'object',
+            required: ['type', 'command'],
+            properties: {
+              type: { const: 'command' },
+              command: { type: 'string', description: 'Run via `bash -lc` in the session cwd. Exit 0 passes.' },
+              timeoutMs: { type: 'integer', default: 120000 },
+            },
+          },
+          {
+            type: 'object',
+            required: ['type', 'prompt', 'image'],
+            properties: {
+              type: { const: 'visual' },
+              prompt: { type: 'string', description: 'What the judge model must verify in the screenshot.' },
+              image: { type: 'string', description: 'Absolute path to a PNG/JPEG, or base64 data. Kept as the reference design.' },
+              capture: {
+                type: 'object',
+                description: 'When set, a fresh screenshot is taken on every run and graded against the reference.',
+                properties: { browser: { type: 'string' }, url: { type: 'string', format: 'uri' } },
+              },
+            },
+          },
+        ],
+      },
+      RequirementsCreate: {
+        type: 'object',
+        required: ['requirements'],
+        properties: {
+          requirements: {
+            type: 'array',
+            minItems: 1,
+            items: {
+              type: 'object',
+              required: ['title', 'check'],
+              properties: {
+                title: { type: 'string' },
+                check: { $ref: '#/components/schemas/RequirementCheck' },
+              },
+            },
+          },
+        },
       },
       PortForward: {
         type: 'object',
@@ -141,6 +189,42 @@ export const openApiSpec: OpenApiSpec = {
           remoteId: { type: ['string', 'null'] },
           remoteColor: { type: ['string', 'null'] },
           remoteName: { type: ['string', 'null'] },
+        },
+      },
+      Automation: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          name: { type: 'string' },
+          description: { type: ['string', 'null'] },
+          cronExpression: { type: 'string' },
+          timezone: { type: 'string' },
+          enabled: { type: 'boolean' },
+          prompt: { type: 'string' },
+          cwd: { type: 'string' },
+          provider: { type: 'string' },
+          model: { type: ['string', 'null'] },
+          permissionMode: { type: 'string' },
+          effort: { type: ['string', 'null'] },
+          concurrencyPolicy: { type: 'string', enum: ['skip'] },
+          maxRuntimeMs: { type: ['integer', 'null'] },
+          nextRunAt: { type: ['integer', 'null'] },
+          createdAt: { type: 'integer' },
+          updatedAt: { type: 'integer' },
+        },
+      },
+      AutomationRun: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          automationId: { type: 'string' },
+          sessionId: { type: ['string', 'null'] },
+          trigger: { type: 'string', enum: ['scheduled', 'manual'] },
+          status: { type: 'string', enum: ['scheduled', 'running', 'succeeded', 'failed', 'timed_out', 'cancelled', 'skipped'] },
+          scheduledFor: { type: ['integer', 'null'] },
+          resultText: { type: ['string', 'null'] },
+          error: { type: ['string', 'null'] },
+          createdAt: { type: 'integer' },
         },
       },
       Remote: {
@@ -196,6 +280,50 @@ export const openApiSpec: OpenApiSpec = {
       },
     },
 
+    // ───────────────────────── Automations ─────────────────────────
+    '/automations': {
+      get: {
+        tags: ['Automations'],
+        summary: 'List automations',
+        responses: { 200: { description: 'Automation list' } },
+      },
+      post: {
+        tags: ['Automations'],
+        summary: 'Create an automation',
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/Automation' } } } },
+        responses: { 201: { description: 'Created' }, 400: errorResponse('Invalid schedule or input') },
+      },
+    },
+    '/automations/{id}': {
+      get: { tags: ['Automations'], summary: 'Get an automation', responses: { 200: { description: 'Automation' }, 404: errorResponse('Not found') } },
+      patch: { tags: ['Automations'], summary: 'Update and reschedule an automation', responses: { 200: { description: 'Updated' }, 400: errorResponse('Invalid input'), 404: errorResponse('Not found') } },
+      delete: { tags: ['Automations'], summary: 'Soft-delete an automation', responses: { 200: okResponse, 404: errorResponse('Not found') } },
+    },
+    '/automations/{id}/run': {
+      post: { tags: ['Automations'], summary: 'Trigger an automation manually', responses: { 202: { description: 'Run started' }, 409: errorResponse('Another run is active') } },
+    },
+    '/automations/{id}/runs': {
+      get: {
+        tags: ['Automations'],
+        summary: 'List automation runs',
+        parameters: [
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 100 } },
+          { name: 'before', in: 'query', schema: { type: 'integer' } },
+          { name: 'status', in: 'query', schema: { type: 'string' } },
+        ],
+        responses: { 200: { description: 'Paginated run list' } },
+      },
+    },
+    '/automations/{id}/runs/{runId}': {
+      get: { tags: ['Automations'], summary: 'Get a run', responses: { 200: { description: 'Run details' }, 404: errorResponse('Not found') } },
+    },
+    '/automations/{id}/runs/{runId}/result': {
+      get: { tags: ['Automations'], summary: 'Get a run result and usage', responses: { 200: { description: 'Run result' }, 404: errorResponse('Not found') } },
+    },
+    '/automations/{id}/runs/{runId}/cancel': {
+      post: { tags: ['Automations'], summary: 'Cancel an active run', responses: { 200: okResponse, 404: errorResponse('Active run not found') } },
+    },
+
     // ───────────────────────── Sessions ─────────────────────────
     '/sessions': {
       get: {
@@ -244,23 +372,43 @@ export const openApiSpec: OpenApiSpec = {
       patch: {
         tags: ['Sessions'],
         summary: 'Rename / update a session',
+        description:
+          'Partial update — only the supplied fields change. `status` is the reversible UI lifecycle: ' +
+          '`archived` hides the tab (nothing is deleted), `open` restores it. Use DELETE for the irreversible path. ' +
+          'Also reachable over MCP as `ui_update_session` / `ui_archive_session` / `ui_unarchive_session`.',
         parameters: [sessionIdParam],
         requestBody: {
           required: true,
-          content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string' } } } } },
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', description: 'New session name shown in the tab bar' },
+                  status: { type: 'string', enum: ['open', 'archived'], description: 'UI lifecycle: archived hides the tab (reversible)' },
+                  permissionMode: { type: 'string', description: 'default | acceptEdits | plan | bypassPermissions | loop' },
+                },
+              },
+            },
+          },
         },
         responses: { 200: { description: 'Updated session', content: { 'application/json': { schema: { $ref: '#/components/schemas/Session' } } } } },
       },
       delete: {
         tags: ['Sessions'],
-        summary: 'Delete / archive a session',
-        description: '`?purge=1` also deletes on-disk history + UI state. `?worktree=1` removes the git worktree when cwd looks like one.',
+        summary: 'Delete a session permanently',
+        description:
+          'Irreversible — drops the session record, stops its provider, and purges its stored resources. ' +
+          'To merely hide a tab, PATCH `status: "archived"` instead. ' +
+          '`?purge=1` also deletes on-disk history + UI state (conversation unrecoverable). ' +
+          '`?worktree=1` removes the git worktree when cwd looks like one (uncommitted work is lost). ' +
+          'The main session cannot be deleted (403). Also reachable over MCP as `ui_delete_session`.',
         parameters: [
           sessionIdParam,
           { name: 'purge', in: 'query', required: false, schema: { type: 'string', enum: ['1'] } },
           { name: 'worktree', in: 'query', required: false, schema: { type: 'string', enum: ['1'] } },
         ],
-        responses: { 200: okResponse },
+        responses: { 200: okResponse, 403: errorResponse('Cannot delete main session'), 404: errorResponse('Session not found') },
       },
     },
     '/sessions/{id}/resume': {
@@ -318,6 +466,140 @@ export const openApiSpec: OpenApiSpec = {
           { name: 'localPort', in: 'path', required: true, schema: { type: 'integer' } },
         ],
         responses: { 200: corsResponse },
+      },
+    },
+
+    // ───────────────────────── Requirements ─────────────────────────
+    // The agent's own routes into this data are MCP tools, and they are
+    // append-only. Approving, deleting, waiving and resolving proposals are
+    // exposed here and nowhere else — that split is what stops a session from
+    // grading itself.
+    '/sessions/{id}/requirements': {
+      get: {
+        tags: ['Requirements'],
+        summary: 'Target, requirements, pending proposals and progress',
+        parameters: [sessionIdParam],
+        responses: { 200: { description: 'Requirements snapshot' }, 404: errorResponse('Session not found') },
+      },
+      post: {
+        tags: ['Requirements'],
+        summary: 'Add requirements as the user',
+        parameters: [sessionIdParam],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/RequirementsCreate' } } },
+        },
+        responses: { 201: { description: 'Requirements snapshot' }, 400: errorResponse('Invalid input') },
+      },
+    },
+    '/sessions/{id}/requirements/target': {
+      put: {
+        tags: ['Requirements'],
+        summary: 'Set the session Target',
+        parameters: [sessionIdParam],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['target'], properties: { target: { type: 'string' } } } } },
+        },
+        responses: { 200: { description: 'Requirements snapshot' }, 400: errorResponse('Invalid input') },
+      },
+    },
+    '/sessions/{id}/requirements/run': {
+      post: {
+        tags: ['Requirements'],
+        summary: 'Run the checks server-side',
+        description: 'Commands run via `bash -lc` in the session cwd; visual checks are graded by a separate judge model. Outcomes are written by the runner and signed — nothing else can set a requirement to passing.',
+        parameters: [sessionIdParam],
+        requestBody: {
+          required: false,
+          content: { 'application/json': { schema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } } } } } },
+        },
+        responses: { 200: { description: 'Run summary + snapshot' }, 404: errorResponse('Session not found') },
+      },
+    },
+    '/sessions/{id}/requirements/events': {
+      get: {
+        tags: ['Requirements'],
+        summary: 'Append-only audit trail',
+        parameters: [sessionIdParam, { name: 'limit', in: 'query', schema: { type: 'integer', default: 200 } }],
+        responses: { 200: { description: 'Events, newest first' } },
+      },
+    },
+    '/sessions/{id}/requirements/{rid}': {
+      patch: {
+        tags: ['Requirements'],
+        summary: 'Approve, unlock, waive or edit a requirement',
+        description: 'Send `{ action: "lock" | "unlock" | "waive", reason? }` for a lifecycle change, or a `{ title?, check? }` patch to edit it.',
+        parameters: [sessionIdParam, { name: 'rid', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Requirements snapshot' }, 409: errorResponse('Requirement is tampered') },
+      },
+      delete: {
+        tags: ['Requirements'],
+        summary: 'Delete a requirement (user only)',
+        parameters: [sessionIdParam, { name: 'rid', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Requirements snapshot' }, 404: errorResponse('Not found') },
+      },
+    },
+    '/sessions/{id}/requirements/{rid}/proposals': {
+      post: {
+        tags: ['Requirements'],
+        summary: 'Queue a change proposal',
+        parameters: [sessionIdParam, { name: 'rid', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 201: { description: 'Proposal' }, 400: errorResponse('Invalid input') },
+      },
+    },
+    '/sessions/{id}/proposals/{pid}/approve': {
+      post: {
+        tags: ['Requirements'],
+        summary: 'Approve a proposal and apply it',
+        parameters: [sessionIdParam, { name: 'pid', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Requirements snapshot' }, 409: errorResponse('Already resolved') },
+      },
+    },
+    '/sessions/{id}/proposals/{pid}/reject': {
+      post: {
+        tags: ['Requirements'],
+        summary: 'Reject a proposal',
+        parameters: [sessionIdParam, { name: 'pid', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Requirements snapshot' }, 409: errorResponse('Already resolved') },
+      },
+    },
+
+    // ───────────────────────── Loop mode ─────────────────────────
+    '/sessions/{id}/loop': {
+      get: {
+        tags: ['Loop'],
+        summary: 'Loop state, progress and caps',
+        parameters: [sessionIdParam],
+        responses: { 200: { description: 'Loop state' }, 404: errorResponse('Session not found') },
+      },
+    },
+    '/sessions/{id}/loop/start': {
+      post: {
+        tags: ['Loop'],
+        summary: 'Arm Loop mode',
+        description: 'Puts the session into `loop` permission mode: bypass-equivalent permissions, AskUserQuestion/ExitPlanMode auto-denied, and a continuation prompt injected after every turn until all approved requirements pass. Never exposed as an MCP tool.',
+        parameters: [sessionIdParam],
+        responses: { 200: { description: 'Loop state' }, 404: errorResponse('Session not found') },
+      },
+    },
+    '/sessions/{id}/loop/pause': {
+      post: { tags: ['Loop'], summary: 'Pause the loop', parameters: [sessionIdParam], responses: { 200: { description: 'Loop state' } } },
+    },
+    '/sessions/{id}/loop/resume': {
+      post: {
+        tags: ['Loop'],
+        summary: 'Resume a paused loop with a fresh budget',
+        parameters: [sessionIdParam],
+        responses: { 200: { description: 'Loop state' }, 409: errorResponse('No loop to resume') },
+      },
+    },
+    '/sessions/{id}/loop/stop': {
+      post: {
+        tags: ['Loop'],
+        summary: 'Stop the loop and leave loop mode',
+        parameters: [sessionIdParam],
+        responses: { 200: { description: 'Loop state' }, 404: errorResponse('Session not found') },
       },
     },
 

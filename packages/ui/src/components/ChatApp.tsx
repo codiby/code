@@ -81,6 +81,9 @@ import { type MockupComment } from '../lib/mockup-inspector';
 import { MockupPanel } from './MockupPanel';
 import { BrowserPanel } from './BrowserPanel';
 import { PlanPanel } from './PlanPanel';
+import { RequirementsPanel } from './RequirementsPanel';
+import { LoopBanner } from './LoopBanner';
+import type { RequirementsSnapshot } from '../lib/requirements';
 import {
   ChatFocusLayout,
   persistWorkspaces,
@@ -98,6 +101,7 @@ import { SearchPanel } from './search/SearchPanel';
 import { FocusBrowserAnchor } from './browser/FocusBrowserAnchor';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
+import { ancestorChain, descendantGroupIds, isAncestorOf } from '../lib/group-tree';
 import type { LocalSessionState } from '../lib/session-state';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
@@ -123,6 +127,34 @@ const SESSION_ACCENT_PALETTE = [
   '#7c5cff', '#22d3ee', '#f59e0b', '#34d399',
   '#f87171', '#c084fc', '#38bdf8', '#fb7185',
 ];
+
+/** Ids of optimistic sidebar rows carry this prefix. No server resource exists
+ *  behind them, so every handler that would hit the bridge bails on one. */
+const PENDING_SESSION_PREFIX = 'pending:';
+export const isPendingSessionId = (id: string | null | undefined): boolean =>
+  !!id && id.startsWith(PENDING_SESSION_PREFIX);
+
+/** Stand-in tab shown while `POST /sessions` is in flight. Shaped like a real
+ *  `SessionInfo` so the sidebar renders it with the ordinary "starting" dot. */
+function makePlaceholderSession(cwd: string, remoteId: string | null): SessionInfo {
+  const now = Date.now();
+  return {
+    id: `${PENDING_SESSION_PREFIX}${crypto.randomUUID()}`,
+    name: cwd.split('/').filter(Boolean).pop() || 'New session',
+    cwd,
+    created_at: now,
+    updated_at: now,
+    status: 'open',
+    runtime_status: 'starting',
+    ready: false,
+    claude_session_id: null,
+    ws_url: '',
+    saved_commands: [],
+    model: null,
+    permission_mode: 'default',
+    remoteId,
+  };
+}
 
 // Streaming content lives directly in the `messages` array as a message flagged
 // `streaming: true` — one per in-flight block (text and/or thinking). Only one
@@ -235,6 +267,8 @@ export function ChatApp() {
   const setPinnedSessionIds = useAppStore(s => s.setPinnedSessionIds);
   const expandedGroupIds = useAppStore(s => s.expandedGroupIds);
   const setExpandedGroupIds = useAppStore(s => s.setExpandedGroupIds);
+  const pinnedOutOfWorktree = useAppStore(s => s.pinnedOutOfWorktree);
+  const setPinnedOutOfWorktree = useAppStore(s => s.setPinnedOutOfWorktree);
   /** Group focused in the sidebar. When set, the main pane renders the
    *  inline new-session composer (GroupComposer) instead of the active
    *  session's chat body. Cleared as soon as a session is selected. */
@@ -259,6 +293,7 @@ export function ChatApp() {
   const theme = useAppStore(s => s.theme);
   const setTheme = useAppStore(s => s.setTheme);
   const autoGroupSessions = useAppStore(s => s.autoGroupSessions);
+  const groupSessionsByWorktree = useAppStore(s => s.groupSessionsByWorktree);
   const autoFocusBrowserOnAction = useAppStore(s => s.autoFocusBrowserOnAction);
   const showTelegramSession = useAppStore(s => s.showTelegramSession);
   const interruptOnSend = useAppStore(s => s.interruptOnSend);
@@ -297,6 +332,13 @@ export function ChatApp() {
     });
   };
 
+  /** Optimistic sidebar rows for sessions whose POST is still in flight, so
+   *  pressing "+" on a group paints a tab immediately instead of after the
+   *  round-trip. Merged into the list handed to the TabBar and dropped in the
+   *  creator's `finally` — a failed create leaves no ghost behind. */
+  const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>([]);
+  const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>({});
+
   const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
   let groupColorIdx = Object.keys(tabGroups).length;
 
@@ -312,7 +354,10 @@ export function ChatApp() {
     const groupName = firstMember?.cwd
       ? (firstMember.cwd.split('/').filter(Boolean).pop() || `Group ${Object.keys(tabGroups).length + 1}`)
       : `Group ${Object.keys(tabGroups).length + 1}`;
-    const newGroups = { ...tabGroups, [groupId]: { id: groupId, name: groupName, color, cwd: groupCwd } };
+    const newGroups: Record<string, TabGroupInfo> = {
+      ...tabGroups,
+      [groupId]: { id: groupId, name: groupName, color, cwd: groupCwd, parentId: null, kind: 'manual' },
+    };
     const newMap = { ...tabGroupMap };
     for (const id of tabIds) newMap[id] = groupId;
     setTabGroups(newGroups);
@@ -326,43 +371,143 @@ export function ChatApp() {
   };
 
   /** Create a new session whose cwd matches the group's saved project path,
-   *  then add it to the group automatically. Triggered from the group's
-   *  dropdown menu. Falls back to the first member's cwd for legacy groups
-   *  created before the cwd field existed, and backfills group.cwd at the
+   *  then add it to the group automatically. Triggered from the "+" on a group
+   *  header — it spawns straight away, no composer step, so an optimistic row
+   *  goes into the sidebar before the POST comes back and is swapped for the
+   *  real session (or dropped, on failure) in the `finally`.
+   *
+   *  `cwdOverride` targets a specific worktree, used when the "+" was pressed on
+   *  a derived worktree group. Falls back to the first member's cwd for legacy
+   *  groups created before the cwd field existed, and backfills group.cwd at the
    *  same time so it persists for next time. */
-  const handleNewSessionInGroup = async (groupId: string) => {
+  const handleNewSessionInGroup = async (groupId: string | null, cwdOverride?: string) => {
     const c = clientRef.current;
     if (!c) return;
-    const group = tabGroups[groupId];
-    if (!group) return;
-    const firstMember = sessions.find(s => tabGroupMap[s.id] === groupId);
-    const cwd = group.cwd || firstMember?.cwd || '';
+    // `groupId: null` comes from a worktree cluster sitting at the sidebar root:
+    // the session spawns ungrouped, and the derivation reclaims it because the
+    // cwd matches.
+    const group = groupId ? tabGroups[groupId] : undefined;
+    if (groupId && !group) return;
+    const members = groupId ? sessions.filter(s => tabGroupMap[s.id] === groupId) : [];
+    const firstMember = members[0];
+    const cwd = cwdOverride || group?.cwd || firstMember?.cwd || '';
     if (!cwd) return;
     // If every member of this group lives on the same remote, the new
     // session goes there too — otherwise it stays local.
     const groupRemoteId = firstMember?.remoteId
-      && sessions.filter(s => tabGroupMap[s.id] === groupId).every(s => s.remoteId === firstMember.remoteId)
+      && members.every(s => s.remoteId === firstMember.remoteId)
         ? firstMember.remoteId
         : null;
+
+    const placeholder = makePlaceholderSession(cwd, groupRemoteId ?? null);
+    setPendingSessions(prev => [...prev, placeholder]);
+    if (groupId) {
+      setPendingGroupMap(prev => ({ ...prev, [placeholder.id]: groupId }));
+      setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
+    }
+
     try {
-      const session = await c.createSession(cwd, { remoteId: groupRemoteId });
-      const newMap = { ...tabGroupMap, [session.id]: groupId };
-      setTabGroupMap(newMap);
+      const session = await c.createSession(cwd, { remoteId: groupRemoteId, groupCwd: group?.cwd });
+      let newMap = tabGroupMap;
+      if (groupId) {
+        newMap = { ...tabGroupMap, [session.id]: groupId };
+        setTabGroupMap(newMap);
+      }
       // Persist the inferred cwd back into the group so subsequent
       // dropdown opens don't need the fallback path.
       let nextGroups = tabGroups;
-      if (!group.cwd) {
-        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd } };
+      const backfillCwd = !!groupId && !!group && !group.cwd && !cwdOverride;
+      if (backfillCwd) {
+        nextGroups = { ...tabGroups, [groupId!]: { ...group!, cwd } };
         setTabGroups(nextGroups);
       }
-      setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
-      persistPrefs({ tabGroupMap: newMap, ...(group.cwd ? {} : { tabGroups: nextGroups }) });
+      persistPrefs({
+        ...(groupId ? { tabGroupMap: newMap } : {}),
+        ...(backfillCwd ? { tabGroups: nextGroups } : {}),
+      });
     } catch (err) {
       console.error('[ChatApp] Failed to create session in group:', err);
+    } finally {
+      setPendingSessions(prev => prev.filter(s => s.id !== placeholder.id));
+      setPendingGroupMap(prev => {
+        const next = { ...prev };
+        delete next[placeholder.id];
+        return next;
+      });
     }
+  };
+
+  /** Create an empty subgroup under `parentId`. Nesting is unbounded; the group
+   *  carries no colour of its own so it inherits the parent's, and `allowEmpty`
+   *  keeps the orphan-pruning pass from deleting it before anything is dragged
+   *  in. */
+  const handleCreateSubgroup = (parentId: string) => {
+    const parent = tabGroups[parentId];
+    if (!parent) return;
+    const groupId = crypto.randomUUID();
+    const siblings = Object.values(tabGroups).filter(g => (g.parentId ?? null) === parentId).length;
+    const newGroups: Record<string, TabGroupInfo> = {
+      ...tabGroups,
+      [groupId]: {
+        id: groupId,
+        name: `Subgroup ${siblings + 1}`,
+        cwd: parent.cwd,
+        parentId,
+        kind: 'manual',
+        allowEmpty: true,
+      },
+    };
+    setTabGroups(newGroups);
+    setExpandedGroupIds(prev => {
+      const next = new Set(prev);
+      next.add(parentId);
+      next.add(groupId);
+      return next;
+    });
+    persistPrefs({ tabGroups: newGroups });
+  };
+
+  /** Re-parent a group. `null` returns it to the sidebar root. Rejects a move
+   *  into the group's own subtree, which would detach that whole branch from
+   *  the tree. */
+  const handleMoveGroup = (groupId: string, newParentId: string | null) => {
+    const group = tabGroups[groupId];
+    if (!group) return;
+    if (newParentId) {
+      if (!tabGroups[newParentId]) return;
+      if (isAncestorOf(tabGroups, groupId, newParentId)) return;
+    }
+    if ((group.parentId ?? null) === newParentId) return;
+    const newGroups: Record<string, TabGroupInfo> = {
+      ...tabGroups,
+      [groupId]: { ...group, parentId: newParentId },
+    };
+    setTabGroups(newGroups);
+    if (newParentId) {
+      setExpandedGroupIds(prev => {
+        if (prev.has(newParentId)) return prev;
+        const next = new Set(prev);
+        next.add(newParentId);
+        return next;
+      });
+    }
+    persistPrefs({ tabGroups: newGroups });
+  };
+
+  /** Toggle a session's exemption from automatic worktree grouping. Set when
+   *  the user drags a row out of its worktree cluster (otherwise the derivation
+   *  would immediately reclaim it), cleared to let it rejoin. */
+  const handlePinOutOfWorktree = (sessionId: string) => {
+    setPinnedOutOfWorktree(prev => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      persistPrefs({ pinnedOutOfWorktree: [...next] });
+      return next;
+    });
   };
 
   /** Open the worktree creation modal targeted at a group's repo. On
@@ -501,6 +646,7 @@ export function ChatApp() {
   };
 
   const handleAddToGroup = (tabId: string, groupId: string) => {
+    if (isPendingSessionId(tabId)) return;
     const newMap = { ...tabGroupMap, [tabId]: groupId };
     setTabGroupMap(newMap);
     setExpandedGroupIds(prev => {
@@ -515,9 +661,11 @@ export function ChatApp() {
     const newMap = { ...tabGroupMap };
     const groupId = newMap[tabId];
     delete newMap[tabId];
-    // Delete group if empty
+    // Drop the group when that emptied it — unless it still holds subgroups or
+    // was created as a deliberately empty folder.
     const newGroups = { ...tabGroups };
-    if (groupId && !Object.values(newMap).includes(groupId)) {
+    const stillHasChildren = !!groupId && Object.values(tabGroups).some(g => (g.parentId ?? null) === groupId);
+    if (groupId && !Object.values(newMap).includes(groupId) && !stillHasChildren && !tabGroups[groupId]?.allowEmpty) {
       delete newGroups[groupId];
       setExpandedGroupIds(prev => {
         if (!prev.has(groupId)) return prev;
@@ -546,12 +694,17 @@ export function ChatApp() {
     });
   }, [activeId, tabGroupMap]);
 
-  // Invariant: a group with zero members in `tabGroupMap` should not exist.
-  // Prune orphans automatically so any flow that removes a tab from a group
-  // (purge, future close/archive cleanup, etc.) leaves no dead group behind.
+  // Invariant: a group with nothing in it should not exist. With nesting,
+  // "nothing" means no sessions anywhere in its subtree *and* no child groups —
+  // a project group whose sessions all live in subgroups has to survive. Groups
+  // the user created explicitly as empty folders opt out via `allowEmpty`.
   useEffect(() => {
     const usedGroupIds = new Set(Object.values(tabGroupMap));
-    const orphaned = Object.keys(tabGroups).filter(id => !usedGroupIds.has(id));
+    const hasChildren = new Set(
+      Object.values(tabGroups).map(g => g.parentId).filter((id): id is string => !!id),
+    );
+    const orphaned = Object.keys(tabGroups).filter(id =>
+      !usedGroupIds.has(id) && !hasChildren.has(id) && !tabGroups[id]?.allowEmpty);
     if (orphaned.length === 0) return;
     const nextGroups = { ...tabGroups };
     for (const id of orphaned) delete nextGroups[id];
@@ -602,19 +755,24 @@ export function ChatApp() {
     persistPrefs({ tabGroups: newGroups });
   };
 
+  /** Drop a group and everything nested under it. Member sessions survive as
+   *  ungrouped tabs; only the grouping goes away. */
   const handleDeleteGroup = (groupId: string) => {
     if (!tabGroups[groupId]) return;
+    const doomed = new Set([groupId, ...descendantGroupIds(tabGroups, groupId)]);
     const newGroups = { ...tabGroups };
-    delete newGroups[groupId];
+    for (const id of doomed) delete newGroups[id];
     const newMap: Record<string, string> = {};
     for (const [sid, gid] of Object.entries(tabGroupMap)) {
-      if (gid !== groupId) newMap[sid] = gid;
+      if (!doomed.has(gid)) newMap[sid] = gid;
     }
     setTabGroups(newGroups);
     setTabGroupMap(newMap);
     setExpandedGroupIds(prev => {
-      if (!prev.has(groupId)) return prev;
-      const next = new Set(prev); next.delete(groupId); return next;
+      const next = new Set(prev);
+      let changed = false;
+      for (const id of doomed) if (next.delete(id)) changed = true;
+      return changed ? next : prev;
     });
     persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
   };
@@ -974,6 +1132,8 @@ export function ChatApp() {
     browserComments: {}, browserInspect: {},
     openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
     pastedImages: [],
+    requirements: null, requirementsOpen: false, requirementsRunning: [],
+    loop: null, loopProgress: null,
   });
 
   const getState = (id: string | null): LocalSessionState => {
@@ -1247,6 +1407,13 @@ export function ChatApp() {
                 lastPlan: existing?.lastPlan ?? null,
                 planComments: existing?.planComments ?? [],
                 planRequestId: existing?.planRequestId ?? null,
+                // Requirements/loop arrive over their own broadcasts and via a
+                // REST refetch on subscribe, so they'd be wiped by the spread.
+                requirements: existing?.requirements ?? null,
+                requirementsOpen: existing?.requirementsOpen ?? false,
+                requirementsRunning: existing?.requirementsRunning ?? [],
+                loop: existing?.loop ?? null,
+                loopProgress: existing?.loopProgress ?? null,
               },
             };
           });
@@ -1449,6 +1616,46 @@ export function ChatApp() {
           });
         },
 
+        // Requirements snapshot — the server pushes one on every mutation and
+        // around every check run. Opens the panel the first time a session
+        // grows a target or a requirement, then leaves it to the user.
+        onRequirements: (sid, snapshot) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            const firstContent = !s.requirements
+              && (!!snapshot.target || snapshot.requirements.length > 0);
+            return {
+              ...prev,
+              [sid]: {
+                ...s,
+                requirements: snapshot,
+                requirementsOpen: s.requirementsOpen || firstContent,
+                // The server is authoritative about what is still running.
+                requirementsRunning: snapshot.requirements
+                  .filter(r => r.status === 'running')
+                  .map(r => r.id),
+              },
+            };
+          });
+        },
+
+        onLoop: (sid, loop, progress) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return {
+              ...prev,
+              [sid]: {
+                ...s,
+                loop,
+                loopProgress: progress,
+                // A running loop without the panel open leaves the user with no
+                // way to see what it is chasing.
+                requirementsOpen: s.requirementsOpen || loop?.phase === 'looping',
+              },
+            };
+          });
+        },
+
         // The auto-approved indicator is now baked into the tool_use ChatMessage
         // itself (`autoApproved: true`) and rendered as a badge in the ToolBubble
         // header — no separate system message is created. The callback remains
@@ -1597,6 +1804,9 @@ export function ChatApp() {
           }
           if (Array.isArray(prefs.pinnedSessionIds)) {
             setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
+          }
+          if (Array.isArray(prefs.pinnedOutOfWorktree)) {
+            setPinnedOutOfWorktree(new Set(prefs.pinnedOutOfWorktree as string[]));
           }
           // Toggles + accents + global env vars are owned by preferencesSlice.
           hydratePreferences(prefs);
@@ -1756,6 +1966,20 @@ export function ChatApp() {
     window.addEventListener('codiby-code:open-file', handler as EventListener);
     return () => window.removeEventListener('codiby-code:open-file', handler as EventListener);
   }, [activeId, openFileInEditor]);
+
+  // A session deep-link chip in the chat was clicked (dispatched from
+  // Markdown.tsx). Route it to the session switcher via a ref so the mount-once
+  // listener always calls the latest handler without re-subscribing each render.
+  const openSessionByIdRef = useRef<(id: string) => void>(() => {});
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ev = e as CustomEvent<{ sessionId: string }>;
+      const id = ev.detail?.sessionId;
+      if (id) openSessionByIdRef.current(id);
+    };
+    window.addEventListener('codiby-code:open-session', handler as EventListener);
+    return () => window.removeEventListener('codiby-code:open-session', handler as EventListener);
+  }, []);
 
   // Close PR dropdown on outside click + fetch PRs when opened
   useEffect(() => {
@@ -2152,6 +2376,7 @@ export function ChatApp() {
   };
 
   const handleToggleAutoGroup = (next: boolean) => setPreference('autoGroupSessions', next);
+  const handleToggleGroupByWorktree = (next: boolean) => setPreference('groupSessionsByWorktree', next);
   const handleToggleAutoFocusBrowserOnAction = (next: boolean) => setPreference('autoFocusBrowserOnAction', next);
   const handleToggleInterruptOnSend = (next: boolean) => setPreference('interruptOnSend', next);
   const handleToggleColorChatBySession = (next: boolean) => setPreference('colorChatBySession', next);
@@ -2200,6 +2425,9 @@ export function ChatApp() {
   };
 
   const handleSelectSession = async (id: string) => {
+    // Optimistic sidebar rows have no server session behind them yet; the
+    // creator focuses the real one as soon as the POST lands.
+    if (isPendingSessionId(id)) return;
     const prevId = activeId;
     setActiveId(id);
     // Clicking a session tab takes focus away from any group composer.
@@ -2267,12 +2495,12 @@ export function ChatApp() {
   const [unsavedClosePrompt, setUnsavedClosePrompt] = useState(false);
 
   const closeTab = (id: string) => {
-    clientRef.current?.unsubscribe(id);
+    const c = clientRef.current;
+    c?.unsubscribe(id);
     subscribedRef.current.delete(id);
-    clientRef.current?.stopSession(id).catch(() => {});
     setSessionStates(prev => { const next = { ...prev }; delete next[id]; return next; });
     setSessionStatusLocal(id, 'archived');
-    clientRef.current?.archiveSession(id).catch(() => {});
+    c?.archiveAndStopSession(id).catch(() => {});
     if (activeId === id) {
       const openSessions = sessions.filter(s => s.id !== id && s.status === 'open');
       setActiveId(openSessions.length > 0 ? openSessions[0]!.id : null);
@@ -2280,6 +2508,7 @@ export function ChatApp() {
   };
 
   const handleCloseTab = (id: string) => {
+    if (isPendingSessionId(id)) return;
     const state = getState(id);
     const hasRunningProcesses = state.isStreaming ||
       state.messages.some(m => m.isTerminal && m.exitCode === undefined && m.terminalCommand);
@@ -2317,6 +2546,15 @@ export function ChatApp() {
         setRestoreCommands(session.saved_commands);
       }
     }
+  };
+
+  // Kept fresh each render so the mount-once `codiby-code:open-session` listener
+  // always sees the current sessions/handlers. Reopens the target if archived,
+  // otherwise just selects it.
+  openSessionByIdRef.current = (id: string) => {
+    const session = sessions.find(s => s.id === id);
+    if (session?.status === 'archived') handleReopenSession(id);
+    else void handleSelectSession(id);
   };
 
   /** Permanently delete a session — drops it from the registry, deletes
@@ -2409,15 +2647,13 @@ export function ChatApp() {
     // Rename the old chat so the archived list shows it as "Cleared: …",
     // then stop its provider (history file stays on disk).
     c.updateSession(targetId, { name: `Cleared: ${originalName}` }).catch(() => {});
-    c.stopSession(targetId).catch(() => {});
-
     c.unsubscribe(targetId);
     subscribedRef.current.delete(targetId);
     setSessionStates(prev => { const next = { ...prev }; delete next[targetId]; return next; });
 
     // Archive the previous session server-side (history kept, hidden from tabs).
     setSessionStatusLocal(targetId, 'archived');
-    c.archiveSession(targetId).catch(() => {});
+    c.archiveAndStopSession(targetId).catch(() => {});
 
     setTabOrder(prev => {
       const next = [...prev];
@@ -2520,8 +2756,11 @@ export function ChatApp() {
   const handleRequestDeleteGroup = async (groupId: string) => {
     const grp = tabGroups[groupId];
     if (!grp) return;
+    // Deleting a group takes its whole subtree with it, so the confirmation has
+    // to account for every nested session, not just the direct members.
+    const doomed = new Set([groupId, ...descendantGroupIds(tabGroups, groupId)]);
     const members = sessions
-      .filter(s => tabGroupMap[s.id] === groupId)
+      .filter(s => doomed.has(tabGroupMap[s.id] ?? ''))
       .map(s => ({
         id: s.id,
         name: s.name,
@@ -2568,21 +2807,23 @@ export function ChatApp() {
     for (const m of prompt.members) {
       await handlePurgeSession(m.id, { worktree: m.isWorktree && prompt.deleteWorktrees });
     }
-    // The orphan-pruning effect will remove the now-empty group entry, but
-    // drop it eagerly so the menu/sidebar updates without waiting for the
-    // tabGroupMap re-render.
+    // The orphan-pruning effect will remove the now-empty group entries, but
+    // drop the whole subtree eagerly so the menu/sidebar updates without
+    // waiting for the tabGroupMap re-render.
     setTabGroups(prev => {
       if (!prev[prompt.groupId]) return prev;
+      const doomed = new Set([prompt.groupId, ...descendantGroupIds(prev, prompt.groupId)]);
       const next = { ...prev };
-      delete next[prompt.groupId];
+      for (const id of doomed) delete next[id];
       persistPrefs({ tabGroups: next });
       return next;
     });
     setExpandedGroupIds(prev => {
-      if (!prev.has(prompt.groupId)) return prev;
+      const doomed = new Set([prompt.groupId, ...descendantGroupIds(tabGroups, prompt.groupId)]);
       const next = new Set(prev);
-      next.delete(prompt.groupId);
-      return next;
+      let changed = false;
+      for (const id of doomed) if (next.delete(id)) changed = true;
+      return changed ? next : prev;
     });
     setDeleteGroupPrompt(null);
   };
@@ -2627,7 +2868,7 @@ export function ChatApp() {
 
   const handleRenameSession = async (id: string, name: string) => {
     const c = clientRef.current;
-    if (!c) return;
+    if (!c || isPendingSessionId(id)) return;
     try {
       const updated = await c.renameSession(id, name);
       setSessions(prev => prev.map(s => s.id === id ? updated : s));
@@ -3250,6 +3491,15 @@ export function ChatApp() {
   const spawnNewTerminalRef = useRef(spawnNewTerminal);
   spawnNewTerminalRef.current = spawnNewTerminal;
 
+  const openTerminalSearch = useCallback(() => {
+    if (!activeId) return;
+    const shells = terminals[activeId] || [];
+    const activeShellId = activeShellBySession[activeId] || shells[shells.length - 1]?.id;
+    if (activeShellId) shellTermHandles.current.get(activeShellId)?.openSearch();
+  }, [activeId, terminals, activeShellBySession]);
+  const openTerminalSearchRef = useRef(openTerminalSearch);
+  openTerminalSearchRef.current = openTerminalSearch;
+
   // Toggle the terminals dock and move keyboard focus with it: revealing the
   // panel focuses the terminal (the active shell's xterm self-focuses on mount;
   // we focus the dock host as a fallback when there are no shells yet), while
@@ -3323,16 +3573,23 @@ export function ChatApp() {
     tabOrder.forEach(pushId);
     liveOpen.forEach(s => pushId(s.id));
 
-    // Group-cluster pass: emit each group's members together on first hit.
+    // Group-cluster pass: emit each top-level group's whole subtree together on
+    // first hit. Clustering on the root ancestor (rather than the session's own
+    // group) keeps a nested project contiguous in Ctrl-Tab order instead of
+    // interleaving its subgroups with unrelated tabs.
+    const rootOf = (sessionId: string): string | null => {
+      const chain = ancestorChain(tabGroups, tabGroupMap[sessionId]);
+      return chain.length ? chain[chain.length - 1]! : null;
+    };
     const out: string[] = [];
     const emittedGroups = new Set<string>();
     for (const id of walk) {
-      const gid = tabGroupMap[id];
-      if (gid && tabGroups[gid]) {
-        if (emittedGroups.has(gid)) continue;
-        emittedGroups.add(gid);
+      const root = rootOf(id);
+      if (root) {
+        if (emittedGroups.has(root)) continue;
+        emittedGroups.add(root);
         for (const m of walk) {
-          if (tabGroupMap[m] === gid) out.push(m);
+          if (rootOf(m) === root) out.push(m);
         }
       } else {
         out.push(id);
@@ -3369,6 +3626,7 @@ export function ChatApp() {
     'toggle-explorer': () => setExplorerCollapsed(c => !c),
     'toggle-terminals': () => toggleTerminalsRef.current(),
     'new-terminal': () => spawnNewTerminalRef.current(),
+    'find-in-terminal': () => openTerminalSearchRef.current(),
     'focus-chat-input': () => inputRef.current?.focus(),
     'find-in-chat': () => setFindOpen(true),
     'search-files': () => { setSearchActive(true); setExplorerCollapsed(false); },
@@ -3504,6 +3762,110 @@ export function ChatApp() {
   // Electron (the action used to no-op when the user picked it).
   const [browserUrlModalOpen, setBrowserUrlModalOpen] = useState(false);
 
+  // ---------------------------------------------------------------------------
+  // Requirements + Loop actions.
+  //
+  // Every mutation here is a USER action by construction: the agent's tools can
+  // only append requirements and queue proposals, so approving, waiving,
+  // deleting and arming a loop have no path except this panel.
+  // ---------------------------------------------------------------------------
+
+  /** Fold a REST response back into the session store. */
+  const applyRequirementsSnapshot = useCallback((
+    sid: string,
+    snapshot: RequirementsSnapshot | null,
+    opts?: { openIfFirst?: boolean },
+  ) => {
+    if (!snapshot) return;
+    setSessionStates(prev => {
+      const s = prev[sid] || emptyLocalState();
+      // Only the very first snapshot for a session may open the panel: once
+      // `requirements` is non-null the user's open/closed choice sticks.
+      const firstContent = opts?.openIfFirst
+        && !s.requirements
+        && (!!snapshot.target || snapshot.requirements.length > 0);
+      return {
+        ...prev,
+        [sid]: {
+          ...s,
+          requirements: snapshot,
+          requirementsOpen: s.requirementsOpen || !!firstContent,
+          requirementsRunning: snapshot.requirements.filter(r => r.status === 'running').map(r => r.id),
+        },
+      };
+    });
+  }, []);
+
+  const refreshRequirements = useCallback(async (sid: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    const [snapshot, loop] = await Promise.all([c.fetchRequirements(sid), c.fetchLoop(sid)]);
+    applyRequirementsSnapshot(sid, snapshot, { openIfFirst: true });
+    if (loop) {
+      setSessionStates(prev => {
+        const s = prev[sid] || emptyLocalState();
+        return { ...prev, [sid]: { ...s, loop: loop.loop, loopProgress: loop.progress } };
+      });
+    }
+  }, [applyRequirementsSnapshot]);
+
+  const runRequirements = useCallback(async (sid: string, ids?: string[]) => {
+    const c = clientRef.current;
+    if (!c) return;
+    // Local echo: the run is synchronous on the server and can take a while,
+    // so mark the targeted rows busy immediately.
+    setSessionStates(prev => {
+      const s = prev[sid] || emptyLocalState();
+      const targets = ids ?? (s.requirements?.requirements ?? [])
+        .filter(r => r.state === 'draft' || r.state === 'locked')
+        .map(r => r.id);
+      return { ...prev, [sid]: { ...s, requirementsRunning: targets } };
+    });
+    const snapshot = await c.runRequirements(sid, ids);
+    applyRequirementsSnapshot(sid, snapshot);
+    setSessionStates(prev => {
+      const s = prev[sid];
+      return s ? { ...prev, [sid]: { ...s, requirementsRunning: [] } } : prev;
+    });
+  }, [applyRequirementsSnapshot]);
+
+  const armLoop = useCallback(async (sid: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    const result = await c.loopControl(sid, 'start');
+    if (!result) return;
+    setSessions(prev => prev.map(s => s.id === sid ? { ...s, permission_mode: 'loop' } : s));
+    setSessionStates(prev => {
+      const s = prev[sid] || emptyLocalState();
+      return { ...prev, [sid]: { ...s, loop: result.loop, loopProgress: result.progress, requirementsOpen: true } };
+    });
+  }, []);
+
+  const controlLoop = useCallback(async (sid: string, action: 'pause' | 'resume' | 'stop') => {
+    const c = clientRef.current;
+    if (!c) return;
+    const result = await c.loopControl(sid, action);
+    if (!result) return;
+    setSessionStates(prev => {
+      const s = prev[sid] || emptyLocalState();
+      return { ...prev, [sid]: { ...s, loop: result.loop, loopProgress: result.progress } };
+    });
+    // Stopping drops the session back to a mode where it can talk to the user
+    // again — mirror the server's choice locally so the picker agrees.
+    if (action === 'stop') {
+      setSessions(prev => prev.map(s => s.id === sid && s.permission_mode === 'loop'
+        ? { ...s, permission_mode: 'bypassPermissions' }
+        : s));
+    }
+  }, []);
+
+  // First paint / reload / reconnect: the WS only pushes *changes*, so pull the
+  // current snapshot whenever a session becomes the active one.
+  useEffect(() => {
+    if (!client || !activeId) return;
+    void refreshRequirements(activeId);
+  }, [client, activeId, refreshRequirements]);
+
   const applyPermissionMode = useCallback((sessionId: string, mode: string) => {
     const c = clientRef.current;
     if (!c) return;
@@ -3517,8 +3879,12 @@ export function ChatApp() {
       setPendingBypassSessionId(sessionId);
       return;
     }
+    // Loop isn't a plain mode flip: the server has to arm the driver and seed
+    // the loop budget, so it goes through POST /loop/start. The mode change is
+    // a side effect of arming it, not the other way round.
+    if (mode === 'loop') { void armLoop(sessionId); return; }
     applyPermissionMode(sessionId, mode);
-  }, [applyPermissionMode]);
+  }, [applyPermissionMode, armLoop]);
 
   // Shift+Tab cycles the active session's permission mode while the chat
   // input is focused. Outside the chat input we leave Shift+Tab alone so the
@@ -3555,6 +3921,20 @@ export function ChatApp() {
       return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
     }), [sessions, tabOrder, showTelegramSession]);
 
+  /** What the sidebar renders: the real sessions plus any optimistic rows for
+   *  creates still in flight, so pressing "+" on a group paints a tab on the
+   *  same frame. Only the sidebar sees these — every other consumer keeps
+   *  working off `orderedOpenSessions`, which holds server-confirmed sessions
+   *  only. */
+  const sidebarSessions = useMemo(
+    () => (pendingSessions.length ? [...orderedOpenSessions, ...pendingSessions] : orderedOpenSessions),
+    [orderedOpenSessions, pendingSessions],
+  );
+  const sidebarGroupMap = useMemo(
+    () => (pendingSessions.length ? { ...tabGroupMap, ...pendingGroupMap } : tabGroupMap),
+    [tabGroupMap, pendingGroupMap, pendingSessions.length],
+  );
+
   /** Derive a remoteId/color/name for each tab group from its members. A
    *  group is "remote" only when every member sits on the same remote (mixed
    *  groups stay local — there's no sensible color to pick otherwise). The
@@ -3562,13 +3942,17 @@ export function ChatApp() {
    *  the sidebar / tab strip use it to tint the group header. */
   const groupRemoteInfo = useMemo(() => {
     const out: Record<string, { remoteId: string; remoteName: string | null; remoteColor: string | null }> = {};
+    // A session counts towards its own group *and* every ancestor, so a parent
+    // whose sessions all live in subgroups still shows the remote pill.
     const byGroup = new Map<string, SessionInfo[]>();
     for (const s of sessions) {
       const gid = tabGroupMap[s.id];
       if (!gid) continue;
-      let list = byGroup.get(gid);
-      if (!list) { list = []; byGroup.set(gid, list); }
-      list.push(s);
+      for (const ancestor of ancestorChain(tabGroups, gid)) {
+        let list = byGroup.get(ancestor);
+        if (!list) { list = []; byGroup.set(ancestor, list); }
+        list.push(s);
+      }
     }
     for (const [gid, members] of byGroup) {
       const ids = new Set(members.map(m => m.remoteId ?? null));
@@ -3583,7 +3967,7 @@ export function ChatApp() {
       };
     }
     return out;
-  }, [sessions, tabGroupMap]);
+  }, [sessions, tabGroupMap, tabGroups]);
 
   // Sessions surfaced in the "+" dropdown's CLOSED section. Now backed by
   // the archived status — the legacy three-state model collapsed into
@@ -3679,6 +4063,7 @@ export function ChatApp() {
   );
 
   const handleReorder = (fromId: string, toId: string) => {
+    if (isPendingSessionId(fromId) || isPendingSessionId(toId)) return;
     setTabOrder(prev => {
       // Ensure all open session IDs are in the order
       const openIds = sessions.filter(s => s.status === 'open').map(s => s.id);
@@ -4338,6 +4723,20 @@ export function ChatApp() {
       ...sdkCommands.filter((c: string) => !BUILTINS.includes(c)),
     ];
     return (
+      <>
+      {/* Loop state sits above the composer and is deliberately not
+          dismissible — an unattended auto-continuing agent should never be
+          running out of sight. */}
+      {s.loop && (
+        <LoopBanner
+          loop={s.loop}
+          progress={s.requirements?.progress ?? s.loopProgress}
+          onOpenRequirements={() => updateLocalState(sid, st => ({ ...st, requirementsOpen: true }))}
+          onPause={() => { void controlLoop(sid, 'pause'); }}
+          onResume={() => { void controlLoop(sid, 'resume'); }}
+          onStop={() => { void controlLoop(sid, 'stop'); }}
+        />
+      )}
       <ChatComposer
         key={sid}
         sessionId={sid}
@@ -4377,6 +4776,7 @@ export function ChatApp() {
         }}
         onFocus={() => { if (sid !== activeId) handleSelectSession(sid); }}
       />
+      </>
     );
   };
 
@@ -4682,6 +5082,22 @@ export function ChatApp() {
                     }}
                   >
                     Approve &amp; Accept Edits
+                  </button>
+                )}
+                {isPlan && (
+                  <button
+                    className="flex items-center gap-1.5 px-3 py-1 rounded text-[12px] bg-amber-600/15 text-amber-400 hover:bg-amber-600/25 transition-colors"
+                    onClick={() => {
+                      handlePermission(req.requestId, true);
+                      if (clientRef.current) {
+                        setSessions(prev => prev.map(s => s.id === sid ? { ...s, permission_mode: 'bypassPermissions' } : s));
+                        clientRef.current.setPermissionMode(sid, 'bypassPermissions');
+                        clientRef.current.updateSession(sid, { permissionMode: 'bypassPermissions' }).catch(() => {});
+                      }
+                    }}
+                    title="Approve the plan and stop asking for permission for the rest of the session"
+                  >
+                    Approve &amp; Bypass
                   </button>
                 )}
                 <button
@@ -5129,7 +5545,7 @@ export function ChatApp() {
               handles session navigation. */}
           {layoutMode === 'standard' && (
             <TabBar
-              sessions={orderedOpenSessions}
+              sessions={sidebarSessions}
               closedSessions={closedSessions}
               activeSessionId={activeId}
               sessionStatuses={statuses}
@@ -5151,15 +5567,20 @@ export function ChatApp() {
               getSessionAccent={getSessionAccent}
               onPickSessionAccent={colorChatBySession ? handlePickSessionAccent : undefined}
               tabGroups={tabGroups}
-              tabGroupMap={tabGroupMap}
+              tabGroupMap={sidebarGroupMap}
               groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
+              pinnedOutOfWorktree={pinnedOutOfWorktree}
+              groupByWorktree={groupSessionsByWorktree}
               onCreateGroup={handleCreateGroup}
               onGroupTabs={handleGroupTabs}
               onAddToGroup={handleAddToGroup}
               onUngroupTab={handleUngroupTab}
               onToggleGroup={handleToggleGroup}
-              onSelectGroup={handleSelectGroup}
+              onCreateSubgroup={handleCreateSubgroup}
+              onMoveGroup={handleMoveGroup}
+              onPinSessionOutOfWorktree={handlePinOutOfWorktree}
+              onOpenGroupComposer={handleSelectGroup}
               onRenameGroup={handleRenameGroup}
               onChangeGroupColor={handleChangeGroupColor}
               onChangeGroupIcon={handleChangeGroupIcon}
@@ -5209,6 +5630,7 @@ export function ChatApp() {
                 claudeModels={claudeModels}
                 onSpawn={handleSpawnHome}
                 onBrowseFolder={() => setShowNewSession(true)}
+                onBranchChanged={setGitBranch}
               />
             ) : (
               <>
@@ -5238,6 +5660,16 @@ export function ChatApp() {
                       panelTabs.push({ id: 'browser:' + bName, kind: 'browser', title: b.title || bName, icon: '🌐', zone: 'main' });
                     }
                     if (openPlan) panelTabs.push({ id: 'plan', kind: 'plan', title: 'Plan', icon: '📋', zone: 'main' });
+                    if (active.requirementsOpen) {
+                      const p = active.requirements?.progress;
+                      panelTabs.push({
+                        id: 'requirements',
+                        kind: 'requirements',
+                        title: p && p.locked > 0 ? `Requerimientos ${p.passing}/${p.locked}` : 'Requerimientos',
+                        icon: '✓',
+                        zone: 'main',
+                      });
+                    }
                     if (pluginDetailOpen) panelTabs.push({ id: 'plugin', kind: 'plugin', title: 'Plugin', icon: '🧩', zone: 'main' });
                     if (openPR) panelTabs.push({ id: 'pr', kind: 'pr', title: openPR.number ? ('PR #' + openPR.number) : 'PR', icon: '◧', zone: 'main' });
                     if (openTerminal) panelTabs.push({ id: 'terminal', kind: 'terminal', title: openTerminal.terminalCommand || 'terminal', icon: '▸', zone: 'main' });
@@ -5251,6 +5683,7 @@ export function ChatApp() {
                       case 'mockup': updateLocalState(activeId, s => ({ ...s, openMockup: null, editorFullWidth: false, mockupInspect: false })); break;
                       case 'browser': closeBrowserFully(activeId, tab.id.slice('browser:'.length)); break;
                       case 'plan': updateLocalState(activeId, s => ({ ...s, openPlan: null, editorFullWidth: false })); break;
+                      case 'requirements': updateLocalState(activeId, s => ({ ...s, requirementsOpen: false, editorFullWidth: false })); break;
                       case 'plugin': setPluginDetailOpen(false); break;
                       case 'pr': setOpenPR(null); break;
                       case 'terminal': updateLocalState(activeId, s => ({ ...s, openTerminalId: null })); break;
@@ -5291,6 +5724,7 @@ export function ChatApp() {
                         handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
+                      onBranchChanged={setGitBranch}
                     />
                   ) : (
                     activeId && renderChatBody(activeId, colorChatBySession ? getSessionAccent(activeId) : undefined)
@@ -5627,6 +6061,16 @@ export function ChatApp() {
                             {activeShellId && (
                               <button
                                 type="button"
+                                onClick={() => shellTermHandles.current.get(activeShellId)?.openSearch()}
+                                className="h-6 w-6 rounded inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-surface-light"
+                                title="Find in terminal"
+                              >
+                                <Search className="w-3 h-3" />
+                              </button>
+                            )}
+                            {activeShellId && (
+                              <button
+                                type="button"
                                 onClick={() => { try { shellTermHandles.current.get(activeShellId)?.clear(); } catch {} }}
                                 className="h-6 w-6 rounded inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-surface-light"
                                 title="Clear terminal"
@@ -5741,6 +6185,7 @@ export function ChatApp() {
                         handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
                       onBrowseFolder={() => setShowNewSession(true)}
+                      onBranchChanged={setGitBranch}
                     />
                           </div>
                         );
@@ -6019,6 +6464,40 @@ export function ChatApp() {
                           </div>
                         );
                       }
+                      case 'requirements': {
+                        if (!activeId) return null;
+                        return (
+                          <RequirementsPanel
+                            snapshot={active.requirements}
+                            runningIds={active.requirementsRunning}
+                            onSetTarget={async (target) => {
+                              const snap = await clientRef.current?.setRequirementsTarget(activeId, target);
+                              applyRequirementsSnapshot(activeId, snap ?? null);
+                            }}
+                            onSetState={async (rid, action, reason) => {
+                              const snap = await clientRef.current?.setRequirementState(activeId, rid, action, reason);
+                              applyRequirementsSnapshot(activeId, snap ?? null);
+                            }}
+                            onEdit={async (rid, patch) => {
+                              const snap = await clientRef.current?.editRequirement(activeId, rid, patch);
+                              applyRequirementsSnapshot(activeId, snap ?? null);
+                            }}
+                            onDelete={async (rid) => {
+                              const snap = await clientRef.current?.deleteRequirement(activeId, rid);
+                              applyRequirementsSnapshot(activeId, snap ?? null);
+                            }}
+                            onRun={(ids) => { void runRequirements(activeId, ids); }}
+                            onResolveProposal={async (pid, decision) => {
+                              const snap = await clientRef.current?.resolveRequirementProposal(activeId, pid, decision);
+                              applyRequirementsSnapshot(activeId, snap ?? null);
+                            }}
+                            onLoadEvents={() => clientRef.current?.fetchRequirementEvents(activeId) ?? Promise.resolve([])}
+                            onLoadImage={(path) => clientRef.current?.readFileDataUrl(path) ?? Promise.resolve(null)}
+                            onClose={() => updateLocalState(activeId, s => ({ ...s, requirementsOpen: false, editorFullWidth: false }))}
+                            onToggleFullWidth={() => updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}
+                          />
+                        );
+                      }
                       case 'plan': {
                         if (!(openPlan && activeId)) return null;
                         return (
@@ -6251,7 +6730,35 @@ export function ChatApp() {
                         // Resources chip lives in the tab strip of the panel that
                         // holds the chat tab — chrome, not floating over messages.
                         if (!activeId || !node.tabIds.includes('chat')) return null;
+                        const rp = active.requirements?.progress;
+                        const hasRequirements = !!(active.requirements?.target || (rp && rp.total > 0));
                         return (
+                          <>
+                          {/* Requirements chip — the only way back into the panel
+                              after closing it, and the entry point for a session
+                              that already had requirements before this reload. */}
+                          {hasRequirements && (
+                            <button
+                              type="button"
+                              onClick={() => updateLocalState(activeId, s => ({ ...s, requirementsOpen: !s.requirementsOpen }))}
+                              title="Requerimientos de la sesión"
+                              className={`inline-flex items-center gap-1.5 h-[22px] pl-1.5 pr-2 rounded-md border text-[11px] font-semibold transition-colors ${
+                                active.requirementsOpen
+                                  ? 'bg-surface-lighter border-emerald-500 text-zinc-100'
+                                  : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
+                              }`}
+                            >
+                              <span className="text-emerald-300">✓</span>
+                              <span>Requerimientos</span>
+                              {rp && rp.locked > 0 && (
+                                <span className={`text-[9.5px] font-bold rounded-full px-1.5 py-px leading-none ${
+                                  rp.complete ? 'text-emerald-300 bg-emerald-500/18' : 'text-zinc-300 bg-white/10'
+                                }`}>
+                                  {rp.passing}/{rp.locked}
+                                </span>
+                              )}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setResourcesOpen(o => !o)}
@@ -6268,6 +6775,7 @@ export function ChatApp() {
                               <span className="text-[9.5px] font-bold text-violet-300 bg-violet-500/18 rounded-full px-1.5 py-px leading-none">{resourceCount}</span>
                             )}
                           </button>
+                          </>
                         );
                       }}
                     />
@@ -6486,6 +6994,8 @@ export function ChatApp() {
           tabGroups={tabGroups}
           tabGroupMap={tabGroupMap}
           autoGroupSessions={autoGroupSessions}
+          groupSessionsByWorktree={groupSessionsByWorktree}
+          onToggleGroupByWorktree={handleToggleGroupByWorktree}
           onToggleAutoGroup={handleToggleAutoGroup}
           autoFocusBrowserOnAction={autoFocusBrowserOnAction}
           onToggleAutoFocusBrowserOnAction={handleToggleAutoFocusBrowserOnAction}

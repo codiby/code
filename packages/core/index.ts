@@ -28,7 +28,42 @@ import {
 // to each remote's tunnelled bridge (Electron main owns the SSH tunnels), so
 // the former gateway/ssh-tunnel imports are gone.
 import { getMergedRemoteGroups, isRemoteGroupId } from './network/remote-groups-cache';
+import { isDerivedGroupId } from './config/group-chain';
 import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
+import {
+  handleCancelAutomationRun,
+  handleCreateAutomation,
+  handleDeleteAutomation,
+  handleGetAutomation,
+  handleGetAutomationRun,
+  handleListAutomationRuns,
+  handleListAutomations,
+  handleRunAutomation,
+  handleUpdateAutomation,
+} from './handlers/automations';
+import { configureAutomationRunner, completeAutomationRun, failAutomationRun } from './automation/runner';
+import { startAutomationScheduler } from './automation/scheduler';
+import {
+  handleAddRequirements,
+  handleCreateProposal,
+  handleDeleteRequirement,
+  handleGetRequirements,
+  handleListRequirementEvents,
+  handleResolveProposal,
+  handleRunRequirements,
+  handleSetTarget,
+  handleUpdateRequirement,
+} from './handlers/requirements';
+import {
+  handleGetLoop,
+  handlePauseLoop,
+  handleResumeLoop,
+  handleStartLoop,
+  handleStopLoop,
+} from './handlers/loop';
+import { configureRequirementsRunner } from './requirements/runner';
+import { listBrowserPreviews } from './provider/sdk-tools';
+import { configureLoopDriver, isLooping, onLoopTurnComplete, stopLoop } from './loop/driver';
 import { handleListMcpServers, handleAddMcpServer, handleRemoveMcpServer } from './handlers/mcp-servers';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
@@ -98,7 +133,8 @@ import {
   trustCA as trustPortlessCA,
   type ProxyMode,
 } from './integrations/portless';
-import { buildInjectedActionEnv, resolveGroupForSession, getGlobalTld } from './process/action-env';
+import { buildInjectedActionEnv, getGlobalTld } from './process/action-env';
+import type { TabGroupInfo } from '../ui/src/lib/tab-groups';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -154,11 +190,25 @@ const frontendClients = new Set<any>();
 /** Which session IDs each frontend client is subscribed to */
 const subscriptions = new Map<any, Set<string>>();
 
+/** Frontend clients that can forward browser CDP calls to Electron. */
+const browserCdpClients = new Set<any>();
+
 /** Broadcast a message to all frontend clients subscribed to a given session */
 function broadcastToSession(sessionId: string, msg: object) {
   const data = JSON.stringify(msg);
   for (const [ws, subs] of subscriptions) {
     if (subs.has(sessionId)) {
+      try { ws.send(data); } catch {}
+    }
+  }
+}
+
+/** Browser controls must be routed only to Electron renderers. Broadcasting to
+ * web clients lets their missing-native-bridge error win the response race. */
+function sendBrowserRequest(sessionId: string, msg: object) {
+  const data = JSON.stringify(msg);
+  for (const [ws, subs] of subscriptions) {
+    if (subs.has(sessionId) && browserCdpClients.has(ws)) {
       try { ws.send(data); } catch {}
     }
   }
@@ -347,10 +397,20 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
     clean.tabGroups = g;
     clean.remoteGroupOverrides = overrides;
   }
+  if (clean.tabGroups && typeof clean.tabGroups === 'object') {
+    // Worktree groups are derived by the sidebar on every render and must never
+    // reach the prefs file — a persisted one would shadow the live derivation
+    // and outlive the sessions it was built from.
+    const g = { ...(clean.tabGroups as Record<string, unknown>) };
+    for (const gid of Object.keys(g)) {
+      if (isDerivedGroupId(gid)) delete g[gid];
+    }
+    clean.tabGroups = g;
+  }
   if (clean.tabGroupMap && typeof clean.tabGroupMap === 'object') {
     const m = { ...(clean.tabGroupMap as Record<string, unknown>) };
     for (const [sid, gid] of Object.entries(m)) {
-      if (typeof gid === 'string' && isRemoteGroupId(gid)) delete m[sid];
+      if (typeof gid === 'string' && (isRemoteGroupId(gid) || isDerivedGroupId(gid))) delete m[sid];
     }
     clean.tabGroupMap = m;
   }
@@ -377,7 +437,12 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
  *  by the time we get here the cwd is either the source repo or the
  *  worktree, both of which resolve to the same folder name. */
 const AUTOGROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
-type AutoGroup = { id: string; name: string; color: string; cwd?: string; icon?: string };
+type AutoGroup = {
+  id: string; name: string; color: string; cwd?: string; icon?: string;
+  /** Autogroups are always top-level projects; the user can nest them later. */
+  parentId?: string | null;
+  kind?: 'manual' | 'worktree';
+};
 function maybeAutoGroupSession(sessionId: string, cwd: string) {
   if (!cwd) return;
   const prefs = loadPreferences();
@@ -394,11 +459,14 @@ function maybeAutoGroupSession(sessionId: string, cwd: string) {
     || groupingCwd.split('\\').filter(Boolean).pop()
     || '/';
   const groups: Record<string, AutoGroup> = { ...((prefs.tabGroups as Record<string, AutoGroup>) || {}) };
-  let groupId = Object.keys(groups).find(gid => groups[gid]!.name === folder);
+  // Match on top-level groups only: with nesting, a subgroup could legitimately
+  // share a name with a project (two repos each with a "Backend" subgroup), and
+  // autogrouping into one of those would be wrong.
+  let groupId = Object.keys(groups).find(gid => groups[gid]!.name === folder && !groups[gid]!.parentId);
   if (!groupId) {
     groupId = randomUUID();
     const color = AUTOGROUP_COLORS[Object.keys(groups).length % AUTOGROUP_COLORS.length]!;
-    groups[groupId] = { id: groupId, name: folder, color, cwd: groupingCwd };
+    groups[groupId] = { id: groupId, name: folder, color, cwd: groupingCwd, parentId: null, kind: 'manual' };
   }
   map[sessionId] = groupId;
   updatePreferences({ tabGroups: groups, tabGroupMap: map });
@@ -486,8 +554,31 @@ async function sendMessageToSession(
 // Wire bridge dependencies (used by provider/lifecycle.ts at spawn time)
 setBridgeDeps({
   broadcastToSession,
+  sendBrowserRequest,
   broadcastSessionList,
   notifyTelegramIfMainSession,
+  onTurnComplete: (sessionId, info) => {
+    completeAutomationRun(sessionId, info);
+    // Deferred by a tick so the bridge finishes resetting the session's
+    // streaming state before the loop driver can push the next prompt into it.
+    setTimeout(() => void onLoopTurnComplete(sessionId, info), 0);
+  },
+  onError: (sessionId, error) => failAutomationRun(sessionId, error.message),
+  onExit: (sessionId, code) => failAutomationRun(sessionId, `Provider exited with code ${code}`),
+});
+
+// Requirements run server-side; the runner needs a way to talk to the browser
+// previews (for visual checks) and to repaint the panel.
+configureRequirementsRunner({
+  broadcastToSession,
+  sendBrowserRequest,
+  listBrowserPreviews: (sessionId) => listBrowserPreviews(sessionId).map(entry => entry.name),
+});
+
+configureLoopDriver({
+  sendMessage: (sessionId, text) => sendMessageToSession(sessionId, text),
+  broadcastToSession,
+  broadcastSessionList,
 });
 
 // Let the terminals module push lifecycle events (terminal_created /
@@ -518,6 +609,12 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   }
 
   const { type } = msg as { type: string };
+
+  if (type === 'client_capabilities') {
+    if (msg.browserCdp === true) browserCdpClients.add(ws);
+    else browserCdpClients.delete(ws);
+    return;
+  }
 
   // ---- get_sessions --------------------------------------------------------
   if (type === 'get_sessions') {
@@ -774,6 +871,10 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!sessionId) return;
     const session = sessions.get(sessionId);
     if (!session) return;
+    // Stop always wins over the loop. Without this the driver would re-inject
+    // a continuation prompt on the next turn_complete and the Stop button
+    // would look broken.
+    if (session.loopState && session.loopState.phase !== 'done') stopLoop(sessionId);
     // Stop is also the user's escape hatch when `isStreaming` is wedged with
     // no live provider (SDK crashed silently, runtime hung past onExit, etc.).
     // Always force-clear server state below; only call provider.interrupt()
@@ -955,6 +1056,10 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!sessionId || !mode) return;
     const session = sessions.get(sessionId);
     if (!session) return;
+    // This frame only ever comes from the user's own mode picker, so leaving
+    // loop mode here is legitimate — but the driver has to be told, or it
+    // would keep re-injecting prompts into a session that is no longer looping.
+    if (session.permissionMode === 'loop' && mode !== 'loop') stopLoop(sessionId);
     session.permissionMode = mode;
     saveSessions();
     if (session.providerSession) {
@@ -1130,6 +1235,40 @@ const TLS = resolveTls();
 // ===========================================================================
 const app = new Hono();
 
+// ── Automations ────────────────────────────────────────────────────────────
+app.get('/automations', () => handleListAutomations());
+app.post('/automations', (c) => handleCreateAutomation(c.req.raw));
+app.get('/automations/:id', (c) => handleGetAutomation(c.req.param('id')));
+app.patch('/automations/:id', (c) => handleUpdateAutomation(c.req.param('id'), c.req.raw));
+app.delete('/automations/:id', (c) => handleDeleteAutomation(c.req.param('id')));
+app.post('/automations/:id/run', (c) => handleRunAutomation(c.req.param('id')));
+app.get('/automations/:id/runs', (c) => handleListAutomationRuns(c.req.param('id'), c.req.raw));
+app.get('/automations/:id/runs/:runId', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId')));
+app.get('/automations/:id/runs/:runId/result', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId'), true));
+app.post('/automations/:id/runs/:runId/cancel', (c) => handleCancelAutomationRun(c.req.param('id'), c.req.param('runId')));
+
+// ── Requirements ───────────────────────────────────────────────────────────
+// Approving, deleting, waiving and resolving proposals are user-only routes.
+// The agent's equivalents live in the SDK MCP server and are append-only.
+app.get('/sessions/:id/requirements', (c) => handleGetRequirements(c.req.param('id')));
+app.post('/sessions/:id/requirements', (c) => handleAddRequirements(c.req.param('id'), c.req.raw));
+app.put('/sessions/:id/requirements/target', (c) => handleSetTarget(c.req.param('id'), c.req.raw));
+app.get('/sessions/:id/requirements/events', (c) => handleListRequirementEvents(c.req.param('id'), c.req.raw));
+app.post('/sessions/:id/requirements/run', (c) => handleRunRequirements(c.req.param('id'), c.req.raw));
+app.patch('/sessions/:id/requirements/:rid', (c) => handleUpdateRequirement(c.req.param('id'), c.req.param('rid'), c.req.raw));
+app.delete('/sessions/:id/requirements/:rid', (c) => handleDeleteRequirement(c.req.param('id'), c.req.param('rid')));
+app.post('/sessions/:id/requirements/:rid/proposals', (c) => handleCreateProposal(c.req.param('id'), c.req.param('rid'), c.req.raw));
+app.post('/sessions/:id/proposals/:pid/approve', (c) => handleResolveProposal(c.req.param('id'), c.req.param('pid'), 'approved'));
+app.post('/sessions/:id/proposals/:pid/reject', (c) => handleResolveProposal(c.req.param('id'), c.req.param('pid'), 'rejected'));
+
+// ── Loop mode ──────────────────────────────────────────────────────────────
+// User-only by design: no MCP tool can arm a loop.
+app.get('/sessions/:id/loop', (c) => handleGetLoop(c.req.param('id')));
+app.post('/sessions/:id/loop/start', (c) => handleStartLoop(c.req.param('id'), broadcastSessionList));
+app.post('/sessions/:id/loop/pause', (c) => handlePauseLoop(c.req.param('id')));
+app.post('/sessions/:id/loop/resume', (c) => handleResumeLoop(c.req.param('id')));
+app.post('/sessions/:id/loop/stop', (c) => handleStopLoop(c.req.param('id'), broadcastSessionList));
+
 // ── Sessions ───────────────────────────────────────────────────────────────
 app.get('/sessions', () => {
   return Response.json(buildFullSessionList(), { headers: corsHeaders });
@@ -1178,9 +1317,9 @@ app.get('/providers/claude/info', () => {
   return Response.json(getClaudeInfo(), { headers: corsHeaders });
 });
 
-app.post('/sessions/:id/stop', (c) => {
+app.post('/sessions/:id/stop', async (c) => {
   const sid = c.req.param('id');
-  const resp = handleStopSession(sid);
+  const resp = await handleStopSession(sid);
   broadcastSessionList();
   return resp;
 });
@@ -1251,13 +1390,11 @@ app.post('/sessions/:id/terminals', async (c) => {
   const session = sessions.get(sessionId);
   const cwd = body.cwd || session?.cwd || process.env.HOME || '/';
 
-  // Cross-action env injection so a manually-run `npm run dev` sees the same
-  // API_URL / WEB_URL an action-spawned shell gets. Worktree detection uses
-  // the shell's own cwd so injected URLs match the active branch.
-  const prefs = loadPreferences();
-  const group = resolveGroupForSession(prefs, sessionId);
-  const injectedEnv = buildInjectedActionEnv(group, getGlobalTld(prefs), undefined, cwd);
-
+  // NO cross-action env injection here. This route serves every ordinary
+  // terminal — the dock's "+", mobile, `/terminal`, `/t`, `>` commands and
+  // terminals restored on reconnect. Portless exports (API_URL, WEB_URL, …)
+  // belong to Actions only; leaking them into a plain shell silently
+  // overrides whatever the user's own dotenv/rc files set up.
   const result = createTerminal({
     sessionId,
     cwd,
@@ -1265,7 +1402,6 @@ app.post('/sessions/:id/terminals', async (c) => {
     rows: body.rows,
     command: body.command,
     terminalName: body.terminalName,
-    injectedEnv,
   });
   if (!result.ok) {
     return Response.json({ error: result.error }, { status: 500, headers: corsHeaders });
@@ -1794,6 +1930,13 @@ app.post('/portless/run', async (c) => {
   if (!body.groupId || !body.actionId || !body.name || !body.command || !body.hostname || !body.cwd) {
     return Response.json({ error: 'groupId, actionId, name, command, hostname and cwd are required.' }, { status: 400, headers: corsHeaders });
   }
+  // Actions — and only Actions — carry their siblings' exports, so an action
+  // launched from Project Settings sees the same API_URL / WEB_URL one
+  // launched through `actions_run` does. Its own exports are excluded (an api
+  // action receiving its own API_URL is useless).
+  const runPrefs = loadPreferences();
+  const runGroup = (runPrefs.tabGroups as Record<string, TabGroupInfo> | undefined)?.[body.groupId];
+  const runEnv = buildInjectedActionEnv(runGroup, getGlobalTld(runPrefs), body.actionId, body.cwd);
   const res = portlessRunAction({
     groupId: body.groupId,
     actionId: body.actionId,
@@ -1804,6 +1947,7 @@ app.post('/portless/run', async (c) => {
     noTls: body.noTls === true,
     source: body.source === 'agent' ? 'agent' : 'user',
     sessionId: body.sessionId,
+    env: runEnv,
   });
   if (!res.ok) {
     return Response.json({ error: res.error }, { status: 400, headers: corsHeaders });
@@ -2309,6 +2453,7 @@ const server = Bun.serve({
       if (type === 'frontend') {
         frontendClients.delete(ws);
         subscriptions.delete(ws);
+        browserCdpClients.delete(ws);
         log(`[/ws] Frontend client disconnected (${frontendClients.size} remaining)`);
         return;
       }
@@ -2402,6 +2547,10 @@ setMcpDeps({
   async setSessionPermissionMode(sessionId, mode) {
     const session = sessions.get(sessionId);
     if (!session) return false;
+    // `EnterPlanMode` reaches this from a tool call, which would otherwise be
+    // a one-line escape from a loop the user armed. Switching out of loop mode
+    // is a user action, over /sessions/:id/loop/stop.
+    if (session.permissionMode === 'loop' && isLooping(sessionId)) return false;
     session.permissionMode = mode;
     saveSessions();
     if (session.providerSession) {
@@ -2411,6 +2560,8 @@ setMcpDeps({
     return true;
   },
 });
+configureAutomationRunner({ port: server.port!, sendMessage: sendMessageToSession, broadcastSessionList });
+startAutomationScheduler();
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);
 
