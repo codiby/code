@@ -2,6 +2,8 @@ import { log } from './logger';
 import { sessions } from '../session/sessions';
 import { stopTelegramBot } from '../integrations/telegram';
 import { stopAll as stopAllPortless } from '../integrations/portless';
+import { stopAutomationScheduler } from '../automation/scheduler';
+import { closeDatabase } from '../database';
 
 export function closeAllProviderSessions() {
   let closed = 0;
@@ -16,7 +18,16 @@ export function closeAllProviderSessions() {
 }
 
 export function registerShutdownHandlers() {
-  const cleanup = () => { closeAllProviderSessions(); stopTelegramBot(); stopAllPortless(); };
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    stopAutomationScheduler();
+    closeAllProviderSessions();
+    stopTelegramBot();
+    stopAllPortless();
+    closeDatabase();
+  };
   process.on('SIGINT', () => { cleanup(); process.exit(0); });
   process.on('SIGTERM', () => { cleanup(); process.exit(0); });
   process.on('exit', () => { cleanup(); });
