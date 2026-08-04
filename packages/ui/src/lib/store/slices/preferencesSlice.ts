@@ -28,6 +28,10 @@ export interface PreferencesData {
   theme: Theme;
   /** Auto-place newly spawned sessions into a project group. */
   autoGroupSessions: boolean;
+  /** Cluster sessions that share a working directory under a checkout node
+   *  inside their project group. Off leaves every session as a direct child of
+   *  its group, the way the sidebar behaved before nesting. */
+  groupSessionsByWorktree: boolean;
   /** Bring a browser preview to the front before an action-style browser_*
    *  tool runs, so the user sees it happen. */
   autoFocusBrowserOnAction: boolean;
@@ -48,6 +52,7 @@ export interface PreferencesData {
 /** The boolean toggles settable through the generic `setPreference` action. */
 type TogglePrefKey =
   | 'autoGroupSessions'
+  | 'groupSessionsByWorktree'
   | 'autoFocusBrowserOnAction'
   | 'showTelegramSession'
   | 'interruptOnSend'
@@ -71,6 +76,7 @@ export interface PreferencesSlice extends PreferencesData {
 export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get) => ({
   theme: initialTheme(),
   autoGroupSessions: false,
+  groupSessionsByWorktree: true,
   autoFocusBrowserOnAction: true,
   showTelegramSession: true,
   interruptOnSend: true,
@@ -106,6 +112,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
     const patch: Partial<PreferencesData> = {};
     if (prefs.theme === 'light' || prefs.theme === 'dark') patch.theme = prefs.theme;
     if (typeof prefs.autoGroupSessions === 'boolean') patch.autoGroupSessions = prefs.autoGroupSessions;
+    if (typeof prefs.groupSessionsByWorktree === 'boolean') patch.groupSessionsByWorktree = prefs.groupSessionsByWorktree;
     if (typeof prefs.autoFocusBrowserOnAction === 'boolean') patch.autoFocusBrowserOnAction = prefs.autoFocusBrowserOnAction;
     if (typeof prefs.showTelegramSession === 'boolean') patch.showTelegramSession = prefs.showTelegramSession;
     if (typeof prefs.interruptOnSend === 'boolean') patch.interruptOnSend = prefs.interruptOnSend;

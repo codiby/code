@@ -156,6 +156,12 @@ export interface PortlessActionInput {
   source?: 'user' | 'agent';
   /** When the action was started by the agent, the originating session id. */
   sessionId?: string;
+  /** Cross-action exports (API_URL, WEB_URL, …) contributed by the project's
+   *  OTHER actions. Actions are the only spawn path that receives these —
+   *  plain terminals deliberately don't. The caller builds the map (it owns
+   *  preferences/project config); entries here override the bridge's own
+   *  inherited environment. */
+  env?: Record<string, string>;
 }
 
 export type PortlessActionState =
@@ -612,7 +618,7 @@ export function runAction(input: PortlessActionInput): RunResult {
   try {
     proc = spawn(cli.bin, args, {
       cwd: input.cwd,
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, ...(input.env || {}), FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     }) as PortlessProc;
   } catch (e: any) {

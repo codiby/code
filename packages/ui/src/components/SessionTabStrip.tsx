@@ -15,8 +15,10 @@ import type { SessionInfo, ConnectionStatus } from '../lib/claude-client';
 export interface SessionTabStripGroup {
   id: string;
   name: string;
-  color: string;
+  /** Absent on nested subgroups, which inherit their ancestor's colour. */
+  color?: string;
   icon?: string;
+  parentId?: string | null;
 }
 
 interface Props {
@@ -43,7 +45,23 @@ interface Props {
 
 type State = 'idle' | 'streaming' | 'complete' | 'attention';
 
-function resolveGroupColor(name: string): string {
+/** A nested subgroup carries no colour of its own — walk up to the nearest
+ *  ancestor that sets one so a whole project branch reads as one family. */
+function inheritedColorName(
+  groups: Record<string, SessionTabStripGroup>,
+  groupId: string,
+): string | undefined {
+  const seen = new Set<string>();
+  let cur: string | null | undefined = groupId;
+  while (cur && !seen.has(cur) && groups[cur]) {
+    seen.add(cur);
+    if (groups[cur]!.color) return groups[cur]!.color;
+    cur = groups[cur]!.parentId ?? null;
+  }
+  return undefined;
+}
+
+function resolveGroupColor(name: string | undefined): string {
   switch (name) {
     case 'blue':   return '#60a5fa';
     case 'green':  return '#3ecf8e';
@@ -209,7 +227,7 @@ export function SessionTabStrip({
             />
           );
         }
-        const groupColor = resolveGroupColor(item.group.color);
+        const groupColor = resolveGroupColor(inheritedColorName(tabGroups, item.group.id));
         const expanded = expandedGroupIds.has(item.group.id);
         const remote = groupRemoteInfo?.[item.group.id];
         return (

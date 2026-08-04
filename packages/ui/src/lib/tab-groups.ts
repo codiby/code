@@ -88,12 +88,30 @@ export interface PortlessConfig {
   exports?: PortlessExport[];
 }
 
+/** `manual` groups are user- (or autogroup-) created and persisted.
+ *  `worktree` groups are derived at render time from sessions sharing a
+ *  worktree cwd — see `lib/group-tree.ts`. They never reach preferences. */
+export type TabGroupKind = 'manual' | 'worktree';
+
 export interface TabGroupInfo {
   id: string;
   name: string;
-  color: string;
+  /** Absent on nested subgroups, which inherit the nearest ancestor's colour
+   *  (`resolveGroupColor`). Top-level groups always carry one. */
+  color?: string;
   cwd?: string;
   icon?: string;
+
+  /** Parent group, or null/absent for a root-level group. Nesting is
+   *  unbounded; cycles are defensively flattened when the tree is built. */
+  parentId?: string | null;
+  /** Defaults to `manual` when absent (every group predating nesting). */
+  kind?: TabGroupKind;
+  /** Only set on derived worktree groups: the shared cwd they group. */
+  worktreePath?: string;
+  /** Survives having no members. Set on groups the user creates explicitly as
+   *  empty folders, so the orphan-pruning pass leaves them alone. */
+  allowEmpty?: boolean;
 
   /** When true, new sessions whose cwd matches this group's cwd are
    *  auto-claimed into this group. Distinct from the global

@@ -2,10 +2,16 @@
  * Cross-action env-var injection.
  *
  * The project carries a single `exports` list at `portless.exports`. Each
- * entry references a source action by id; when a different action (or any
- * taskr-spawned shell) starts, the entry's value is computed from the
- * source action's configured hostname and added to the spawned process's
- * env. The source action never receives its own exports.
+ * entry references a source action by id; when a DIFFERENT action starts,
+ * the entry's value is computed from the source action's configured
+ * hostname and added to the spawned process's env. The source action never
+ * receives its own exports.
+ *
+ * Actions only. Ordinary terminals — the dock's "+", mobile, `/terminal`,
+ * `/t`, `>` commands, terminals restored on reconnect, and the agent's
+ * `spawn_terminal` — get a plain shell. Injecting there silently overrode
+ * whatever the user's own `.env`/rc files set, and the user has no way to
+ * see why `npm run dev` suddenly talks to a portless hostname.
  *
  * Why config-time, not runtime:
  *   The URL is a pure function of (hostname, tld, tls). Computing it at
@@ -17,6 +23,7 @@
  */
 
 import { spawnSync } from 'child_process';
+import { sessionGroupChain } from '../config/group-chain';
 import type {
   TabGroupInfo,
   PortlessConfig,
@@ -112,13 +119,15 @@ export function renderExportValue(
     .replace(/\$\{scheme\}|\{scheme\}/g, scheme);
 }
 
-/** Build the env-var map a newly-spawned process in this project should
+/** Build the env-var map a newly-spawned ACTION in this project should
  *  receive. Iterates the project's `portless.exports`, skipping any whose
  *  source action is the spawning action itself.
  *
- *  @param excludeActionId — pass when an action is the one spawning so
- *  its own exports are skipped. `/terminal` and `spawn_terminal` aren't
- *  tied to a specific action, so they pass `undefined` (no exclusion). */
+ *  Callers are `actions_run` and `POST /portless/run` — the two Action
+ *  launch paths. Terminal spawn paths must not call this.
+ *
+ *  @param excludeActionId — the id of the action being spawned, so its own
+ *  exports are skipped. */
 export function buildInjectedActionEnv(
   group: TabGroupInfo | undefined,
   globalTld: string,
@@ -179,14 +188,18 @@ export function getGlobalTld(prefs: Record<string, unknown>): string {
 }
 
 /** Look up the TabGroup a session belongs to, given the raw preferences
- *  blob (the bridge already loads this on demand for the MCP tools). */
+ *  blob (the bridge already loads this on demand for the MCP tools).
+ *
+ *  Groups nest, and portless config lives on the project, so this returns the
+ *  nearest ancestor that actually configures portless — a session inside a
+ *  `Backend` subgroup still resolves the repo's dev-server actions. Falls back
+ *  to the session's own group when nobody in the chain defines one. */
 export function resolveGroupForSession(
   prefs: Record<string, unknown>,
   sessionId: string,
 ): TabGroupInfo | undefined {
   const map = (prefs.tabGroupMap as Record<string, string> | undefined) || {};
-  const groupId = map[sessionId];
-  if (!groupId) return undefined;
   const groups = (prefs.tabGroups as Record<string, TabGroupInfo> | undefined) || {};
-  return groups[groupId];
+  const chain = sessionGroupChain(groups, map, sessionId);
+  return chain.find(g => g.portless) ?? chain[0];
 }

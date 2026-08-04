@@ -13,6 +13,10 @@ export interface TabGroupsSlice {
   tabGroupMap: Record<string, string>;
   pinnedSessionIds: Set<string>;
   expandedGroupIds: Set<string>;
+  /** Sessions the user pulled out of their automatic worktree group. They keep
+   *  their project group but stop counting towards the ≥2 rule that materialises
+   *  a worktree group — the one way to opt out of the automatic clustering. */
+  pinnedOutOfWorktree: Set<string>;
   /** Group focused in the sidebar; when set, the main pane shows the inline
    *  new-session composer instead of the active session's chat. */
   selectedGroupId: string | null;
@@ -22,6 +26,7 @@ export interface TabGroupsSlice {
   setTabGroupMap: Dispatch<SetStateAction<Record<string, string>>>;
   setPinnedSessionIds: Dispatch<SetStateAction<Set<string>>>;
   setExpandedGroupIds: Dispatch<SetStateAction<Set<string>>>;
+  setPinnedOutOfWorktree: Dispatch<SetStateAction<Set<string>>>;
   setSelectedGroupId: Dispatch<SetStateAction<string | null>>;
 }
 
@@ -31,6 +36,7 @@ export const createTabGroupsSlice: SliceCreator<TabGroupsSlice> = (set) => ({
   tabGroupMap: {},
   pinnedSessionIds: new Set(),
   expandedGroupIds: new Set(),
+  pinnedOutOfWorktree: new Set(),
   selectedGroupId: null,
 
   setTabOrder: (u) => set(s => ({ tabOrder: apply(s.tabOrder, u) })),
@@ -38,5 +44,6 @@ export const createTabGroupsSlice: SliceCreator<TabGroupsSlice> = (set) => ({
   setTabGroupMap: (u) => set(s => ({ tabGroupMap: apply(s.tabGroupMap, u) })),
   setPinnedSessionIds: (u) => set(s => ({ pinnedSessionIds: apply(s.pinnedSessionIds, u) })),
   setExpandedGroupIds: (u) => set(s => ({ expandedGroupIds: apply(s.expandedGroupIds, u) })),
+  setPinnedOutOfWorktree: (u) => set(s => ({ pinnedOutOfWorktree: apply(s.pinnedOutOfWorktree, u) })),
   setSelectedGroupId: (u) => set(s => ({ selectedGroupId: apply(s.selectedGroupId, u) })),
 });

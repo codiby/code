@@ -44,7 +44,7 @@ const NO_GROUP = '__nogroup__';
 const BOARD_DRAG_TYPE = 'application/x-codiby-session';
 function groupHex(g: TabGroupInfo | undefined): string {
   if (!g) return '#5b5d66';
-  return GROUP_HEX_COLOR[g.color] || g.color || '#5b5d66';
+  return GROUP_HEX_COLOR[g.color ?? ''] || g.color || '#5b5d66';
 }
 
 type LaneId = 'needs' | 'working' | 'review' | 'done';

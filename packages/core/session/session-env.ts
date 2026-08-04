@@ -11,9 +11,14 @@
  * The Claude provider itself runs in-process and inherits the bun
  * server's env, so it is NOT covered here — global envs that need to
  * reach Claude must be set on the bun server, not via this module.
+ *
+ * Groups nest, so the lookup walks the whole ancestor chain: a session in
+ * `utilityprofit › Backend` sees the repo's vars plus whatever Backend adds
+ * on top.
  */
 
 import { loadPreferences } from './storage';
+import { sessionGroupChain } from '../config/group-chain';
 
 interface EnvVarRow {
   key: string;
@@ -22,7 +27,7 @@ interface EnvVarRow {
 
 interface PrefsShape {
   globalEnvVars?: EnvVarRow[];
-  tabGroups?: Record<string, { envVars?: EnvVarRow[] }>;
+  tabGroups?: Record<string, { envVars?: EnvVarRow[]; parentId?: string | null }>;
   tabGroupMap?: Record<string, string>;
 }
 
@@ -43,13 +48,16 @@ export function getSessionEnvOverrides(sessionId: string | undefined | null): Re
     }
   }
 
+  // Walk the group chain root-first so a nested subgroup's vars override the
+  // repo-level ones it inherits, the same way project beats global.
   if (sessionId && prefs.tabGroupMap && prefs.tabGroups) {
-    const gid = prefs.tabGroupMap[sessionId];
-    const group = gid ? prefs.tabGroups[gid] : undefined;
-    const list = Array.isArray(group?.envVars) ? group!.envVars! : [];
-    for (const row of list) {
-      if (row && typeof row.key === 'string' && row.key.trim()) {
-        out[row.key.trim()] = typeof row.value === 'string' ? row.value : '';
+    const chain = sessionGroupChain(prefs.tabGroups, prefs.tabGroupMap, sessionId);
+    for (const group of chain.slice().reverse()) {
+      const list = Array.isArray(group.envVars) ? group.envVars : [];
+      for (const row of list) {
+        if (row && typeof row.key === 'string' && row.key.trim()) {
+          out[row.key.trim()] = typeof row.value === 'string' ? row.value : '';
+        }
       }
     }
   }

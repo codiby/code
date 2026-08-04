@@ -60,12 +60,15 @@ interface Props {
     remoteId?: string | null,
     /** Pasted/dropped screenshots to ship with the first message. */
     images?: { media_type: string; data: string }[],
-    /** Reasoning effort — only forwarded for Claude sessions. */
+    /** Reasoning effort — forwarded for providers that support it. */
     effort?: string,
   ) => void;
   /** Opens the full folder-picker modal (parent-owned). Invoked from the
    *  "Browse for folder…" item at the bottom of the project dropdown. */
   onBrowseFolder?: () => void;
+  /** Keeps the app-wide git status indicator aligned with this composer's
+   * branch selection before a session exists for the selected group. */
+  onBranchChanged?: (branch: string | null) => void;
 }
 
 /**
@@ -75,7 +78,7 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, onSpawn, onBrowseFolder }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, onSpawn, onBrowseFolder, onBranchChanged }: Props) {
   const [prompt, setPrompt] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [cwd, setCwd] = useState(groupCwd);
@@ -210,6 +213,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     const existing = (gitInfo?.worktrees || []).find(w => w.branch === branch && w.path && w.path !== cwd);
     if (existing) {
       switchToWorktree(existing.path);
+      onBranchChanged?.(branch);
       setBranchMenuOpen(false);
       return;
     }
@@ -219,10 +223,12 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       if (result.ok) {
         const info = await client.getGitInfo(cwd);
         setGitInfo(info);
+        onBranchChanged?.(info.is_git ? info.branch || null : null);
       } else if (result.alreadyInWorktree?.path) {
         // Stale gitInfo: the server saw the branch in a worktree we didn't
         // know about. Switch instead of failing.
         switchToWorktree(result.alreadyInWorktree.path);
+        onBranchChanged?.(branch);
       }
     } finally {
       setCheckingOut(false);
@@ -249,9 +255,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       worktreeOrigin || undefined,
       remoteId ?? null,
       images,
-      // Effort is a Claude-only spawn option; drop it silently if the user
-      // picked one and then switched the provider away from Claude.
-      provider === 'claude' && effort ? effort : undefined,
+      (provider === 'claude' || provider === 'opencode') && effort ? effort : undefined,
     );
     setPastedImages([]);
   };

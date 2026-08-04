@@ -20,6 +20,7 @@ import { PairPhoneModal } from './PairPhoneModal';
 import { PluginSettingsSections } from './PluginExtensionPoints';
 import { RemotesSection } from './RemotesSection';
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
+import { resolveGroupColor } from '../lib/group-tree';
 import {
   GROUP_COLORS, GROUP_HEX_COLOR, GROUP_DOT_COLOR,
   type TabGroupInfo,
@@ -38,6 +39,8 @@ interface ProjectSettingsModalProps {
   tabGroupMap: Record<string, string>;
   autoGroupSessions: boolean;
   onToggleAutoGroup: (next: boolean) => void;
+  groupSessionsByWorktree: boolean;
+  onToggleGroupByWorktree: (next: boolean) => void;
   autoFocusBrowserOnAction: boolean;
   onToggleAutoFocusBrowserOnAction: (next: boolean) => void;
   interruptOnSend: boolean;
@@ -560,7 +563,7 @@ function TabGroupsListSection({ tabGroups, tabGroupMap, onDeleteGroup, onSelect 
         <div className="space-y-1.5">
           {entries.map(g => {
             const count = memberCount[g.id] || 0;
-            const dot = GROUP_DOT_COLOR[g.color] || 'bg-zinc-400';
+            const dot = GROUP_DOT_COLOR[resolveGroupColor(tabGroups, g.id, '')] || 'bg-zinc-400';
             const Icon = g.icon ? ICON_MAP[g.icon] : null;
             const isConfirm = confirming === g.id;
             return (
@@ -639,6 +642,8 @@ function ChatColorPreview({ accent, tintBackground }: { accent: string | null; t
 function GeneralSection({
   autoGroupSessions,
   onToggleAutoGroup,
+  groupSessionsByWorktree,
+  onToggleGroupByWorktree,
   autoFocusBrowserOnAction,
   onToggleAutoFocusBrowserOnAction,
   interruptOnSend,
@@ -650,6 +655,8 @@ function GeneralSection({
 }: {
   autoGroupSessions: boolean;
   onToggleAutoGroup: (v: boolean) => void;
+  groupSessionsByWorktree: boolean;
+  onToggleGroupByWorktree: (v: boolean) => void;
   autoFocusBrowserOnAction: boolean;
   onToggleAutoFocusBrowserOnAction: (v: boolean) => void;
   interruptOnSend: boolean;
@@ -671,6 +678,19 @@ function GeneralSection({
           <div className="flex-1 min-w-0 text-left">
             <div className="text-[12.5px] text-zinc-100">Auto-group new sessions</div>
             <div className="text-[11px] text-zinc-500 mt-0.5">Bucket new sessions into a tab group named after the project folder.</div>
+          </div>
+          <SwitchControl>
+            <SwitchThumb />
+          </SwitchControl>
+        </Switch>
+        <Switch
+          isSelected={groupSessionsByWorktree}
+          onChange={onToggleGroupByWorktree}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border hover:border-border-light transition-colors cursor-pointer"
+        >
+          <div className="flex-1 min-w-0 text-left">
+            <div className="text-[12.5px] text-zinc-100">Group sessions by worktree</div>
+            <div className="text-[11px] text-zinc-500 mt-0.5">Inside a project, sessions that share a working directory collapse under a folder named after it — the branch for a linked worktree, "main" for the repo itself. Needs two or more sessions on the same checkout; it dissolves on its own below that. Off: every session stays a direct child of its project.</div>
           </div>
           <SwitchControl>
             <SwitchThumb />
@@ -2235,7 +2255,7 @@ function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; lab
 
 function NavProject({ group, memberCount, active, onClick }: { group: TabGroupInfo; memberCount: number; active: boolean; onClick: () => void }) {
   const Icon = group.icon ? ICON_MAP[group.icon] : null;
-  const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
+  const hex = GROUP_HEX_COLOR[group.color ?? ''] || '#a78bfa';
   return (
     <button
       onClick={onClick}
@@ -2263,7 +2283,7 @@ function NavProject({ group, memberCount, active, onClick }: { group: TabGroupIn
 
 export function ProjectSettingsModal({
   open, onClose, tabGroups, tabGroupMap,
-  autoGroupSessions, onToggleAutoGroup,
+  autoGroupSessions, onToggleAutoGroup, groupSessionsByWorktree, onToggleGroupByWorktree,
   autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction,
   interruptOnSend, onToggleInterruptOnSend,
   colorChatBySession, onToggleColorChatBySession,
@@ -2403,6 +2423,8 @@ export function ProjectSettingsModal({
                   tabGroups={tabGroups}
                   tabGroupMap={tabGroupMap}
                   autoGroupSessions={autoGroupSessions}
+                  groupSessionsByWorktree={groupSessionsByWorktree}
+                  onToggleGroupByWorktree={onToggleGroupByWorktree}
                   onToggleAutoGroup={onToggleAutoGroup}
                   autoFocusBrowserOnAction={autoFocusBrowserOnAction}
                   onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction}
@@ -2443,13 +2465,15 @@ export function ProjectSettingsModal({
 }
 
 /* Global content router (right pane when no project selected) */
-function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, interruptOnSend, onToggleInterruptOnSend, colorChatBySession, onToggleColorChatBySession, tintChatBackground, onToggleTintChatBackground, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, portlessTld, onChangePortlessTld, client, onDeleteGroup, onSelectGroup }: {
+function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSessions, onToggleAutoGroup, groupSessionsByWorktree, onToggleGroupByWorktree, autoFocusBrowserOnAction, onToggleAutoFocusBrowserOnAction, interruptOnSend, onToggleInterruptOnSend, colorChatBySession, onToggleColorChatBySession, tintChatBackground, onToggleTintChatBackground, showTelegramSession, onToggleShowTelegramSession, globalEnvVars, onChangeGlobalEnvVars, portlessTld, onChangePortlessTld, client, onDeleteGroup, onSelectGroup }: {
   section: GlobalSection;
   serverUrl: string | null;
   tabGroups: Record<string, TabGroupInfo>;
   tabGroupMap: Record<string, string>;
   autoGroupSessions: boolean;
   onToggleAutoGroup: (v: boolean) => void;
+  groupSessionsByWorktree: boolean;
+  onToggleGroupByWorktree: (v: boolean) => void;
   autoFocusBrowserOnAction: boolean;
   onToggleAutoFocusBrowserOnAction: (v: boolean) => void;
   interruptOnSend: boolean;
@@ -2470,7 +2494,7 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
 }) {
   return (
     <div className="px-8 pt-6 pb-8">
-      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} colorChatBySession={colorChatBySession} onToggleColorChatBySession={onToggleColorChatBySession} tintChatBackground={tintChatBackground} onToggleTintChatBackground={onToggleTintChatBackground} />}
+      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} groupSessionsByWorktree={groupSessionsByWorktree} onToggleGroupByWorktree={onToggleGroupByWorktree} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} colorChatBySession={colorChatBySession} onToggleColorChatBySession={onToggleColorChatBySession} tintChatBackground={tintChatBackground} onToggleTintChatBackground={onToggleTintChatBackground} />}
       {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
       {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
       {section === 'tailscale'   && <TailscaleSection serverUrl={serverUrl} />}
@@ -2512,7 +2536,7 @@ function ProjectContent({ group, tab, onTabChange, onPatch, onDelete, tabGroupMa
   activeSessionCwd?: string;
   activeSessionGroupId?: string;
 }) {
-  const hex = GROUP_HEX_COLOR[group.color] || '#a78bfa';
+  const hex = GROUP_HEX_COLOR[group.color ?? ''] || '#a78bfa';
   const Icon = group.icon ? ICON_MAP[group.icon] : Folder;
   const [confirmDelete, setConfirmDelete] = useState(false);
 

@@ -7,17 +7,22 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { corsHeaders } from '../config/config';
+import { corsHeaders, MAIN_SESSION_ID } from '../config/config';
 import { log } from '../lib/logger';
 import { sessions, sessionToJSON, saveSessions } from '../session/sessions';
-import { handleCreateSession, handleRestartSession } from '../handlers/sessions';
+import {
+  handleCreateSession,
+  handleRestartSession,
+  handleRenameSession,
+  handleDeleteSession,
+} from '../handlers/sessions';
 import { addMessage, getSessionState } from '../session/state';
 import type { ChatMessage } from '../session/state';
 import { createWorktree, applyWorktreeSetup } from '../handlers/worktree';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { extname, basename } from 'path';
-import { saveResource } from '../handlers/resources';
+import { saveResource, purgeSessionResources } from '../handlers/resources';
 import {
   IMAGE_MEDIA_TYPES,
   mockupsFor,
@@ -37,6 +42,10 @@ import { requestPermissionDecision } from '../provider/bridge';
  *  Matches the set in ChatApp.tsx#handleCreateGroup so new server-made groups
  *  look indistinguishable from client-made ones. */
 const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
+
+/** Modes a caller may set through `ui_update_session`. `loop` is deliberately
+ *  absent — arming a loop is a user action driven by /sessions/:id/loop/start. */
+const SETTABLE_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'];
 
 type TabGroup = { id: string; name: string; color: string; cwd?: string; icon?: string };
 
@@ -78,6 +87,106 @@ let _serverPort = 3111;
 export function setMcpDeps(deps: McpDeps) {
   _deps = deps;
   _serverPort = deps.port;
+}
+
+// ---------------------------------------------------------------------------
+// Session CRUD helpers — shared by ui_update_session / ui_archive_session /
+// ui_unarchive_session / ui_delete_session. These deliberately route through
+// the same handlers the HTTP routes use so the bun server stays the single
+// source of truth for `ui-sessions.json`; the MCP layer only validates input
+// and broadcasts.
+// ---------------------------------------------------------------------------
+
+type SessionPatch = { name?: string; status?: 'open' | 'archived'; permissionMode?: string };
+
+export function canRenameOwnedSession(owningSessionId: string, targetSessionId: string): boolean {
+  return !!owningSessionId && owningSessionId === targetSessionId;
+}
+
+/** Apply a patch through `handleRenameSession` (the `PATCH /sessions/:id`
+ *  handler), then broadcast so every open tab repaints without a restart.
+ *  Also pushes a permission-mode change to the live provider, matching what
+ *  the `set_permission_mode` WS frame does — a PATCH alone would leave a
+ *  running provider on the old mode. */
+async function patchSessionViaHandler(
+  sessionId: string,
+  patch: SessionPatch,
+): Promise<{ ok: true; session: Record<string, unknown> } | { ok: false; error: string }> {
+  const session = sessions.get(sessionId);
+  if (!session) return { ok: false, error: `Session not found: ${sessionId}` };
+  // The Telegram bridge and the pinned first tab both hold a hard reference to
+  // MAIN_SESSION_ID, and the tab bar only renders `status === 'open'` sessions
+  // — archiving it would make the bot's tab vanish with no way back from the
+  // UI. The desktop client special-cases it the same way (ChatApp#handleCloseTab).
+  if (patch.status === 'archived' && sessionId === MAIN_SESSION_ID) {
+    return {
+      ok: false,
+      error: 'Cannot archive the main session — the Telegram bridge references it and the UI pins its tab. Use `/clear` on that tab to reset its history instead.',
+    };
+  }
+  // Leaving loop mode is a user action, over POST /sessions/:id/loop/stop —
+  // silently flipping the mode here would leave the loop driver re-injecting
+  // prompts into a session that no longer reports itself as looping.
+  if (patch.permissionMode !== undefined && session.permissionMode === 'loop') {
+    return {
+      ok: false,
+      error: `Session ${sessionId} is in loop mode. Stop the loop from the UI (or POST /sessions/${sessionId}/loop/stop) before changing its permission mode.`,
+    };
+  }
+
+  const req = new Request(`http://internal/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  const resp = await handleRenameSession(sessionId, req);
+  const data = await resp.json() as Record<string, unknown>;
+  if (!resp.ok) {
+    return { ok: false, error: typeof data.error === 'string' ? data.error : `HTTP ${resp.status}` };
+  }
+  if (patch.permissionMode !== undefined && session.providerSession) {
+    try { await session.providerSession.setPermissionMode(patch.permissionMode as never); } catch {}
+  }
+  _deps?.broadcastSessionList();
+  return { ok: true, session: data };
+}
+
+/** Normalize the `session_id` / `session_ids` pair the archive/unarchive tools
+ *  accept into a deduped, order-preserving list. */
+function collectSessionIds(args: Record<string, unknown> | undefined): string[] {
+  const out: string[] = [];
+  const push = (v: unknown) => {
+    if (typeof v !== 'string') return;
+    const id = v.trim();
+    if (id && !out.includes(id)) out.push(id);
+  };
+  push(args?.session_id);
+  if (Array.isArray(args?.session_ids)) for (const v of args!.session_ids as unknown[]) push(v);
+  return out;
+}
+
+/** Flip `status` on one or more sessions and report per-id outcomes so a batch
+ *  archive doesn't fail wholesale on a single bad id. */
+async function setSessionsStatus(
+  ids: string[],
+  status: 'open' | 'archived',
+): Promise<{ text: string; isError: boolean }> {
+  const done: string[] = [];
+  const failed: string[] = [];
+  for (const id of ids) {
+    const result = await patchSessionViaHandler(id, { status });
+    if (result.ok) {
+      const name = typeof result.session.name === 'string' ? result.session.name : id;
+      done.push(`${id} — ${name}`);
+    } else {
+      failed.push(`${id} — ${result.error}`);
+    }
+  }
+  const verb = status === 'archived' ? 'Archived' : 'Unarchived';
+  const parts: string[] = [];
+  if (done.length) parts.push(`${verb} ${done.length} session${done.length === 1 ? '' : 's'}:\n${done.map(l => `  ${l}`).join('\n')}`);
+  if (failed.length) parts.push(`Failed ${failed.length}:\n${failed.map(l => `  ${l}`).join('\n')}`);
+  return { text: parts.join('\n\n'), isError: done.length === 0 };
 }
 
 function createMcpServer(uiSessionId: string) {
@@ -163,7 +272,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'ui_list_sessions',
-      description: 'List all Codiby Code sessions (chat tabs). Returns each session\'s id, name, status, and working directory. Use this to find the session_id to pass to ui_send_message.',
+      description: 'List all Codiby Code sessions (chat tabs). Returns each session\'s id, name, status, and working directory. Use this to find the session_id to pass to ui_send_message. When mentioning any of these sessions to the user, link to them as `[Session Name](codiby-session:<id>)` rather than printing the raw id — the UI renders that as a clickable chip.',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -281,6 +390,90 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           since_seq: { type: 'number', description: 'If set, only return messages with seq strictly greater than this. Useful for polling for new messages after a previous read.' },
           include_tools: { type: 'boolean', description: 'Include tool_use and tool_result messages. Default true. Set false for a cleaner user/assistant transcript.' },
           max_chars_per_message: { type: 'number', description: 'Per-message truncation cap. Default 500. Pass 0 to disable truncation.' },
+        },
+        required: ['session_id'],
+      },
+    },
+    {
+      name: 'ui_update_session',
+      description:
+        'Update an existing Codiby Code session (chat tab) by id. Pass only the fields you want to change — omitted fields are left alone.\n\n' +
+        'A session may only rename itself; use ui_rename_session for that. Cross-session name changes are rejected to prevent one tab from receiving another tab\'s title.\n\n' +
+        '`status` controls tab visibility and is fully reversible: `archived` hides the tab (the session, its history and its worktree all stay on disk), `open` brings it back. ' +
+        'Prefer ui_archive_session / ui_unarchive_session for the common case — they take a list of ids. ' +
+        'To destroy a session for good, use ui_delete_session instead (irreversible).\n\n' +
+        'The main session (the Telegram bridge\'s pinned tab) cannot be archived.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          session_id: { type: 'string', description: 'Id of the session to update (from ui_list_sessions).' },
+          name: { type: 'string', description: 'New session name shown in the tab bar. Aim for ≤ 24 chars.' },
+          status: {
+            type: 'string',
+            enum: ['open', 'archived'],
+            description: 'UI lifecycle. `archived` hides the tab (reversible, nothing is deleted); `open` restores it.',
+          },
+          permission_mode: {
+            type: 'string',
+            enum: SETTABLE_PERMISSION_MODES,
+            description: 'Permission mode for the session. Applied to the running provider too. Rejected while the session is in loop mode.',
+          },
+        },
+        required: ['session_id'],
+      },
+    },
+    {
+      name: 'ui_archive_session',
+      description:
+        'Archive (close) one or more Codiby Code sessions — shortcut for ui_update_session with `status: "archived"`.\n\n' +
+        'REVERSIBLE: archiving only hides the tab from the tab bar. The session record, its chat history, and its git worktree are all left untouched, and ui_unarchive_session brings it straight back. ' +
+        'This is what you want when the user asks to "close", "clean up", or "get rid of" tabs. ' +
+        'Do NOT reach for ui_delete_session unless the user explicitly wants the session destroyed.\n\n' +
+        'Pass `session_ids` to archive several tabs in one call. The main session (Telegram bridge) cannot be archived. Archiving does not stop the underlying provider process.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          session_id: { type: 'string', description: 'Id of a session to archive. Use `session_ids` for several at once.' },
+          session_ids: { type: 'array', items: { type: 'string' }, description: 'Ids of the sessions to archive. Combined with `session_id` if both are given.' },
+        },
+      },
+    },
+    {
+      name: 'ui_unarchive_session',
+      description:
+        'Bring one or more archived Codiby Code sessions back into the tab bar — shortcut for ui_update_session with `status: "open"`. ' +
+        'Does NOT auto-resume the provider; that happens lazily when the tab is focused or a message is sent. ' +
+        'Use ui_list_sessions to find archived ids (they show as `[archived/…]`).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          session_id: { type: 'string', description: 'Id of a session to restore. Use `session_ids` for several at once.' },
+          session_ids: { type: 'array', items: { type: 'string' }, description: 'Ids of the sessions to restore. Combined with `session_id` if both are given.' },
+        },
+      },
+    },
+    {
+      name: 'ui_delete_session',
+      description:
+        'PERMANENTLY delete a Codiby Code session. IRREVERSIBLE — there is no undo and no trash. ' +
+        'Only call this when the user explicitly asked to delete/destroy the session; if they merely want the tab out of the way, call ui_archive_session instead (reversible).\n\n' +
+        'What each flag destroys:\n' +
+        '  • default (both flags false) — removes the session record and stops its provider. The chat history stays on disk, so the transcript is still recoverable by hand, but the tab is gone from the UI.\n' +
+        '  • `purge: true` — ALSO deletes the on-disk chat history and UI state for the session. The conversation is unrecoverable.\n' +
+        '  • `remove_worktree: true` — ALSO deletes the git worktree at the session\'s cwd from disk (only when the cwd matches the `.wt/<branch>` convention). Uncommitted work in that worktree is LOST.\n\n' +
+        'Both flags default to false and must be opted into explicitly. The session\'s stored images/mockups are dropped either way. The main session cannot be deleted.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          session_id: { type: 'string', description: 'Id of the session to delete permanently (from ui_list_sessions).' },
+          purge: {
+            type: 'boolean',
+            description: 'Also delete the on-disk chat history + UI state, making the conversation unrecoverable. Defaults to false.',
+          },
+          remove_worktree: {
+            type: 'boolean',
+            description: 'Also remove the git worktree at the session\'s cwd (only for `.wt/<branch>` paths). Destroys uncommitted work there. Defaults to false.',
+          },
         },
         required: ['session_id'],
       },
@@ -748,6 +941,92 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           (state.isStreaming ? ' (streaming...)' : '');
         return { content: [{ type: 'text', text: header + '\n' + lines.join('\n') }] };
       }
+      case 'ui_update_session': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        const sessionId = typeof args!.session_id === 'string' ? args!.session_id.trim() : '';
+        if (!sessionId) return { content: [{ type: 'text', text: 'session_id is required' }], isError: true };
+
+        const patch: SessionPatch = {};
+        if (args!.name !== undefined) {
+          if (!canRenameOwnedSession(uiSessionId, sessionId)) {
+            return {
+              content: [{ type: 'text', text: 'A session may only rename itself. Use ui_rename_session in the target session.' }],
+              isError: true,
+            };
+          }
+          const next = typeof args!.name === 'string' ? args!.name.trim() : '';
+          if (!next) return { content: [{ type: 'text', text: '`name` cannot be empty or whitespace.' }], isError: true };
+          patch.name = next;
+        }
+        if (args!.status !== undefined) {
+          if (args!.status !== 'open' && args!.status !== 'archived') {
+            return { content: [{ type: 'text', text: "`status` must be 'open' or 'archived'." }], isError: true };
+          }
+          patch.status = args!.status;
+        }
+        if (args!.permission_mode !== undefined) {
+          const mode = typeof args!.permission_mode === 'string' ? args!.permission_mode : '';
+          if (!SETTABLE_PERMISSION_MODES.includes(mode)) {
+            return { content: [{ type: 'text', text: `\`permission_mode\` must be one of: ${SETTABLE_PERMISSION_MODES.join(', ')}.` }], isError: true };
+          }
+          patch.permissionMode = mode;
+        }
+        if (Object.keys(patch).length === 0) {
+          return { content: [{ type: 'text', text: 'Nothing to update — pass at least one of `name`, `status`, `permission_mode`.' }], isError: true };
+        }
+
+        const result = await patchSessionViaHandler(sessionId, patch);
+        if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
+        const s = result.session;
+        return {
+          content: [{
+            type: 'text',
+            text: `Updated session ${sessionId} — name="${s.name}", status=${s.status}, permission_mode=${s.permission_mode}.`,
+          }],
+        };
+      }
+      case 'ui_archive_session':
+      case 'ui_unarchive_session': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        const ids = collectSessionIds(args);
+        if (ids.length === 0) {
+          return { content: [{ type: 'text', text: 'Pass `session_id` (or `session_ids` for several).' }], isError: true };
+        }
+        const status = name === 'ui_archive_session' ? 'archived' : 'open';
+        const { text, isError } = await setSessionsStatus(ids, status);
+        return { content: [{ type: 'text', text }], isError };
+      }
+      case 'ui_delete_session': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        const sessionId = typeof args!.session_id === 'string' ? args!.session_id.trim() : '';
+        if (!sessionId) return { content: [{ type: 'text', text: 'session_id is required' }], isError: true };
+        const target = sessions.get(sessionId);
+        if (!target) return { content: [{ type: 'text', text: `Session not found: ${sessionId}` }], isError: true };
+        const purge = args!.purge === true;
+        const removeWorktree = args!.remove_worktree === true;
+        const label = target.name;
+        const cwd = target.cwd;
+
+        const resp = await handleDeleteSession(sessionId, purge, removeWorktree);
+        const data = await resp.json() as Record<string, unknown>;
+        if (!resp.ok) {
+          return { content: [{ type: 'text', text: typeof data.error === 'string' ? data.error : `Delete failed: HTTP ${resp.status}` }], isError: true };
+        }
+        // Mirror the DELETE /sessions/:id route: the session's stored images and
+        // mockups go with it.
+        purgeSessionResources(sessionId);
+        _deps.broadcastSessionList();
+
+        const notes: string[] = [];
+        notes.push(purge ? 'chat history purged from disk' : 'chat history left on disk');
+        const wt = data.worktree as { removed?: boolean; method?: string } | undefined;
+        if (removeWorktree) {
+          notes.push(wt?.removed ? `worktree removed from ${cwd} (via ${wt.method})` : `worktree NOT removed (cwd ${cwd} is not a .wt/<branch> path, or removal failed)`);
+        }
+        return {
+          content: [{ type: 'text', text: `Permanently deleted session ${sessionId} — ${label}. ${notes.join('; ')}.` }],
+        };
+      }
       case 'ui_list_tab_groups': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
         const prefs = _deps.loadPreferences();
@@ -886,6 +1165,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!plan) return { content: [{ type: 'text', text: 'plan is required' }], isError: true };
         const decision = await requestPermissionDecision(session, {
           broadcastToSession: _deps.broadcastToSession,
+          sendBrowserRequest: _deps.broadcastToSession,
           broadcastSessionList: _deps.broadcastSessionList,
           notifyTelegramIfMainSession: () => {},
         }, {
@@ -1142,15 +1422,33 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   return mcpServer;
 }
 
-const transports = new Map<string, { transport: WebStandardStreamableHTTPServerTransport; server: Server }>();
+const transports = new Map<string, {
+  transport: WebStandardStreamableHTTPServerTransport;
+  server: Server;
+  uiSessionId: string;
+}>();
+
+export function owningUiSessionId(req: Request): string {
+  return req.headers.get('x-session-id') || new URL(req.url).searchParams.get('session_id') || '';
+}
+
+export function matchesMcpSessionOwner(boundSessionId: string, requestedSessionId: string): boolean {
+  return !requestedSessionId || requestedSessionId === boundSessionId;
+}
 
 export async function handleMcpRequest(req: Request): Promise<Response> {
   const mcpSessionId = req.headers.get('mcp-session-id');
-  const uiSessionId = req.headers.get('x-session-id') || '';
+  const uiSessionId = owningUiSessionId(req);
 
   if (mcpSessionId) {
     const entry = transports.get(mcpSessionId);
-    if (entry) return entry.transport.handleRequest(req);
+    if (entry) {
+      if (!matchesMcpSessionOwner(entry.uiSessionId, uiSessionId)) {
+        log(`[mcp] Rejected session owner mismatch: ${mcpSessionId} (bound=${entry.uiSessionId.slice(0, 8) || 'unknown'}, requested=${uiSessionId.slice(0, 8)})`);
+        return new Response('MCP session belongs to a different UI session', { status: 409 });
+      }
+      return entry.transport.handleRequest(req);
+    }
     return new Response('Session not found', { status: 404 });
   }
 
@@ -1160,7 +1458,7 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
     onsessioninitialized: (id) => {
-      transports.set(id, { transport, server: mcpServer });
+      transports.set(id, { transport, server: mcpServer, uiSessionId });
       log(`[mcp] Session started: ${id} (ui: ${uiSessionId.slice(0, 8)})`);
     },
     onsessionclosed: (id) => {
