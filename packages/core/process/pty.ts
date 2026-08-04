@@ -125,11 +125,17 @@ export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
   let cmd: string[];
   if (isWin) {
     cmd = shellArgs;
-  } else if (process.platform === 'darwin') {
-    cmd = ['/usr/bin/script', '-q', '/dev/null', ...shellArgs];
   } else {
-    // Linux util-linux script
-    cmd = ['/usr/bin/script', '-qfc', shellArgs.join(' '), '/dev/null'];
+    const quote = (arg: string) => `'${arg.replaceAll("'", `'\\''`)}'`;
+    // `script` copies the raw outer PTY settings to its controlling PTY.
+    // Restore normal line discipline there before the interactive shell starts.
+    const shellCommand = `stty sane; exec ${shellArgs.map(quote).join(' ')}`;
+    if (process.platform === 'darwin') {
+      cmd = ['/usr/bin/script', '-q', '/dev/null', '/bin/sh', '-c', shellCommand];
+    } else {
+      // Linux util-linux script
+      cmd = ['/usr/bin/script', '-qfc', shellCommand, '/dev/null'];
+    }
   }
 
   let proc: ReturnType<typeof Bun.spawn>;
