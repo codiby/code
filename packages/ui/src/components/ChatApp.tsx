@@ -96,6 +96,8 @@ import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
 import { GroupComposer } from './GroupComposer';
+import { EmptyComposerStage } from './EmptyComposerStage';
+import { ChatThread } from './ChatThread';
 import { AskUserQuestionForm } from './chat/AskUserQuestionForm';
 import { SearchPanel } from './search/SearchPanel';
 import { FocusBrowserAnchor } from './browser/FocusBrowserAnchor';
@@ -116,6 +118,15 @@ const MOD_KEY = IS_MAC ? '⌘' : 'Ctrl';
 
 // Extensions that open in the image preview tab instead of the text editor.
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg']);
+
+// Display names for the providers a session can run on. Mirrors the labels in
+// GroupComposer / NewSessionModal so the empty-session headline reads the same
+// as the new-session screen it's modelled on.
+const PROVIDER_LABELS: Record<string, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
 
 // Shared chime helper — used by both the desktop ChatApp and the mobile UI
 // so the audio cue on permission requests / turn completion is identical.
@@ -1441,7 +1452,10 @@ export function ChatApp() {
               );
               if (idx !== -1) {
                 const next = [...s.messages];
-                next[idx] = msg;
+                // Keep the local key so React sees the same node: the bubble is
+                // already on screen (and may be mid-entrance), it just gained a
+                // `seq`.
+                next[idx] = { ...msg, uiKey: next[idx]!.uiKey ?? next[idx]!.id };
                 return { ...prev, [sid]: { ...s, messages: next, contextTokens } };
               }
             }
@@ -1474,7 +1488,8 @@ export function ChatApp() {
               }
               if (idx !== -1) {
                 const next = [...s.messages];
-                next[idx] = msg;
+                // Same node as the preview it settles — see `uiKey`.
+                next[idx] = { ...msg, uiKey: next[idx]!.uiKey ?? next[idx]!.id };
                 return { ...prev, [sid]: { ...s, messages: next, contextTokens } };
               }
             }
@@ -4783,6 +4798,33 @@ export function ChatApp() {
   const composerNode = activeId ? renderComposer(activeId) : null;
 
   /**
+   * A session with no messages gets the group's new-session screen: the
+   * composer centred under a "New session in <folder> with <provider>"
+   * headline (see EmptyComposerStage), docking to the bottom once the first
+   * message lands.
+   *
+   * There's no flash risk on tab switch — the composer isn't rendered at all
+   * until `session_state` has landed with the replayed history (renderComposer
+   * bails on a missing entry). The latch covers the remaining edge: an entry
+   * created by some other broadcast that beats the state replay.
+   */
+  const seenNonEmptyRef = useRef<Set<string>>(new Set());
+  const activeStageState = activeId ? sessionStates[activeId] : undefined;
+  if (activeId && (activeStageState?.messages.length ?? 0) > 0) seenNonEmptyRef.current.add(activeId);
+  const composerCentered =
+    !!activeId
+    && !selectedGroupId
+    && layoutMode !== 'focus'
+    && !!activeStageState
+    && activeStageState.messages.length === 0
+    && !seenNonEmptyRef.current.has(activeId);
+  const activeStageSession = activeId ? sessions.find(s => s.id === activeId) : undefined;
+  const activeStageCwd = activeStageState?.initInfo?.cwd || activeStageSession?.cwd || '';
+  const activeStageFolder = activeStageCwd.split('/').filter(Boolean).pop() || activeStageCwd || 'this folder';
+  const activeStageProvider = PROVIDER_LABELS[activeStageSession?.provider ?? 'claude']
+    ?? (activeStageSession?.provider ?? 'Claude');
+
+  /**
    * Render the per-session chat scroll area (messages + streaming partials +
    * inline permission request). Used by both layouts: the standard view
    * mounts it once for the active session; focus mode mounts it per pane so
@@ -4798,14 +4840,19 @@ export function ChatApp() {
     const status: ConnectionStatus = statuses[sid] || 'disconnected';
     const isActiveSession = sid === activeId;
     return (
-      <div
-        ref={isActiveSession ? attachScrollRef : undefined}
+      <ChatThread
+        sessionId={sid}
+        attachRef={isActiveSession ? attachScrollRef : undefined}
         onScroll={isActiveSession ? handleMessagesScroll : undefined}
         style={accent && tintChatBackground ? { backgroundColor: `${accent}0d` } : undefined}
         className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1"
       >
-        {cs.messages.length === 0 && (
-          <div className="flex items-center justify-center h-full">
+        {/* With the composer centred (EmptyComposerStage) the "send a message"
+            prompt is redundant and would collide with it — only the
+            not-yet-connected states are still worth surfacing, and those go to
+            the top so the centre stays clear. */}
+        {cs.messages.length === 0 && !(isActiveSession && composerCentered && status === 'connected') && (
+          <div className={`flex items-center justify-center ${isActiveSession && composerCentered ? 'pt-2' : 'h-full'}`}>
             <p className="text-zinc-600 text-sm">
               {status === 'connecting' ? 'Connecting to Claude...' :
                status === 'connected' ? 'Send a message to start' :
@@ -4894,7 +4941,7 @@ export function ChatApp() {
                 }
               : undefined;
             return (
-              <div key={item.id} id={`msg-${item.id}`}>
+              <div key={item.uiKey ?? item.id} id={`msg-${item.id}`}>
                 <MessageBubble
                   message={item}
                   onOpenTerminal={handleOpenTerminal}
@@ -5110,7 +5157,7 @@ export function ChatApp() {
             </div>
           );
         })()}
-      </div>
+      </ChatThread>
     );
   };
 
@@ -6160,8 +6207,22 @@ export function ChatApp() {
                   )}
 
                   {/* Input — hidden while the inline GroupComposer is mounted,
-                      since the composer renders its own send affordance. */}
-                  {!selectedGroupId && composerNode}
+                      since the composer renders its own send affordance.
+                      EmptyComposerStage stays mounted either way: it owns the
+                      centred → docked transition, so it can't be swapped in
+                      only for the empty case. */}
+                  {!selectedGroupId && composerNode && activeId && (
+                    <EmptyComposerStage
+                      sessionId={activeId}
+                      centered={composerCentered}
+                      folderName={activeStageFolder}
+                      providerLabel={activeStageProvider}
+                      branch={gitBranch}
+                      getThreadEl={() => scrollRef.current}
+                    >
+                      {composerNode}
+                    </EmptyComposerStage>
+                  )}
                           </div>
                         );
                       }

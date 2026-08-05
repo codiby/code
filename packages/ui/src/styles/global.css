@@ -434,6 +434,46 @@ code {
 }
 
 /* ---------------------------------------------------------------------------
+   Live reasoning line — a gradient clipped to the text, sweeping left to
+   right while the model thinks. The block is a single truncated line in both
+   states (see ThinkingBubble), so this is the only thing that signals the
+   block is still growing.
+
+   Deliberately CSS and not GSAP: the bubble re-renders on every stream delta,
+   and a JS tween would have to be re-established (or carefully not) on each
+   one. A keyframe animation lives on the element, so text can change under it
+   without touching the animation, and it stops existing the moment the class
+   comes off — nothing keeps ticking in idle.
+   --------------------------------------------------------------------------- */
+@keyframes thinking-sweep {
+  from { background-position: 160% 0; }
+  to   { background-position: -60% 0; }
+}
+.thinking-sweep {
+  background-image: linear-gradient(
+    90deg,
+    #5b5b63 0%, #5b5b63 32%, #e9e6ff 50%, #5b5b63 68%, #5b5b63 100%
+  );
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  /* Lento a propósito: el barrido acompaña la lectura de la línea, no compite
+     con ella. Por debajo de ~2s se lee como un spinner nervioso. */
+  animation: thinking-sweep 2.6s linear infinite;
+}
+html.light .thinking-sweep {
+  background-image: linear-gradient(
+    90deg,
+    #a1a1aa 0%, #a1a1aa 32%, #3f3f46 50%, #a1a1aa 68%, #a1a1aa 100%
+  );
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-sweep { animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
    Mobile WS connection indicator — indeterminate progress bar that slides a
    gradient sliver across a thin track. Fades in while the WebSocket is
    connecting / disconnected and fades out once `'connected'`.

@@ -248,6 +248,18 @@ export interface ChatMessage {
    * persisted server-side.
    */
   placeholder?: boolean;
+  /**
+   * Local-only React key. A message can change `id` mid-life: an optimistic
+   * user send is replaced by the server's echo, and a streaming block is
+   * replaced by its permanent copy when the turn closes. Both are the SAME
+   * bubble to the reader, but keying off `id` remounts the node — which tears
+   * down its DOM element, taking any running entrance animation and any local
+   * component state (an expanded tool card, a scrolled code block) with it.
+   *
+   * The adopting write carries the original `uiKey` across, so React sees one
+   * continuous node. `id` stays authoritative for dedupe and scroll targets.
+   */
+  uiKey?: string;
   isTerminal?: boolean;
   terminalCommand?: string;
   exitCode?: number;

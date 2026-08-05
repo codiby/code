@@ -1026,35 +1026,33 @@ export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: 
   return result;
 }
 
+/**
+ * Reasoning block — one line, whether it's still arriving or already settled.
+ *
+ * It used to render fully expanded while streaming and collapse to a one-line
+ * chip on completion. That made the block's height track the reasoning: every
+ * delta pushed the rest of the chat down, and the turn ended with a drop of
+ * however many lines the model had produced. The fix isn't to animate that
+ * collapse — it's to never change height in the first place.
+ *
+ * So the live block is the same single row as the settled one. The only thing
+ * that moves is a gradient clipped to the text, sweeping left to right: it
+ * reads as forward progress (a pulse only says "alive"), and it's
+ * `background-position`, so it costs no layout. Opening the block is still the
+ * user's call — and growth they asked for doesn't surprise them.
+ */
 function ThinkingBubble({ message }: { message: ChatMessage }) {
   const [open, setOpen] = useState(false);
   const redacted = !!message.thinkingRedacted;
+  const streaming = !!message.streaming;
   const Chevron = open ? ChevronDown : ChevronRight;
   const text = message.content || '';
-  const firstLine = text.split('\n').find((l) => l.trim()) ?? '';
-  const preview = firstLine.length > 90 ? firstLine.slice(0, 89) + '…' : firstLine;
-  // Live block: the reasoning is still streaming in. Show it always-expanded
-  // with a pulsing sparkle + caret (the old bottom-anchored preview look),
-  // rather than the collapsed "Thought" chip it settles into once the block
-  // completes.
-  if (message.streaming) {
-    return (
-      <div className="py-1">
-        <div className="flex items-start gap-1.5 text-[12px] text-zinc-500">
-          <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-70 text-violet-300/70 animate-pulse" />
-          <span className="font-medium uppercase tracking-wide text-[10px] mt-[3px] shrink-0">
-            Thinking
-          </span>
-        </div>
-        <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
-          <p className="text-[12px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-            {text}
-            <span className="inline-block ml-0.5 w-1.5 h-3 bg-zinc-500/70 align-middle animate-pulse" />
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const lines = text.split('\n').filter((l) => l.trim());
+  // While reasoning, the line follows the leading edge (the newest sentence)
+  // so it shows movement; once settled it keeps the opening line, which is a
+  // stable summary of what the block was about.
+  const source = (streaming ? lines[lines.length - 1] : lines[0]) ?? '';
+  const preview = source.length > 90 ? source.slice(0, 89) + '…' : source;
   return (
     <div className="py-1">
       <button
@@ -1063,19 +1061,34 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
         className="group flex w-full items-start gap-1.5 text-left text-[12px] text-zinc-500 hover:text-zinc-300 transition-colors"
       >
         <Chevron className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-70 group-hover:opacity-100" />
-        <Sparkles className="w-3 h-3 mt-1 shrink-0 opacity-60" />
+        <Sparkles
+          className={`w-3 h-3 mt-1 shrink-0 ${
+            streaming ? 'opacity-70 text-violet-300/70' : 'opacity-60'
+          }`}
+        />
         <span className="font-medium uppercase tracking-wide text-[10px] mt-0.5 shrink-0">
-          {redacted ? 'Encrypted thought' : 'Thought'}
+          {streaming ? 'Thinking' : redacted ? 'Encrypted thought' : 'Thought'}
         </span>
         {!open && preview && (
-          <span className="ml-1 truncate italic text-zinc-500/80">{preview}</span>
+          <span
+            className={`ml-1 min-w-0 flex-1 truncate italic ${
+              streaming ? 'thinking-sweep' : 'text-zinc-500/80'
+            }`}
+          >
+            {preview}
+          </span>
         )}
       </button>
       {open && (
         <div className="mt-1 ml-5 pl-2.5 border-l border-zinc-800/80">
-          {redacted ? (
-            <p className="text-[12px] italic text-zinc-500 leading-relaxed">
+          {redacted || streaming ? (
+            // Live text stays unparsed: the markdown would be re-parsed on
+            // every delta, and half-written fences render as garbage anyway.
+            <p className="text-[12px] italic text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
               {text}
+              {streaming && (
+                <span className="inline-block ml-0.5 w-1.5 h-3 bg-zinc-500/70 align-middle animate-pulse" />
+              )}
             </p>
           ) : (
             <Markdown
