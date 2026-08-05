@@ -5,6 +5,41 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] — 2026-08-05
+
+### Added
+
+- **A blank session opens on the new-session screen.** A session with no
+  messages now shows the composer centred under a "New session in *folder* with
+  *provider*" headline, the same shape as the group's new-session screen,
+  instead of a bare "Send a message to start". The first message docks it to the
+  bottom: the headline and branch chip collapse away while the composer travels
+  down and the opening exchange rises to meet it. The composer never changes
+  parent — centred is a transform — so focus, caret and in-flight IME
+  composition survive the move.
+- **Messages rise into place.** Every new block in the thread — the message you
+  just sent, the agent's reasoning, its tool runs, each finished text block —
+  fades up instead of popping in. A growing streaming block animates once, not
+  on every delta, and switching sessions or paging in history stays still.
+
+### Changed
+
+- **The reasoning block no longer resizes the chat.** It used to render fully
+  expanded while arriving and collapse to a one-line chip when done, so every
+  delta pushed the conversation down and the turn ended with a drop. It is now
+  the same single truncated line in both states, with a gradient sweeping across
+  the text while the model thinks. Measured over real turns, the chat moves 0 px
+  where it previously moved hundreds. Clicking still expands the full reasoning.
+
+### Fixed
+
+- **Entrance animations no longer die a frame in.** A message changes `id`
+  mid-life — an optimistic send is replaced by the server's echo, a streaming
+  block by its permanent copy — and keying React off `id` remounted the node,
+  tearing down the running animation. Messages now carry a stable UI key. This
+  also stops the remount from discarding local component state at the end of
+  every turn, so a tool card you expanded no longer collapses itself.
+
 ## [0.25.0] — 2026-08-04
 
 ### Added
