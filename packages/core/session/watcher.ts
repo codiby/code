@@ -2,10 +2,14 @@
  * Session file watcher — watches a session's `cwd` recursively and broadcasts
  * batched file/folder change events to subscribed frontend clients.
  *
- * Uses Bun's native `fs.watch` (recursive) — no external dependency. Raw events
- * are coalesced over a short debounce window so a burst of writes (e.g. a
- * formatter rewriting many files, or a `git checkout`) arrives as a single
+ * Uses Bun's native `fs.watch` — no external dependency. Raw events are
+ * coalesced over a short debounce window so a burst of writes (e.g. a formatter
+ * rewriting many files, or a `git checkout`) arrives as a single
  * `file_changes` message instead of hundreds.
+ *
+ * The tree is covered by one non-recursive watch on the cwd plus a recursive
+ * watch per interesting top-level directory, rather than one recursive watch
+ * over everything — see `startSessionWatcher` for why that distinction matters.
  *
  * Lifecycle: started from `startProviderSession` (lifecycle.ts) when a session
  * spawns, stopped when the session is stopped or deleted (handlers/sessions.ts).
@@ -13,7 +17,7 @@
  * running across provider restarts (startSessionWatcher is idempotent).
  */
 
-import { watch, statSync, existsSync, type FSWatcher } from 'fs';
+import { watch, statSync, existsSync, readdirSync, type FSWatcher } from 'fs';
 import { join, sep } from 'path';
 import { log, logError } from '../lib/logger';
 import { invalidateIndexFor } from '../handlers/files';
@@ -32,7 +36,13 @@ type Broadcast = (sessionId: string, msg: object) => void;
 
 type Entry = {
   cwd: string;
-  watcher: FSWatcher;
+  /** One watcher on `cwd` itself plus one recursive watcher per watched
+   *  top-level directory. See `startSessionWatcher` for why it isn't a single
+   *  recursive watch on the whole tree. */
+  watchers: FSWatcher[];
+  /** Top-level directory names that already have a recursive watcher, so a
+   *  rename event doesn't attach a second one. */
+  watchedTopLevel: Set<string>;
   broadcast: Broadcast;
   /** Coalesced changes keyed by relative path; last kind wins within a window. */
   pending: Map<string, FileChange>;
@@ -88,6 +98,72 @@ function toPosix(p: string): string {
   return p.split(sep).join('/');
 }
 
+/** Immediate subdirectories of `dir` worth watching (ignored ones excluded). */
+function watchableTopLevelDirs(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !IGNORED_SEGMENTS.has(d.name))
+      .map(d => d.name);
+  } catch {
+    return [];
+  }
+}
+
+/** Attach one watcher to `dir` and wire it into `entry`.
+ *  `prefix` ('' for the cwd watcher, 'name/' for a subtree) is prepended to the
+ *  filenames it reports so every path stays relative to the session cwd.
+ *  Returns false when the watch couldn't be established. */
+function attachWatch(
+  entry: Entry,
+  sessionId: string,
+  dir: string,
+  prefix: string,
+  recursive: boolean,
+): boolean {
+  let watcher: FSWatcher;
+  try {
+    watcher = watch(dir, { recursive });
+  } catch (err) {
+    logError(`[watch] could not watch ${dir} for ${sessionId.slice(0, 8)}: ${err}`);
+    return false;
+  }
+
+  watcher.on('change', (eventType, filename) => {
+    if (!filename) return;
+    const raw = toPosix(typeof filename === 'string' ? filename : filename.toString());
+    const rel = prefix ? `${prefix}${raw}` : raw;
+    if (isIgnored(rel)) return;
+    // The cwd watcher is non-recursive, so a directory appearing at the top
+    // level needs its own subtree watcher or its contents go unwatched.
+    if (!prefix && !rel.includes('/')) attachNewTopLevelDir(entry, sessionId, rel);
+    record(entry, sessionId, String(eventType), rel);
+  });
+  watcher.on('error', (err) => {
+    logError(`[watch] watcher error for ${sessionId.slice(0, 8)}: ${err}`);
+  });
+
+  entry.watchers.push(watcher);
+  return true;
+}
+
+function attachSubtree(entry: Entry, sessionId: string, name: string): void {
+  if (entry.watchedTopLevel.has(name)) return;
+  entry.watchedTopLevel.add(name);
+  attachWatch(entry, sessionId, join(entry.cwd, name), `${name}/`, true);
+}
+
+/** A top-level entry changed — start watching inside it if it's a directory we
+ *  care about and aren't already following. */
+function attachNewTopLevelDir(entry: Entry, sessionId: string, name: string): void {
+  if (IGNORED_SEGMENTS.has(name) || entry.watchedTopLevel.has(name)) return;
+  try {
+    if (!statSync(join(entry.cwd, name)).isDirectory()) return;
+  } catch {
+    return; // removed, or unreadable
+  }
+  attachSubtree(entry, sessionId, name);
+}
+
 /**
  * Start watching `cwd` for a session. Idempotent: a second call for the same
  * session is a no-op when the cwd matches, and restarts the watcher when it
@@ -103,17 +179,10 @@ export function startSessionWatcher(sessionId: string, cwd: string, broadcast: B
   }
   if (!cwd) return;
 
-  let watcher: FSWatcher;
-  try {
-    watcher = watch(cwd, { recursive: true });
-  } catch (err) {
-    logError(`[watch] could not watch ${cwd} for ${sessionId.slice(0, 8)}: ${err}`);
-    return;
-  }
-
   const entry: Entry = {
     cwd,
-    watcher,
+    watchers: [],
+    watchedTopLevel: new Set(),
     broadcast,
     pending: new Map(),
     flushTimer: null,
@@ -123,18 +192,20 @@ export function startSessionWatcher(sessionId: string, cwd: string, broadcast: B
     headTimer: null,
   };
 
-  watcher.on('change', (eventType, filename) => {
-    if (!filename) return;
-    const rel = toPosix(typeof filename === 'string' ? filename : filename.toString());
-    if (isIgnored(rel)) return;
-    record(entry, sessionId, String(eventType), rel);
-  });
-  watcher.on('error', (err) => {
-    logError(`[watch] watcher error for ${sessionId.slice(0, 8)}: ${err}`);
-  });
+  // One watcher on the cwd itself — top-level files, and new top-level dirs —
+  // plus one recursive watcher per top-level directory we actually care about.
+  //
+  // A single `watch(cwd, { recursive: true })` looks simpler but registers an
+  // inotify watch for every directory in the tree, `node_modules` and `.git`
+  // included. On a typical repo that's tens of thousands of descriptors held
+  // for events `isIgnored` discards anyway, and it's enough to blow past the
+  // per-user inotify limit — at which point the subtrees we *do* want fail to
+  // register and their changes are silently never reported.
+  if (!attachWatch(entry, sessionId, cwd, '', false)) return;
+  for (const name of watchableTopLevelDirs(cwd)) attachSubtree(entry, sessionId, name);
 
   watchers.set(sessionId, entry);
-  log(`[watch] started for ${sessionId.slice(0, 8)} at ${cwd}`);
+  log(`[watch] started for ${sessionId.slice(0, 8)} at ${cwd} (${entry.watchers.length} watches)`);
 
   // Resolve the git dir and start watching HEAD asynchronously — the file
   // watcher above is live regardless of whether this is a git repo.
@@ -154,9 +225,13 @@ export function stopSessionWatcher(sessionId: string): void {
     clearTimeout(entry.headTimer);
     entry.headTimer = null;
   }
-  try {
-    entry.watcher.close();
-  } catch {}
+  for (const watcher of entry.watchers) {
+    try {
+      watcher.close();
+    } catch {}
+  }
+  entry.watchers.length = 0;
+  entry.watchedTopLevel.clear();
   try {
     entry.headWatcher?.close();
   } catch {}
