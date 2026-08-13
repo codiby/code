@@ -28,6 +28,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 const OUT = join(ROOT, 'dist');
 const WATCH = process.argv.includes('--watch');
+const BUILD_DEFINES = {
+  'process.env.NODE_ENV': JSON.stringify(WATCH ? 'development' : 'production'),
+};
 
 /**
  * Sideloaded plugins must share React identity with the host (see
@@ -134,6 +137,7 @@ async function buildEntry(cfg: EntryCfg) {
     target: 'browser',
     format: 'esm',
     minify: !WATCH,
+    define: BUILD_DEFINES,
     sourcemap: WATCH ? 'inline' : 'linked',
     splitting: true,
     naming: {
@@ -207,6 +211,7 @@ async function buildRuntimeModules(): Promise<number> {
       target: 'browser',
       format: 'esm',
       minify: !WATCH,
+      define: BUILD_DEFINES,
       sourcemap: WATCH ? 'inline' : 'linked',
       splitting: false,
       // Force the output filename so the importmap URLs stay stable across builds.
@@ -222,12 +227,23 @@ async function buildRuntimeModules(): Promise<number> {
   return outputs;
 }
 
+async function validateProductionRuntime(): Promise<void> {
+  if (WATCH) return;
+  const reactDom = await readFile(join(OUT, 'runtime/react-dom.js'), 'utf8');
+  const devMarkers = ['runWithFiberInDEV', 'Download the React DevTools', 'bundleType:1'];
+  const marker = devMarkers.find(value => reactDom.includes(value));
+  if (marker) {
+    throw new Error(`Production ReactDOM runtime contains development marker: ${marker}`);
+  }
+}
+
 async function buildOnce() {
   const started = Date.now();
   await rm(OUT, { recursive: true, force: true });
   await mkdir(OUT, { recursive: true });
 
   let totalOutputs = await buildRuntimeModules();
+  await validateProductionRuntime();
   for (const cfg of ENTRIES) {
     const { outputs } = await buildEntry(cfg);
     totalOutputs += outputs;
