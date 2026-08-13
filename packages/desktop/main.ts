@@ -189,13 +189,27 @@ function createMainWindow(): BrowserWindow {
 
   // Native right-click menu. Electron ships no default context menu, so without
   // this a right-click on a link (or selected text) does nothing. Build a menu
-  // from the click params: "Copy Link" over links, standard clipboard actions
-  // over selections and editable fields.
+  // from the click params: "Copy Image" over images, "Copy Link" over links,
+  // standard clipboard actions over selections and editable fields.
   win.webContents.on('context-menu', (_event, params) => {
     const items: Electron.MenuItemConstructorOptions[] = [];
     const linkUrl = params.linkURL;
 
+    if (params.mediaType === 'image') {
+      // copyImageAt hands Chromium the decoded bitmap at that hit point, so it
+      // works the same for `data:` attachments, bridge-served files and remote
+      // URLs — and puts a real image on the pasteboard, not a URL string.
+      const { x, y } = params;
+      items.push({ label: 'Copy Image', click: () => win.webContents.copyImageAt(x, y) });
+      // A `data:` src is the whole payload inline; copying megabytes of base64
+      // as "the address" is never what the user meant.
+      if (params.srcURL && !params.srcURL.startsWith('data:')) {
+        items.push({ label: 'Copy Image Address', click: () => clipboard.writeText(params.srcURL) });
+      }
+    }
+
     if (linkUrl) {
+      if (items.length) items.push({ type: 'separator' });
       items.push(
         { label: 'Open Link in Browser', click: () => { shell.openExternal(linkUrl).catch(() => {}); } },
         { label: 'Copy Link', click: () => clipboard.writeText(linkUrl) },
