@@ -7,9 +7,10 @@
  * rewriting many files, or a `git checkout`) arrives as a single
  * `file_changes` message instead of hundreds.
  *
- * The tree is covered by one non-recursive watch on the cwd plus a recursive
- * watch per interesting top-level directory, rather than one recursive watch
- * over everything — see `startSessionWatcher` for why that distinction matters.
+ * Watches are placed so that none of them ever falls inside `node_modules`,
+ * `.git` or the other ignored directories, rather than one recursive watch over
+ * everything — see `coverSubtree` for how, and `startSessionWatcher` for why
+ * that distinction matters.
  *
  * Lifecycle: started from `startProviderSession` (lifecycle.ts) when a session
  * spawns, stopped when the session is stopped or deleted (handlers/sessions.ts).
@@ -36,13 +37,15 @@ type Broadcast = (sessionId: string, msg: object) => void;
 
 type Entry = {
   cwd: string;
-  /** One watcher on `cwd` itself plus one recursive watcher per watched
-   *  top-level directory. See `startSessionWatcher` for why it isn't a single
-   *  recursive watch on the whole tree. */
+  /** Every watcher covering the tree. See `startSessionWatcher` for why it
+   *  isn't a single recursive watch on the whole thing. */
   watchers: FSWatcher[];
-  /** Top-level directory names that already have a recursive watcher, so a
-   *  rename event doesn't attach a second one. */
-  watchedTopLevel: Set<string>;
+  /** Directories that already have a watcher, relative to `cwd` with POSIX
+   *  separators (`''` is the cwd itself), so a rename event doesn't attach a
+   *  second one. */
+  watchedDirs: Set<string>;
+  /** Set once we've reported hitting `MAX_WATCHES`, so it's logged one time. */
+  watchLimitLogged: boolean;
   broadcast: Broadcast;
   /** Coalesced changes keyed by relative path; last kind wins within a window. */
   pending: Map<string, FileChange>;
@@ -101,28 +104,39 @@ function toPosix(p: string): string {
   return p.split(sep).join('/');
 }
 
-/** Immediate subdirectories of `dir` worth watching (ignored ones excluded). */
-function watchableTopLevelDirs(dir: string): string[] {
+/** Immediate subdirectory names of `dir`. Symlinks aren't followed, so a
+ *  symlinked directory never becomes a watch root (nor a walk loop). */
+function childDirs(dir: string): string[] {
   try {
     return readdirSync(dir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !IGNORED_SEGMENTS.has(d.name))
+      .filter(d => d.isDirectory())
       .map(d => d.name);
   } catch {
-    return [];
+    return []; // unreadable — nothing we can watch inside it anyway
   }
 }
 
-/** Attach one watcher to `dir` and wire it into `entry`.
- *  `prefix` ('' for the cwd watcher, 'name/' for a subtree) is prepended to the
- *  filenames it reports so every path stays relative to the session cwd.
- *  Returns false when the watch couldn't be established. */
-function attachWatch(
-  entry: Entry,
-  sessionId: string,
-  dir: string,
-  prefix: string,
-  recursive: boolean,
-): boolean {
+/** Backstop against a pathological tree (an ignored directory sprinkled across
+ *  hundreds of subdirectories) turning into an unbounded pile of watches. */
+const MAX_WATCHES = 1024;
+
+/** Attach one watcher covering `relDir` — a POSIX path relative to the session
+ *  cwd, `''` for the cwd itself — and wire it into `entry`. `relDir` is
+ *  prepended to the filenames the watcher reports so every path staged stays
+ *  relative to the cwd. Returns false when the watch couldn't be established. */
+function attachWatch(entry: Entry, sessionId: string, relDir: string, recursive: boolean): boolean {
+  if (entry.watchers.length >= MAX_WATCHES) {
+    if (!entry.watchLimitLogged) {
+      entry.watchLimitLogged = true;
+      logError(
+        `[watch] watch limit (${MAX_WATCHES}) reached for ${sessionId.slice(0, 8)} — ` +
+          `changes under ${relDir || '.'} and any further directory go unreported`,
+      );
+    }
+    return false;
+  }
+
+  const dir = relDir ? join(entry.cwd, relDir) : entry.cwd;
   let watcher: FSWatcher;
   try {
     watcher = watch(dir, { recursive });
@@ -131,14 +145,16 @@ function attachWatch(
     return false;
   }
 
+  const prefix = relDir ? `${relDir}/` : '';
   watcher.on('change', (eventType, filename) => {
     if (!filename) return;
     const raw = toPosix(typeof filename === 'string' ? filename : filename.toString());
-    const rel = prefix ? `${prefix}${raw}` : raw;
+    const rel = `${prefix}${raw}`;
     if (isIgnored(rel)) return;
-    // The cwd watcher is non-recursive, so a directory appearing at the top
-    // level needs its own subtree watcher or its contents go unwatched.
-    if (!prefix && !rel.includes('/')) attachNewTopLevelDir(entry, sessionId, rel);
+    // A non-recursive watch sees only its own directory, so a subdirectory
+    // appearing under it needs its own coverage or its contents go unwatched.
+    // Recursive watches already cover whatever shows up beneath them.
+    if (!recursive && !raw.includes('/')) coverNewChildDir(entry, sessionId, rel);
     record(entry, sessionId, String(eventType), rel);
   });
   watcher.on('error', (err) => {
@@ -146,25 +162,73 @@ function attachWatch(
   });
 
   entry.watchers.push(watcher);
+  entry.watchedDirs.add(relDir);
   return true;
 }
 
-function attachSubtree(entry: Entry, sessionId: string, name: string): void {
-  if (entry.watchedTopLevel.has(name)) return;
-  entry.watchedTopLevel.add(name);
-  attachWatch(entry, sessionId, join(entry.cwd, name), `${name}/`, true);
+/** One watch to place: a directory relative to the session cwd (`''` is the cwd
+ *  itself), and whether it covers that directory's whole subtree. */
+export type PlannedWatch = { relDir: string; recursive: boolean };
+
+/**
+ * Walk `relDir` and collect the watches covering it into `out`, never placing
+ * one inside — or over — an ignored directory, at any depth.
+ *
+ * `fs.watch` can't be told to exclude a subtree from a recursive watch, so the
+ * split is structural. A directory with no ignored name anywhere below it is
+ * reported *clean* and nothing is emitted for it, leaving the caller to cover
+ * it with a single recursive watch. A directory that does hold one somewhere
+ * below gets a non-recursive watch on itself and a recursive watch on each of
+ * its clean children — so the ignored directory ends up covered by nothing.
+ *
+ * Returns true when `relDir` came out clean and nothing was emitted for it.
+ */
+function planSubtree(cwd: string, relDir: string, out: PlannedWatch[]): boolean {
+  const children = childDirs(relDir ? join(cwd, relDir) : cwd);
+  const candidates = children.filter(name => !IGNORED_SEGMENTS.has(name));
+  let dirty = candidates.length !== children.length;
+
+  const cleanChildren: string[] = [];
+  for (const name of candidates) {
+    const childRel = relDir ? `${relDir}/${name}` : name;
+    if (planSubtree(cwd, childRel, out)) cleanChildren.push(childRel);
+    else dirty = true; // a descendant had to be split up, so we can't be whole
+  }
+  if (!dirty) return true;
+
+  out.push({ relDir, recursive: false });
+  for (const childRel of cleanChildren) out.push({ relDir: childRel, recursive: true });
+  return false;
 }
 
-/** A top-level entry changed — start watching inside it if it's a directory we
- *  care about and aren't already following. */
-function attachNewTopLevelDir(entry: Entry, sessionId: string, name: string): void {
-  if (IGNORED_SEGMENTS.has(name) || entry.watchedTopLevel.has(name)) return;
+/** The watches that cover `relDir` (`''` for the whole cwd), always including
+ *  one for `relDir` itself. Pure — exported for tests. */
+export function planWatches(cwd: string, relDir = ''): PlannedWatch[] {
+  const out: PlannedWatch[] = [];
+  if (planSubtree(cwd, relDir, out)) out.push({ relDir, recursive: true });
+  return out;
+}
+
+/** Cover `relDir` with watches. Used for the session cwd and for directories
+ *  that appear after startup. */
+function coverDir(entry: Entry, sessionId: string, relDir: string): void {
+  if (entry.watchedDirs.has(relDir)) return;
+  for (const { relDir: dir, recursive } of planWatches(entry.cwd, relDir)) {
+    attachWatch(entry, sessionId, dir, recursive);
+  }
+}
+
+/** A new entry appeared directly under a non-recursively watched directory —
+ *  start covering it if it's a directory we care about and aren't following. */
+function coverNewChildDir(entry: Entry, sessionId: string, rel: string): void {
+  const name = rel.slice(rel.lastIndexOf('/') + 1);
+  if (IGNORED_SEGMENTS.has(name) || entry.watchedDirs.has(rel)) return;
   try {
-    if (!statSync(join(entry.cwd, name)).isDirectory()) return;
+    if (!statSync(join(entry.cwd, rel)).isDirectory()) return;
   } catch {
     return; // removed, or unreadable
   }
-  attachSubtree(entry, sessionId, name);
+  coverDir(entry, sessionId, rel);
 }
 
 /**
@@ -185,7 +249,8 @@ export function startSessionWatcher(sessionId: string, cwd: string, broadcast: B
   const entry: Entry = {
     cwd,
     watchers: [],
-    watchedTopLevel: new Set(),
+    watchedDirs: new Set(),
+    watchLimitLogged: false,
     broadcast,
     pending: new Map(),
     flushTimer: null,
@@ -195,17 +260,18 @@ export function startSessionWatcher(sessionId: string, cwd: string, broadcast: B
     headTimer: null,
   };
 
-  // One watcher on the cwd itself — top-level files, and new top-level dirs —
-  // plus one recursive watcher per top-level directory we actually care about.
+  // Lay watches over the tree such that none of them lands inside an ignored
+  // directory, at any depth — see `coverSubtree`.
   //
-  // A single `watch(cwd, { recursive: true })` looks simpler but registers an
-  // inotify watch for every directory in the tree, `node_modules` and `.git`
-  // included. On a typical repo that's tens of thousands of descriptors held
-  // for events `isIgnored` discards anyway, and it's enough to blow past the
-  // per-user inotify limit — at which point the subtrees we *do* want fail to
-  // register and their changes are silently never reported.
-  if (!attachWatch(entry, sessionId, cwd, '', false)) return;
-  for (const name of watchableTopLevelDirs(cwd)) attachSubtree(entry, sessionId, name);
+  // A single `watch(cwd, { recursive: true })` looks simpler but registers a
+  // watch for every directory in the tree, `node_modules` and `.git` included.
+  // On a monorepo that's tens of thousands of descriptors held for events
+  // `isIgnored` discards anyway, and it's enough to exhaust the process's file
+  // descriptors (EMFILE) — which doesn't just lose the watches we *do* want,
+  // it takes the provider process down with it. Filtering the events isn't
+  // enough; the watches have to never be placed there in the first place.
+  coverDir(entry, sessionId, '');
+  if (entry.watchers.length === 0) return;
 
   watchers.set(sessionId, entry);
   log(`[watch] started for ${sessionId.slice(0, 8)} at ${cwd} (${entry.watchers.length} watches)`);
@@ -234,7 +300,7 @@ export function stopSessionWatcher(sessionId: string): void {
     } catch {}
   }
   entry.watchers.length = 0;
-  entry.watchedTopLevel.clear();
+  entry.watchedDirs.clear();
   try {
     entry.headWatcher?.close();
   } catch {}
