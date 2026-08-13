@@ -5,6 +5,77 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] — 2026-08-12
+
+### Added
+
+- **Chat width control.** Three buttons beside the Resources chip set how wide
+  the chat column grows: compact (896 px), standard (1152 px, the default) or
+  full-bleed. The message thread, the composer and the empty-session headline
+  all follow it, so the column stays aligned, and the choice persists with the
+  rest of your preferences. The session accent tint still spans the whole pane,
+  so narrowing the chat leaves no untinted stripe beside it.
+- **Pinned sessions and search on mobile.** The home list gains a search field
+  that ranks name matches above project and group matches — with a loose
+  "letters in order" fallback for a phone keyboard — and highlights what
+  matched. Long-pressing a row opens a sheet to pin or close that session.
+  Pinned sessions lift into a block at the top and share the desktop's pin
+  list, so a pin made on the phone shows up in the tab bar too.
+- **Bare URLs, domains and emails become links.** Text an agent never wrote as
+  Markdown now links anyway: `https://` URLs, `www.` hosts, plain domains and
+  email addresses. Linking runs over the finished document rather than line by
+  line, so it never touches existing links or code spans, and schemeless
+  domains only link on a short TLD list that excludes file extensions —
+  `bridge.ts`, `main.rs` and `README.md` stay plain text.
+- **Copy Image in the desktop right-click menu.** Right-clicking an image
+  copies the actual bitmap, the same for inline attachments, bridge-served
+  files and remote URLs, with Copy Image Address alongside it for anything
+  that isn't inline base64.
+
+### Changed
+
+- **Worktrees live inside their repo.** A new worktree is created at
+  `<repo>/.worktrees/<branch>` instead of `<repo-parent>/.wt/<branch>`, so the
+  owning repo is readable straight off the path and two projects sharing a
+  parent directory can no longer collide. The directory is kept out of
+  `git status` locally. Which repo owns a checkout is now answered by git
+  rather than counting directory levels, which is what used to file a session
+  spawned in a worktree under the wrong group. Worktrees created by older
+  versions keep working everywhere.
+- **Quieter tool and agent cards.** Tool rows inside a run card dropped their
+  left rail and indent — the card already groups them. Agent cards start
+  collapsed instead of expanded, and while a sub-agent runs its title sweeps
+  with the same shimmer the reasoning blocks use, so a closed card still reads
+  as alive.
+- **The phone app no longer refreshes itself.** A new build used to take over a
+  page that was already open and reload it mid-session. It now installs in the
+  background and waits: settings shows an "Update ready" dot and "Force
+  refresh" is the only thing that swaps it in.
+
+### Fixed
+
+- **One plan, one approval card.** An `ExitPlanMode` call waits for as long as
+  you take to read the plan, and the server was closing the connection ten
+  seconds in. The agent saw the drop, called the tool again, and a single plan
+  turned into a queue of approval cards with the first one hung forever. Calls
+  that block on a person now keep their connection alive while they wait, and a
+  retry attaches to the card already on screen instead of opening another.
+- **The production build can no longer ship a development React.** The browser
+  bundles never had `NODE_ENV` defined, so the sideloaded ReactDOM runtime
+  could go out as a dev build. It is now set per build mode, and the build
+  fails outright if the production runtime still carries dev markers.
+- **The process monitor no longer stalls the app.** Its port poll shelled out
+  to `lsof` across the whole machine every 3 s and blocked the event loop while
+  it ran — 1.9 s out of every 3 s on a host with one very busy process, which
+  showed up as stuttering terminals and slow HTTP. It now resolves ports from
+  the tracked pids only, asynchronously, and a slow poll can't stack on the
+  next one.
+- **The session watcher stops drowning in `node_modules`.** Watching a repo
+  recursively registered an inotify watch per directory — about 8.5k on a
+  typical project, nearly all of them under `node_modules` and `.git`, whose
+  events were discarded anyway. Enough of them exhausted the system watch limit
+  and file changes silently stopped being noticed.
+
 ## [0.26.0] — 2026-08-05
 
 ### Added
