@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Sun, Moon, Eraser } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Sun, Moon, Eraser, FoldHorizontal, RectangleHorizontal, UnfoldHorizontal } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -103,7 +103,8 @@ import { SearchPanel } from './search/SearchPanel';
 import { FocusBrowserAnchor } from './browser/FocusBrowserAnchor';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
-import { ancestorChain, descendantGroupIds, isAncestorOf } from '../lib/group-tree';
+import { CHAT_WIDTH_CLASS, type ChatWidth } from '../lib/store/slices/preferencesSlice';
+import { ancestorChain, descendantGroupIds, isAncestorOf, WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
 import type { LocalSessionState } from '../lib/session-state';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
@@ -137,6 +138,14 @@ import { playChime } from '../lib/chime';
 const SESSION_ACCENT_PALETTE = [
   '#7c5cff', '#22d3ee', '#f59e0b', '#34d399',
   '#f87171', '#c084fc', '#38bdf8', '#fb7185',
+];
+
+/** Chat column widths offered by the segmented control in the chat panel's
+ *  tab strip, next to the Resources chip. Order = left-to-right. */
+const CHAT_WIDTH_OPTIONS: { value: ChatWidth; label: string; hint: string; Icon: typeof FoldHorizontal }[] = [
+  { value: 'compact', label: 'Compacto', hint: '896px', Icon: FoldHorizontal },
+  { value: 'standard', label: 'Estándar', hint: '1152px', Icon: RectangleHorizontal },
+  { value: 'full', label: 'Ancho completo', hint: 'sin límite', Icon: UnfoldHorizontal },
 ];
 
 /** Ids of optimistic sidebar rows carry this prefix. No server resource exists
@@ -299,6 +308,7 @@ export function ChatApp() {
   //   - showTelegramSession: show the Telegram bot pseudo-tab.
   //   - interruptOnSend: sending mid-turn barges in vs. queues.
   //   - colorChatBySession / tintChatBackground: per-session accent tinting.
+  //   - chatWidth: max width of the chat column (compact / standard / full).
   //   - sessionAccents: per-session accent overrides (sessionId → hex).
   //   - globalEnvVars: env layered onto every Bash tool call / user terminal.
   const theme = useAppStore(s => s.theme);
@@ -310,6 +320,9 @@ export function ChatApp() {
   const interruptOnSend = useAppStore(s => s.interruptOnSend);
   const colorChatBySession = useAppStore(s => s.colorChatBySession);
   const tintChatBackground = useAppStore(s => s.tintChatBackground);
+  const chatWidth = useAppStore(s => s.chatWidth);
+  const setChatWidth = useAppStore(s => s.setChatWidth);
+  const chatWidthClass = CHAT_WIDTH_CLASS[chatWidth];
   const sessionAccents = useAppStore(s => s.sessionAccents);
   const globalEnvVars = useAppStore(s => s.globalEnvVars);
   const setPreference = useAppStore(s => s.setPreference);
@@ -1066,6 +1079,16 @@ export function ChatApp() {
     () => focusWorkspaces.find(w => w.id === activeWorkspaceId) ?? focusWorkspaces[0]!,
     [focusWorkspaces, activeWorkspaceId],
   );
+  // Partial text/thinking frames are high-frequency and carry the full
+  // accumulated string. Only visible chats need those transient frames; final
+  // messages and status events still update every subscribed session. Selecting
+  // a background session requests a fresh session_state before rendering it.
+  const streamVisibleIdsRef = useRef<Set<string>>(new Set());
+  streamVisibleIdsRef.current = new Set(
+    layoutMode === 'focus'
+      ? activeWorkspace?.sessionIds ?? []
+      : activeId ? [activeId] : [],
+  );
   // Picker popover for "add a chat to this workspace". Click-outside and
   // Escape close it; mounting is conditional in the JSX below.
   const [addChatPickerOpen, setAddChatPickerOpen] = useState(false);
@@ -1507,6 +1530,7 @@ export function ChatApp() {
         },
 
         onPartialText: (sid, text) => {
+          if (!streamVisibleIdsRef.current.has(sid)) return;
           setSessionStates(prev => {
             const s = prev[sid] || emptyLocalState();
             return { ...prev, [sid]: { ...s, messages: upsertStreamingBlock(s.messages, 'text', text) } };
@@ -1514,6 +1538,7 @@ export function ChatApp() {
         },
 
         onPartialThinking: (sid, text) => {
+          if (!streamVisibleIdsRef.current.has(sid)) return;
           setSessionStates(prev => {
             const s = prev[sid] || emptyLocalState();
             return { ...prev, [sid]: { ...s, messages: upsertStreamingBlock(s.messages, 'thinking', text) } };
@@ -2716,7 +2741,7 @@ export function ChatApp() {
     if (!session) return;
     // Match server-side `looksLikeWorktree` so the checkbox only appears
     // for paths the server can actually clean up.
-    const isWorktree = /[\\/]\.wt[\\/]/.test(session.cwd);
+    const isWorktree = WORKTREE_CWD_LOOSE_RE.test(session.cwd);
     setDeleteSessionPrompt({
       id,
       name: session.name,
@@ -2780,7 +2805,7 @@ export function ChatApp() {
         id: s.id,
         name: s.name,
         cwd: s.cwd,
-        isWorktree: /[\\/]\.wt[\\/]/.test(s.cwd),
+        isWorktree: WORKTREE_CWD_LOOSE_RE.test(s.cwd),
       }));
     const anyWorktree = members.some(m => m.isWorktree);
     setDeleteGroupPrompt({
@@ -4755,6 +4780,7 @@ export function ChatApp() {
       <ChatComposer
         key={sid}
         sessionId={sid}
+        widthClass={chatWidthClass}
         autoFocus={sid === activeId}
         input={s.input}
         onChangeInput={(val) => setInputForSession(sid, val)}
@@ -4840,12 +4866,18 @@ export function ChatApp() {
     const status: ConnectionStatus = statuses[sid] || 'disconnected';
     const isActiveSession = sid === activeId;
     return (
+      // The tint spans the whole pane; the scroll column inside it is capped
+      // by the chat-width preference and centred, so narrowing the chat never
+      // leaves a stripe of untinted background beside it.
+      <div
+        className="flex-1 min-w-0 min-h-0 flex flex-col items-center"
+        style={accent && tintChatBackground ? { backgroundColor: `${accent}0d` } : undefined}
+      >
       <ChatThread
         sessionId={sid}
         attachRef={isActiveSession ? attachScrollRef : undefined}
         onScroll={isActiveSession ? handleMessagesScroll : undefined}
-        style={accent && tintChatBackground ? { backgroundColor: `${accent}0d` } : undefined}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1"
+        className={`w-full ${chatWidthClass} flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-1`}
       >
         {/* With the composer centred (EmptyComposerStage) the "send a message"
             prompt is redundant and would collide with it — only the
@@ -5158,6 +5190,7 @@ export function ChatApp() {
           );
         })()}
       </ChatThread>
+      </div>
     );
   };
 
@@ -6219,6 +6252,7 @@ export function ChatApp() {
                       providerLabel={activeStageProvider}
                       branch={gitBranch}
                       getThreadEl={() => scrollRef.current}
+                      widthClass={chatWidthClass}
                     >
                       {composerNode}
                     </EmptyComposerStage>
@@ -6820,6 +6854,28 @@ export function ChatApp() {
                               )}
                             </button>
                           )}
+                          {/* Chat width — compact / standard / full-bleed.
+                              Segmented, sitting right before the Resources
+                              chip so the two read as one control strip. */}
+                          <div className="inline-flex items-center gap-px h-[22px] p-px rounded-md bg-surface-light/40">
+                            {CHAT_WIDTH_OPTIONS.map(({ value, label, hint, Icon }) => (
+                              <button
+                                key={value}
+                                type="button"
+                                onClick={() => setChatWidth(value)}
+                                title={`Ancho del chat: ${label} (${hint})`}
+                                aria-label={`Ancho del chat: ${label}`}
+                                aria-pressed={chatWidth === value}
+                                className={`inline-flex items-center justify-center h-5 w-6 rounded transition-colors ${
+                                  chatWidth === value
+                                    ? 'bg-surface-lighter text-zinc-100'
+                                    : 'text-zinc-500 hover:text-zinc-200 hover:bg-surface-light'
+                                }`}
+                              >
+                                <Icon size={13} />
+                              </button>
+                            ))}
+                          </div>
                           <button
                             type="button"
                             onClick={() => setResourcesOpen(o => !o)}

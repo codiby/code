@@ -141,6 +141,9 @@ interface Props {
    *  large paste is saved to a file: the composer shows the block, but the sent
    *  message swaps it for a file-reference badge (see ChatApp.handleSend). */
   onRegisterSnippet?: (block: string, badge: string) => void;
+  /** Tailwind max-width for the composer column, so it lines up with whatever
+   *  width the chat thread is using. Defaults to the historical `max-w-4xl`. */
+  widthClass?: string;
 }
 
 export function ChatComposer(props: Props) {
@@ -149,7 +152,7 @@ export function ChatComposer(props: Props) {
     active, activeSession, connectionStatus, opencodeInfo, claudeModels,
     slashCommands, client, cwd,
     onSend, onInterrupt, onSelectModel, onSelectPermissionMode, onSelectEffort, onFocus,
-    onRegisterSnippet, autoFocus,
+    onRegisterSnippet, autoFocus, widthClass = 'max-w-4xl',
   } = props;
 
   // Per-pane refs. Hooks live here (not in the host) so each composer
@@ -488,7 +491,7 @@ export function ChatComposer(props: Props) {
 
   return (
     <div className="p-3 shrink-0 relative">
-      <div className="max-w-4xl mx-auto relative">
+      <div className={`${widthClass} mx-auto relative`}>
         {slash.isActive && (
           <SlashCommandList
             filtered={slash.filtered}
@@ -520,19 +523,18 @@ export function ChatComposer(props: Props) {
           {/* Ambient color spots — four point-lights bouncing in pairs.
               Clipped to the composer's rounded bounds. Fades in while
               the session is streaming. */}
-          <div
-            aria-hidden
-            className="absolute inset-0 overflow-hidden pointer-events-none transition-opacity duration-300 ease-out"
-            style={{
-              opacity: active.isStreaming && !active.permRequest ? 1 : 0,
-              borderRadius: isTerminalMode ? '1rem' : '18px',
-            }}
-          >
-            <span className="composer-spot composer-spot--b1" />
-            <span className="composer-spot composer-spot--b3" />
-            <span className="composer-spot composer-spot--b4" />
-            <span className="composer-spot composer-spot--b5" />
-          </div>
+          {active.isStreaming && !active.permRequest && (
+            <div
+              aria-hidden
+              className="absolute inset-0 overflow-hidden pointer-events-none"
+              style={{ borderRadius: isTerminalMode ? '1rem' : '18px' }}
+            >
+              <span className="composer-spot composer-spot--b1" />
+              <span className="composer-spot composer-spot--b3" />
+              <span className="composer-spot composer-spot--b4" />
+              <span className="composer-spot composer-spot--b5" />
+            </div>
+          )}
           <div
             onDragEnter={handleDragEnter}
             onDragOver={handleDragOver}

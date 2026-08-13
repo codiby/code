@@ -32,6 +32,9 @@ interface Props {
   /** Chat scroll container — faded up as the composer docks so the first
    *  exchange arrives with the composer rather than popping in behind it. */
   getThreadEl?: () => HTMLElement | null;
+  /** Tailwind max-width for the headline/branch chrome, so it lines up with
+   *  the composer underneath it. Defaults to the historical `max-w-4xl`. */
+  widthClass?: string;
   /** The real composer (LoopBanner + ChatComposer). */
   children: ReactNode;
 }
@@ -40,7 +43,8 @@ const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export function EmptyComposerStage({
-  sessionId, centered, folderName, providerLabel, branch, getThreadEl, children,
+  sessionId, centered, folderName, providerLabel, branch, getThreadEl,
+  widthClass = 'max-w-4xl', children,
 }: Props) {
   const stackRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLDivElement>(null);
@@ -142,7 +146,7 @@ export function EmptyComposerStage({
     <div ref={stackRef} className="shrink-0 relative z-10">
       {showChrome && (
         <div ref={headRef} className="overflow-hidden">
-          <div className="max-w-4xl mx-auto px-6 pb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[22px] text-zinc-400 font-light">
+          <div className={`${widthClass} mx-auto px-6 pb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[22px] text-zinc-400 font-light`}>
             <span>New session in</span>
             <span className="inline-flex items-center gap-1.5 text-zinc-100" title={folderName}>
               <FolderClosed size={18} className="text-zinc-500" />
@@ -161,7 +165,7 @@ export function EmptyComposerStage({
 
       {showChrome && (
         <div ref={footRef} className="overflow-hidden">
-          <div className="max-w-4xl mx-auto px-6 pb-2 -mt-1 flex items-center justify-end text-xs text-zinc-500">
+          <div className={`${widthClass} mx-auto px-6 pb-2 -mt-1 flex items-center justify-end text-xs text-zinc-500`}>
             {branch && (
               <span className="inline-flex items-center gap-1.5 px-2 py-1" title={branch}>
                 <GitBranch size={12} />

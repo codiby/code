@@ -5,6 +5,17 @@ import type { SliceCreator } from '../types';
 /** Light / dark appearance. Dark is the historical default. */
 export type Theme = 'dark' | 'light';
 
+/** How wide the chat column (messages + composer) is allowed to grow. */
+export type ChatWidth = 'compact' | 'standard' | 'full';
+
+/** Tailwind max-width per chat width setting. `max-w-none` lets the column
+ *  span whatever the panel gives it. */
+export const CHAT_WIDTH_CLASS: Record<ChatWidth, string> = {
+  compact: 'max-w-4xl',
+  standard: 'max-w-6xl',
+  full: 'max-w-none',
+};
+
 /** localStorage key mirroring the persisted theme so the boot script in
  *  index.html can paint the right appearance before React (and the
  *  server-hydrated preferences) load — avoids a dark→light flash. */
@@ -43,6 +54,8 @@ export interface PreferencesData {
   colorChatBySession: boolean;
   /** Also wash the whole chat background with the session accent. */
   tintChatBackground: boolean;
+  /** Max width of the chat column — compact / standard / full-bleed. */
+  chatWidth: ChatWidth;
   /** Per-session accent overrides (sessionId → hex). Absence = auto-derived. */
   sessionAccents: Record<string, string>;
   /** Global env vars layered onto every Bash tool call / user terminal. */
@@ -62,6 +75,8 @@ type TogglePrefKey =
 export interface PreferencesSlice extends PreferencesData {
   /** Switch appearance, mirror it to localStorage, and persist to the server. */
   setTheme: (theme: Theme) => void;
+  /** Set the chat column width and persist it to the server. */
+  setChatWidth: (width: ChatWidth) => void;
   /** Set a boolean preference and persist it to the server. */
   setPreference: (key: TogglePrefKey, value: boolean) => void;
   /** Add/remove a per-session accent override (null clears it) and persist. */
@@ -82,6 +97,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
   interruptOnSend: true,
   colorChatBySession: true,
   tintChatBackground: false,
+  chatWidth: 'standard',
   sessionAccents: {},
   globalEnvVars: [],
 
@@ -89,6 +105,11 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
     set({ theme });
     try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch {}
     persistPrefs({ theme });
+  },
+
+  setChatWidth: (width) => {
+    set({ chatWidth: width });
+    persistPrefs({ chatWidth: width });
   },
 
   setPreference: (key, value) => {
@@ -118,6 +139,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
     if (typeof prefs.interruptOnSend === 'boolean') patch.interruptOnSend = prefs.interruptOnSend;
     if (typeof prefs.colorChatBySession === 'boolean') patch.colorChatBySession = prefs.colorChatBySession;
     if (typeof prefs.tintChatBackground === 'boolean') patch.tintChatBackground = prefs.tintChatBackground;
+    if (prefs.chatWidth === 'compact' || prefs.chatWidth === 'standard' || prefs.chatWidth === 'full') patch.chatWidth = prefs.chatWidth;
     if (prefs.sessionAccents && typeof prefs.sessionAccents === 'object') patch.sessionAccents = prefs.sessionAccents as Record<string, string>;
     if (Array.isArray(prefs.globalEnvVars)) patch.globalEnvVars = prefs.globalEnvVars as ProjectEnvVar[];
     if (Object.keys(patch).length) set(patch);
