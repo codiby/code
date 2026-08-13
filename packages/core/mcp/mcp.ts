@@ -7,6 +7,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 import { corsHeaders, MAIN_SESSION_ID } from '../config/config';
 import { log } from '../lib/logger';
 import { sessions, sessionToJSON, saveSessions } from '../session/sessions';
@@ -36,7 +37,13 @@ import {
   setBrowserPreview,
   getBrowserPreview,
 } from '../provider/sdk-tools';
-import { requestPermissionDecision } from '../provider/bridge';
+import { findPendingDecision, requestPermissionDecision } from '../provider/bridge';
+import type { PermissionDecision } from '../provider/types';
+
+/** How often a tool that's blocked on the user pokes the connection so Bun's
+ *  `idleTimeout` doesn't reap it mid-review. Comfortably under the 10s default
+ *  so it still helps a client running the old settings. */
+const HEARTBEAT_MS = 4000;
 
 /** Palette for auto-assigning a tab-group colour when the caller doesn't pick.
  *  Matches the set in ChatApp.tsx#handleCreateGroup so new server-made groups
@@ -681,7 +688,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   try {
     switch (name) {
@@ -1163,10 +1170,23 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const plan = typeof args!.plan === 'string' ? args!.plan.trim() : '';
         if (!plan) return { content: [{ type: 'text', text: 'plan is required' }], isError: true };
-        const decision = await requestPermissionDecision(session, {
-          broadcastToSession: _deps.broadcastToSession,
-          sendBrowserRequest: _deps.broadcastToSession,
-          broadcastSessionList: _deps.broadcastSessionList,
+        const answer = (decision: PermissionDecision): CallToolResult => (decision.allow
+          ? { content: [{ type: 'text', text: 'Plan approved. Plan mode disabled; you may now implement the approved plan.' }] }
+          : { content: [{ type: 'text', text: decision.message || 'The plan was not approved.' }], isError: true });
+
+        // A plan review takes as long as the user takes, and this call stays
+        // open the whole time. If the agent gives up on it anyway (a dropped
+        // socket, its own per-call timeout) it calls ExitPlanMode again —
+        // which used to open a second card and fire a second notification
+        // while the first prompt hung forever. Attach the retry to the
+        // decision already on screen instead.
+        const inFlight = findPendingDecision(session.id, 'ExitPlanMode');
+        if (inFlight) return answer(await inFlight);
+
+        const decision = await keepAlive(request.params._meta?.progressToken, extra?.sendNotification, () => requestPermissionDecision(session, {
+          broadcastToSession: _deps!.broadcastToSession,
+          sendBrowserRequest: _deps!.broadcastToSession,
+          broadcastSessionList: _deps!.broadcastSessionList,
           notifyTelegramIfMainSession: () => {},
         }, {
           requestId: randomUUID(),
@@ -1174,11 +1194,8 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           displayName: 'Exit Plan Mode',
           title: 'Review implementation plan',
           input: { plan },
-        });
-        if (!decision.allow) {
-          return { content: [{ type: 'text', text: decision.message || 'The plan was not approved.' }], isError: true };
-        }
-        return { content: [{ type: 'text', text: 'Plan approved. Plan mode disabled; you may now implement the approved plan.' }] };
+        }));
+        return answer(decision);
       }
       case 'ui_open_file_in_editor': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
@@ -1427,6 +1444,42 @@ const transports = new Map<string, {
   server: Server;
   uiSessionId: string;
 }>();
+
+/**
+ * Await something that blocks on a human — a plan review, an approval — while
+ * keeping the MCP call's socket alive.
+ *
+ * Bun closes a connection that sends nothing for `idleTimeout` seconds, and a
+ * tool waiting on the user sends nothing by definition. The agent then sees
+ * "the socket connection was closed unexpectedly" and retries the tool, which
+ * is how one plan turned into a stream of approval cards. A periodic progress
+ * notification is traffic, so the connection stays up for as long as the user
+ * needs. Clients that didn't ask for progress updates just drop them.
+ */
+export async function keepAlive<T>(
+  progressToken: string | number | undefined,
+  send: ((n: ServerNotification) => Promise<void>) | undefined,
+  work: () => Promise<T>,
+  intervalMs: number = HEARTBEAT_MS,
+): Promise<T> {
+  if (!send || progressToken === undefined) return work();
+
+  let beats = 0;
+  const timer = setInterval(() => {
+    // Fire-and-forget: a heartbeat that loses the race with the socket
+    // closing must not turn into an unhandled rejection.
+    send({
+      method: 'notifications/progress',
+      params: { progressToken, progress: ++beats },
+    }).catch(() => {});
+  }, intervalMs);
+
+  try {
+    return await work();
+  } finally {
+    clearInterval(timer);
+  }
+}
 
 export function owningUiSessionId(req: Request): string {
   return req.headers.get('x-session-id') || new URL(req.url).searchParams.get('session_id') || '';

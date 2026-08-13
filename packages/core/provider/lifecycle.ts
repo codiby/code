@@ -38,6 +38,13 @@ export function startProviderSession(session: Session, port: number, resumeSessi
       type: 'http',
       url: `http://localhost:${port}/mcp`,
       headers: { 'x-session-id': session.id },
+      // ExitPlanMode (and any other tool here that hands control back) stays
+      // open for exactly as long as the user takes to answer. The provider's
+      // default per-call timeout is a minute or so, after which the agent gets
+      // an error and retries — which is how a single plan turned into a stream
+      // of approval cards. A day is effectively "no deadline" while still
+      // letting a genuinely wedged call die eventually.
+      timeoutMs: 24 * 60 * 60 * 1000,
     },
     // In-process SDK tools — run inside the bridge with access to session
     // state and the WebSocket broadcaster (no HTTP hop).

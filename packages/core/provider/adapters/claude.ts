@@ -67,8 +67,8 @@ function toSdkMcpServers(
   if (!mcp) return undefined;
   const out: Record<string, McpServerConfig> = {};
   for (const [name, spec] of Object.entries(mcp)) {
-    if (spec.type === 'sse') out[name] = { type: 'sse', url: spec.url, headers: spec.headers };
-    else if (spec.type === 'http') out[name] = { type: 'http', url: spec.url, headers: spec.headers };
+    if (spec.type === 'sse') out[name] = { type: 'sse', url: spec.url, headers: spec.headers, timeout: spec.timeoutMs };
+    else if (spec.type === 'http') out[name] = { type: 'http', url: spec.url, headers: spec.headers, timeout: spec.timeoutMs };
     else if (spec.type === 'stdio') out[name] = { type: 'stdio', command: spec.command, args: spec.args, env: spec.env };
     else if (spec.type === 'sdk') out[name] = spec.server as McpServerConfig;
   }

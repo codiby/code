@@ -30,9 +30,12 @@ export type ImageInput = {
   data: string;
 };
 
+/** Per-call wall-clock budget for a remote MCP server's tools, in ms. Adapters
+ *  pass it through to the provider SDK, which otherwise applies its own (much
+ *  shorter) default — see the `codiby-code` spec in lifecycle.ts. */
 export type McpServerSpec =
-  | { type: 'sse'; url: string; headers?: Record<string, string> }
-  | { type: 'http'; url: string; headers?: Record<string, string> }
+  | { type: 'sse'; url: string; headers?: Record<string, string>; timeoutMs?: number }
+  | { type: 'http'; url: string; headers?: Record<string, string>; timeoutMs?: number }
   | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
   /**
    * An in-process SDK MCP server pre-built via the provider SDK's own helpers

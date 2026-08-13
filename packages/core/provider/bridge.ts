@@ -393,10 +393,32 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
 
 type PendingDecision = {
   sessionId: string;
+  toolName: string;
+  /** The same promise `requestPermissionDecision` returned to its first
+   *  caller. Kept so a duplicate request for the same session+tool can await
+   *  the decision the user is already looking at (see `findPendingDecision`). */
+  promise: Promise<PermissionDecision>;
   resolve: (decision: PermissionDecision) => void;
 };
 
 const pendingDecisions = new Map<string, PendingDecision>();
+
+/**
+ * The in-flight decision for this session+tool, if the user is already being
+ * asked. Callers that would otherwise raise a second, identical prompt (an
+ * agent retrying `ExitPlanMode` after its MCP call timed out, say) await this
+ * instead — one card, one notification, and the retry stays blocked until the
+ * user actually answers.
+ */
+export function findPendingDecision(
+  sessionId: string,
+  toolName: string,
+): Promise<PermissionDecision> | null {
+  for (const pending of pendingDecisions.values()) {
+    if (pending.sessionId === sessionId && pending.toolName === toolName) return pending.promise;
+  }
+  return null;
+}
 
 /**
  * Surface a provider-agnostic approval request. HTTP MCP tools use this path
@@ -429,9 +451,10 @@ export function requestPermissionDecision(
     });
   } catch {}
 
-  return new Promise<PermissionDecision>((resolve) => {
-    pendingDecisions.set(req.requestId, { sessionId: session.id, resolve });
-  });
+  let resolve!: (decision: PermissionDecision) => void;
+  const promise = new Promise<PermissionDecision>((res) => { resolve = res; });
+  pendingDecisions.set(req.requestId, { sessionId: session.id, toolName: req.toolName, promise, resolve });
+  return promise;
 }
 
 export function resolvePermissionDecision(

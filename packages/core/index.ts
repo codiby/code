@@ -2204,6 +2204,13 @@ const server = Bun.serve({
   port: PORT,
   hostname: HOST,
   ...(TLS ? { tls: TLS } : {}),
+  // Bun's default is 10s, and it counts a request that is waiting on a human
+  // as idle. An MCP tool that blocks for approval (ExitPlanMode) got its
+  // socket reaped ten seconds in, so the agent saw "socket connection closed
+  // unexpectedly" and called the tool again — one plan, a queue of approval
+  // cards. 255 is Bun's maximum; the tools also heartbeat while they wait
+  // (see `keepAlive` in mcp.ts), so this is the backstop, not the mechanism.
+  idleTimeout: 255,
 
   async fetch(req, server) {
     const url = new URL(req.url);
