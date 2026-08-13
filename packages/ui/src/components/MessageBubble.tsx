@@ -28,6 +28,9 @@ interface Props {
   /** Re-attempts delivery of a message whose offline send timed out.
    *  Wired by ChatApp; only fires for bubbles where `deliveryStatus === 'failed'`. */
   onRetry?: (msgId: string) => void;
+  /** Rendered inside a card that already groups it (a tool-run card), so the
+   *  bubble drops its own left rail / indent. */
+  nested?: boolean;
 }
 
 /** Short `9:41`-style clock for the hover stamp; null when we have no usable
@@ -244,7 +247,7 @@ function CopyButton({ text, title = 'Copy' }: { text: string; title?: string }) 
   );
 }
 
-function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage; isLast?: boolean; onAnswerAskUser?: (answers: Record<string, string>) => void }) {
+function ToolBubble({ message, isLast, onAnswerAskUser, nested }: { message: ChatMessage; isLast?: boolean; onAnswerAskUser?: (answers: Record<string, string>) => void; nested?: boolean }) {
   const input = (message.toolInput && typeof message.toolInput === 'object' ? message.toolInput : null) as Record<string, unknown> | null;
   const isEdit = message.toolName === 'Edit' && input && typeof input.old_string === 'string' && typeof input.new_string === 'string';
   const isWrite = message.toolName === 'Write' && input && typeof input.content === 'string';
@@ -362,7 +365,10 @@ function ToolBubble({ message, isLast, onAnswerAskUser }: { message: ChatMessage
   const allAskAnswered = askQuestions.every((_, i) => (askSelections[String(i)] || '').trim());
 
   return (
-    <div className="py-0.5 pl-3 ml-1 border-l-2 border-border select-none">
+    // The left rail is what marks a loose tool call as belonging to the
+    // stream. Inside a run card the card itself already says "these belong
+    // together", so the rail (and its indent) is just noise.
+    <div className={`py-0.5 select-none ${nested ? '' : 'pl-3 ml-1 border-l-2 border-border'}`}>
       <div
         className="flex items-center gap-1.5 cursor-pointer"
         onClick={() => setExpanded(e => !e)}
@@ -735,7 +741,10 @@ function TerminalBubble({ message, onOpenInPanel }: { message: ChatMessage; onOp
 
 /** Agent tool call card — groups sub-tools inside a collapsible card */
 export function AgentBubble({ agent, children, onOpenTerminal }: { agent: ChatMessage; children: ChatMessage[]; onOpenTerminal?: (msgId: string) => void }) {
-  const [expanded, setExpanded] = useState(true);
+  // Collapsed by default: a sub-agent's tool stream is its own business, and
+  // expanded it buries the main thread. While it runs, the sweeping title
+  // (below) is what says it's alive — same cue the thinking blocks use.
+  const [expanded, setExpanded] = useState(false);
   const input = (agent.toolInput && typeof agent.toolInput === 'object' ? agent.toolInput : {}) as Record<string, unknown>;
   const description = (input.description as string) || (input.prompt as string)?.slice(0, 80) || 'Agent';
   const running = !agent.toolResult;
@@ -753,7 +762,9 @@ export function AgentBubble({ agent, children, onOpenTerminal }: { agent: ChatMe
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </span>
           <span className="text-[11px] font-mono font-medium text-cyan-400">Agent</span>
-          <span className="text-[11px] text-zinc-400 truncate flex-1">{description}</span>
+          <span className={`text-[11px] truncate flex-1 ${running ? 'thinking-sweep' : 'text-zinc-400'}`}>
+            {description}
+          </span>
           {running && (
             <span
               className="w-3 h-3 rounded-full border border-cyan-500/40 border-t-cyan-300 animate-spin shrink-0"
@@ -933,6 +944,7 @@ export function ToolRunBubble({
                 onOpenTerminal={onOpenTerminal}
                 sessionId={sessionId}
                 client={client}
+                nested
               />
             ))}
           </div>
@@ -1102,7 +1114,7 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry, nested }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
@@ -1168,7 +1180,7 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
   }
 
   if (isToolUse) {
-    return <ToolBubble message={message} isLast={isLast} onAnswerAskUser={onAnswerAskUser} />;
+    return <ToolBubble message={message} isLast={isLast} onAnswerAskUser={onAnswerAskUser} nested={nested} />;
   }
 
   if (isThinking) {
