@@ -287,7 +287,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
         '`cwd` is REQUIRED — explicitly choose the directory the new session opens in.\n\n' +
         'Set `initial_message` to send the first user message immediately after the session is created.\n\n' +
         'To run the session inside a fresh git worktree instead of `cwd` directly, set `worktree`. ' +
-        'The worktree is created at `<dirname(cwd)>/.wt/<branch>`. `cwd` is then treated as the SOURCE repo, ' +
+        'The worktree is created at `<cwd>/.worktrees/<branch>`. `cwd` is then treated as the SOURCE repo, ' +
         'and the new session\'s actual cwd becomes the worktree path. Omit `worktree` to use `cwd` as-is.\n\n' +
         'The `worktree` object can also mirror the create-worktree modal: `copy_env` copies `.env`, ' +
         '`link_node_modules` symlinks `node_modules` (fast), `copy_node_modules` does a full copy, and ' +
@@ -460,7 +460,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
         'What each flag destroys:\n' +
         '  • default (both flags false) — removes the session record and stops its provider. The chat history stays on disk, so the transcript is still recoverable by hand, but the tab is gone from the UI.\n' +
         '  • `purge: true` — ALSO deletes the on-disk chat history and UI state for the session. The conversation is unrecoverable.\n' +
-        '  • `remove_worktree: true` — ALSO deletes the git worktree at the session\'s cwd from disk (only when the cwd matches the `.wt/<branch>` convention). Uncommitted work in that worktree is LOST.\n\n' +
+        '  • `remove_worktree: true` — ALSO deletes the git worktree at the session\'s cwd from disk (only when the cwd matches the `.worktrees/<branch>` convention, or the legacy `.wt/<branch>`). Uncommitted work in that worktree is LOST.\n\n' +
         'Both flags default to false and must be opted into explicitly. The session\'s stored images/mockups are dropped either way. The main session cannot be deleted.',
       inputSchema: {
         type: 'object' as const,
@@ -472,7 +472,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           remove_worktree: {
             type: 'boolean',
-            description: 'Also remove the git worktree at the session\'s cwd (only for `.wt/<branch>` paths). Destroys uncommitted work there. Defaults to false.',
+            description: 'Also remove the git worktree at the session\'s cwd (only for `.worktrees/<branch>` or legacy `.wt/<branch>` paths). Destroys uncommitted work there. Defaults to false.',
           },
         },
         required: ['session_id'],
@@ -1021,7 +1021,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         notes.push(purge ? 'chat history purged from disk' : 'chat history left on disk');
         const wt = data.worktree as { removed?: boolean; method?: string } | undefined;
         if (removeWorktree) {
-          notes.push(wt?.removed ? `worktree removed from ${cwd} (via ${wt.method})` : `worktree NOT removed (cwd ${cwd} is not a .wt/<branch> path, or removal failed)`);
+          notes.push(wt?.removed ? `worktree removed from ${cwd} (via ${wt.method})` : `worktree NOT removed (cwd ${cwd} is not a .worktrees/<branch> path, or removal failed)`);
         }
         return {
           content: [{ type: 'text', text: `Permanently deleted session ${sessionId} — ${label}. ${notes.join('; ')}.` }],

@@ -27,15 +27,23 @@ function shape(nodes: TreeNode[]): unknown[] {
 }
 
 const REPO = '/src/code';
-const WT_A = '/src/code/.wt/feat-a';
-const WT_B = '/src/code/.wt/feat-b';
+const WT_A = '/src/code/.worktrees/feat-a';
+const WT_B = '/src/code/.worktrees/feat-b';
 
 describe('worktreeOf', () => {
-  test('splits the standard <repo>/.wt/<branch> layout', () => {
+  test('splits the standard <repo>/.worktrees/<branch> layout', () => {
     expect(worktreeOf(WT_A)).toEqual({ repo: '/src/code', branch: 'feat-a' });
   });
 
+  test('still splits the legacy .wt layout', () => {
+    // Pre-existing worktrees keep deriving. Note the `repo` here is the
+    // directory that *contained* the repo, not the repo — the legacy layout put
+    // worktrees outside it, which is exactly why the bridge asks git instead.
+    expect(worktreeOf('/src/.wt/feat-a')).toEqual({ repo: '/src', branch: 'feat-a' });
+  });
+
   test('handles Windows separators', () => {
+    expect(worktreeOf('C:\\src\\code\\.worktrees\\feat-a')).toEqual({ repo: 'C:\\src\\code', branch: 'feat-a' });
     expect(worktreeOf('C:\\src\\code\\.wt\\feat-a')).toEqual({ repo: 'C:\\src\\code', branch: 'feat-a' });
   });
 
@@ -45,6 +53,11 @@ describe('worktreeOf', () => {
     expect(worktreeOf(`${WT_A}/packages/ui`)).toBeNull();
     expect(worktreeOf('')).toBeNull();
     expect(worktreeOf(undefined)).toBeNull();
+  });
+
+  test('does not mistake a directory merely named like the marker', () => {
+    expect(worktreeOf('/src/code/worktrees/feat-a')).toBeNull();
+    expect(worktreeOf('/src/code/.worktrees-old/feat-a')).toBeNull();
   });
 });
 
@@ -252,7 +265,7 @@ describe('buildGroupTree — automatic worktree groups', () => {
   });
 
   test('the repo root is a checkout too — it clusters as "main"', () => {
-    // git's own terms: the repo root is the main working tree, `.wt/*` are the
+    // git's own terms: the repo root is the main working tree, `.worktrees/*` are the
     // linked ones. Both cluster; the root reads as `main`.
     const proj = { proj: group('proj', { cwd: REPO }) };
     const tree = buildGroupTree({

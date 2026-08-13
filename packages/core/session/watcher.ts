@@ -82,6 +82,9 @@ const IGNORED_SEGMENTS = new Set([
   '.turbo',
   '.cache',
   'build',
+  // Linked worktrees. `.worktrees` now sits *inside* the repo being watched, so
+  // without this every branch checkout would replay the whole tree as changes.
+  '.worktrees',
   '.wt',
 ]);
 

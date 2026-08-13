@@ -12,27 +12,33 @@ import { DEFAULT_PROVIDER } from '../provider/registry';
 import { clearPendingDecisionsForSession } from '../provider/bridge';
 import { deleteSessionData, clearMessages } from '../session/storage';
 import { stopSessionWatcher } from '../session/watcher';
+import { rootRepoOf } from './worktree';
 import type { Session } from '../types';
 
-/** True when `cwd` matches the worktree convention `<repo-parent>/.wt/<branch>`
- *  used by handleCreateWorktree. We only treat these as removable worktrees.
- *  Accepts both `/` and `\` so Windows paths match too. */
+/** True when `cwd` matches the worktree convention `<repo>/.worktrees/<branch>`
+ *  used by handleCreateWorktree, or the legacy `<repo-parent>/.wt/<branch>`.
+ *  We only treat these as removable worktrees. Accepts both `/` and `\` so
+ *  Windows paths match too. */
 function looksLikeWorktree(cwd: string): boolean {
   if (!cwd) return false;
-  return /[\\/]\.wt[\\/][^\\/]+$/.test(cwd) || /[\\/]\.wt[\\/]/.test(cwd);
+  return /[\\/]\.(?:worktrees|wt)[\\/]/.test(cwd);
 }
 
-/** Try to remove the git worktree at `cwd` from its parent repo. The parent
- *  repo is `<cwd>/../..` for the standard `<repo-parent>/.wt/<branch>` layout,
- *  but we also try a few common siblings if that doesn't pan out. Best-effort
- *  — falls back to a recursive directory delete if `git worktree remove`
+/** Try to remove the git worktree at `cwd` from the repo that owns it. Asks git
+ *  for the owning repo (`rootRepoOf`) instead of walking a fixed number of
+ *  levels up: the current layout nests the worktree one level below the repo
+ *  and the legacy one put it outside the repo entirely, so no single depth is
+ *  right for both. Falls back to the old path-arithmetic candidates when git
+ *  can't answer, then to a recursive directory delete if `git worktree remove`
  *  refuses (e.g. uncommitted changes). */
 function purgeWorktree(cwd: string): { removed: boolean; method: 'git' | 'fs' | 'none' } {
   if (!existsSync(cwd)) return { removed: false, method: 'none' };
-  // <cwd>/../..  — typically the parent git repo for `<repo>/.wt/<branch>`
-  const wtParent = dirname(cwd);                     // <repo>/.wt
+  const owner = rootRepoOf(cwd);
+  const wtParent = dirname(cwd);                     // <repo>/.worktrees
   const candidateRepo = dirname(wtParent);           // <repo>
-  const repoCandidates = [candidateRepo, dirname(candidateRepo)];
+  const repoCandidates = [owner, candidateRepo, dirname(candidateRepo)].filter(
+    (repo, i, all): repo is string => !!repo && all.indexOf(repo) === i,
+  );
   for (const repo of repoCandidates) {
     if (!existsSync(join(repo, '.git'))) continue;
     try {

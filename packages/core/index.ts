@@ -90,7 +90,7 @@ import {
 } from './handlers/terminals';
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef, runShell } from './handlers/git';
 import { handleSearch } from './handlers/search';
-import { handleCreateWorktree, handleRemoveWorktree } from './handlers/worktree';
+import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
 import { registerShutdownHandlers } from './lib/shutdown';
@@ -429,8 +429,8 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
  *  with an explicit group assignment win).
  *
  *  Worktree-aware: when the session is spawned under the standard
- *  `<repo>/.wt/<branch>` layout, the group name is derived from the
- *  parent repo's folder, not the worktree branch. That way a session
+ *  `<repo>/.worktrees/<branch>` layout, the group name is derived from the
+ *  root repo's folder, not the worktree branch. That way a session
  *  spawned in a worktree lands in the same group as the source repo
  *  rather than a freshly-minted "branch" group. Callers that already
  *  routed the original repo cwd through `group_cwd` are unaffected —
@@ -449,12 +449,16 @@ function maybeAutoGroupSession(sessionId: string, cwd: string) {
   if (!prefs.autoGroupSessions) return;
   const map: Record<string, string> = { ...((prefs.tabGroupMap as Record<string, string>) || {}) };
   if (map[sessionId]) return;
-  // Treat `<repo>/.wt/<branch>` as the parent repo for grouping purposes.
-  // Match both `/` and `\` separators (Windows-safe), and only when the
-  // worktree segment is the *last* path component — anything more nested
-  // is a normal subdirectory and stays as-is.
-  const wtMatch = cwd.match(/^(.*?)[\\/]\.wt[\\/][^\\/]+$/);
-  const groupingCwd = wtMatch ? wtMatch[1]! : cwd;
+  // A session in a worktree groups under the repo that owns it, never under
+  // the worktree itself. Ask git for that repo — under the current
+  // `<repo>/.worktrees/<branch>` layout the regex capture is already the repo,
+  // but legacy `<repo-parent>/.wt/<branch>` worktrees sit *outside* it and the
+  // capture lands on the containing directory (`up` instead of `utilityprofit`).
+  // The capture stays as the fallback for when git can't answer. Non-worktree
+  // cwds are left alone: a session started in a subdirectory keeps grouping by
+  // that subdirectory, exactly as before.
+  const wtMatch = cwd.match(WORKTREE_CWD_RE);
+  const groupingCwd = wtMatch ? (rootRepoOf(cwd) ?? wtMatch[1]!) : cwd;
   const folder = groupingCwd.split('/').filter(Boolean).pop()
     || groupingCwd.split('\\').filter(Boolean).pop()
     || '/';

@@ -1389,7 +1389,7 @@ export class ClaudeClient {
   /** Permanently remove a session: drops it from the registry and deletes
    *  its on-disk chat history + UI state. Pass `worktree: true` to also
    *  remove the underlying git worktree (when the session's cwd matches the
-   *  `.wt/<branch>` convention). */
+   *  `.worktrees/<branch>` convention, or the legacy `.wt/<branch>`). */
   async purgeSession(
     sessionId: string,
     opts: { worktree?: boolean } = {},

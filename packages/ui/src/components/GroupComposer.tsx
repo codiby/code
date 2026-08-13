@@ -9,6 +9,7 @@ import {
 import type { ClaudeClient } from '../lib/claude-client';
 import { ChatComposer, type PastedImage } from './ChatComposer';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
+import { WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
 
 const PROVIDER_KEY = 'claude-ui-last-provider';
 const RECENT_DIRS_KEY = 'claude-ui-recent-dirs';
@@ -199,8 +200,8 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   // worktree at '<path>'`. Instead of surfacing the error, switch the
   // composer's cwd to that worktree's path so the session spawns there.
   const switchToWorktree = (wtPath: string) => {
-    const main = (gitInfo?.worktrees || []).find(w => !w.path.includes('/.wt/'));
-    const isMain = !wtPath.includes('/.wt/');
+    const main = (gitInfo?.worktrees || []).find(w => !WORKTREE_CWD_LOOSE_RE.test(w.path));
+    const isMain = !WORKTREE_CWD_LOOSE_RE.test(wtPath);
     setCwd(wtPath);
     setWorktreeOrigin(isMain ? null : (main?.path ?? null));
   };

@@ -1,8 +1,21 @@
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { corsHeaders } from '../config/config';
+
+/** Every worktree the app creates lives at `<repo>/.worktrees/<branch>` — inside
+ *  the project it belongs to, so the owning repo is readable straight off the
+ *  path and two repos can never collide in a shared directory. */
+export const WORKTREES_DIRNAME = '.worktrees';
+
+/** Matches the current layout and the legacy one (`<repo-parent>/.wt/<branch>`,
+ *  which nothing creates any more but plenty of checkouts still sit in),
+ *  capturing (1) the directory holding the worktree dir and (2) the branch
+ *  segment — but only when the branch is the last component, since anything
+ *  deeper is an ordinary subdirectory of a worktree. Mirrored in the UI as
+ *  `WORKTREE_CWD_RE`; keep the two in sync. */
+export const WORKTREE_CWD_RE = /^(.*?)[\\/]\.(?:worktrees|wt)[\\/]([^\\/]+)$/;
 
 function refExists(cwd: string, ref: string): boolean {
   try {
@@ -14,12 +27,81 @@ function refExists(cwd: string, ref: string): boolean {
 }
 
 /**
+ * Absolute path of the *root* repo owning `cwd` — the main working tree — for
+ * any checkout: the repo root itself, a `<repo>/.worktrees/<branch>` worktree,
+ * or a legacy `<repo-parent>/.wt/<branch>` one.
+ *
+ * Asks git rather than slicing the path. Path arithmetic only works when the
+ * worktree sits at a known depth below the repo, which is exactly what the
+ * legacy layout broke — `<repo-parent>/.wt/<branch>` resolves two levels up to
+ * the parent *directory*, not to a repo. `--git-common-dir` is the main
+ * working tree's `.git` for every linked worktree, so its parent is the root
+ * repo in all three cases. Returns null when `cwd` isn't inside a git repo.
+ */
+export function rootRepoOf(cwd: string): string | null {
+  if (!cwd || !existsSync(cwd)) return null;
+  try {
+    const commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', {
+      cwd, stdio: 'pipe', timeout: 10_000,
+    }).toString().trim();
+    if (!commonDir) return null;
+    return dirname(commonDir);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keep `<repo>/.worktrees/` out of the parent repo's `git status`.
+ *
+ * A worktree nested inside its own repo shows up there as untracked content.
+ * The entry goes in `.git/info/exclude` rather than `.gitignore` because the
+ * latter is usually committed and shared — this is a local tooling artifact,
+ * not something to push to everyone on the team. Best-effort: a missing or
+ * read-only `info/` just means a noisier `git status`, never a failed worktree.
+ */
+function excludeWorktreesDir(repoPath: string): void {
+  try {
+    const commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', {
+      cwd: repoPath, stdio: 'pipe', timeout: 10_000,
+    }).toString().trim();
+    if (!commonDir) return;
+    const excludePath = join(commonDir, 'info', 'exclude');
+    const entry = `${WORKTREES_DIRNAME}/`;
+    if (existsSync(excludePath)) {
+      const current = readFileSync(excludePath, 'utf8');
+      if (current.split(/\r?\n/).some(line => line.trim() === entry)) return;
+      appendFileSync(excludePath, `${current.endsWith('\n') ? '' : '\n'}# Codiby Code worktrees\n${entry}\n`);
+    } else {
+      mkdirSync(dirname(excludePath), { recursive: true });
+      appendFileSync(excludePath, `# Codiby Code worktrees\n${entry}\n`);
+    }
+  } catch {
+    // Non-fatal — see doc comment.
+  }
+}
+
+/** `<repo>/.worktrees`, created if absent and excluded from `git status`.
+ *
+ *  Anchored to the *root* repo, so spawning a worktree while already inside one
+ *  puts the new checkout beside its sibling rather than nested inside it. Every
+ *  worktree of a project therefore lives in exactly one directory, one level
+ *  deep, however you got there. */
+function ensureWorktreesDir(repoPath: string): string {
+  const base = rootRepoOf(repoPath) ?? repoPath;
+  const wtDir = join(base, WORKTREES_DIRNAME);
+  if (!existsSync(wtDir)) mkdirSync(wtDir, { recursive: true });
+  excludeWorktreesDir(base);
+  return wtDir;
+}
+
+/**
  * Minimal worktree creation — the `git worktree add` step only, no deps install
  * or env copy. Exposed so MCP tools (and anything else in-process) can create a
  * worktree without dealing with the SSE streaming protocol of the HTTP handler.
  *
  *  - branch name is sanitized to [a-zA-Z0-9_\-/.]
- *  - worktree is placed at `<dirname(repoPath)>/.wt/<safeBranch>`
+ *  - worktree is placed at `<repoPath>/.worktrees/<safeBranch>`
  *  - newBranch=true creates the branch (fails if it already exists)
  *  - newBranch=false attaches an existing branch (fails if it doesn't exist)
  *  - sourceBranch / pullSource only apply when newBranch=true
@@ -40,9 +122,7 @@ export function createWorktree(opts: {
   const sourceBranch = opts.sourceBranch?.trim()
     ? opts.sourceBranch.trim().replace(/[^a-zA-Z0-9_\-/.]/g, '-')
     : '';
-  const wtDir = join(dirname(repoPath), '.wt');
-  if (!existsSync(wtDir)) mkdirSync(wtDir, { recursive: true });
-  const wtPath = join(wtDir, safeBranch);
+  const wtPath = join(ensureWorktreesDir(repoPath), safeBranch);
 
   if (opts.newBranch) {
     // Optional: fetch origin/<sourceBranch> first so the new branch is based on
@@ -284,9 +364,7 @@ export async function handleCreateWorktree(req: Request): Promise<Response> {
 
   const safeBranch = branchName.replace(/[^a-zA-Z0-9_\-/.]/g, '-');
   const sourceBranch = sourceBranchRaw && sourceBranchRaw.replace(/[^a-zA-Z0-9_\-/.]/g, '-') || '';
-  const wtDir = join(dirname(repoPath), '.wt');
-  if (!existsSync(wtDir)) mkdirSync(wtDir, { recursive: true });
-  const wtPath = join(wtDir, safeBranch);
+  const wtPath = join(ensureWorktreesDir(repoPath), safeBranch);
 
   const stream = new ReadableStream({
     async start(controller) {

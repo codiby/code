@@ -13,7 +13,7 @@
  *    session to its real project group.
  *
  *  "Worktree" is git's own word for both kinds of checkout: the repo root is
- *  the *main* working tree and `.wt/<branch>` are *linked* ones. The derivation
+ *  the *main* working tree and `.worktrees/<branch>` are *linked* ones. The derivation
  *  treats them the same — sessions sitting in the repo root cluster under
  *  `main` exactly like sessions on a branch cluster under that branch. It only
  *  kicks in when the parent actually spans more than one directory; a project
@@ -26,14 +26,27 @@
 import type { SessionInfo } from './claude-client';
 import type { TabGroupInfo } from './tab-groups';
 
-/** `<repo>/.wt/<branch>` — the layout every worktree the app creates uses.
- *  Matches `/` and `\` so Windows paths derive the same way, and only when the
- *  branch segment is the *last* component: anything deeper is an ordinary
- *  subdirectory of a worktree, not the worktree root. Mirrors the regex the
- *  bridge uses in `maybeAutoGroupSession`. */
-export const WORKTREE_CWD_RE = /^(.*?)[\\/]\.wt[\\/]([^\\/]+)$/;
+/** `<repo>/.worktrees/<branch>` — the layout every worktree the app creates
+ *  uses. `.wt` is the legacy directory, kept here so worktrees created by older
+ *  versions keep deriving; nothing new is ever placed there. Matches `/` and
+ *  `\` so Windows paths derive the same way, and only when the branch segment
+ *  is the *last* component: anything deeper is an ordinary subdirectory of a
+ *  worktree, not the worktree root. Mirrors the regex the bridge uses in
+ *  `maybeAutoGroupSession`. */
+export const WORKTREE_CWD_RE = /^(.*?)[\\/]\.(?:worktrees|wt)[\\/]([^\\/]+)$/;
 
-/** Repo root + branch for a worktree cwd, or null when the cwd isn't one. */
+/** True when `cwd` is inside a worktree directory at any depth — the loose
+ *  test, for callers that only need "is this a worktree checkout?" rather than
+ *  the repo/branch split. */
+export const WORKTREE_CWD_LOOSE_RE = /[\\/]\.(?:worktrees|wt)[\\/]/;
+
+/** Repo root + branch for a worktree cwd, or null when the cwd isn't one.
+ *
+ *  Under the current layout `repo` is the real owning repo. For a legacy
+ *  `<repo-parent>/.wt/<branch>` path it is the directory that *contained* the
+ *  repo, which is why the bridge prefers git's own answer (`rootRepoOf`) and
+ *  only falls back to this capture. The UI has no git access, so a legacy
+ *  worktree can still label its parent one level too high. */
 export function worktreeOf(cwd: string | undefined | null): { repo: string; branch: string } | null {
   if (!cwd) return null;
   const m = cwd.match(WORKTREE_CWD_RE);
