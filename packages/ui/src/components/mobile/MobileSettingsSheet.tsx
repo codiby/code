@@ -6,9 +6,14 @@ import { resolveServerUrl, getAuthToken, setAuthToken } from '../../lib/claude-c
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** A newer build is installed and waiting. The app never applies it by
+   *  itself — "Force refresh" is the only thing that swaps it in. */
+  updateReady?: boolean;
+  refreshing?: boolean;
+  onForceRefresh?: () => void;
 }
 
-export function MobileSettingsSheet({ open, onClose }: Props) {
+export function MobileSettingsSheet({ open, onClose, updateReady, refreshing, onForceRefresh }: Props) {
   const [token, setToken] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [tgRunning, setTgRunning] = useState<boolean | null>(null);
@@ -160,6 +165,41 @@ export function MobileSettingsSheet({ open, onClose }: Props) {
             {testResult && <div className="text-[11px] text-zinc-400 mt-2 px-1">{testResult}</div>}
           </div>
         </section>
+
+        {/* App / updates */}
+        {onForceRefresh && (
+          <section>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 px-1">
+              App
+            </div>
+            <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+              <div className="flex items-center gap-2 text-sm text-zinc-200">
+                Version
+                <span className="ml-auto flex items-center gap-1.5 text-[11px]">
+                  <span className={`w-1.5 h-1.5 rounded-full ${updateReady ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                  <span className="text-zinc-400">{updateReady ? 'Update ready' : 'Up to date'}</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-500 mt-1.5 leading-relaxed">
+                New builds install in the background but never reload the app on their own.
+                Tap below to drop the cached bundle and load the latest one.
+              </p>
+              <Button
+                variant="ghost"
+                fullWidth
+                onPress={onForceRefresh}
+                isDisabled={refreshing}
+                className={`mt-3 h-auto min-w-0 min-h-12 rounded-xl border text-sm font-medium disabled:opacity-50 ${
+                  updateReady
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200 active:bg-emerald-500/25'
+                    : 'bg-white/5 border-white/10 text-zinc-200 active:bg-white/10'
+                }`}
+              >
+                {refreshing ? 'Refreshing…' : 'Force refresh'}
+              </Button>
+            </div>
+          </section>
+        )}
 
         {/* Pairing / token */}
         <section>

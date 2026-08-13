@@ -12,6 +12,7 @@ import {
 } from '../../lib/claude-client';
 import { playChime } from '../../lib/chime';
 import { useScreenWakeLock } from '../../lib/wake-lock';
+import { useAppStore } from '../../lib/store';
 import { MobileChat } from './MobileChat';
 import { MobileHome } from './MobileHome';
 import { GlassNav, type NavTab } from './GlassNav';
@@ -72,53 +73,48 @@ export function MobileApp() {
   // on iOS Safari via "Add to Home Screen", and Android Chrome will pick
   // up the SW automatically when the page is served over HTTPS.
   //
-  // Update flow:
-  //  1. On register we check for updates immediately and on tab focus.
-  //  2. When a new SW reaches the `waiting` state (because the current tab is
-  //     still controlled by the old one), we tell it to skipWaiting.
-  //  3. The new SW's `activate` handler posts a `sw-activated` message; we
-  //     also listen to `controllerchange` as a backstop. Either one triggers
-  //     a single reload so the page loads the new `/m` shell with fresh
-  //     hashed asset refs.
+  // Update flow — deliberately *never* automatic:
+  //  1. On register we check for updates immediately, on tab focus, and every
+  //     5 min. A newer build installs in the background.
+  //  2. The new worker is left sitting in `waiting`. Nothing swaps under the
+  //     running page, so opening the app never costs a reload — during active
+  //     development every launch used to land on a new build and refresh.
+  //  3. We only flip `updateReady`, which lights up the Force refresh button
+  //     (home header + Settings). That button is the one thing that tells the
+  //     waiting worker to take over and reloads the page.
+  const swRegRef = useRef<ServiceWorkerRegistration | null>(null);
+  const [updateReady, setUpdateReady] = useState(false);
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    let reloadPending = false;
-    const reloadOnce = () => {
-      if (reloadPending) return;
-      reloadPending = true;
-      // Give the browser a tick to finalize the controller swap before reload.
-      setTimeout(() => window.location.reload(), 50);
-    };
 
-    const askToSkip = (reg: ServiceWorkerRegistration) => {
-      if (reg.waiting) {
-        try { reg.waiting.postMessage({ type: 'skip-waiting' }); } catch {}
-      }
-    };
+    let reg: ServiceWorkerRegistration | null = null;
+    // A *waiting* worker is the exact definition of "a newer build is
+    // installed but not applied" — narrower than reacting to `sw-activated`,
+    // which also fires on the very first install (nothing to update to) and
+    // would light the button up on a brand-new device.
+    const sync = () => setUpdateReady(!!reg?.waiting);
 
     navigator.serviceWorker
       .register('/sw.js', { scope: '/' })
-      .then((reg) => {
-        // If there's already a waiting worker from a previous load, kick it.
-        askToSkip(reg);
+      .then((r) => {
+        reg = r;
+        swRegRef.current = r;
+        // A worker left waiting by a previous visit still counts as an update.
+        sync();
         // Re-check for updates when the tab becomes visible again — picks up
         // new deploys that happened while the PWA was backgrounded.
-        const poll = () => { reg.update().catch(() => {}); };
+        const poll = () => { r.update().then(sync).catch(() => {}); };
         const onVis = () => { if (document.visibilityState === 'visible') poll(); };
         document.addEventListener('visibilitychange', onVis);
         // Also a time-based check as a backstop (every 5 min) for long-lived
         // sessions that never lose focus.
         const t = setInterval(poll, 5 * 60 * 1000);
-        reg.addEventListener('updatefound', () => {
-          const nw = reg.installing;
+        r.addEventListener('updatefound', () => {
+          const nw = r.installing;
           if (!nw) return;
-          nw.addEventListener('statechange', () => {
-            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-              // There's a fresh worker waiting and we're currently controlled
-              // by the old one — nudge it to activate.
-              askToSkip(reg);
-            }
-          });
+          // `installed` means it finished and parked itself in `waiting`
+          // (our sw.js never calls skipWaiting on install).
+          nw.addEventListener('statechange', sync);
         });
         // Store cleanup on window so React strict-mode double-invoke doesn't
         // leak. We intentionally don't remove these across unmounts of the
@@ -130,17 +126,35 @@ export function MobileApp() {
       })
       .catch(() => {/* secure-context restriction or registration error — ignore */});
 
-    const onMsg = (ev: MessageEvent) => {
-      if (ev.data?.type === 'sw-activated') reloadOnce();
-    };
+    // A swap finished (only reachable through Force refresh, which reloads
+    // right after) — re-read the registration so the flag can't stick on.
+    const onMsg = (ev: MessageEvent) => { if (ev.data?.type === 'sw-activated') sync(); };
     navigator.serviceWorker.addEventListener('message', onMsg);
-    navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
-
-    return () => {
-      navigator.serviceWorker.removeEventListener('message', onMsg);
-      navigator.serviceWorker.removeEventListener('controllerchange', reloadOnce);
-    };
+    return () => { navigator.serviceWorker.removeEventListener('message', onMsg); };
   }, []);
+
+  // The only path that swaps the app's assets. Promotes a waiting worker,
+  // wipes the shell cache so the reload can't be served a stale bundle even
+  // if the swap didn't happen (an unregistered SW on plain http, say), then
+  // reloads.
+  const [refreshing, setRefreshing] = useState(false);
+  const forceRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const reg = swRegRef.current
+        || (await navigator.serviceWorker?.getRegistration?.().catch(() => null))
+        || null;
+      if (reg) {
+        try { await reg.update(); } catch {}
+        try { reg.waiting?.postMessage({ type: 'skip-waiting' }); } catch {}
+      }
+      if (typeof caches !== 'undefined') {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k).catch(() => false)));
+      }
+    } catch {/* best effort — reload regardless */}
+    window.location.reload();
+  };
 
   useEffect(() => {
     const hash = window.location.hash || '';
@@ -591,6 +605,16 @@ export function MobileApp() {
     setActiveId(fresh.id);
   };
 
+  /** Pin / unpin a session. Persisted under the same `pinnedSessionIds`
+   *  preference the desktop uses, so a pin made on the phone shows up in the
+   *  desktop tab bar too. */
+  const togglePinSession = (id: string) => {
+    const next = new Set(pinnedSessionIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setPinnedSessionIds(next);
+    clientRef.current?.updatePreferences({ pinnedSessionIds: [...next] }).catch(() => {});
+  };
+
   /** Tap-to-cycle permission mode — keeps MobileApp's local sessions list in
    *  sync with the server-side change so the badge re-renders immediately. */
   const applyPermissionMode = (sessionId: string, mode: string) => {
@@ -647,6 +671,31 @@ export function MobileApp() {
   // Bottom chrome (nav + composer) auto-hides on downward scroll, comes
   // back on upward scroll or near the top of the chat.
   const [chromeHidden, setChromeHidden] = useState(false);
+
+  // Session deep-link chips — `[Name](codiby-session:<id>)`, rendered by the
+  // shared Markdown component — resolve their name from the app store, which
+  // only the desktop shell fills in. Mirror the mobile session list into it,
+  // otherwise every chip falls back to the dimmed "unknown session" label and
+  // isn't tappable at all.
+  useEffect(() => {
+    useAppStore.setState({ sessions });
+  }, [sessions]);
+
+  // …and route the chip's click, which on desktop ChatApp handles. Archived
+  // targets are reopened first so the deep-link works from any chat.
+  useEffect(() => {
+    const onOpenSession = (e: Event) => {
+      const id = (e as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (!id) return;
+      const target = sessions.find((s) => s.id === id);
+      if (!target) return;
+      if (target.status === 'archived') reopenSession(id);
+      else setActiveId(id);
+      setTab('chat');
+    };
+    window.addEventListener('codiby-code:open-session', onOpenSession);
+    return () => window.removeEventListener('codiby-code:open-session', onOpenSession);
+  }, [sessions]);
 
   // Terminals as first-class resources, keyed by session. Fetched from the
   // bridge on connect (onTerminalsSnapshot) and kept in sync via the
@@ -866,10 +915,14 @@ export function MobileApp() {
           tabGroupMap={tabGroupMap}
           tabOrder={tabOrder}
           pinnedSessionIds={pinnedSessionIds}
+          onTogglePin={togglePinSession}
           sessionLastMessageAt={sessionLastMessageAt}
           keepScreenOn={wakeLock.enabled}
           keepScreenOnSupported={wakeLock.supported}
           onToggleKeepScreenOn={wakeLock.setEnabled}
+          updateReady={updateReady}
+          refreshing={refreshing}
+          onForceRefresh={forceRefresh}
         />
       ) : (
         <MobileChat
@@ -947,6 +1000,9 @@ export function MobileApp() {
       <MobileSettingsSheet
         open={tab === 'settings'}
         onClose={() => setTab('chat')}
+        updateReady={updateReady}
+        refreshing={refreshing}
+        onForceRefresh={forceRefresh}
       />
 
       <BypassWarningModal

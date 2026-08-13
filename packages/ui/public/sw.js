@@ -38,8 +38,12 @@ self.addEventListener('install', (event) => {
       const cache = await caches.open(SHELL_CACHE);
       await cache.addAll(SHELL_URLS).catch(() => {});
     } catch {/* ignore */}
-    // Take control immediately on next load
-    await self.skipWaiting();
+    // NOTE: deliberately no `skipWaiting()` here. A new build must NOT take
+    // over a page that's already open — activating swaps the shell under a
+    // live session and the client then reloads to match, which is what made
+    // the app refresh on every launch during active development. The new
+    // worker sits in `waiting` until the user taps "Force refresh" (which
+    // posts `skip-waiting` below), or until every tab is closed.
   })());
 });
 
@@ -51,8 +55,9 @@ self.addEventListener('activate', (event) => {
       keys.filter((k) => k !== SHELL_CACHE).map((k) => caches.delete(k)),
     );
     await self.clients.claim();
-    // Notify every open client so they can soft-reload onto the new
-    // hashed chunks instead of sitting on the stale page.
+    // Tell every open client the swap happened. Clients use this only to
+    // surface the "update ready" affordance — they never reload on their
+    // own; see the registration site in MobileApp.tsx.
     const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
     for (const c of clients) {
       try { c.postMessage({ type: 'sw-activated', cache: SHELL_CACHE }); } catch {}
