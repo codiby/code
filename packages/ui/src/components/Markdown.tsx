@@ -5,6 +5,7 @@
  */
 
 import { memo, useCallback } from 'react';
+import { autolinkHtml } from '../lib/autolink';
 import { highlightCode, normalizeLang } from '../lib/highlight';
 import { detectLanguage } from '../lib/detect-language';
 import { useAppStore } from '../lib/store';
@@ -142,17 +143,10 @@ function renderInline(text: string): string {
     // Italic
     .replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '<em>$1</em>')
     // Strikethrough
-    .replace(/~~(.+?)~~/g, '<del class="text-zinc-600">$1</del>')
-    // Auto-link bare URLs. Negative lookbehind skips URLs that are already
-    // inside markdown link syntax `](url)`, inside HTML attributes `href="..."`,
-    // or inside an existing `<a>` tag (preceded by `>`). Trailing punctuation
-    // (.,!?:;) is stripped so "see https://x.com." links to https://x.com.
-    .replace(/(?<![("'>])https?:\/\/[^\s<>"')]+/g, (url) => {
-      const trail = url.match(/[.,!?:;]+$/);
-      const href = trail ? url.slice(0, url.length - trail[0].length) : url;
-      const tail = trail ? trail[0] : '';
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline break-all">${href}</a>${tail}`;
-    });
+    .replace(/~~(.+?)~~/g, '<del class="text-zinc-600">$1</del>');
+  // Bare URLs are linked in a single pass over the finished document
+  // (`autolinkHtml` below), where the anchors and code spans this function
+  // just produced can be skipped as a whole.
 }
 
 function renderTable(rows: string[]): string {
@@ -317,7 +311,7 @@ function renderMarkdown(source: string): string {
   flushTable();
   closeList();
 
-  return html.join('\n');
+  return autolinkHtml(html.join('\n'));
 }
 
 // Memoized so an unchanged message's rendered HTML is never re-applied. The
