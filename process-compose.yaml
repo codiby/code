@@ -1,0 +1,85 @@
+# Native process orchestration for the Codiby Code server.
+#
+# Same shape as `docker-compose.yml`, except every process runs directly on the
+# host — no container, no volume mounts, no port mapping. That matters here
+# because the bridge server spawns Claude Code, reads `~/.claude`, and drives
+# git worktrees anywhere under `$HOME`; those are the exact things a container
+# makes awkward.
+#
+# This is the production entrypoint: install, build once, serve. For local
+# development with hot rebuilds use `bun run dev` (run.sh) instead.
+#
+#   process-compose up              start (TUI)
+#   process-compose up -t=false     no TUI — systemd, CI, `ssh host ...`
+#   process-compose down            stop everything
+#   process-compose process restart bridge
+#   process-compose --dry-run       validate this file
+#
+# `.env` in this directory is loaded automatically; add more with
+# `-e .env.local`. Same variables `run.sh` reads — CLAUDE_UI_PORT is the one
+# that matters.
+#
+# Requires `process-compose` >= 1.x (https://github.com/F1bonacc1/process-compose).
+version: "0.5"
+
+log_level: info
+log_length: 3000
+
+environment:
+  - "CLAUDE_UI_PORT=${CLAUDE_UI_PORT:-3111}"
+
+processes:
+  deps:
+    description: "Install workspace dependencies"
+    command: "bun install --frozen-lockfile"
+    availability:
+      restart: "no"
+    log_location: "./logs/deps.log"
+
+  build:
+    description: "Production build of the desktop + mobile frontends"
+    # Gates the bridge: `dist/index.html` must exist before anything can hit
+    # `/`, otherwise the first request races an empty dist.
+    command: "bun run scripts/build.ts"
+    depends_on:
+      deps:
+        condition: process_completed_successfully
+    availability:
+      restart: "no"
+    log_location: "./logs/build.log"
+
+  bridge:
+    description: "API + WebSockets + static dist (desktop UI at /, mobile at /m/)"
+    command: "bun packages/core/index.ts"
+    depends_on:
+      build:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "127.0.0.1"
+        scheme: http
+        path: "/health"
+        port: ${CLAUDE_UI_PORT:-3111}
+      initial_delay_seconds: 2
+      period_seconds: 2
+      timeout_seconds: 5
+      failure_threshold: 30
+    liveness_probe:
+      http_get:
+        host: "127.0.0.1"
+        scheme: http
+        path: "/health"
+        port: ${CLAUDE_UI_PORT:-3111}
+      initial_delay_seconds: 15
+      period_seconds: 30
+      timeout_seconds: 10
+      failure_threshold: 3
+    availability:
+      restart: always
+      backoff_seconds: 2
+    # SIGTERM lets index.ts unlink its port file before exiting; SIGKILL would
+    # leave a stale `~/.codiby/server.port` pointing at a dead process.
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+    log_location: "./logs/bridge.log"
