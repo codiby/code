@@ -1993,19 +1993,39 @@ export function ChatApp() {
     return () => window.removeEventListener('codiby-code:open-mockup', handler as EventListener);
   }, [activeId, updateLocalState]);
 
-  // A saved-snippet badge in the chat was clicked (dispatched from Markdown.tsx).
-  // Read the file and open it read-only in the preview pane of the active session.
+  // A saved-snippet badge (Markdown.tsx) or a diffdoc caption / line number
+  // (DiffDoc.tsx) in the chat was clicked. Read the file and open it read-only
+  // in the preview pane of the active session, scrolled to `line` when given.
   useEffect(() => {
     const handler = async (e: Event) => {
-      const ev = e as CustomEvent<{ path: string }>;
+      const ev = e as CustomEvent<{ path: string; line?: number }>;
       const path = ev.detail?.path;
       if (!activeId || !path || !clientRef.current) return;
       const file = await clientRef.current.readFile(path);
-      if (file) openFileInEditor(activeId, path, file.content, undefined, { readOnly: true, pin: true });
+      if (file) openFileInEditor(activeId, path, file.content, ev.detail?.line, { readOnly: true, pin: true });
     };
     window.addEventListener('codiby-code:open-file', handler as EventListener);
     return () => window.removeEventListener('codiby-code:open-file', handler as EventListener);
   }, [activeId, openFileInEditor]);
+
+  // An `explain` block asked something on the reader's behalf — a decision they
+  // picked, or a step they want rewritten (dispatched from Explain.tsx). It is a
+  // real turn to the model; it just doesn't draw as a bubble, because the text
+  // carries an anchor and `groupMessages` routes it back into the block.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text = (e as CustomEvent<{ text: string }>).detail?.text;
+      if (!activeId || !text || !clientRef.current) return;
+      updateLocalState(activeId, s => ({
+        ...s,
+        messages: [...s.messages, { id: crypto.randomUUID(), role: 'user' as const, content: text, timestamp: Date.now() }],
+        isStreaming: true, wasInterrupted: false, partialText: '', partialThinking: '',
+      }));
+      clientRef.current.sendMessage(activeId, text);
+    };
+    window.addEventListener('codiby-code:send-message', handler as EventListener);
+    return () => window.removeEventListener('codiby-code:send-message', handler as EventListener);
+  }, [activeId, updateLocalState]);
 
   // A session deep-link chip in the chat was clicked (dispatched from
   // Markdown.tsx). Route it to the session switcher via a ref so the mount-once

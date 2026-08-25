@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'reac
 import { ChevronDown, ChevronRight, Sparkles, Copy, Check } from 'lucide-react';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
 import { isDotenvPath } from '../lib/monaco-dotenv';
+import { collectExplainParts, EMPTY_EXPLAIN_PARTS } from '../lib/explain';
 import { Markdown } from './Markdown';
 import { MobileImageViewer } from './mobile/MobileImageViewer';
 
@@ -991,6 +992,14 @@ export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: 
     return res ? { ...msg, toolResult: res } : msg;
   };
 
+  /** Only messages that actually author a block pay the copy — every other
+   *  message keeps its identity so its bubble's memo still holds. */
+  const attachExplain = (msg: ChatMessage, parts: ReturnType<typeof collectExplainParts>['parts']): ChatMessage => {
+    if (parts === EMPTY_EXPLAIN_PARTS) return msg;
+    if (typeof msg.content !== 'string' || !msg.content.includes('```explain')) return msg;
+    return { ...msg, explainParts: parts };
+  };
+
   // Set of Agent tool_use ids that are live in this window. A message is a
   // sub-agent message iff its parentToolUseId is in this set. (Scoping to the
   // visible window avoids accidentally folding bubbles into an older Agent
@@ -1000,11 +1009,21 @@ export function groupMessages(messages: ChatMessage[]): (ChatMessage | { agent: 
     if (m.toolName === 'Agent') agentIds.add(m.id);
   }
 
+  // Explain blocks pull their live state out of the transcript: the reader's
+  // answers and the continuations a decision produced. Those messages exist for
+  // the model, not for the reader, so they are dropped from the visible thread
+  // and handed to the block that owns them instead.
+  const explain = collectExplainParts(messages);
+  const hasParts = Object.keys(explain.parts.continuations).length > 0
+    || Object.keys(explain.parts.answers).length > 0;
+  const explainParts = hasParts ? explain.parts : EMPTY_EXPLAIN_PARTS;
+
   const result: (ChatMessage | { agent: ChatMessage; children: ChatMessage[] })[] = [];
   const groupByAgentId = new Map<string, { agent: ChatMessage; children: ChatMessage[] }>();
 
   for (const raw of messages) {
-    const msg = attach(raw);
+    if (explain.hidden.has(raw.id)) continue;
+    const msg = attachExplain(attach(raw), explainParts);
 
     // Skip tool_result messages that were paired with a tool_use above;
     // they're rendered inside that card via `attach()`.
@@ -1290,7 +1309,12 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
           {assistantTime}
         </span>
       )}
-      <Markdown text={message.content} className="text-[13px] text-zinc-300 leading-relaxed" />
+      <Markdown
+        text={message.content}
+        className="text-[13px] text-zinc-300 leading-relaxed"
+        messageId={message.id}
+        explainParts={message.explainParts}
+      />
     </div>
   );
 });

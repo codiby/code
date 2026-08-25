@@ -220,6 +220,13 @@ export interface ChatMessage {
   autoApproved?: boolean;
   isError?: boolean;
   /**
+   * Local-only, computed by `groupMessages`: the live state of any ```explain
+   * block this message authored — the decisions already answered and the
+   * continuations they produced. Derived from later messages rather than
+   * stored, so a block keeps its state across a remount or a reload.
+   */
+  explainParts?: import('./explain').ExplainParts;
+  /**
    * Set on assistant messages whose `content` is the model's reasoning
    * summary (Anthropic `thinking` / `redacted_thinking` block). Rendered as
    * a collapsible dim bubble — distinct from regular assistant text.

@@ -8,6 +8,10 @@ import { memo, useCallback } from 'react';
 import { autolinkHtml } from '../lib/autolink';
 import { highlightCode, normalizeLang } from '../lib/highlight';
 import { detectLanguage } from '../lib/detect-language';
+import { splitBlockSegments } from '../lib/block-fences';
+import { explainBlockId } from '../lib/explain';
+import { DiffDoc, DiffDocPending } from './DiffDoc';
+import { Explain, ExplainPending } from './Explain';
 import { useAppStore } from '../lib/store';
 
 const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'strong', 'del', 'sub', 'sup', 'kbd', 'mark', 'abbr']);
@@ -46,7 +50,7 @@ function codeBlockHtml(code: string, lang: string): string {
   const fade = clipped ? `<div class="cm-code-fade" aria-hidden></div>` : '';
   const pre = `<pre class="text-[11px] bg-[#0d0d0d] border border-border rounded px-3 pb-2 ${padTop} font-mono overflow-x-auto leading-snug${langClass}"><code class="${langClass.trim()}">${body}</code></pre>`;
   const more = clipped
-    ? `<button type="button" data-expand-code class="cm-code-more">▾ Mostrar ${lineCount - MAX_CODE_LINES} líneas más</button>`
+    ? `<button type="button" data-expand-code class="cm-code-more">▾ Show ${lineCount - MAX_CODE_LINES} more lines</button>`
     : '';
 
   return `<div class="relative group/code my-2" data-code-block>`
@@ -321,7 +325,32 @@ function renderMarkdown(source: string): string {
 // recreates every text node, which silently drops the user's text selection.
 // Skipping the re-render when `text`/`className` are unchanged keeps the DOM
 // (and the live selection) intact.
-export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
+/** Fenced languages that render as React components instead of code blocks. */
+const BLOCK_LANGS = ['diffdoc', 'explain'] as const;
+
+/**
+ * Everything an `explain` block needs that lives outside its own message: the
+ * continuation blocks a branch produced, and the decisions already answered.
+ * Both are derived from later messages by `groupMessages` (MessageBubble.tsx)
+ * and keyed by block id, so the block survives a remount with its state.
+ */
+export interface ExplainParts {
+  continuations: Record<string, string[]>;
+  answers: Record<string, Record<number, string>>;
+}
+
+export const Markdown = memo(function Markdown({
+  text,
+  className,
+  messageId,
+  explainParts,
+}: {
+  text: string;
+  className?: string;
+  /** Anchors `explain` blocks to their authoring message. */
+  messageId?: string;
+  explainParts?: ExplainParts;
+}) {
   // Event delegation: copy buttons live inside dangerouslySetInnerHTML, so they
   // can't carry a React handler. Catch their clicks here, read the sibling
   // <code>'s textContent, and copy it.
@@ -387,12 +416,51 @@ export const Markdown = memo(function Markdown({ text, className }: { text: stri
   }, []);
 
   if (!text) return null;
-  const html = renderMarkdown(text);
+
+  const cls = `text-[12px] text-zinc-300 leading-relaxed break-words [&_details]:my-2 [&_details]:border [&_details]:border-border [&_details]:rounded-lg [&_details]:overflow-hidden [&_summary]:px-3 [&_summary]:py-1.5 [&_summary]:bg-surface-light [&_summary]:cursor-pointer [&_summary]:text-zinc-300 [&_summary]:text-[12px] [&_summary]:font-medium [&_details>:not(summary)]:px-3 [&_details>:not(summary)]:py-2 ${className || ''}`;
+
+  // ```diffdoc and ```explain fences render as real React figures rather than
+  // as HTML from the string pipeline, so each block owns its own interactions.
+  // Routing them is ALL this component knows about those formats — the grammars
+  // live in lib/diff-doc.ts and lib/explain.ts. When a message has neither (the
+  // overwhelming case) the DOM is byte-identical to the pre-split version, which
+  // matters: an extra wrapper here would break the memo's promise of leaving
+  // live text selections in the thread untouched.
+  const segments = splitBlockSegments(text, BLOCK_LANGS);
+  if (segments.length === 1 && segments[0].type === 'md') {
+    return (
+      <div onClick={handleClick} className={cls} dangerouslySetInnerHTML={{ __html: renderMarkdown(segments[0].text) }} />
+    );
+  }
+
+  let explainIndex = 0;
   return (
-    <div
-      onClick={handleClick}
-      className={`text-[12px] text-zinc-300 leading-relaxed break-words [&_details]:my-2 [&_details]:border [&_details]:border-border [&_details]:rounded-lg [&_details]:overflow-hidden [&_summary]:px-3 [&_summary]:py-1.5 [&_summary]:bg-surface-light [&_summary]:cursor-pointer [&_summary]:text-zinc-300 [&_summary]:text-[12px] [&_summary]:font-medium [&_details>:not(summary)]:px-3 [&_details>:not(summary)]:py-2 ${className || ''}`}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div onClick={handleClick} className={cls}>
+      {segments.map((segment, i) => {
+        if (segment.type === 'block' && segment.lang === 'diffdoc') {
+          return <DiffDoc key={i} source={segment.source} />;
+        }
+        if (segment.type === 'block') {
+          const blockId = explainBlockId(messageId || 'local', explainIndex++);
+          return (
+            <Explain
+              key={i}
+              source={segment.source}
+              blockId={blockId}
+              continuations={explainParts?.continuations[blockId] || EMPTY_PARTS}
+              answers={explainParts?.answers[blockId] || EMPTY_ANSWERS}
+            />
+          );
+        }
+        if (segment.type === 'pending') {
+          return segment.lang === 'explain' ? <ExplainPending key={i} /> : <DiffDocPending key={i} />;
+        }
+        return <div key={i} dangerouslySetInnerHTML={{ __html: renderMarkdown(segment.text) }} />;
+      })}
+    </div>
   );
 });
+
+// Shared empty literals: a fresh `[]`/`{}` per render would defeat Explain's memo.
+const EMPTY_PARTS: string[] = [];
+const EMPTY_ANSWERS: Record<number, string> = {};

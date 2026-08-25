@@ -5,6 +5,7 @@ import { Button, TextField, TextArea } from '@heroui/react';
 import type { ChatMessage, ClaudeClient, PermissionRequest, SessionInfo, TerminalInfo } from '../../lib/claude-client';
 import { getAuthToken, resolveServerUrl } from '../../lib/claude-client';
 import { Terminal as TerminalIcon } from 'lucide-react';
+import { collectExplainParts, type ExplainParts } from '../../lib/explain';
 import { Markdown } from '../Markdown';
 import { InteractiveTerminalBubble } from '../InteractiveTerminalBubble';
 import { PermissionCard } from './PermissionCard';
@@ -602,6 +603,19 @@ export function MobileChat({
     resetComposer();
   };
 
+  // An `explain` block answered a decision or asked for a rewrite. Same as the
+  // desktop handler: a real turn to the model, carrying an anchor so it renders
+  // back inside the block instead of as a bubble.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text = (e as CustomEvent<{ text: string }>).detail?.text;
+      if (!text || !session || !client) return;
+      client.sendMessage(session.id, text);
+    };
+    window.addEventListener('codiby-code:send-message', handler as EventListener);
+    return () => window.removeEventListener('codiby-code:send-message', handler as EventListener);
+  }, [session?.id, client]);
+
   // Drain queued messages on the streaming→idle transition for the active
   // session. Per-session lastStreamingRef keeps the previous value so we
   // only fire on a true→false flip.
@@ -793,8 +807,12 @@ export function MobileChat({
             // Skip tool_result rows that pair with a tool_use rendered above —
             // those get folded into the tool's accordion. Then collapse runs of
             // consecutive same-tool calls into a single "Read 4 files" card.
+            // Same rule as the desktop thread (groupMessages): the messages an
+            // explain block generated feed the block, they don't get a bubble.
+            const explain = collectExplainParts(messages);
             const visible = messages.filter(
-              (m) => !(m.isToolResult && m.toolUseId && toolUseIds.has(m.toolUseId))
+              (m) => !explain.hidden.has(m.id)
+                && !(m.isToolResult && m.toolUseId && toolUseIds.has(m.toolUseId))
             );
             const collapsed = collapseToolRuns(visible);
             return collapsed.map((item, idx) => {
@@ -817,6 +835,7 @@ export function MobileChat({
                   key={m.id}
                   msg={m}
                   result={m.toolName && !m.isToolResult ? resultByToolUseId.get(m.id) : undefined}
+                  explainParts={explain.parts}
                   onOpenImage={setViewerSrc}
                 />
               );
@@ -1346,7 +1365,7 @@ export function MobileChat({
 // fields that matter on a phone. No Monaco / xterm / complex tool UIs.
 // ---------------------------------------------------------------------------
 
-function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (src: string) => void; nested?: boolean }) {
+function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested, explainParts }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (src: string) => void; nested?: boolean; explainParts?: ExplainParts }) {
   if (msg.role === 'user') {
     const hasImages = !!msg.images && msg.images.length > 0;
     const pending = !!msg.isPending;
@@ -1455,7 +1474,7 @@ function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested }: { 
   // get a visible bubble; everything else is plain text on the dark canvas.
   return (
     <li className="mx-4 text-zinc-100">
-      <Markdown text={msg.content} className={MOBILE_MD_CLS} />
+      <Markdown text={msg.content} className={MOBILE_MD_CLS} messageId={msg.id} explainParts={explainParts} />
     </li>
   );
 }

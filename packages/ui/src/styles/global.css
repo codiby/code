@@ -502,52 +502,55 @@ html.light .thinking-sweep {
 /* ---------------------------------------------------------------------------
    Prism syntax highlighting — dark token theme for markdown code blocks
    (rendered by src/components/Markdown.tsx via src/lib/highlight.ts). Scoped
-   to `pre code` so it only colors fenced blocks, never inline `code`.
+   to `pre code` — so it only colors fenced blocks, never inline `code` — plus
+   `.dd-code`, the per-line code cell of a diffdoc figure (DiffDoc.tsx), which
+   is highlighted by the same pipeline but is not wrapped in a <pre>.
    Palette follows the One Dark family against the #0d0d0d block background.
    --------------------------------------------------------------------------- */
-pre code .token.comment,
-pre code .token.prolog,
-pre code .token.doctype,
-pre code .token.cdata { color: #6a737d; font-style: italic; }
+:is(pre code, .dd-code) .token.comment,
+:is(pre code, .dd-code) .token.prolog,
+:is(pre code, .dd-code) .token.doctype,
+:is(pre code, .dd-code) .token.cdata { color: #6a737d; font-style: italic; }
 
-pre code .token.punctuation { color: #8b949e; }
+:is(pre code, .dd-code) .token.punctuation { color: #8b949e; }
 
-pre code .token.property,
-pre code .token.tag,
-pre code .token.constant,
-pre code .token.symbol,
-pre code .token.deleted { color: #e06c75; }
+:is(pre code, .dd-code) .token.property,
+:is(pre code, .dd-code) .token.tag,
+:is(pre code, .dd-code) .token.constant,
+:is(pre code, .dd-code) .token.symbol,
+:is(pre code, .dd-code) .token.deleted { color: #e06c75; }
 
-pre code .token.boolean,
-pre code .token.number { color: #d19a66; }
+:is(pre code, .dd-code) .token.boolean,
+:is(pre code, .dd-code) .token.number { color: #d19a66; }
 
-pre code .token.selector,
-pre code .token.attr-name,
-pre code .token.string,
-pre code .token.char,
-pre code .token.builtin,
-pre code .token.inserted { color: #98c379; }
+:is(pre code, .dd-code) .token.selector,
+:is(pre code, .dd-code) .token.attr-name,
+:is(pre code, .dd-code) .token.string,
+:is(pre code, .dd-code) .token.char,
+:is(pre code, .dd-code) .token.builtin,
+:is(pre code, .dd-code) .token.inserted { color: #98c379; }
 
-pre code .token.operator,
-pre code .token.entity,
-pre code .token.url,
-pre code .token.variable { color: #56b6c2; }
+:is(pre code, .dd-code) .token.operator,
+:is(pre code, .dd-code) .token.entity,
+:is(pre code, .dd-code) .token.url,
+:is(pre code, .dd-code) .token.variable { color: #56b6c2; }
 
-pre code .token.atrule,
-pre code .token.attr-value,
-pre code .token.keyword { color: #c678dd; }
+:is(pre code, .dd-code) .token.atrule,
+:is(pre code, .dd-code) .token.attr-value,
+:is(pre code, .dd-code) .token.keyword { color: #c678dd; }
 
-pre code .token.function,
-pre code .token.class-name { color: #61afef; }
+:is(pre code, .dd-code) .token.function,
+:is(pre code, .dd-code) .token.class-name { color: #61afef; }
 
-pre code .token.regex,
-pre code .token.important { color: #e5c07b; }
+:is(pre code, .dd-code) .token.regex,
+:is(pre code, .dd-code) .token.important { color: #e5c07b; }
 
-pre code .token.important,
-pre code .token.bold { font-weight: 600; }
-pre code .token.italic { font-style: italic; }
+:is(pre code, .dd-code) .token.important,
+:is(pre code, .dd-code) .token.bold { font-weight: 600; }
+:is(pre code, .dd-code) .token.italic { font-style: italic; }
 
-/* diff blocks: tint whole inserted/deleted lines */
+/* diff blocks: tint whole inserted/deleted lines. Not applied inside a
+   diffdoc figure — there the row itself carries the tint. */
 pre code .token.inserted { background: rgba(46, 160, 67, 0.12); }
 pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
 
@@ -559,6 +562,394 @@ pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
 .cm-code-clip.cm-expanded .cm-code-fade { display: none; }
 .cm-code-more { display: block; width: 100%; text-align: center; font-size: 11px; color: #a1a1aa; background: rgba(255,255,255,.02); border: 1px solid var(--border, rgba(255,255,255,.08)); border-top: 0; border-radius: 0 0 6px 6px; padding: 6px; margin-top: -7px; cursor: pointer; transition: background .12s, color .12s; }
 .cm-code-more:hover { background: rgba(255,255,255,.05); color: #e4e4e7; }
+
+/* ---------------------------------------------------------------------------
+   diffdoc figures (src/components/DiffDoc.tsx, grammar in src/lib/diff-doc.ts).
+
+   A diffdoc is a diff the agent typed into its own answer, so it must read as
+   part of the document rather than as an attached tool result: no card, no
+   header bar, no background fill. What frames it is a hairline in the margin
+   and a caption — the same grammar as a block quote. The +/− bands bleed to
+   the edges of the message column so they read as highlighted text, and prose
+   notes are typeset in the body font right where they belong in the change.
+   --------------------------------------------------------------------------- */
+.dd {
+  --dd-add-bg:   rgba(46, 160, 67, .13);
+  --dd-add-bar:  #2ea043;
+  --dd-add-mark: rgba(46, 160, 67, .28);
+  --dd-del-bg:   rgba(248, 81, 73, .11);
+  --dd-del-bar:  #f85149;
+  --dd-del-mark: rgba(248, 81, 73, .26);
+  /* Width of ONE line-number gutter; there are two (old side, new side). */
+  --dd-gutter: 1.75rem;
+  /* Where prose typeset inside the diff starts — flush with the code column. */
+  --dd-text-indent: calc(2 * var(--dd-gutter) + 1.7rem);
+  --dd-prose: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+
+  position: relative;
+  margin: 0.85rem 0;
+  padding-left: 0.85rem;
+}
+/* The margin hairline. Inset top/bottom so it reads as a mark against the
+   text, not as the left edge of a box. */
+.dd::before {
+  content: "";
+  position: absolute;
+  left: 0; top: .3rem; bottom: .3rem;
+  width: 1px;
+  background: var(--color-border-light);
+}
+
+.dd-body {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  border-radius: 3px;
+}
+
+/* Rows stretch to the content width so a tint band still spans the full row
+   once the block is scrolled sideways. */
+.dd-row { display: flex; white-space: pre; min-width: 100%; width: max-content; }
+.dd-row-add { background: var(--dd-add-bg); box-shadow: inset 2px 0 var(--dd-add-bar); }
+.dd-row-del { background: var(--dd-del-bg); box-shadow: inset 2px 0 var(--dd-del-bar); }
+
+.dd-ln {
+  flex: none;
+  width: var(--dd-gutter);
+  padding-right: .55rem;
+  text-align: right;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-zinc-600, #71717a);
+  user-select: none;
+}
+.dd-ln-link { cursor: pointer; }
+.dd-ln-link:hover { color: var(--color-zinc-300, #d4d4d8); text-decoration: underline; }
+.dd-row-del .dd-ln { opacity: .55; }
+
+.dd-sg { flex: none; width: .85rem; user-select: none; color: var(--color-zinc-600, #71717a); }
+.dd-row-add .dd-sg { color: var(--dd-add-bar); }
+.dd-row-del .dd-sg { color: var(--dd-del-bar); }
+
+.dd-code { flex: 1; padding-right: .75rem; color: #c9d1d9; }
+.dd-row-ctx .dd-code { color: #9aa0a8; }
+
+/* Intra-line highlight: the token that actually changed. */
+.dd-mark { background: transparent; color: inherit; border-radius: 2px; padding: 0 1px; }
+.dd-row-add .dd-mark { background: var(--dd-add-mark); }
+.dd-row-del .dd-mark { background: var(--dd-del-mark); }
+
+/* Prose inside the diff — body font, not mono. This is the whole point of the
+   format, so it gets real breathing room and hairlines above/below rather than
+   pretending to be a comment line. */
+.dd-note {
+  display: flex;
+  gap: .6rem;
+  padding: .5rem .75rem .5rem var(--dd-text-indent);
+  font-family: var(--dd-prose);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-zinc-400, #a1a1aa);
+  background: rgba(255, 255, 255, .018);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+.dd-note-rule { flex: none; width: 2px; border-radius: 1px; background: var(--color-border-light); }
+.dd-note-code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--color-surface-light);
+  color: var(--color-zinc-300, #d4d4d8);
+}
+.dd-note-strong { color: var(--color-zinc-200, #e4e4e7); font-weight: 600; }
+
+/* Elided run of unchanged lines. Nothing to expand — the agent never sent
+   those lines — so it is a marker, not a control. */
+.dd-gap {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .15rem 0 .15rem var(--dd-text-indent);
+  font-family: var(--dd-prose);
+  font-size: 10.5px;
+  color: var(--color-zinc-600, #71717a);
+  user-select: none;
+}
+.dd-gap-dots { font-family: ui-monospace, monospace; }
+
+/* Streaming placeholder, shown between the opening fence and the closing one. */
+.dd-pending { display: flex; flex-direction: column; gap: .35rem; padding: .3rem 0; }
+.dd-pending-bar { height: .55rem; border-radius: 2px; background: var(--color-surface-lighter); animation: ddPending 1.4s ease-in-out infinite; }
+.dd-pending-bar:nth-child(1) { width: 45%; }
+.dd-pending-bar:nth-child(2) { width: 72%; animation-delay: .18s; }
+.dd-pending-bar:nth-child(3) { width: 58%; animation-delay: .36s; }
+@keyframes ddPending { 0%, 100% { opacity: .35; } 50% { opacity: .8; } }
+
+.dd-stat-add { color: #7ee787; }
+.dd-stat-del { color: #ffa198; }
+
+/* Light theme. Unlike a fenced ```block — which keeps its own dark #0d0d0d
+   canvas — a diffdoc sits directly on the page, so both the tints and the
+   syntax colours have to be restated for a light background. */
+html.light .dd {
+  --dd-add-bg:   rgba(26, 127, 55, .10);
+  --dd-add-bar:  #1a7f37;
+  --dd-add-mark: rgba(26, 127, 55, .22);
+  --dd-del-bg:   rgba(207, 34, 46, .09);
+  --dd-del-bar:  #cf222e;
+  --dd-del-mark: rgba(207, 34, 46, .20);
+}
+/* `--color-border-light` is *lighter* than `--color-border` on this theme, so
+   the margin hairline and the note rule would all but disappear. */
+html.light .dd::before,
+html.light .dd-note-rule { background: #d0d3d9; }
+html.light .dd-code { color: #24292f; }
+html.light .dd-row-ctx .dd-code { color: #57606a; }
+html.light .dd-note { background: rgba(0, 0, 0, .015); }
+html.light .dd-stat-add { color: #1a7f37; }
+html.light .dd-stat-del { color: #cf222e; }
+
+html.light .dd-code .token.comment,
+html.light .dd-code .token.prolog,
+html.light .dd-code .token.doctype,
+html.light .dd-code .token.cdata { color: #6e7781; }
+html.light .dd-code .token.punctuation { color: #24292f; }
+html.light .dd-code .token.property,
+html.light .dd-code .token.tag,
+html.light .dd-code .token.symbol,
+html.light .dd-code .token.deleted,
+html.light .dd-code .token.atrule,
+html.light .dd-code .token.attr-value,
+html.light .dd-code .token.keyword { color: #cf222e; }
+html.light .dd-code .token.boolean,
+html.light .dd-code .token.number,
+html.light .dd-code .token.constant,
+html.light .dd-code .token.operator,
+html.light .dd-code .token.entity,
+html.light .dd-code .token.url,
+html.light .dd-code .token.variable { color: #0550ae; }
+html.light .dd-code .token.selector,
+html.light .dd-code .token.attr-name,
+html.light .dd-code .token.string,
+html.light .dd-code .token.char,
+html.light .dd-code .token.builtin,
+html.light .dd-code .token.inserted,
+html.light .dd-code .token.regex,
+html.light .dd-code .token.important { color: #0a3069; }
+html.light .dd-code .token.function,
+html.light .dd-code .token.class-name { color: #8250df; }
+
+/* ---------------------------------------------------------------------------
+   explain figures (src/components/Explain.tsx, grammar in src/lib/explain.ts).
+
+   A complex answer, shown one beat at a time. Every rule here serves the same
+   goal: the reader's eye never has to hunt. The objective is pinned, the steps
+   already read collapse into a ONE-LINE rail instead of a growing list, and the
+   frame holds the height of the tallest step so the body text and the primary
+   button stay at the same pixel for the whole run.
+   --------------------------------------------------------------------------- */
+.ex {
+  --ex-ask: #7aa2f7;
+  --ex-ask-dim: rgba(122, 162, 247, .12);
+  --ex-acc: #c8956b;
+  --ex-acc-dim: rgba(200, 149, 107, .13);
+  --ex-done: rgba(126, 231, 135, .45);
+
+  position: relative;
+  margin: .9rem 0;
+  padding-left: .9rem;
+}
+.ex::before {
+  content: "";
+  position: absolute;
+  left: 0; top: .3rem; bottom: .3rem;
+  width: 1px;
+  background: var(--color-border-light);
+}
+
+.ex-goal { display: flex; align-items: flex-start; gap: .55rem; margin-bottom: .7rem; }
+.ex-goal-tag {
+  flex: none; margin-top: .18rem;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ex-acc); background: var(--ex-acc-dim);
+  border: 1px solid rgba(200, 149, 107, .28); border-radius: 4px; padding: 2px 6px;
+}
+.ex-goal-text { font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--color-zinc-100, #f4f4f5); }
+
+/* The rail. One row, whatever the step count — this is what replaced the list
+   of read steps that pushed the live text further down on every advance. */
+.ex-rail {
+  display: flex; align-items: center;
+  padding-bottom: .6rem; margin-bottom: .85rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.ex-seg { position: relative; flex: 1; height: 20px; padding: 0; border: 0; background: none; cursor: pointer; }
+.ex-seg::after {
+  content: ""; position: absolute; left: 1.5px; right: 1.5px; top: 8px;
+  height: 3px; border-radius: 2px; background: var(--color-surface-lighter); transition: background .2s;
+}
+.ex-seg-past::after { background: var(--ex-done); }
+.ex-seg-on::after { background: var(--ex-acc); }
+.ex-seg-ask::after { box-shadow: inset 0 0 0 1px rgba(122, 162, 247, .55); }
+.ex-seg-ask.ex-seg-past::after,
+.ex-seg-ask.ex-seg-on::after { background: var(--ex-ask); box-shadow: none; }
+.ex-seg:hover::after { filter: brightness(1.35); }
+/* The step title, on hover, positioned above the rail so it costs no height. */
+.ex-seg-tip {
+  position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-style: normal; font-size: 11px; color: var(--color-zinc-300, #d4d4d8);
+  background: var(--color-surface-lighter); border: 1px solid var(--color-border-light);
+  border-radius: 5px; padding: 3px 8px; opacity: 0; transition: opacity .14s;
+  pointer-events: none; z-index: 5;
+}
+.ex-seg:hover .ex-seg-tip { opacity: 1; }
+/* Steps that don't exist yet, because they depend on an unanswered decision. */
+.ex-seg-ghost { position: relative; flex: 1; height: 20px; }
+.ex-seg-ghost::after {
+  content: ""; position: absolute; left: 1.5px; right: 1.5px; top: 9px;
+  border-top: 2px dashed var(--color-surface-lighter);
+}
+.ex-count {
+  flex: none; padding-left: .7rem; white-space: nowrap;
+  font-size: 11px; font-variant-numeric: tabular-nums; color: var(--color-zinc-600, #71717a);
+}
+
+/* min-height, NEVER height: a bad measurement can only leave dead space, it
+   can never let the body overlap the footer. */
+.ex-frame { position: relative; transition: min-height .2s ease; }
+.ex-slide {
+  position: absolute; left: 0; right: 0; top: 0;
+  opacity: 0; visibility: hidden; transition: opacity .18s ease;
+}
+.ex-slide-on { position: relative; opacity: 1; visibility: visible; }
+
+.ex-title { margin: 0 0 .5rem; font-size: 15px; font-weight: 600; line-height: 1.38; color: var(--color-zinc-100, #f4f4f5); }
+.ex-p { margin: 0 0 .6rem; font-size: 13px; line-height: 1.6; color: var(--color-zinc-400, #a1a1aa); }
+.ex-p:last-child { margin-bottom: 0; }
+.ex-break { height: .35rem; }
+.ex-code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px; padding: 1px 5px; border-radius: 4px;
+  background: var(--color-surface-light); border: 1px solid var(--color-border);
+  color: var(--color-zinc-200, #e4e4e7);
+}
+.ex-strong { color: var(--color-zinc-100, #fff); font-weight: 600; }
+
+.ex-art {
+  margin-top: .65rem; padding-left: .75rem;
+  border-left: 1px solid var(--color-border-light);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px; line-height: 1.6;
+}
+.ex-art-row { white-space: pre; overflow-x: auto; padding: 0 .4rem; border-radius: 2px; }
+.ex-art-ctx { color: var(--color-zinc-600, #71717a); }
+.ex-art-add { background: rgba(46, 160, 67, .13); color: #c8e6c9; }
+.ex-art-del { background: rgba(248, 81, 73, .11); color: #e6c8c8; }
+
+/* ---- decision ---- */
+.ex-ask-tag {
+  display: inline-block; margin-bottom: .5rem;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ex-ask); background: var(--ex-ask-dim);
+  border: 1px solid rgba(122, 162, 247, .3); border-radius: 4px; padding: 2px 6px;
+}
+.ex-opts { display: flex; flex-direction: column; gap: .35rem; margin-top: .75rem; }
+.ex-opt {
+  display: flex; align-items: flex-start; gap: .6rem; text-align: left;
+  padding: .5rem .7rem; border: 1px solid var(--color-border); border-radius: 9px;
+  cursor: pointer; transition: border-color .13s, background .13s;
+}
+.ex-opt:hover { border-color: rgba(122, 162, 247, .5); background: var(--ex-ask-dim); }
+.ex-opt-key {
+  flex: none; width: 18px; height: 18px; margin-top: .1rem; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: ui-monospace, monospace; font-size: 10px;
+  background: var(--color-surface-lighter); color: var(--color-zinc-600, #71717a);
+}
+.ex-opt:hover .ex-opt-key { background: var(--ex-ask); color: #0b1220; }
+.ex-opt-text { font-size: 13px; font-weight: 550; line-height: 1.35; color: var(--color-zinc-200, #e4e4e7); }
+.ex-opt-desc { display: block; margin-top: .1rem; font-size: 12px; font-weight: 400; color: var(--color-zinc-600, #71717a); }
+
+.ex-answered {
+  display: flex; align-items: center; gap: .55rem; margin-top: .75rem;
+  padding: .5rem .7rem; border-radius: 9px;
+  border: 1px solid rgba(122, 162, 247, .35); background: var(--ex-ask-dim);
+}
+/* The branch is being written. Shown inside the block because the turn that
+   produces it draws no bubbles — without this the reader gets no signal at all. */
+.ex-writing {
+  margin-top: .45rem; padding-left: .1rem;
+  font-size: 12px; color: var(--ex-ask);
+  animation: exWriting 1.3s ease-in-out infinite;
+}
+@keyframes exWriting { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+
+.ex-answered-check { flex: none; font-size: 12px; color: var(--ex-ask); }
+.ex-answered-label { font-size: 13px; font-weight: 550; color: var(--color-zinc-200, #e4e4e7); }
+
+/* The rewrite panel overlays the frame rather than pushing it: asking for help
+   must not move the text you were already struggling with. */
+.ex-over {
+  /* Anchored to the top of the frame and free to grow past it: with more
+     options than the frame is tall, centring inside `inset: 0` clipped the
+     last one against the footer rule. It draws over the footer instead — the
+     buttons under it are unreachable anyway while the panel is open. */
+  position: absolute; top: 0; left: 0; right: 0; min-height: 100%; z-index: 20;
+  display: flex; flex-direction: column; gap: .1rem;
+  padding: .45rem; border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .38), 0 0 0 1px var(--color-border);
+}
+.ex-over-head {
+  margin-bottom: .4rem; font-size: 10.5px; font-weight: 650;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--ex-acc);
+}
+.ex-over-opt {
+  text-align: left; padding: .45rem .6rem; border-radius: 6px;
+  border: 1px solid transparent; cursor: pointer;
+  font-size: 13px; color: var(--color-zinc-400, #a1a1aa);
+}
+.ex-over-opt:hover {
+  background: var(--color-surface-lighter);
+  border-color: var(--color-border);
+  color: var(--color-zinc-200, #e4e4e7);
+}
+
+.ex-acts {
+  display: flex; align-items: center; gap: .5rem;
+  margin-top: .9rem; padding-top: .75rem; border-top: 1px solid var(--color-border);
+}
+.ex-btn { font-size: 12.5px; font-weight: 550; padding: .4rem .8rem; border-radius: 8px; cursor: pointer; transition: .14s; }
+.ex-btn-primary { background: var(--ex-acc); color: #1a1207; }
+.ex-btn-primary:hover:not(:disabled) { background: #d6a47c; }
+.ex-btn-ghost { border: 1px solid var(--color-border); color: var(--color-zinc-600, #71717a); }
+.ex-btn-ghost:hover:not(:disabled) { color: var(--color-zinc-200, #e4e4e7); border-color: var(--color-border-light); }
+.ex-btn-quiet { margin-left: auto; color: var(--color-zinc-600, #71717a); }
+.ex-btn-quiet:hover { color: var(--ex-acc); }
+.ex-btn:disabled { opacity: .28; cursor: default; }
+.ex-hint { margin-left: auto; font-size: 11.5px; color: var(--color-zinc-600, #71717a); }
+
+.ex-pending { display: flex; flex-direction: column; gap: .35rem; padding: .3rem 0; }
+.ex-pending-bar { height: .55rem; border-radius: 2px; background: var(--color-surface-lighter); animation: ddPending 1.4s ease-in-out infinite; }
+.ex-pending-bar:nth-child(1) { width: 52%; }
+.ex-pending-bar:nth-child(2) { width: 78%; animation-delay: .18s; }
+.ex-pending-bar:nth-child(3) { width: 64%; animation-delay: .36s; }
+
+.ex-raw {
+  margin: .5rem 0; padding: .5rem .75rem; overflow-x: auto;
+  font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5;
+  background: #0d0d0d; border: 1px solid var(--color-border); border-radius: 4px;
+  color: var(--color-zinc-400, #a1a1aa); white-space: pre;
+}
+
+html.light .ex::before { background: #d0d3d9; }
+html.light .ex-art-add { background: rgba(26, 127, 55, .10); color: #0f5323; }
+html.light .ex-art-del { background: rgba(207, 34, 46, .09); color: #82151d; }
+html.light .ex-over { background: var(--color-surface); box-shadow: 0 0 0 1px var(--color-border); }
 
 /* ---------------------------------------------------------------------------
    Contenteditable composer (src/components/RichInput.tsx). The editable layer
