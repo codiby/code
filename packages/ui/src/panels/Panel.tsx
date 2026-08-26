@@ -124,7 +124,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
     return (
       <div
         onMouseDownCapture={onFocus}
-        className={`flex flex-col min-w-0 min-h-0 h-full w-full rounded-lg overflow-hidden bg-surface border ${edge}`}
+        className={`flex flex-col min-w-0 min-h-0 h-full w-full rounded-lg overflow-hidden bg-base border ${edge}`}
       >
         <div className="flex items-stretch h-[28px] shrink-0 px-1 gap-0.5 border-b border-border bg-base">
           {barExtras}

@@ -27,10 +27,10 @@ type SearchAddonInstance = InstanceType<SearchAddonCtor>;
 // can't reach them via the stylesheet — the terminal carries its own themes,
 // applied on create and swapped live when the app theme flips.
 const DARK_TERM_THEME = {
-  background: '#141414',
+  background: '#0f1012',
   foreground: '#d4d4d4',
   cursor: '#d4d4d4',
-  cursorAccent: '#141414',
+  cursorAccent: '#0f1012',
   selectionBackground: '#444',
   black:        '#1e1e1e',
   red:          '#f87171',
@@ -76,7 +76,7 @@ const LIGHT_TERM_THEME = {
   brightWhite:  '#24292f',
 };
 const termThemeFor = (t: string) => (t === 'light' ? LIGHT_TERM_THEME : DARK_TERM_THEME);
-const termBgFor = (t: string) => (t === 'light' ? '#fcfcfd' : '#141414');
+const termBgFor = (t: string) => (t === 'light' ? '#fcfcfd' : '#0f1012');
 
 let xtermModulesPromise: Promise<{ Terminal: TerminalCtor; FitAddon: FitAddonCtor; SearchAddon: SearchAddonCtor }> | null = null;
 function loadXterm() {
