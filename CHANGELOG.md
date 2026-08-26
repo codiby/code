@@ -5,6 +5,50 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] — 2026-08-25
+
+### Added
+
+- **Diffs typeset inside the answer.** A ` ```diffdoc ` block renders a change
+  as part of the explanation instead of as an attachment beside it — no tool
+  header, no result footer, no card. Prose notes sit between the hunks, right
+  against the lines they describe, and when a line is replaced one-for-one only
+  the span that actually changed is tinted, so you read the edit rather than
+  diffing two long lines by eye.
+- **Answers you advance one step at a time.** A ` ```explain ` block shows a
+  long or branching answer as a sequence of steps with the objective pinned
+  above. Steps you have read collapse into a one-line rail instead of piling
+  up, and the frame holds the height of the tallest step so the text and the
+  button never jump between advances. A step can carry options, which makes it
+  a decision that blocks until you pick one; your answer folds back into the
+  same figure rather than starting a new bubble, so the thread stops growing.
+  Nothing is stored — the state is derived from the transcript, so it survives
+  a reload. Both the desktop and phone threads render them, in both themes.
+- **Native deployment without a container.** A `process-compose.yaml` runs the
+  bridge directly on a host: install, build the frontends once, then serve,
+  gated on `/health` and restarted on failure. Replaces leaving `bun dev`
+  attached to an ssh session.
+
+### Changed
+
+- **The chat sits on the page, not on a card.** The chat panel painted itself a
+  shade lighter than everything around it, which read as a raised surface. It
+  now shares the base background, and the terminal — whose palette lives in
+  JavaScript, out of the stylesheet's reach — matches it too, including the
+  glyph under a block cursor that used to flash the old tone while you typed.
+  Panels with tabs keep the lighter fill so the active tab still cuts against
+  it.
+
+### Fixed
+
+- **A monorepo no longer exhausts file descriptors.** The session watcher threw
+  away events from `node_modules` and `.git`, but only after registering the
+  watches — and the recursive watch on each top-level directory descended into
+  every nested `node_modules` anyway. On a large monorepo that held tens of
+  thousands of descriptors open to feed events nothing ever read, enough to hit
+  `EMFILE` and take the provider process down. Ignored directories are now
+  skipped before a watch is placed.
+
 ## [0.27.0] — 2026-08-12
 
 ### Added
