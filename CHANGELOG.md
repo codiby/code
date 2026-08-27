@@ -5,6 +5,38 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] — 2026-08-26
+
+### Added
+
+- **One previewer for everything a session holds.** Opening an image in the
+  chat used to give you a bare fullscreen bitmap, and the Resources drawer had
+  a second, unrelated lightbox beside it. Both are now the same previewer, and
+  it renders whatever the item is: images keep pinch, drag and wheel zoom, PDFs
+  and mockups render in a frame that owns its own scrolling, and anything else
+  offers Save and Open. Whatever you opened brings the rest with it as a
+  filmstrip along the bottom — the thread's images when you came from the chat,
+  the whole drawer when you came from Resources — so the arrow keys, the
+  chevrons and the thumbnails walk the set instead of making you close and
+  reopen. Deleting or filtering away the item you are looking at closes the
+  previewer rather than stranding it on a copy that no longer exists.
+- **Right-click to copy an image.** The previewer has its own menu: Copy Image
+  puts the bitmap on the clipboard rather than its address, re-encoding to PNG
+  when the source is a JPEG or an SVG, since the clipboard takes nothing else.
+  A mockup adds Copy HTML, and everything offers Save As, Open in Browser and
+  Copy Address. It replaces the native menu on the desktop and is the only one
+  the browser and phone builds have ever had.
+- **Ports forwarded to a remote viewer.** When you reach the bridge from
+  another machine, everything the agent starts binds to the bridge's loopback
+  and is invisible from where you are sitting — and the agent had no way to
+  know, so it kept handing over localhost URLs that could not open. It now
+  detects a remote viewer from the frontend socket's peer address and gets
+  `ui_forward_port`, `ui_list_port_forwards` and `ui_close_port_forward` to do
+  something about it. The proxy is raw TCP, so WebSocket upgrades and TLS pass
+  through untouched. A loopback viewer wins when both are open — with the
+  desktop app on this machine localhost already works, and the briefing would
+  only cost tokens.
+
 ## [0.28.0] — 2026-08-25
 
 ### Added
