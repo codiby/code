@@ -841,6 +841,12 @@ export function ChatApp() {
    *  broadcasts. Drives the offline state on the chat-header forwards chip. */
   const remoteStatuses = useAppStore(s => s.remoteStatuses);
   const setRemoteStatuses = useAppStore(s => s.setRemoteStatuses);
+  /** Ports each session has pushed out to the network, and whether this
+   *  browser is on another machine. Together they decide the forwards chip. */
+  const publishedPorts = useAppStore(s => s.publishedPorts);
+  const setPublishedPorts = useAppStore(s => s.setPublishedPorts);
+  const viewerIsRemote = useAppStore(s => s.viewerIsRemote);
+  const setViewerIsRemote = useAppStore(s => s.setViewerIsRemote);
   // Terminals as first-class resources, keyed by sessionId. Fetched from the
   // bridge on connect (`onTerminalsSnapshot`) and kept in sync via the
   // `terminal_created` / `terminal_removed` / `terminal_exit` broadcasts. The
@@ -1889,7 +1895,15 @@ export function ChatApp() {
           });
         },
 
-        onWelcome: () => {},
+        // The socket peer decided this, not the page URL — it is the same fact
+        // that decides whether the agent gets told to forward its dev servers.
+        onWelcome: ({ viewerIsRemote }) => {
+          setViewerIsRemote(viewerIsRemote);
+        },
+
+        onPublishedPorts: (sid, ports) => {
+          setPublishedPorts(prev => ({ ...prev, [sid]: ports }));
+        },
 
         onPortlessStatus: (status) => {
           // Re-emit on a window event so any open Project Settings pane and
@@ -2233,6 +2247,20 @@ export function ChatApp() {
       .catch(() => { if (!cancelled) setOpencodeInfo({ available: false, models: [] }); });
     return () => { cancelled = true; };
   }, [client, opencodeInfo]);
+
+  // Seed the active session's published ports. The `published_ports`
+  // broadcast keeps them fresh afterwards, but it only fires on a change —
+  // without this seed a session that already had forwards open before this
+  // tab connected would show an empty chip.
+  useEffect(() => {
+    if (!client || !activeId) return;
+    let cancelled = false;
+    const sid = activeId;
+    client.listPublishedPorts(sid)
+      .then(ports => { if (!cancelled) setPublishedPorts(prev => ({ ...prev, [sid]: ports })); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [client, activeId, setPublishedPorts]);
 
   // Prime the global Claude model cache from the bridge on connect. The
   // live `supported_models` WS message keeps the per-session lists fresh;
@@ -5428,13 +5456,16 @@ export function ChatApp() {
             </>
           )}
 
-          {/* Port forwards chip — only renders when the active session lives
-              on a remote. The popover handles its own visibility. */}
+          {/* Port forwards chip — renders when the session lives on a remote,
+              when this browser is on another machine, or when either kind of
+              forward is open. The popover handles its own visibility. */}
           <div className="ml-auto mr-1.5 flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             <PortForwardsPopover
               client={client}
               session={activeSession}
               tunnelStatus={activeSession?.remoteId ? remoteStatuses[activeSession.remoteId]?.status : undefined}
+              publishedPorts={activeSession ? publishedPorts[activeSession.id] : undefined}
+              viewerIsRemote={viewerIsRemote}
             />
           </div>
 

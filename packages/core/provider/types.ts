@@ -56,6 +56,14 @@ export type SpawnOptions = {
   /** Provider-specific resume token (e.g. a Claude session UUID). */
   resumeSessionId?: string | null;
   mcpServers?: Record<string, McpServerSpec>;
+  /**
+   * Extra steering appended to the provider's system prompt for this session
+   * only. Currently the remote-viewer briefing (see network/remote-viewer.ts),
+   * which depends on where the user's browser is and so can't live in the
+   * adapter's static preamble. Adapters with no system-prompt hook ignore it —
+   * the same guidance also arrives as a turn-level reminder.
+   */
+  extraSystemPrompt?: string | null;
 };
 
 export type InitInfo = {

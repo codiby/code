@@ -10,6 +10,7 @@ import { buildSessionSdkMcpServer } from './sdk-tools';
 import { loadExternalMcpServers } from '../mcp/mcp-config';
 import { loadPreferences } from '../session/storage';
 import { startSessionWatcher } from '../session/watcher';
+import { remoteViewerSystemPrompt } from '../network/remote-viewer';
 import type { Session } from '../types';
 import type { EffortLevel, McpServerSpec, PermissionMode, SpawnOptions } from './types';
 
@@ -69,6 +70,11 @@ export function startProviderSession(session: Session, port: number, resumeSessi
     effort: (session.effort as EffortLevel | null) ?? null,
     resumeSessionId: resumeSessionId ?? null,
     mcpServers,
+    // Null unless the user's browser is on another machine, in which case the
+    // agent has to be told that the dev servers it starts here are unreachable
+    // from there without `ui_forward_port`. Also records what the provider was
+    // told, so a viewer that moves mid-session gets a turn-level reminder.
+    extraSystemPrompt: remoteViewerSystemPrompt(session.id),
   };
 
   session.runtimeStatus = 'starting';

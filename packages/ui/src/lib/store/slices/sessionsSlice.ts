@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import type { SessionInfo, ConnectionStatus, SessionActivity } from '../../claude-client';
+import type { SessionInfo, ConnectionStatus, SessionActivity, PublishedPort } from '../../claude-client';
 import type { LocalSessionState } from '../../session-state';
 import type { SliceCreator } from '../types';
 import { apply } from '../apply';
@@ -22,6 +22,14 @@ export interface SessionsSlice {
   statuses: Record<string, ConnectionStatus>;
   sessionActivity: Record<string, SessionActivity>;
   remoteStatuses: Record<string, RemoteStatus>;
+  /** Local ports each session has pushed out to the network, keyed by session
+   *  id. Written by the `published_ports` broadcast — the agent opens most of
+   *  them, so the popover cannot rely on having asked. */
+  publishedPorts: Record<string, PublishedPort[]>;
+  /** True when this browser reached the bridge from another machine, so the
+   *  services it starts are not reachable at `localhost` here. Decided by the
+   *  server from the socket peer and delivered on the welcome message. */
+  viewerIsRemote: boolean;
   turnCompleteIds: Set<string>;
   visibleMessageCount: number;
 
@@ -31,6 +39,8 @@ export interface SessionsSlice {
   setStatuses: Dispatch<SetStateAction<Record<string, ConnectionStatus>>>;
   setSessionActivity: Dispatch<SetStateAction<Record<string, SessionActivity>>>;
   setRemoteStatuses: Dispatch<SetStateAction<Record<string, RemoteStatus>>>;
+  setPublishedPorts: Dispatch<SetStateAction<Record<string, PublishedPort[]>>>;
+  setViewerIsRemote: Dispatch<SetStateAction<boolean>>;
   setTurnCompleteIds: Dispatch<SetStateAction<Set<string>>>;
   setVisibleMessageCount: Dispatch<SetStateAction<number>>;
 }
@@ -42,6 +52,8 @@ export const createSessionsSlice: SliceCreator<SessionsSlice> = (set) => ({
   statuses: {},
   sessionActivity: {},
   remoteStatuses: {},
+  publishedPorts: {},
+  viewerIsRemote: false,
   turnCompleteIds: new Set(),
   visibleMessageCount: 200,
 
@@ -51,6 +63,8 @@ export const createSessionsSlice: SliceCreator<SessionsSlice> = (set) => ({
   setStatuses: (u) => set(s => ({ statuses: apply(s.statuses, u) })),
   setSessionActivity: (u) => set(s => ({ sessionActivity: apply(s.sessionActivity, u) })),
   setRemoteStatuses: (u) => set(s => ({ remoteStatuses: apply(s.remoteStatuses, u) })),
+  setPublishedPorts: (u) => set(s => ({ publishedPorts: apply(s.publishedPorts, u) })),
+  setViewerIsRemote: (u) => set(s => ({ viewerIsRemote: apply(s.viewerIsRemote, u) })),
   setTurnCompleteIds: (u) => set(s => ({ turnCompleteIds: apply(s.turnCompleteIds, u) })),
   setVisibleMessageCount: (u) => set(s => ({ visibleMessageCount: apply(s.visibleMessageCount, u) })),
 });

@@ -12,6 +12,8 @@ import { DEFAULT_PROVIDER } from '../provider/registry';
 import { clearPendingDecisionsForSession } from '../provider/bridge';
 import { deleteSessionData, clearMessages } from '../session/storage';
 import { stopSessionWatcher } from '../session/watcher';
+import { closeSessionPortForwards } from '../network/port-forward';
+import { forgetViewerBriefing } from '../network/remote-viewer';
 import { rootRepoOf } from './worktree';
 import type { Session } from '../types';
 
@@ -309,6 +311,10 @@ export async function handleDeleteSession(
   }
   killSessionLsp(sessionId);
   stopSessionWatcher(sessionId);
+  // The services behind this session's forwards are going away with it, so
+  // leaving the listeners bound would just squat on the ports.
+  closeSessionPortForwards(sessionId);
+  forgetViewerBriefing(sessionId);
   sessions.delete(sessionId);
   saveSessions();
 

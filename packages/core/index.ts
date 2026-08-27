@@ -28,6 +28,21 @@ import {
 // to each remote's tunnelled bridge (Electron main owns the SSH tunnels), so
 // the former gateway/ssh-tunnel imports are gone.
 import { getMergedRemoteGroups, isRemoteGroupId } from './network/remote-groups-cache';
+import {
+  bindSubscriptionMap,
+  describeClientOrigin,
+  forgetClientOrigin,
+  registerClientOrigin,
+} from './network/client-origin';
+import type { ClientOrigin } from './network/client-origin';
+import { viewerLocationReminder } from './network/remote-viewer';
+import { setPortForwardListener } from './network/port-forward';
+import {
+  handleAddPublishedPort,
+  handleListPublishedPorts,
+  handleRemovePublishedPort,
+  publishedPortsFor,
+} from './handlers/published-ports';
 import { isDerivedGroupId } from './config/group-chain';
 import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import {
@@ -189,6 +204,20 @@ const frontendClients = new Set<any>();
 
 /** Which session IDs each frontend client is subscribed to */
 const subscriptions = new Map<any, Set<string>>();
+
+// Lets client-origin answer "is this session being watched from another
+// machine?" per session rather than for the bridge as a whole.
+bindSubscriptionMap(subscriptions);
+
+// Most forwards are opened by the agent, not the user, so the popover has to
+// hear about them rather than wait to be refreshed.
+setPortForwardListener((sessionId) => {
+  broadcastToSession(sessionId, {
+    type: 'published_ports',
+    sessionId,
+    ports: publishedPortsFor(sessionId),
+  });
+});
 
 /** Frontend clients that can forward browser CDP calls to Electron. */
 const browserCdpClients = new Set<any>();
@@ -767,8 +796,15 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     updateSessionState(sessionId, s => ({ ...s, isStreaming: true, wasInterrupted: false }));
     broadcastToSession(sessionId, { type: 'status', sessionId, status: 'streaming' });
 
+    // The provider's system prompt is fixed at spawn, so a user who opened
+    // this session from another machine after it started would otherwise never
+    // learn that `localhost` URLs are useless to them. Fires only when the
+    // viewer actually moved since the last briefing.
+    const viewerNotice = viewerLocationReminder(sessionId);
+    const outgoingText = viewerNotice ? `${viewerNotice}\n\n${msgText}` : msgText;
+
     try {
-      await session.providerSession!.sendUserMessage({ text: msgText, images });
+      await session.providerSession!.sendUserMessage({ text: outgoingText, images });
     } catch (err) {
       log(`[${sessionId.slice(0, 8)}] sendUserMessage failed: ${err}`);
     }
@@ -1264,6 +1300,14 @@ app.delete('/sessions/:id/requirements/:rid', (c) => handleDeleteRequirement(c.r
 app.post('/sessions/:id/requirements/:rid/proposals', (c) => handleCreateProposal(c.req.param('id'), c.req.param('rid'), c.req.raw));
 app.post('/sessions/:id/proposals/:pid/approve', (c) => handleResolveProposal(c.req.param('id'), c.req.param('pid'), 'approved'));
 app.post('/sessions/:id/proposals/:pid/reject', (c) => handleResolveProposal(c.req.param('id'), c.req.param('pid'), 'rejected'));
+
+// ── Published ports ────────────────────────────────────────────────────────
+// The same forwards the agent opens through `ui_forward_port`, so the user can
+// publish one it missed or take one down without asking it to.
+app.get('/sessions/:id/published-ports', (c) => handleListPublishedPorts(c.req.param('id')));
+app.post('/sessions/:id/published-ports', (c) => handleAddPublishedPort(c.req.param('id'), c.req.raw));
+app.delete('/sessions/:id/published-ports/:publicPort', (c) =>
+  handleRemovePublishedPort(c.req.param('id'), Number(c.req.param('publicPort'))));
 
 // ── Loop mode ──────────────────────────────────────────────────────────────
 // User-only by design: no MCP tool can arm a loop.
@@ -2319,7 +2363,13 @@ const server = Bun.serve({
 
     // Single multiplexed frontend WebSocket
     if (url.pathname === '/ws') {
-      const upgraded = server.upgrade(req, { data: { type: 'frontend' } });
+      // Capture where this client actually is at upgrade time: the socket peer
+      // says whether their browser runs on this machine, and the Host header
+      // says what name they reached us under. Both are gone by the time the
+      // `websocket.open` handler runs, so they ride along in `data`. See
+      // network/client-origin.ts for what the agent does with it.
+      const origin = describeClientOrigin(server.requestIP(req)?.address, req.headers.get('host'));
+      const upgraded = server.upgrade(req, { data: { type: 'frontend', origin } });
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
@@ -2371,11 +2421,20 @@ const server = Bun.serve({
       if (type === 'frontend') {
         frontendClients.add(ws);
         subscriptions.set(ws, new Set());
-        log(`[/ws] Frontend client connected (${frontendClients.size} total)`);
+        const origin = (ws.data as { origin?: ClientOrigin }).origin;
+        if (origin) registerClientOrigin(ws, origin);
+        log(
+          `[/ws] Frontend client connected from ${origin?.address || 'unknown'}` +
+            `${origin?.remote ? ' (remote — sessions get the port-forward briefing)' : ''}` +
+            ` (${frontendClients.size} total)`,
+        );
         // Welcome message first so the client knows whether to auto-resume
         // every stopped session (service mode — sessions are already up) or
         // wait for `active_tab_change` to spawn lazily (app mode).
-        ws.send(JSON.stringify({ type: 'welcome', spawnMode: SPAWN_MODE }));
+        // `viewerIsRemote` is the same socket-level fact that decides whether
+        // the agent gets the port-forward briefing. The UI could guess from
+        // `location.hostname`, but then the chip and the agent could disagree.
+        ws.send(JSON.stringify({ type: 'welcome', spawnMode: SPAWN_MODE, viewerIsRemote: origin?.remote ?? false }));
         // Preferences must arrive before the sessions list — the client uses
         // tabOrder/tabGroups/etc to decide which tabs to
         // show, so receiving the session list first would race the prefs and
@@ -2465,6 +2524,7 @@ const server = Bun.serve({
         frontendClients.delete(ws);
         subscriptions.delete(ws);
         browserCdpClients.delete(ws);
+        forgetClientOrigin(ws);
         log(`[/ws] Frontend client disconnected (${frontendClients.size} remaining)`);
         return;
       }

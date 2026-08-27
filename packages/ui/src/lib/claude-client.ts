@@ -442,6 +442,29 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'er
  *  message for telemetry / future use. */
 export type SpawnMode = 'app' | 'service';
 
+/** A local port this session has pushed out to every network interface so a
+ *  browser on another machine can reach it. Mirrors `SessionPortForward` in
+ *  the bridge's network/port-forward.ts, plus the URL the server built. */
+export interface PublishedPort {
+  id: string;
+  sessionId: string;
+  /** Port on the bridge's machine the traffic is delivered to. */
+  targetPort: number;
+  targetHost: string;
+  /** Port bound on 0.0.0.0 — what a remote browser dials. */
+  publicPort: number;
+  label: string | null;
+  createdAt: number;
+  connections: number;
+  url: string;
+  /** True when no remote client was connected, so `url` uses this machine's
+   *  own hostname rather than one somebody was seen reaching it on. */
+  urlIsGuess: boolean;
+  /** Only present on the create response: whether anything answered on the
+   *  target port at that moment. */
+  listening?: boolean;
+}
+
 /** A single filesystem change reported by the server-side session watcher.
  *  `path` is relative to the session cwd, POSIX-separated. Kept in lock-step
  *  with `FileChange` in server/watcher.ts. */
@@ -532,7 +555,11 @@ type ClientCallbacks = {
    *  in-memory chat history for the session so the next replay/render
    *  starts from an empty log. */
   onSessionCleared?: (sessionId: string) => void;
-  onWelcome: (info: { spawnMode: SpawnMode }) => void;
+  onWelcome: (info: { spawnMode: SpawnMode; viewerIsRemote: boolean }) => void;
+  /** A session's published ports changed. The agent opens most of these
+   *  through `ui_forward_port`, so the popover learns about them here rather
+   *  than by polling. Optional — viewers without the chip can omit it. */
+  onPublishedPorts?: (sessionId: string, ports: PublishedPort[]) => void;
   /** A Portless action's runtime status changed. Optional — viewers that
    *  don't surface Portless UI can omit it. */
   onPortlessStatus?: (status: PortlessActionStatus) => void;
@@ -1053,7 +1080,13 @@ export class ClaudeClient {
         this.callbacks.onSessionCleared?.(msg.sessionId as string);
         break;
       case 'welcome':
-        this.callbacks.onWelcome({ spawnMode: (msg.spawnMode as SpawnMode) || 'service' });
+        this.callbacks.onWelcome({
+          spawnMode: (msg.spawnMode as SpawnMode) || 'service',
+          viewerIsRemote: msg.viewerIsRemote === true,
+        });
+        break;
+      case 'published_ports':
+        this.callbacks.onPublishedPorts?.(msg.sessionId as string, (msg.ports as PublishedPort[]) || []);
         break;
       case 'portless_status':
         this.callbacks.onPortlessStatus?.(msg.status as PortlessActionStatus);
@@ -1959,6 +1992,47 @@ export class ClaudeClient {
   resourceRawUrl(sessionId: string, rid: string): string {
     const base = this.baseForSession(sessionId);
     return withToken(`${base}/sessions/${encodeURIComponent(sessionId)}/resources/${encodeURIComponent(rid)}/raw`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Published ports — this machine's local ports pushed out to a browser
+  // running somewhere else. The opposite direction to the SSH forwards below,
+  // and always the local bridge's job, so these go over plain HTTP.
+  // ---------------------------------------------------------------------------
+
+  async listPublishedPorts(sessionId: string): Promise<PublishedPort[]> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/published-ports`);
+    if (!resp.ok) throw new Error(`Failed to load published ports (${resp.status})`);
+    return resp.json();
+  }
+
+  async publishPort(
+    sessionId: string,
+    body: { port: number; publicPort?: number | null; host?: string; label?: string },
+  ): Promise<PublishedPort> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/published-ports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      // The server sends a readable reason for both 409 (port taken) and 400
+      // (bad input); surfacing the status number instead would waste it.
+      const detail = await resp.json().catch(() => null);
+      throw new Error(detail?.error || `Failed to publish port (${resp.status})`);
+    }
+    return resp.json();
+  }
+
+  async unpublishPort(sessionId: string, publicPort: number): Promise<void> {
+    const resp = await authedFetch(
+      `${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/published-ports/${publicPort}`,
+      { method: 'DELETE' },
+    );
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => null);
+      throw new Error(detail?.error || `Failed to close port ${publicPort}`);
+    }
   }
 
   // ---------------------------------------------------------------------------

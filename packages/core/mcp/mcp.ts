@@ -39,6 +39,16 @@ import {
 } from '../provider/sdk-tools';
 import { findPendingDecision, requestPermissionDecision } from '../provider/bridge';
 import type { PermissionDecision } from '../provider/types';
+import {
+  PortInUseError,
+  closePortForward,
+  getPortForward,
+  isTargetListening,
+  listPortForwards,
+  openPortForward,
+} from '../network/port-forward';
+import type { SessionPortForward } from '../network/port-forward';
+import { publishedPortUrl, publishedUrlIsGuess } from '../network/remote-viewer';
 
 /** How often a tool that's blocked on the user pokes the connection so Bun's
  *  `idleTimeout` doesn't reap it mid-review. Comfortably under the 10s default
@@ -275,6 +285,57 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           cwd: { type: 'string', description: 'Working directory' },
         },
         required: ['command', 'cwd'],
+      },
+    },
+    {
+      name: 'ui_forward_port',
+      description:
+        'Publish a port running on THIS machine so the user\'s browser can reach it.\n\n' +
+        'Use this whenever the user is viewing Codiby Code from another computer (the system prompt says so when they are) ' +
+        'and you want to hand them a URL for something you started — a dev server, a preview, an API, a docs site. ' +
+        'Their browser cannot open `localhost` here; this binds the port on every network interface and returns the URL that does work.\n\n' +
+        'Raw TCP, so HTTP, WebSockets and TLS all pass through.\n\n' +
+        'Leave `public_port` unset and the tool picks one — it mirrors `port` when it can, otherwise any free port; ' +
+        'either way the URL it returns is the one to use. Set `public_port` explicitly and a conflict is an ERROR: ' +
+        'the tool answers "already in use" and you must pick a different number rather than retry the same one.\n\n' +
+        'The published port has no authentication in front of it: anyone who can route to this machine can reach the service. ' +
+        'Forward what the user asked to see, not everything you have running. The forward lives until you close it or the session ends.\n\n' +
+        'Not needed for browser-automation tools (`browser_open`, `browser_navigate`) — those drive a browser on this machine and can use `localhost` directly.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          port: { type: 'number', description: 'The local port the service is listening on, e.g. 5173 for Vite.' },
+          public_port: {
+            type: 'number',
+            description: 'Port to bind publicly. Omit it unless the user needs a specific number — the tool then mirrors `port` when free and falls back to any free port. Naming one makes a conflict an error.',
+          },
+          host: {
+            type: 'string',
+            description: 'Interface the service is dialled on. Defaults to "127.0.0.1"; only set it if the service binds somewhere else.',
+          },
+          label: { type: 'string', description: 'Short note about what is behind the port, e.g. "vite dev". Shown in ui_list_port_forwards.' },
+        },
+        required: ['port'],
+      },
+    },
+    {
+      name: 'ui_list_port_forwards',
+      description:
+        'List the ports this session has published with `ui_forward_port`, with the URL for each. ' +
+        'Check here before forwarding again — a port you already published does not need a second forward.',
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    {
+      name: 'ui_close_port_forward',
+      description:
+        'Take down a port published by `ui_forward_port`. Call it once the process behind the port is gone, ' +
+        'or when the user asks you to stop exposing it. Only forwards owned by this session can be closed.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          public_port: { type: 'number', description: 'The published port to close — the `public_port` from ui_list_port_forwards, not the local target port.' },
+        },
+        required: ['public_port'],
       },
     },
     {
@@ -752,6 +813,86 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           clearTimeout(timeout);
           return { content: [{ type: 'text', text: output || `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
         }
+      }
+      case 'ui_forward_port': {
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const targetPort = args!.port as number;
+        const targetHost = ((args!.host as string) || '127.0.0.1').trim() || '127.0.0.1';
+        let forward: SessionPortForward;
+        try {
+          forward = await openPortForward({
+            sessionId: uiSessionId,
+            targetPort,
+            targetHost,
+            publicPort: args!.public_port as number | undefined,
+            label: (args!.label as string) ?? null,
+          });
+        } catch (err) {
+          if (err instanceof PortInUseError) {
+            // The agent's next move depends on knowing this is a *binding*
+            // conflict, not a bad request — spell out the retry.
+            const taken = listPortForwards().map(f => f.publicPort);
+            const hint = taken.length ? ` Ports currently forwarded by this bridge: ${taken.join(', ')}.` : '';
+            return {
+              content: [{
+                type: 'text',
+                text: `${err.message}${hint}\nRetry with a different \`public_port\` (e.g. ${err.port + 1}) — the same one will fail again.`,
+              }],
+              isError: true,
+            };
+          }
+          return { content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }], isError: true };
+        }
+        const url = publishedPortUrl(forward.publicPort);
+        const listening = await isTargetListening(forward.targetHost, forward.targetPort);
+        const lines = [
+          `Forwarding 0.0.0.0:${forward.publicPort} -> ${forward.targetHost}:${forward.targetPort}`,
+          `Give the user this URL: ${url}`,
+        ];
+        if (forward.publicPort !== targetPort && args!.public_port === undefined) {
+          lines.push(`Port ${targetPort} was taken on the public interface, so the forward landed on ${forward.publicPort}. Use the URL above, not port ${targetPort}.`);
+        }
+        if (publishedUrlIsGuess()) {
+          // No client is connected, so the hostname above is this machine's own
+          // name rather than one we watched somebody reach us on.
+          lines.push(`No remote client is connected right now, so the hostname above is this machine's own — if it does not resolve for the user, give them this machine's LAN or Tailscale address with port ${forward.publicPort}.`);
+        }
+        if (!listening) {
+          lines.push(
+            `Warning: nothing is listening on ${forward.targetHost}:${forward.targetPort} yet. The forward is up and will start working` +
+            ' once the service binds — but if you already started it, check that it binds loopback and not some other interface.',
+          );
+        }
+        // Vite/Next reject requests whose Host header isn't in their allow-list,
+        // which surfaces to the user as a blank page rather than a network error.
+        lines.push('If the page loads blank or the dev server rejects the host, it is filtering by Host header — start it with `--host` (Vite) or add the hostname to its allowed-hosts config.');
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+      case 'ui_list_port_forwards': {
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const list = listPortForwards(uiSessionId);
+        if (list.length === 0) {
+          return { content: [{ type: 'text', text: 'This session has no forwarded ports. Use ui_forward_port to publish one.' }] };
+        }
+        const text = list.map(f => {
+          const bits = [`${publishedPortUrl(f.publicPort)} -> ${f.targetHost}:${f.targetPort}`];
+          if (f.label) bits.push(`(${f.label})`);
+          bits.push(`· ${f.connections} connection${f.connections === 1 ? '' : 's'}`);
+          return `  ${bits.join(' ')}`;
+        }).join('\n');
+        return { content: [{ type: 'text', text: `Forwarded ports for this session:\n${text}` }] };
+      }
+      case 'ui_close_port_forward': {
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const publicPort = args!.public_port as number;
+        if (closePortForward(publicPort, uiSessionId)) {
+          return { content: [{ type: 'text', text: `Closed the forward on port ${publicPort}.` }] };
+        }
+        const owner = getPortForward(publicPort);
+        const reason = owner
+          ? `port ${publicPort} is forwarded by another session (${owner.sessionId}), not this one`
+          : `this bridge is not forwarding port ${publicPort}`;
+        return { content: [{ type: 'text', text: `Nothing to close — ${reason}.` }], isError: true };
       }
       case 'ui_list_sessions': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

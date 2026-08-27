@@ -238,12 +238,16 @@ class ClaudeSession extends ProviderSessionBase {
       // the human-readable summary; `omitted` would only return signatures.
       thinking: { type: 'adaptive', display: 'summarized' },
       // Keep the Claude Code preset (built-in tool/git/cwd context still
-      // applies) and append Codiby Code-specific steering — currently the
-      // rename policy that pairs with the `rename_session` SDK tool.
+      // applies) and append Codiby Code-specific steering — the rename policy
+      // that pairs with the `rename_session` SDK tool, plus whatever this
+      // particular session needs (currently the remote-viewer briefing, which
+      // varies per session and so can't be baked into the constant).
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: CODIBY_CODE_SYSTEM_PROMPT_APPEND,
+        append: [CODIBY_CODE_SYSTEM_PROMPT_APPEND, opts.extraSystemPrompt]
+          .filter(Boolean)
+          .join('\n\n'),
       },
     };
     if (opts.model) sdkOptions.model = opts.model;

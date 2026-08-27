@@ -101,6 +101,10 @@ export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   'mcp__codiby-code-sdk__edit_requirement',
   'mcp__codiby-code-sdk__attach_requirement_image',
   'mcp__codiby-code-sdk__propose_change',
+  // Read-only view of this session's own port forwards. Opening one binds a
+  // public listener and stays behind the normal permission flow; reading the
+  // list back does nothing and the agent has to check it before forwarding.
+  'mcp__codiby-code__ui_list_port_forwards',
 ]);
 
 /**
