@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { ChevronDown, ChevronRight, ArrowDown, LayoutGrid, X as XIcon, Sparkles } from 'lucide-react';
 import { Button, TextField, TextArea } from '@heroui/react';
@@ -13,7 +13,8 @@ import { MobileAskQuestionCard } from './AskQuestionCard';
 import { DiffView } from './DiffView';
 import { MobileDiffModal } from './MobileDiffModal';
 import { MobileActionSheet, type ActionSheetId } from './MobileActionSheet';
-import { MobileImageViewer } from './MobileImageViewer';
+import { FullscreenPreview } from '../FullscreenPreview';
+import { collectGallery, type Gallery } from '../../lib/preview';
 import { collapseToolRuns, toolRunSummary } from '../MessageBubble';
 import type { ToolRunGroup } from '../MessageBubble';
 import { MobileMockupModal } from './MobileMockupModal';
@@ -221,8 +222,13 @@ export function MobileChat({
   const [actionSheetOpen, setActionSheetOpen] = useState(false);
 
   // Fullscreen image viewer — set by tapping any inline image in the chat.
-  // Single state at the chat root so we render exactly one portal modal.
-  const [viewerSrc, setViewerSrc] = useState<string | null>(null);
+  // Single state at the chat root so we render exactly one portal modal. The
+  // tapped image brings the whole thread's gallery with it (see
+  // lib/image-gallery.ts) so the viewer's filmstrip can walk the conversation.
+  const [gallery, setGallery] = useState<Gallery | null>(null);
+  const openImage = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+    setGallery(collectGallery(e.currentTarget));
+  }, []);
   const handleActionSheet = (id: ActionSheetId) => {
     if (id === 'new-terminal') {
       stickToBottomRef.current = true;
@@ -791,7 +797,9 @@ export function MobileChat({
           </div>
         )}
 
-        <ul ref={ulRef} className="flex flex-col gap-1 py-3">
+        {/* `data-image-gallery-root` bounds the fullscreen viewer's filmstrip
+            to this thread — see lib/image-gallery.ts. */}
+        <ul ref={ulRef} className="flex flex-col gap-1 py-3" data-image-gallery-root="">
           {(() => {
             // Build toolUseId → result map and a set of tool_use ids we have
             // results for. Then SKIP standalone tool_result rows whose parent
@@ -836,7 +844,7 @@ export function MobileChat({
                   msg={m}
                   result={m.toolName && !m.isToolResult ? resultByToolUseId.get(m.id) : undefined}
                   explainParts={explain.parts}
-                  onOpenImage={setViewerSrc}
+                  onOpenImage={openImage}
                 />
               );
             });
@@ -856,7 +864,7 @@ export function MobileChat({
                 isPending: true,
               }}
               onCancelPending={() => removePending(session.id, p.id)}
-              onOpenImage={setViewerSrc}
+              onOpenImage={openImage}
             />
           ))}
           {partialThinking && (
@@ -1314,7 +1322,11 @@ export function MobileChat({
         onPermissionModeChange={session ? onPermissionModeChange : undefined}
       />
 
-      <MobileImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />
+      <FullscreenPreview
+        gallery={gallery}
+        onIndexChange={(index) => setGallery(g => (g ? { ...g, index } : g))}
+        onClose={() => setGallery(null)}
+      />
 
       {openMockup && session && (
         <MobileMockupModal
@@ -1365,7 +1377,7 @@ export function MobileChat({
 // fields that matter on a phone. No Monaco / xterm / complex tool UIs.
 // ---------------------------------------------------------------------------
 
-function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested, explainParts }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (src: string) => void; nested?: boolean; explainParts?: ExplainParts }) {
+function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested, explainParts }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (e: React.MouseEvent<HTMLImageElement>) => void; nested?: boolean; explainParts?: ExplainParts }) {
   if (msg.role === 'user') {
     const hasImages = !!msg.images && msg.images.length > 0;
     const pending = !!msg.isPending;
@@ -1388,7 +1400,8 @@ function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested, expl
                   key={i}
                   src={src}
                   alt="attachment"
-                  onClick={() => onOpenImage?.(src)}
+                  data-gallery-image=""
+                  onClick={onOpenImage}
                   className="w-24 h-24 rounded-lg object-cover border border-white/10 cursor-zoom-in"
                 />
               );
@@ -1430,7 +1443,8 @@ function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested, expl
                   key={i}
                   src={src}
                   alt=""
-                  onClick={() => onOpenImage?.(src)}
+                  data-gallery-image=""
+                  onClick={onOpenImage}
                   className="max-h-56 rounded-lg object-contain border border-white/10 cursor-zoom-in"
                 />
               );

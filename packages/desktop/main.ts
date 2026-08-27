@@ -159,6 +159,11 @@ function createMainWindow(): BrowserWindow {
       v8CacheOptions: 'code',
       // The renderer renders a chat UI, so spellcheck stays on.
       spellcheck: true,
+      // Chromium's built-in PDF viewer is gated behind this flag, and Electron
+      // defaults it off. The Resources previewer iframes PDFs, which would
+      // otherwise render as a blank frame or a download prompt. NPAPI is long
+      // gone, so this no longer opens the door to third-party plugins.
+      plugins: true,
       // Default is true; pinned here so a future Electron upgrade can't
       // flip the default to false and starve background tabs of CPU.
       backgroundThrottling: true,

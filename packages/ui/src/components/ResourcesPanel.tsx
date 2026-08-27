@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LayoutGrid, X, Trash2, FileText, Code2, Download } from 'lucide-react';
+import { LayoutGrid, X, Trash2, FileText, Code2 } from 'lucide-react';
 import type { ClaudeClient, SessionResource } from '../lib/claude-client';
+import { FullscreenPreview } from './FullscreenPreview';
+import { humanSize, resourceToPreviewItem, type Gallery } from '../lib/preview';
 
 interface Props {
   open: boolean;
@@ -27,12 +29,6 @@ function inFilter(r: SessionResource, f: KindFilter): boolean {
   return r.kind === f;
 }
 
-function humanSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function timeAgo(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   if (s < 60) return 'just now';
@@ -53,7 +49,11 @@ export function ResourcesPanel({ open, onClose, client, sessionId, refreshKey = 
   const [items, setItems] = useState<SessionResource[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<KindFilter>('all');
-  const [preview, setPreview] = useState<SessionResource | null>(null);
+  // The open item is tracked by id, not by value: the gallery handed to the
+  // previewer is derived from the list on show, so deleting the open resource
+  // (or filtering it away) closes the previewer instead of stranding it on a
+  // stale copy.
+  const [previewId, setPreviewId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!client || !sessionId) { setItems([]); return; }
@@ -68,32 +68,45 @@ export function ResourcesPanel({ open, onClose, client, sessionId, refreshKey = 
     void load();
   }, [open, load, refreshKey]);
 
-  // Escape closes the lightbox first, then the drawer.
+  // Escape closes the previewer first, then the drawer. (The previewer has its
+  // own Escape handler; this one only keeps the drawer from closing under it.)
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (preview) setPreview(null);
+      if (previewId) setPreviewId(null);
       else onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose, preview]);
+  }, [open, onClose, previewId]);
 
   const shown = useMemo(() => items.filter(r => inFilter(r, filter)), [items, filter]);
+
+  const rawUrl = useCallback(
+    (r: SessionResource) => (client && sessionId ? client.resourceRawUrl(sessionId, r.id) : ''),
+    [client, sessionId],
+  );
+
+  // Everything currently listed becomes the previewer's filmstrip, so opening
+  // one resource lets you walk the whole drawer — images, PDFs and mockups
+  // alike — without coming back out.
+  const gallery = useMemo<Gallery | null>(() => {
+    if (!previewId) return null;
+    const index = shown.findIndex(r => r.id === previewId);
+    if (index < 0) return null;
+    return { items: shown.map(r => resourceToPreviewItem(r, rawUrl(r))), index };
+  }, [previewId, shown, rawUrl]);
 
   const del = useCallback(async (r: SessionResource, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!client || !sessionId) return;
     if (!window.confirm(`Delete “${r.name}”? This removes it from disk.`)) return;
     setItems(prev => prev.filter(x => x.id !== r.id));
-    setPreview(prev => (prev?.id === r.id ? null : prev));
     await client.deleteResource(sessionId, r.id);
   }, [client, sessionId]);
 
   if (!open) return null;
-
-  const rawUrl = (r: SessionResource) => (client && sessionId ? client.resourceRawUrl(sessionId, r.id) : '');
 
   return (
     <div className="h-full w-[440px] shrink-0 flex flex-col bg-surface border-l border-border">
@@ -140,16 +153,18 @@ export function ResourcesPanel({ open, onClose, client, sessionId, refreshKey = 
         {!loading && shown.length > 0 && (
           <div className="grid grid-cols-2 gap-3.5">
             {shown.map(r => (
-              <ResourceCard key={r.id} r={r} rawUrl={rawUrl(r)} onOpen={() => setPreview(r)} onDelete={(e) => del(r, e)} />
+              <ResourceCard key={r.id} r={r} rawUrl={rawUrl(r)} onOpen={() => setPreviewId(r.id)} onDelete={(e) => del(r, e)} />
             ))}
           </div>
         )}
       </div>
 
-      {/* Lightbox */}
-      {preview && (
-        <Lightbox r={preview} rawUrl={rawUrl(preview)} onClose={() => setPreview(null)} />
-      )}
+      {/* Same fullscreen previewer the chat uses for its images. */}
+      <FullscreenPreview
+        gallery={gallery}
+        onIndexChange={(i) => setPreviewId(shown[i]?.id ?? null)}
+        onClose={() => setPreviewId(null)}
+      />
     </div>
   );
 }
@@ -189,43 +204,6 @@ function ResourceCard({ r, rawUrl, onOpen, onDelete }: {
       <div className="px-2.5 py-2.5">
         <div className="text-[12px] font-semibold text-zinc-200 truncate" title={r.name}>{r.name}</div>
         <div className="text-[10.5px] text-zinc-600 mt-0.5">{humanSize(r.size)} · {timeAgo(r.createdAt)}</div>
-      </div>
-    </div>
-  );
-}
-
-function Lightbox({ r, rawUrl, onClose }: { r: SessionResource; rawUrl: string; onClose: () => void }) {
-  const isImage = r.kind === 'image';
-  const isMockup = r.kind === 'mockup';
-  return (
-    <div
-      className="absolute inset-0 z-20 flex flex-col bg-black/80 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="flex items-center gap-2 h-11 px-3 shrink-0 border-b border-white/10">
-        <span className="text-[12px] font-semibold text-zinc-100 truncate">{r.name}</span>
-        <span className="text-[10.5px] text-zinc-500">{humanSize(r.size)}</span>
-        <a
-          href={rawUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
-          className="ml-auto w-7 h-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-white/10" title="Open raw"
-        >
-          <Download size={14} />
-        </a>
-        <button type="button" onClick={onClose} className="w-7 h-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-white/10">
-          <X size={15} />
-        </button>
-      </div>
-      <div className="flex-1 min-h-0 p-3">
-        {isImage ? (
-          <img src={rawUrl} alt={r.name} className="max-h-full max-w-full m-auto object-contain rounded-md" />
-        ) : isMockup ? (
-          <iframe src={rawUrl} title={r.name} sandbox="allow-scripts" className="w-full h-full rounded-md bg-white border border-white/10" />
-        ) : (
-          <div className="h-full flex flex-col items-center justify-center gap-3 text-zinc-400">
-            <FileText size={40} className="opacity-50" />
-            <a href={rawUrl} target="_blank" rel="noreferrer" className="text-[12px] text-violet-300 hover:underline">Open {r.name}</a>
-          </div>
-        )}
       </div>
     </div>
   );

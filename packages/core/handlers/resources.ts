@@ -113,13 +113,16 @@ function extractExt(name: string, mime: string): string {
 const MIME_EXT: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
   'image/svg+xml': 'svg', 'text/html': 'html', 'text/plain': 'txt',
-  'application/json': 'json', 'text/markdown': 'md',
+  'application/json': 'json', 'text/markdown': 'md', 'application/pdf': 'pdf',
 };
 const EXT_MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
   webp: 'image/webp', svg: 'image/svg+xml', html: 'text/html', htm: 'text/html',
   txt: 'text/plain', json: 'application/json', md: 'text/markdown', css: 'text/css',
   js: 'text/javascript', ts: 'text/plain',
+  // Served as-is so the previewer can iframe it into Chromium's PDF viewer;
+  // `application/octet-stream` would turn that frame into a download.
+  pdf: 'application/pdf',
 };
 
 export function mimeForExt(ext: string): string {

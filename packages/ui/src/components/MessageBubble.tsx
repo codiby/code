@@ -4,7 +4,8 @@ import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
 import { isDotenvPath } from '../lib/monaco-dotenv';
 import { collectExplainParts, EMPTY_EXPLAIN_PARTS } from '../lib/explain';
 import { Markdown } from './Markdown';
-import { MobileImageViewer } from './mobile/MobileImageViewer';
+import { FullscreenPreview } from './FullscreenPreview';
+import { collectGallery, type Gallery } from '../lib/preview';
 
 const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
 const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.default })));
@@ -1140,9 +1141,18 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
   const isThinking = !!message.isThinking;
   // Local fullscreen image-viewer state — only the bubbles that contain
   // clickable images ever set this, but it lives at the top so any branch
-  // can render the (portal-mounted) viewer next to its main content.
-  const [viewerSrc, setViewerSrc] = useState<string | null>(null);
-  const viewer = <MobileImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />;
+  // can render the (portal-mounted) viewer next to its main content. The
+  // gallery is the whole thread's images, read off the DOM at click time, so
+  // the viewer's filmstrip walks every image in the conversation.
+  const [gallery, setGallery] = useState<Gallery | null>(null);
+  const openViewer = (e: React.MouseEvent<HTMLImageElement>) => setGallery(collectGallery(e.currentTarget));
+  const viewer = (
+    <FullscreenPreview
+      gallery={gallery}
+      onIndexChange={(index) => setGallery(g => (g ? { ...g, index } : g))}
+      onClose={() => setGallery(null)}
+    />
+  );
 
   // Interactive terminals are a first-class resource rendered only in the
   // terminals dock (desktop) / shells list (mobile) — never inline here.
@@ -1164,7 +1174,8 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
                     key={i}
                     src={src}
                     alt=""
-                    onClick={() => setViewerSrc(src)}
+                    data-gallery-image=""
+                    onClick={openViewer}
                     className="max-h-72 rounded border border-zinc-800 object-contain cursor-zoom-in"
                   />
                 );
@@ -1238,7 +1249,8 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
                       key={i}
                       src={src}
                       alt=""
-                      onClick={() => setViewerSrc(src)}
+                      data-gallery-image=""
+                      onClick={openViewer}
                       className="max-h-40 rounded border border-blue-900/30 object-cover cursor-zoom-in"
                     />
                   );

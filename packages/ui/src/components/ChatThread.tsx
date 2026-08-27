@@ -101,7 +101,10 @@ export function ChatThread({ sessionId, attachRef, onScroll, style, className, c
   });
 
   return (
-    <div ref={setRef} onScroll={onScroll} style={style} className={className}>
+    // `data-image-gallery-root` bounds the fullscreen viewer's filmstrip to
+    // this thread — see lib/image-gallery.ts. Focus mode mounts one of these
+    // per pane, so each session keeps its own gallery.
+    <div ref={setRef} onScroll={onScroll} style={style} className={className} data-image-gallery-root="">
       {children}
     </div>
   );
