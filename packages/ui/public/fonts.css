@@ -1,0 +1,95 @@
+/* Self-hosted typefaces.
+ *
+ * The app used to ship no fonts at all and leaned on Tailwind's default
+ * `system-ui` stacks. That renders as SF Pro on macOS but as Cantarell /
+ * Ubuntu / DejaVu Sans on Linux — different metrics, different weights, and a
+ * layout that breaks wherever the design assumed SF's narrow advance widths.
+ * Bundling the faces makes every platform render identically, and keeps the
+ * app working offline (nothing is fetched from a CDN at runtime).
+ *
+ * This file deliberately sits in `public/` rather than in `src/styles/`, and is
+ * pulled in with a plain <link> from the HTML shells in `scripts/build.ts`
+ * instead of an `@import` from `global.css`. Bun's CSS bundler resolves every
+ * `url()` it sees as a module specifier, so a root-absolute `/fonts/…` path
+ * inside a bundled stylesheet fails the build outright. `public/` is copied
+ * into `dist/` verbatim, which leaves these URLs untouched — they resolve at
+ * `/fonts/*` in dev and from `Contents/Resources/dist/fonts/` in the packaged
+ * Electron app.
+ *
+ * Both families are variable (one file spans the whole weight axis) and are
+ * licensed under the SIL OFL 1.1 — see the LICENSE-*.txt files next to them.
+ * Sourced from @fontsource-variable/{inter,jetbrains-mono}@5.3.0.
+ *
+ * `font-display: block` rather than `swap`: the files are local and resolve in
+ * single-digit milliseconds, so there is no risk of a long invisible-text
+ * period — and blocking avoids a visible reflow from the fallback metrics,
+ * which is the exact ugliness this file exists to remove.
+ */
+
+/* ── Inter (UI / prose) ──────────────────────────────────────────────────── */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: italic;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-wght-italic.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: italic;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-ext-wght-italic.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── JetBrains Mono (code, terminal, diffs, kbd) ─────────────────────────── */
+@font-face {
+  font-family: 'JetBrains Mono Variable';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 800;
+  src: url('/fonts/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono Variable';
+  font-style: italic;
+  font-display: block;
+  font-weight: 100 800;
+  src: url('/fonts/jetbrains-mono-latin-wght-italic.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono Variable';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 800;
+  src: url('/fonts/jetbrains-mono-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono Variable';
+  font-style: italic;
+  font-display: block;
+  font-weight: 100 800;
+  src: url('/fonts/jetbrains-mono-latin-ext-wght-italic.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}

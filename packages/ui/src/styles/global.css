@@ -7,7 +7,23 @@
  * component has been loaded yet. */
 @import "@xterm/xterm/css/xterm.css";
 
+/* The @font-face rules for the two families referenced below live in
+ * `packages/ui/public/fonts.css`, linked directly from the HTML shells — see
+ * the comment at the top of that file for why they cannot be @import'd here. */
+
 @theme {
+  /* Typography. Defining these two tokens overrides Tailwind v4's defaults
+   * (`ui-sans-serif, system-ui, …` / `ui-monospace, SFMono-Regular, …`), which
+   * resolve to a different typeface on every OS — SF Pro on macOS, Cantarell
+   * or DejaVu Sans on Linux. Every `font-sans`/`font-mono` utility and the
+   * inherited body font pick these up, so the app renders identically
+   * everywhere. The system stacks stay on as a last-resort fallback in case a
+   * woff2 fails to load. */
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif,
+               "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo,
+               Consolas, "Liberation Mono", monospace;
+
   /* Palette aligned with the SessionTabStrip / titlebar mockup the design
    *  was approved against. Tailwind's `bg-base`, `bg-surface*`, `border-*`
    *  classes throughout the app pick these up automatically. */
@@ -282,7 +298,7 @@ pre {
 }
 
 code {
-  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+  font-family: var(--font-mono);
 }
 
 /* Diff review comment gutter indicator */
@@ -584,7 +600,7 @@ pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
   --dd-gutter: 1.75rem;
   /* Where prose typeset inside the diff starts — flush with the code column. */
   --dd-text-indent: calc(2 * var(--dd-gutter) + 1.7rem);
-  --dd-prose: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  --dd-prose: var(--font-sans);
 
   position: relative;
   margin: 0.85rem 0;
@@ -601,7 +617,7 @@ pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
 }
 
 .dd-body {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
   overflow-x: auto;
@@ -657,7 +673,7 @@ pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
 }
 .dd-note-rule { flex: none; width: 2px; border-radius: 1px; background: var(--color-border-light); }
 .dd-note-code {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   padding: 1px 4px;
   border-radius: 3px;
@@ -678,7 +694,7 @@ pre code .token.deleted  { background: rgba(248, 81, 73, 0.12); }
   color: var(--color-zinc-600, #71717a);
   user-select: none;
 }
-.dd-gap-dots { font-family: ui-monospace, monospace; }
+.dd-gap-dots { font-family: var(--font-mono); }
 
 /* Streaming placeholder, shown between the opening fence and the closing one. */
 .dd-pending { display: flex; flex-direction: column; gap: .35rem; padding: .3rem 0; }
@@ -832,7 +848,7 @@ html.light .dd-code .token.class-name { color: #8250df; }
 .ex-p:last-child { margin-bottom: 0; }
 .ex-break { height: .35rem; }
 .ex-code {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px; padding: 1px 5px; border-radius: 4px;
   background: var(--color-surface-light); border: 1px solid var(--color-border);
   color: var(--color-zinc-200, #e4e4e7);
@@ -842,7 +858,7 @@ html.light .dd-code .token.class-name { color: #8250df; }
 .ex-art {
   margin-top: .65rem; padding-left: .75rem;
   border-left: 1px solid var(--color-border-light);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px; line-height: 1.6;
 }
 .ex-art-row { white-space: pre; overflow-x: auto; padding: 0 .4rem; border-radius: 2px; }
@@ -867,7 +883,7 @@ html.light .dd-code .token.class-name { color: #8250df; }
 .ex-opt-key {
   flex: none; width: 18px; height: 18px; margin-top: .1rem; border-radius: 5px;
   display: flex; align-items: center; justify-content: center;
-  font-family: ui-monospace, monospace; font-size: 10px;
+  font-family: var(--font-mono); font-size: 10px;
   background: var(--color-surface-lighter); color: var(--color-zinc-600, #71717a);
 }
 .ex-opt:hover .ex-opt-key { background: var(--ex-ask); color: #0b1220; }
@@ -941,7 +957,7 @@ html.light .dd-code .token.class-name { color: #8250df; }
 
 .ex-raw {
   margin: .5rem 0; padding: .5rem .75rem; overflow-x: auto;
-  font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
   background: #0d0d0d; border: 1px solid var(--color-border); border-radius: 4px;
   color: var(--color-zinc-400, #a1a1aa); white-space: pre;
 }
@@ -963,7 +979,7 @@ html.light .ex-over { background: var(--color-surface); box-shadow: 0 0 0 1px va
 .rc-line { white-space: pre-wrap; min-height: 1.5em; }
 .rc-card { position: relative; margin: 6px 0; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: 10px; background: #0d0d0d; padding: 9px 12px; }
 .rc-card[data-lang]::before { content: attr(data-lang); position: absolute; top: 6px; right: 10px; font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: #52525b; pointer-events: none; user-select: none; }
-.rc-card .rc-cl { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.6; }
+.rc-card .rc-cl { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; }
 .rc-card .rc-fence { color: #52525b; }
 
 /* ---------------------------------------------------------------------------

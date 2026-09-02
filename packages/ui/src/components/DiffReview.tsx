@@ -3,6 +3,7 @@ import { DiffEditor } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import { Button, TextField, TextArea } from '@heroui/react';
 import { isDotenvPath } from '../lib/monaco-dotenv';
+import { MONO_FONT_STACK } from '../lib/fonts';
 
 export interface ReviewComment {
   id: string;
@@ -209,6 +210,7 @@ export function DiffReview({ original, modified, filePath, comments, onAddCommen
           options={{
             readOnly: true,
             minimap: { enabled: false },
+            fontFamily: MONO_FONT_STACK,
             fontSize: 13,
             lineNumbers: 'on',
             scrollBeyondLastLine: false,

@@ -30,6 +30,11 @@ const SHELL_URLS = [
   '/manifest.webmanifest',
   '/brand/codiby-isotipo.jpg',
   '/brand/codiby-wordmark.png',
+  // Only the two latin upright faces: they cover every glyph the shell paints
+  // before the first render. Italic and latin-ext load on demand, and missing
+  // them offline degrades to a fallback face rather than a blank screen.
+  '/fonts/inter-latin-wght-normal.woff2',
+  '/fonts/jetbrains-mono-latin-wght-normal.woff2',
 ];
 
 self.addEventListener('install', (event) => {

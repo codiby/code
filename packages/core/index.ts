@@ -2296,6 +2296,11 @@ const server = Bun.serve({
       url.pathname === '/favicon.svg' ||
       url.pathname === '/favicon.ico' ||
       url.pathname === '/sw.js' ||
+      // Self-hosted typefaces. `fonts.css` holds the @font-face rules and
+      // `/fonts/*` the woff2 files; both are copied verbatim from public/ into
+      // dist/ rather than bundled, so neither lands under /assets/.
+      url.pathname === '/fonts.css' ||
+      url.pathname.startsWith('/fonts/') ||
       url.pathname.startsWith('/brand/') ||
       url.pathname.startsWith('/assets/') ||
       // Shared React runtime bundles for the importmap (host ↔ plugins).

@@ -346,7 +346,7 @@ const SWITCHER_CSS = `
   z-index: 200;
   display: grid;
   place-items: center;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
   color: var(--cts-text);
   -webkit-font-smoothing: antialiased;

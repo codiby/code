@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'reac
 import { ChevronDown, ChevronRight, Sparkles, Copy, Check } from 'lucide-react';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
 import { isDotenvPath } from '../lib/monaco-dotenv';
+import { MONO_FONT_STACK } from '../lib/fonts';
 import { collectExplainParts, EMPTY_EXPLAIN_PARTS } from '../lib/explain';
 import { Markdown } from './Markdown';
 import { FullscreenPreview } from './FullscreenPreview';
@@ -219,6 +220,7 @@ const MONACO_SHARED_OPTS = {
   readOnly: true,
   minimap: { enabled: false },
   scrollBeyondLastLine: false,
+  fontFamily: MONO_FONT_STACK,
   fontSize: 12,
   lineNumbers: 'off' as const,
   glyphMargin: false,
@@ -662,7 +664,17 @@ function openTerminalWindow(command: string, content: string, exitCode?: number)
   const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>$ ${command}</title>
 <style>
-  body { margin: 0; background: #1b1b1b; color: #a1a1aa; font-family: 'SF Mono','Fira Code',monospace; font-size: 13px; }
+  /* This popup is an about:blank document, so it inherits nothing from the
+     app's stylesheet — the bundled face has to be re-declared here. The URL is
+     absolute against the opener's origin because a root-relative path in a
+     document.write'd about:blank has no reliable base to resolve against. */
+  @font-face {
+    font-family: 'JetBrains Mono Variable';
+    font-weight: 100 800;
+    font-display: block;
+    src: url('${location.origin}/fonts/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+  }
+  body { margin: 0; background: #1b1b1b; color: #a1a1aa; font-family: 'JetBrains Mono Variable', ui-monospace, Menlo, monospace; font-size: 13px; }
   .header { padding: 8px 12px; background: #2a2a2a; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; }
   .cmd { color: #e4e4e7; }
   .status { font-size: 11px; }

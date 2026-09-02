@@ -62,6 +62,25 @@ const IMPORTMAP_JSON = JSON.stringify({
 });
 const IMPORTMAP_HTML = `    <script type="importmap">${IMPORTMAP_JSON}</script>`;
 
+/**
+ * Preload the two upright latin faces the shell paints with. `@font-face` in
+ * the stylesheet only starts a fetch once the CSS has parsed AND something on
+ * the page matches the rule, which puts the font request a full round-trip
+ * behind first paint. Since `font-display: block` holds text invisible until
+ * the face lands, that delay is directly visible as a blank shell — the
+ * preload collapses it. Italic and latin-ext stay lazy: they cover a minority
+ * of the glyphs and are not worth blocking on.
+ */
+const FONT_HTML = [
+  ...[
+    '/fonts/inter-latin-wght-normal.woff2',
+    '/fonts/jetbrains-mono-latin-wght-normal.woff2',
+  ].map((href) => `    <link rel="preload" as="font" type="font/woff2" href="${href}" crossorigin />`),
+  // Served verbatim out of public/ — see the header comment in that file for
+  // why the @font-face rules are not bundled with the rest of the CSS.
+  '    <link rel="stylesheet" href="/fonts.css" />',
+].join('\n');
+
 type EntryCfg = {
   name: 'desktop' | 'mobile';
   entry: string;                  // absolute path to the .tsx entrypoint
@@ -76,6 +95,7 @@ const DESKTOP_HTML = ({ js, css }: { js: string; css: string[] }) => `<!doctype 
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Codiby Code</title>
     <link rel="icon" type="image/svg+xml" href="/brand/codiby-isotipo.svg" />
+${FONT_HTML}
 ${IMPORTMAP_HTML}
 ${css.map((href) => `    <link rel="stylesheet" href="${href}" />`).join('\n')}
   </head>
@@ -100,6 +120,7 @@ const MOBILE_HTML = ({ js, css }: { js: string; css: string[] }) => `<!doctype h
     <link rel="icon" type="image/svg+xml" href="/brand/codiby-isotipo.svg" />
     <link rel="apple-touch-icon" href="/brand/codiby-app-icon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
+${FONT_HTML}
 ${IMPORTMAP_HTML}
 ${css.map((href) => `    <link rel="stylesheet" href="${href}" />`).join('\n')}
   </head>

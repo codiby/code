@@ -49,7 +49,9 @@ export class ErrorBoundary extends Component<Props, State> {
             textAlign: 'center',
             color: '#e5e7eb',
             background: '#0a0a0a',
-            fontFamily: 'system-ui, sans-serif',
+            // Fallback spelled out after the var: this screen renders when the
+            // app has already failed, and the stylesheet may not have loaded.
+            fontFamily: 'var(--font-sans, system-ui, sans-serif)',
           }}
         >
           <div style={{ fontSize: 18, fontWeight: 600 }}>Something went wrong</div>

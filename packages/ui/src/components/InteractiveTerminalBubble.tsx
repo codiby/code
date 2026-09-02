@@ -171,7 +171,11 @@ const InteractiveTerminalBubbleImpl = forwardRef<TerminalBubbleHandle, Props>(fu
       if (cancelled || !containerRef.current) return;
 
       const term = new Terminal({
-        fontFamily: '"SF Mono", "Fira Code", Menlo, Consolas, monospace',
+        // Spelled out rather than `var(--font-mono)`: xterm measures the cell
+        // width on a canvas 2d context, and canvas `ctx.font` does not resolve
+        // CSS custom properties — a var() here silently degrades to the
+        // default font and every column lands a fraction of a pixel off.
+        fontFamily: '"JetBrains Mono Variable", ui-monospace, Menlo, Consolas, monospace',
         fontSize: 12,
         lineHeight: 1.2,
         cursorBlink: !exited,

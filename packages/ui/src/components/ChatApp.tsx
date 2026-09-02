@@ -4,6 +4,7 @@ import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelR
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
+import { MONO_FONT_STACK } from '../lib/fonts';
 import { ImagePreview } from './ImagePreview';
 import { Providers } from './Providers';
 import { FileExplorer, type GitModifiedState } from './FileExplorer';
@@ -5102,6 +5103,7 @@ export function ChatApp() {
                       renderSideBySide: true,
                       minimap: { enabled: false },
                       scrollBeyondLastLine: false,
+                      fontFamily: MONO_FONT_STACK,
                       fontSize: 12,
                       lineNumbers: 'off',
                       glyphMargin: false,
@@ -5133,6 +5135,7 @@ export function ChatApp() {
                       readOnly: true,
                       minimap: { enabled: false },
                       scrollBeyondLastLine: false,
+                      fontFamily: MONO_FONT_STACK,
                       fontSize: 12,
                       lineNumbers: 'on',
                       glyphMargin: false,
@@ -6388,6 +6391,7 @@ export function ChatApp() {
                         }}
                         options={{
                           minimap: { enabled: false },
+                          fontFamily: MONO_FONT_STACK,
                           fontSize: 13,
                           lineNumbers: 'on',
                           scrollBeyondLastLine: false,
