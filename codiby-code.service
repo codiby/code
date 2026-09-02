@@ -1,0 +1,56 @@
+# Codiby Code bridge server, as a systemd *user* unit.
+#
+# This is the Linux counterpart to `scripts/install.sh` (which writes a macOS
+# LaunchAgent). It supervises the `process-compose.yaml` at the repo root:
+# process-compose installs deps, builds the frontends once, then runs the
+# bridge, restarting it on failure.
+#
+# Deliberately a --user unit, not a system one. The bridge reads `~/.claude`,
+# spawns `claude` as you, and drives git worktrees under `$HOME`; running it as
+# root or as a service account breaks all three.
+#
+# Install:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp codiby-code.service ~/.config/systemd/user/
+#   # adjust WorkingDirectory below if the repo is not at ~/codiby/code
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now codiby-code.service
+#
+#   # survive logout — without this the unit dies when your last session ends
+#   sudo loginctl enable-linger "$USER"
+#
+# Inspect:
+#
+#   systemctl --user status codiby-code.service
+#   journalctl --user -u codiby-code.service -f
+#   process-compose attach -p 8811             # per-process TUI
+#   process-compose process restart bridge -p 8811
+
+[Unit]
+Description=Codiby Code bridge server (process-compose)
+Documentation=https://github.com/codiby/code
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/codiby/code
+# process-compose spawns bun; bun spawns claude. Both must be on PATH, and the
+# bridge re-derives PATH from $SHELL at startup (packages/core/config/config.ts).
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=SHELL=/usr/bin/zsh
+# API on 8811 so `process-compose attach -p 8811` works from any shell (8080 is taken).
+ExecStart=%h/.local/bin/process-compose up -t=false --port 8811
+ExecStop=%h/.local/bin/process-compose down --port 8811
+Restart=always
+RestartSec=5
+# The unit's children are a whole process tree — process-compose, bun, every
+# `claude` it spawned, and their PTYs. `mixed` sends SIGTERM to the main process
+# only, letting process-compose shut its own children down in order, then
+# SIGKILLs whatever is left in the cgroup once TimeoutStopSec expires.
+KillMode=mixed
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target

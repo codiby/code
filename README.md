@@ -41,6 +41,44 @@ Run the full Electron desktop app in dev mode:
 bun run electron:dev
 ```
 
+## Headless Deployment (Linux)
+
+There is no Linux desktop package. On a server you run the bridge directly and
+reach the UI over the network — the desktop app at `/`, the phone build at `/m/`.
+
+[`process-compose.yaml`](./process-compose.yaml) is the entrypoint: it installs
+dependencies, builds both frontends once, then serves, gating the bridge on
+`dist/index.html` so the first request can't race an empty `dist/`.
+
+```sh
+process-compose up              # with TUI
+process-compose up -t=false     # detached — systemd, CI, `ssh host ...`
+```
+
+To keep it running across reboots, install the bundled systemd **user** unit:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp codiby-code.service ~/.config/systemd/user/
+# edit WorkingDirectory if the repo is not at ~/codiby/code
+systemctl --user daemon-reload
+systemctl --user enable --now codiby-code.service
+sudo loginctl enable-linger "$USER"   # otherwise it dies at logout
+```
+
+It has to be a user unit, not a system one: the bridge reads `~/.claude`, spawns
+`claude` as you, and drives git worktrees under `$HOME`.
+
+Deploying a new revision means restarting the unit, not just rebuilding `dist/`
+— route handling and the static allowlist live inside the bridge process:
+
+```sh
+git pull && systemctl --user restart codiby-code.service
+```
+
+`bun` and `claude` must be on the unit's `PATH`, which systemd does **not**
+inherit from your shell profile; the unit sets it explicitly.
+
 ## Project Structure
 
 ```text
