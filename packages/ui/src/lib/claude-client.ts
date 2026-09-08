@@ -7,6 +7,7 @@
  */
 import { getNative, isNative } from './native';
 import { Conn } from './conn';
+import { mergeSessionsByOwner } from './merge-sessions';
 import { emptyProgress } from './requirements';
 import type {
   LoopState,
@@ -99,6 +100,86 @@ export interface McpServerInput {
   headers?: Record<string, string>;
   /** Required when scope is 'project' — the session cwd whose .mcp.json to write. */
   cwd?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Automations — prompts the bridge runs on a cron, without an open session.
+//
+// Mirrors packages/core/database/schema.ts (`automations`, `automation_runs`)
+// and the zod input schema in packages/core/automation/types.ts. Timestamps are
+// epoch millis; every nullable column is `| null` rather than optional, because
+// the server always serialises the full row.
+// ---------------------------------------------------------------------------
+
+export type AutomationPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+export type AutomationEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type AutomationRunStatus =
+  | 'scheduled' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'skipped';
+export type AutomationRunTrigger = 'scheduled' | 'manual' | 'webhook';
+/** `cron` fires on a schedule; `webhook` only when its endpoint is POSTed to. */
+export type AutomationTriggerType = 'cron' | 'webhook';
+
+export interface Automation {
+  id: string;
+  name: string;
+  description: string | null;
+  triggerType: AutomationTriggerType;
+  /** Null for webhook automations, which have no schedule. */
+  cronExpression: string | null;
+  timezone: string;
+  enabled: boolean;
+  prompt: string;
+  cwd: string;
+  provider: string;
+  model: string | null;
+  permissionMode: AutomationPermissionMode;
+  effort: AutomationEffort | null;
+  concurrencyPolicy: 'skip';
+  maxRuntimeMs: number | null;
+  /** When the scheduler will fire next; null while disabled. */
+  nextRunAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  deletedAt: number | null;
+}
+
+export interface AutomationRun {
+  id: string;
+  automationId: string;
+  automationName: string;
+  /** The session the run spawned — null until it starts, or if it was skipped. */
+  sessionId: string | null;
+  trigger: AutomationRunTrigger;
+  scheduledFor: number | null;
+  status: AutomationRunStatus;
+  startedAt: number | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  resultText: string | null;
+  error: string | null;
+  stopReason: string | null;
+  costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  createdAt: number;
+}
+
+/** Payload for POST /automations. PATCH takes any subset of the same fields. */
+export interface AutomationInput {
+  name: string;
+  description?: string | null;
+  triggerType?: AutomationTriggerType;
+  /** Required for cron automations; omitted (or null) for webhook ones. */
+  cronExpression?: string | null;
+  timezone?: string;
+  enabled?: boolean;
+  prompt: string;
+  cwd: string;
+  provider?: string;
+  model?: string | null;
+  permissionMode?: AutomationPermissionMode;
+  effort?: AutomationEffort | null;
+  maxRuntimeMs?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +623,12 @@ type ClientCallbacks = {
    */
   onBrowserRequest?: (req: { sessionId: string; name: string; requestId: string; action: string; args: unknown }) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
+  /** A remote bridge's own preferences. Only its tab groups are of any use
+   *  here — they're folded into the sidebar by name so a project that exists on
+   *  both machines reads as one folder. `{}` means the remote went away and its
+   *  groups should be dropped. Optional: viewers without remote UI can omit it,
+   *  and then a remote's preferences are simply ignored. */
+  onRemotePreferences?: (remoteId: string, preferences: Record<string, unknown>) => void;
   /** The keyboard-shortcut override map changed (the shortcuts editor saved,
    *  possibly in another window). */
   onKeybindings?: (overrides: Record<string, string | null>) => void;
@@ -672,9 +759,13 @@ export class ClaudeClient {
   private remoteConns = new Map<string, Conn>();
   /** sessionId → remoteId for sessions that live on a remote (absent = local). */
   private sessionRemote = new Map<string, string>();
-  /** Last known SSH-tunnel local port per remote. */
+  /** Current SSH-tunnel local port per remote — the single source of truth for
+   *  where a remote's bridge lives right now. Kept fresh by the tunnel-status
+   *  push from Electron main, which fires on every master respawn (each one
+   *  lands on a different free port). */
   private remotePorts = new Map<string, number>();
-  /** Memoized tunnel-acquire promise per remote (one acquire → one refcount). */
+  /** In-flight tunnel-acquire per remote (single-flight only; dropped once it
+   *  settles, so a later acquire is never answered with a dead port). */
   private remoteBasePromises = new Map<string, Promise<string | null>>();
   /** Remote display metadata (color/name) used to tag discovered sessions. */
   private remoteMeta = new Map<string, { color?: string | null; name?: string | null }>();
@@ -700,6 +791,14 @@ export class ClaudeClient {
   /** Debounce timer for the background socket-teardown (see visibilityHandler). */
   private bgCloseTimer: ReturnType<typeof setTimeout> | null = null;
   private pageShowHandler: (() => void) | null = null;
+
+  /**
+   * Origin of the local bridge, e.g. `http://localhost:3111`. Exposed so the UI
+   * can show callable URLs (automation webhooks) that a user pastes elsewhere.
+   */
+  get localServerUrl(): string {
+    return this.serverUrl;
+  }
 
   constructor(serverUrl: string, callbacks: ClientCallbacks) {
     this.serverUrl = serverUrl;
@@ -787,16 +886,29 @@ export class ClaudeClient {
     return port ? `http://127.0.0.1:${port}` : null;
   }
 
-  /** Bring a remote's tunnel up ONCE (memoized), caching the local port. Holds
-   *  a single refcount for the remote's lifetime. Memoizing here — and deduping
-   *  the spawn in Electron main — is what stops many `ssh` masters racing for
-   *  the same control socket. Failed acquires are un-memoized so REST retries. */
+  /** Bring a remote's tunnel up if needed and return its CURRENT local base.
+   *
+   *  The port is re-read from `remotePorts` on every call, never memoized: the
+   *  ssh master picks a fresh free local port every time it respawns, and it
+   *  respawns whenever the remote bridge dies or the link drops (the master
+   *  eventually gives up on a bridge that refuses every channel). Electron main
+   *  pushes the new port on `remote-tunnel-status`, which is what keeps
+   *  `remotePorts` current. Caching the first successful acquire forever — as
+   *  this used to — pinned every REST call to a port nothing listens on any
+   *  more, so the WS came back after a reconnect but files, git, messages and
+   *  session actions stayed dead until the whole app was reloaded.
+   *
+   *  The memoized promise now only single-flights a *pending* acquire (holding
+   *  one refcount for the remote's lifetime, deduped again in main so several
+   *  `ssh` masters can't race for the same control socket); it is dropped as
+   *  soon as it settles. */
   private ensureRemoteBaseUp(remoteId: string): Promise<string | null> {
+    const known = this.remoteBase(remoteId);
+    if (known) return Promise.resolve(known);
     let p = this.remoteBasePromises.get(remoteId);
     if (!p) {
-      p = this.acquireRemoteBase(remoteId).then((base) => {
-        if (!base) this.remoteBasePromises.delete(remoteId);
-        return base;
+      p = this.acquireRemoteBase(remoteId).finally(() => {
+        this.remoteBasePromises.delete(remoteId);
       });
       this.remoteBasePromises.set(remoteId, p);
     }
@@ -838,6 +950,9 @@ export class ClaudeClient {
 
   private releaseRemote(remoteId: string) {
     this.remoteBasePromises.delete(remoteId);
+    // Forget the port too: the remote is gone, and a later re-add must acquire
+    // a fresh tunnel rather than inherit a port that is no longer forwarded.
+    this.remotePorts.delete(remoteId);
     getNative()?.invoke('remote_tunnel_release', { remoteId }).catch(() => {});
   }
 
@@ -853,18 +968,38 @@ export class ClaudeClient {
         conn.destroy();
         this.remoteConns.delete(rid);
         this.sessionsByConn.delete(rid);
+        // Drop its groups from the sidebar too, otherwise a removed remote
+        // keeps a folder alive with no sessions left to justify it.
+        this.callbacks.onRemotePreferences?.(rid, {});
         this.releaseRemote(rid);
       }
     }
   }
 
-  /** Re-point a `${serverUrl}/…` file/git/search URL at the currently-focused
-   *  remote's direct tunnel base. No-op when the focused session is local. */
-  private async remoteUrl(url: string): Promise<string> {
-    if (!_activeRemoteId) return url;
-    this.ensureRemoteConn(_activeRemoteId);
-    const base = await this.ensureRemoteBaseUp(_activeRemoteId);
-    return base ? url.replace(this.serverUrl, base) : url;
+  /** Re-point a `${serverUrl}/…` file/git/search URL at a remote's direct
+   *  tunnel base. No-op when the resolved target is local.
+   *
+   *  `remoteId` pins the host explicitly — `null` forces the local bridge, an
+   *  id forces that remote. Omit it to follow the focused session's remote,
+   *  which is what session-scoped browsing (FileExplorer, diffs, search) wants.
+   *  Callers whose target is *independent* of the focused tab — the New Session
+   *  folder browser above all — MUST pin, otherwise a remote tab sitting in the
+   *  background silently redirects their "local" listing to that remote.
+   *
+   *  A pinned remote whose tunnel can't be brought up throws instead of falling
+   *  back to the local bridge: answering a remote browse with local folders is
+   *  exactly the mix-up this parameter exists to prevent. */
+  private async remoteUrl(url: string, remoteId?: string | null): Promise<string> {
+    const pinned = remoteId !== undefined;
+    const rid = pinned ? remoteId : _activeRemoteId;
+    if (!rid) return url;
+    this.ensureRemoteConn(rid);
+    const base = await this.ensureRemoteBaseUp(rid);
+    if (!base) {
+      if (pinned) throw new Error(`Remote ${rid} tunnel not ready`);
+      return url;
+    }
+    return url.replace(this.serverUrl, base);
   }
 
   /** Sync http base for a session's bridge from the last-known tunnel port.
@@ -893,11 +1028,12 @@ export class ClaudeClient {
     return base;
   }
 
-  /** Merge each connection's last session list into one and emit it. */
+  /** Merge each connection's last session list into one and emit it. Rows are
+   *  deduplicated by id (`mergeSessionsByOwner`) — the same session reaches us
+   *  over more than one connection, and concatenating painted it once per
+   *  connection. */
   private emitMergedSessions() {
-    const all: SessionInfo[] = [];
-    for (const list of this.sessionsByConn.values()) all.push(...list);
-    this.callbacks.onSessions(all);
+    this.callbacks.onSessions(mergeSessionsByOwner(this.sessionsByConn));
   }
 
   /** Load the configured remotes from the local bridge and open a direct
@@ -1068,10 +1204,22 @@ export class ClaudeClient {
         );
         break;
       case 'keybindings':
-        this.callbacks.onKeybindings?.(msg.keybindings as Record<string, string | null>);
+        // Per-machine, like preferences below: a remote's shortcut overrides
+        // are not this window's.
+        if (!remoteId) this.callbacks.onKeybindings?.(msg.keybindings as Record<string, string | null>);
         break;
       case 'preferences':
-        this.callbacks.onPreferences(msg.preferences as Record<string, unknown>);
+        // Preferences belong to the machine that sent them. Handing a remote's
+        // blob to `onPreferences` replaced this window's groups, ordering and
+        // pins with the remote's — and the frontend then persisted them back
+        // into the local file, which is how groups with another machine's cwd
+        // ended up in ~/.codiby/ui-preferences.json. A remote's groups are
+        // merged separately and never persisted (see remote-groups.ts).
+        if (remoteId) {
+          this.callbacks.onRemotePreferences?.(remoteId, msg.preferences as Record<string, unknown>);
+        } else {
+          this.callbacks.onPreferences(msg.preferences as Record<string, unknown>);
+        }
         break;
       case 'focus_session':
         this.callbacks.onFocusSession(msg.sessionId as string);
@@ -1351,6 +1499,10 @@ export class ClaudeClient {
        *  in the parent repo's autogroup instead of one named after the
        *  worktree branch. */
       groupCwd?: string;
+      /** Put the session straight into this group. The bridge does the write,
+       *  which keeps it the only writer of `tabGroupMap` on creation and stops
+       *  the automatic grouping rules from racing an explicit choice. */
+      groupId?: string;
     } = {},
   ): Promise<SessionInfo> {
     const remoteId = opts.remoteId ?? null;
@@ -1372,6 +1524,7 @@ export class ClaudeClient {
         effort: opts.effort,
         provider: opts.provider,
         group_cwd: opts.groupCwd,
+        group_id: opts.groupId,
       }),
     });
     if (!resp.ok) throw new Error(`Failed to create session: ${resp.status}`);
@@ -1536,21 +1689,28 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async listDirs(prefix: string): Promise<string[]> {
-    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/ls?prefix=${encodeURIComponent(prefix)}`));
+  /** `remoteId` pins the host to browse (`null` = this machine); omit to
+   *  follow the focused session. See `remoteUrl`. */
+  async listDirs(prefix: string, remoteId?: string | null): Promise<string[]> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/ls?prefix=${encodeURIComponent(prefix)}`, remoteId));
     if (!resp.ok) return [];
     return resp.json();
   }
 
-  async getUserHome(): Promise<string> {
-    if (this._userHomeCache) return this._userHomeCache;
-    const resp = await authedFetch(`${this.serverUrl}/user-home`);
+  /** Home directory of the host `remoteId` names (`null`/omitted = this
+   *  machine). Cached per host — the local home and each remote's differ. */
+  async getUserHome(remoteId?: string | null): Promise<string> {
+    const key = remoteId ?? '';
+    const cached = this._userHomeCache.get(key);
+    if (cached) return cached;
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/user-home`, remoteId ?? null));
     if (!resp.ok) return '/';
     const data = await resp.json() as { home?: string };
-    this._userHomeCache = data.home || '/';
-    return this._userHomeCache;
+    const home = data.home || '/';
+    this._userHomeCache.set(key, home);
+    return home;
   }
-  private _userHomeCache: string | null = null;
+  private _userHomeCache = new Map<string, string>();
 
   async listFiles(dirPath: string): Promise<{ name: string; path: string; type: 'file' | 'dir' }[]> {
     const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/files?path=${encodeURIComponent(dirPath)}`));
@@ -1660,8 +1820,11 @@ export class ClaudeClient {
     return { ok: false, error: data.error || `HTTP ${resp.status}` };
   }
 
-  async createDir(path: string): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-new`), {
+  /** `remoteId` pins the host the folder is created on (`null` = this machine);
+   *  omit to follow the focused session. The New Session browser must pin, for
+   *  the same reason `listDirs` does — see `remoteUrl`. */
+  async createDir(path: string, remoteId?: string | null): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-new`, remoteId), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, kind: 'dir' }),
@@ -1690,13 +1853,15 @@ export class ClaudeClient {
     return data.content || '';
   }
 
-  async getGitInfo(path: string): Promise<{
+  /** `remoteId` pins the host (`null` = this machine); omit to follow the
+   *  focused session. See `remoteUrl`. */
+  async getGitInfo(path: string, remoteId?: string | null): Promise<{
     is_git: boolean; branch?: string; top_level?: string;
     worktrees?: { path: string; branch: string }[];
     parent_branch?: string | null;
     package_manager?: string; has_env?: boolean;
   }> {
-    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`));
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`, remoteId));
     if (!resp.ok) return { is_git: false };
     return resp.json();
   }
@@ -1717,8 +1882,10 @@ export class ClaudeClient {
     return resp.ok;
   }
 
-  async listBranches(cwd: string): Promise<{ current: string; local: string[]; remote: string[] }> {
-    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-branches?cwd=${encodeURIComponent(cwd)}`));
+  /** `remoteId` pins the host (`null` = this machine); omit to follow the
+   *  focused session. See `remoteUrl`. */
+  async listBranches(cwd: string, remoteId?: string | null): Promise<{ current: string; local: string[]; remote: string[] }> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-branches?cwd=${encodeURIComponent(cwd)}`, remoteId));
     if (!resp.ok) return { current: '', local: [], remote: [] };
     return resp.json();
   }
@@ -1839,6 +2006,87 @@ export class ClaudeClient {
   /** Delete a skill by its opaque id. */
   async deleteSkill(id: string): Promise<{ ok: boolean; error?: string }> {
     const resp = await authedFetch(`${this.serverUrl}/skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Automations
+  //
+  // Definitions live on the local bridge only — the scheduler that fires them
+  // is a single process, so these always go to `serverUrl` and never to a
+  // remote's tunnel.
+  // -------------------------------------------------------------------------
+
+  async listAutomations(): Promise<Automation[]> {
+    const resp = await authedFetch(`${this.serverUrl}/automations`);
+    if (!resp.ok) return [];
+    const body = await resp.json().catch(() => null);
+    return body?.automations ?? [];
+  }
+
+  async createAutomation(input: AutomationInput): Promise<Automation | { error: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/automations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok || !body?.automation) return { error: body?.error || `HTTP ${resp.status}` };
+    return body.automation;
+  }
+
+  async updateAutomation(id: string, patch: Partial<AutomationInput>): Promise<Automation | { error: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/automations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok || !body?.automation) return { error: body?.error || `HTTP ${resp.status}` };
+    return body.automation;
+  }
+
+  async deleteAutomation(id: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  /**
+   * Fire an automation by hand. The server answers 409 with a `skipped` run
+   * when one is already in flight — surfaced as `skipped: true` rather than an
+   * error, since it is the concurrency policy working as configured.
+   */
+  async runAutomation(id: string): Promise<{ run?: AutomationRun; skipped?: boolean; error?: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/automations/${encodeURIComponent(id)}/run`, { method: 'POST' });
+    const body = await resp.json().catch(() => null);
+    if (resp.status === 409) return { skipped: true, run: body?.run, error: body?.error };
+    if (!resp.ok) return { error: body?.error || `HTTP ${resp.status}` };
+    return { run: body?.run };
+  }
+
+  /** Newest-first page of runs. `before` is the `createdAt` cursor from the previous page. */
+  async listAutomationRuns(
+    id: string,
+    options: { limit?: number; before?: number; status?: AutomationRunStatus } = {},
+  ): Promise<{ runs: AutomationRun[]; nextCursor: number | null }> {
+    const params = new URLSearchParams();
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.before) params.set('before', String(options.before));
+    if (options.status) params.set('status', options.status);
+    const query = params.toString();
+    const resp = await authedFetch(
+      `${this.serverUrl}/automations/${encodeURIComponent(id)}/runs${query ? `?${query}` : ''}`,
+    );
+    if (!resp.ok) return { runs: [], nextCursor: null };
+    const body = await resp.json().catch(() => null);
+    return { runs: body?.runs ?? [], nextCursor: body?.nextCursor ?? null };
+  }
+
+  async cancelAutomationRun(automationId: string, runId: string): Promise<{ ok: boolean; error?: string }> {
+    const resp = await authedFetch(
+      `${this.serverUrl}/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/cancel`,
+      { method: 'POST' },
+    );
     return resp.json().catch(() => ({ ok: resp.ok }));
   }
 
@@ -2257,15 +2505,26 @@ export class ClaudeClient {
       onDone: (result: { path: string; branch: string }) => void;
       onError: (err: string) => void;
     },
+    /** Host that owns `repoPath` — `null` for this machine, a remote id for a
+     *  remote. This POST used to go to the local bridge unconditionally, so
+     *  creating a worktree for a remote repo asked the local git to operate on
+     *  a path that doesn't exist here: HTTP 500. */
+    remoteId?: string | null,
   ): { abort: () => void } {
     const ctrl = new AbortController();
-    authedFetch(`${this.serverUrl}/worktree`, {
+    this.remoteUrl(`${this.serverUrl}/worktree`, remoteId).then((url) => authedFetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ repo_path: repoPath, branch, ...opts }),
       signal: ctrl.signal,
-    }).then(async (resp) => {
-      if (!resp.ok || !resp.body) { callbacks.onError(`HTTP ${resp.status}`); return; }
+    })).then(async (resp) => {
+      if (!resp.ok || !resp.body) {
+        // Surface the server's message, not just the status — "HTTP 500" on its
+        // own says nothing about which host refused or why.
+        const detail = await resp.text().catch(() => '');
+        callbacks.onError(`HTTP ${resp.status}${detail ? ` — ${detail.slice(0, 300)}` : ''}`);
+        return;
+      }
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -2299,12 +2558,38 @@ export class ClaudeClient {
   }
 
   /** Remove an existing git worktree by path. Rejects (with the server's
-   *  message) when git refuses — e.g. trying to remove the main worktree. */
-  async removeWorktree(repoPath: string, worktreePath: string): Promise<{ ok: boolean; removed?: boolean }> {
-    const resp = await authedFetch(`${this.serverUrl}/worktree/remove`, {
+   *  message) when git refuses — e.g. trying to remove the main worktree.
+   *  `remoteId` pins the host that owns the worktree (`null` = this machine). */
+  async removeWorktree(repoPath: string, worktreePath: string, remoteId?: string | null): Promise<{ ok: boolean; removed?: boolean }> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/worktree/remove`, remoteId), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ repo_path: repoPath, worktree_path: worktreePath }),
+    });
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`;
+      try { const j = await resp.json(); if (j?.error) msg = j.error; } catch {}
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
+  /** Retroactive grouping of the sessions sitting loose in the sidebar.
+   *
+   *  `apply: false` (the default) plans without writing — that is what the
+   *  confirmation dialog shows. `apply: true` performs it in one preferences
+   *  write and returns the same summary. The plan is recomputed on apply, so
+   *  the two can drift only by whatever changed in between.
+   *
+   *  Local-only: the rules need git to resolve each session's repo root, so
+   *  this always talks to this machine's bridge. Sessions on a remote bridge
+   *  are not part of the plan. */
+  async autoGroupSessions(apply = false): Promise<{
+    groups: { name: string; groupId: string | null; exists: boolean; sessionIds: string[] }[];
+    moved: number;
+  }> {
+    const resp = await authedFetch(`${this.serverUrl}/sessions/auto-group`, {
+      method: apply ? 'POST' : 'GET',
     });
     if (!resp.ok) {
       let msg = `HTTP ${resp.status}`;

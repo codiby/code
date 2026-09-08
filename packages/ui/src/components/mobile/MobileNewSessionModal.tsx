@@ -7,13 +7,12 @@ import {
   Select, SelectPopover, SelectTrigger, SelectValue,
 } from '@heroui/react';
 import type { ClaudeClient } from '../../lib/claude-client';
+// The mobile client browses whichever bridge it is connected to and has no
+// host picker, so its recents belong to that bridge's own host bucket.
+import { addRecentDir, getRecentDirs } from '../../lib/recent-dirs';
 import { MobileWorktreeModal } from './MobileWorktreeModal';
 
-// Shared with the desktop NewSessionModal so "recent projects" stay in sync
-// across the two entry points.
-const RECENT_KEY = 'claude-ui-recent-dirs';
 const PROVIDER_KEY = 'claude-ui-last-provider';
-const MAX_RECENT = 10;
 
 const PROVIDER_OPTIONS = [
   { key: 'claude', label: 'Claude' },
@@ -35,16 +34,6 @@ function getLastProvider(available: ReadonlyArray<{ key: string }>): ProviderKey
   const v = localStorage.getItem(PROVIDER_KEY);
   if (available.some(o => o.key === v)) return v as ProviderKey;
   return 'claude';
-}
-
-function getRecentDirs(): string[] {
-  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }
-  catch { return []; }
-}
-function addRecentDir(dir: string) {
-  const recent = getRecentDirs().filter(d => d !== dir);
-  recent.unshift(dir);
-  localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, MAX_RECENT)));
 }
 
 interface GitInfo {
@@ -100,10 +89,14 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
 
+  // This sheet always creates a LOCAL session, so every browse call pins the
+  // local host (`null`). Without the pin the client follows the focused
+  // session's remote, and a remote tab open in the background made the browser
+  // list that remote's filesystem for a session about to be spawned here.
   const loadDir = useCallback(async (path: string) => {
     setLoading(true);
     try {
-      const dirs = await client.listDirs(path.endsWith('/') ? path : path + '/');
+      const dirs = await client.listDirs(path.endsWith('/') ? path : path + '/', null);
       setFolders(dirs);
     } catch { setFolders([]); }
     setLoading(false);
@@ -112,7 +105,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
   const checkGit = useCallback(async (path: string) => {
     if (!path) { setGitInfo(null); return; }
     try {
-      const info = await client.getGitInfo(path);
+      const info = await client.getGitInfo(path, null);
       setGitInfo(info as GitInfo);
     } catch { setGitInfo(null); }
   }, [client]);
@@ -122,7 +115,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
   // via the Recent tab.
   useEffect(() => {
     if (!open) return;
-    setRecentDirs(getRecentDirs());
+    setRecentDirs(getRecentDirs(null));
     setError(null);
     setName('');
     setModel('');
@@ -131,7 +124,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
     setTab('browse');
     let cancelled = false;
     (async () => {
-      const home = await client.getUserHome();
+      const home = await client.getUserHome(null);
       if (cancelled) return;
       setCwd(home);
       loadDir(home);
@@ -165,7 +158,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
         model: model || null,
         effort: (provider === 'claude' || provider === 'opencode') && effort ? effort : null,
       });
-      addRecentDir(cwd);
+      addRecentDir(null, cwd);
       localStorage.setItem(PROVIDER_KEY, provider);
       onCreated(session.id, cwd || '/');
       onClose();

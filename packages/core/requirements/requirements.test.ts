@@ -5,13 +5,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 const testDir = mkdtempSync(join(tmpdir(), 'codiby-requirements-'));
-process.env.CODIBY_DATABASE_FILE = join(testDir, 'database.sqlite');
 process.env.CODIBY_REQUIREMENTS_KEY_FILE = join(testDir, 'requirements.key');
 
 let repository: typeof import('./repository');
 let runner: typeof import('./runner');
-/** Resolved from the module, not rebuilt here: `bun test` shares one process,
- *  so whichever test file imports `../database` first fixes the path. */
+/** Resolved from the module, not rebuilt here: `bun test` shares one process
+ *  and one sqlite handle, opened on the sandbox that
+ *  scripts/test-preload.ts points CODIBY_DATABASE_FILE at. */
 let DATABASE_FILE: string;
 
 const SESSION = 'ses_test';

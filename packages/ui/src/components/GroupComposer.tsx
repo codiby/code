@@ -10,9 +10,9 @@ import type { ClaudeClient } from '../lib/claude-client';
 import { ChatComposer, type PastedImage } from './ChatComposer';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
 import { WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
+import { getRecentDirs } from '../lib/recent-dirs';
 
 const PROVIDER_KEY = 'claude-ui-last-provider';
-const RECENT_DIRS_KEY = 'claude-ui-recent-dirs';
 
 const PROVIDER_OPTIONS = [
   { key: 'claude', label: 'Claude' },
@@ -121,21 +121,13 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
 
   // Reload recent dirs from localStorage each time the dropdown opens — the
   // list may have grown since mount via other modals adding to it. Also wire
-  // click-outside / Escape to dismiss. For remote groups, skip the local
-  // recents entirely — those paths live on the user's local machine, but the
-  // session would be spawned on the remote where they don't exist (provider
-  // would crash mid-turn → red dot).
+  // click-outside / Escape to dismiss. Recents are stored per host, so a remote
+  // group offers the paths last used *on that remote*: mixing hosts here would
+  // spawn the session in a directory that doesn't exist there (provider would
+  // crash mid-turn → red dot).
   useEffect(() => {
     if (!folderMenuOpen) return;
-    if (remoteId) {
-      setRecentDirs([]);
-    } else {
-      try {
-        const raw = localStorage.getItem(RECENT_DIRS_KEY);
-        const dirs = raw ? JSON.parse(raw) : [];
-        setRecentDirs(Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === 'string') : []);
-      } catch { setRecentDirs([]); }
-    }
+    setRecentDirs(getRecentDirs(remoteId));
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (folderMenuRef.current?.contains(target)) return;
@@ -149,7 +141,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       document.removeEventListener('mousedown', onDocMouseDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [folderMenuOpen]);
+  }, [folderMenuOpen, remoteId]);
 
   // Build the dropdown list: current cwd first (so it's always reachable as a
   // visual anchor), then de-duped recent dirs.
@@ -166,16 +158,19 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   useEffect(() => {
     if (!client || !cwd) { setGitInfo(null); return; }
     let cancelled = false;
-    client.getGitInfo(cwd).then(info => { if (!cancelled) setGitInfo(info); }).catch(() => {});
+    // Pinned to the group's host: a remote group's repo lives on the remote,
+    // and a local group's on this machine, regardless of which session tab is
+    // focused while the composer is open.
+    client.getGitInfo(cwd, remoteId ?? null).then(info => { if (!cancelled) setGitInfo(info); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [client, cwd]);
+  }, [client, cwd, remoteId]);
 
   // Branch dropdown: fetch branches on open, wire click-outside / Escape.
   useEffect(() => {
     if (!branchMenuOpen) return;
     setBranchFilter('');
     if (client && cwd) {
-      client.listBranches(cwd).then(data => {
+      client.listBranches(cwd, remoteId ?? null).then(data => {
         setBranches({ local: data.local || [], remote: data.remote || [], current: data.current || '' });
         setTimeout(() => branchInputRef.current?.focus(), 50);
       }).catch(() => {});
@@ -193,7 +188,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       document.removeEventListener('mousedown', onDocMouseDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [branchMenuOpen, client, cwd]);
+  }, [branchMenuOpen, client, cwd, remoteId]);
 
   // When the user picks a branch that's already checked out in some worktree,
   // `git checkout` would fail with `fatal: '<branch>' is already used by
@@ -495,6 +490,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
             <WorktreeCreateForm
               client={client}
               repoPath={gitInfo.top_level!}
+              remoteId={remoteId ?? null}
               hasEnv={gitInfo.has_env}
               detectedPackageManager={gitInfo.package_manager}
               existingWorktrees={gitInfo.worktrees}

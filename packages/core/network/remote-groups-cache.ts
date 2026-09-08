@@ -19,7 +19,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from '
 import { join } from 'path';
 import { logError } from '../lib/logger';
 import { CODIBY_DIR } from '../config/config';
-import { remotes } from './remotes';
+
 
 export const REMOTE_GROUPS_DIR = join(CODIBY_DIR, 'ui-remote-groups');
 
@@ -66,25 +66,16 @@ export function clearRemoteGroups(remoteId: string) {
   }
 }
 
-/** Union of every known remote's cached groups — what we splice into the
- *  preferences blob sent to the frontend. */
-export function getMergedRemoteGroups(): RemoteGroups {
-  const tabGroups: Record<string, unknown> = {};
-  const tabGroupMap: Record<string, string> = {};
-  for (const remoteId of remotes.keys()) {
-    const g = loadRemoteGroups(remoteId);
-    Object.assign(tabGroups, g.tabGroups);
-    Object.assign(tabGroupMap, g.tabGroupMap);
-  }
-  return { tabGroups, tabGroupMap };
-}
+/** Prefix the frontend gives a group it renders on behalf of a remote
+ *  (`ui/src/lib/remote-groups.ts` — keep the two in step). Identity by prefix
+ *  rather than by "is it in some remote's cache" is what makes the check
+ *  reliable: a cache can be stale, empty, or belong to a remote that has since
+ *  been removed, and every one of those cases used to let another machine's
+ *  group settle into ui-preferences.json for good. */
+export const REMOTE_GROUP_PREFIX = 'rmt:';
 
-/** True if `groupId` belongs to a remote — used to strip remote groups back
- *  out before persisting the local preferences file (the client can't tell
- *  local from remote groups, so a prefs write echoes them back). */
+/** True if `groupId` belongs to another machine, and so must never be written
+ *  to this machine's preferences file. */
 export function isRemoteGroupId(groupId: string): boolean {
-  for (const remoteId of remotes.keys()) {
-    if (groupId in loadRemoteGroups(remoteId).tabGroups) return true;
-  }
-  return false;
+  return groupId.startsWith(REMOTE_GROUP_PREFIX);
 }

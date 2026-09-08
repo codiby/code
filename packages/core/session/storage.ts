@@ -6,7 +6,7 @@
  *   └── state.json        # UI state (input, panels, todos)
  */
 
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { CODIBY_DIR } from '../config/config';
 
@@ -71,6 +71,16 @@ export function loadMessages(sessionId: string): unknown[] {
     return deduped;
   } catch {
     return [];
+  }
+}
+
+/** True when the session has at least one message on disk. Stats the log
+ *  instead of parsing it — callers only want "did anything ever happen here". */
+export function hasStoredMessages(sessionId: string): boolean {
+  try {
+    return statSync(join(sessionDir(sessionId), 'messages.jsonl')).size > 0;
+  } catch {
+    return false;
   }
 }
 

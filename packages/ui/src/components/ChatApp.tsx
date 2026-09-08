@@ -9,8 +9,9 @@ import { ImagePreview } from './ImagePreview';
 import { Providers } from './Providers';
 import { FileExplorer, type GitModifiedState } from './FileExplorer';
 import { SessionTabStrip } from './SessionTabStrip';
-import { TabBar } from './TabBar';
+import { TabBar, type NavView } from './TabBar';
 import { SessionsBoardView } from './SessionsBoardView';
+import { AutomationsView } from './AutomationsView';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { RunningInstancesButton } from './RunningInstancesButton';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
@@ -106,6 +107,9 @@ import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
 import { CHAT_WIDTH_CLASS, type ChatWidth } from '../lib/store/slices/preferencesSlice';
 import { ancestorChain, descendantGroupIds, isAncestorOf, WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
+import {
+  isRemoteGroupKey, mergeRemoteGroups, remoteOfGroupKey, type RemoteGroupPrefs,
+} from '../lib/remote-groups';
 import type { LocalSessionState } from '../lib/session-state';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
@@ -288,16 +292,15 @@ export function ChatApp() {
   const setPinnedSessionIds = useAppStore(s => s.setPinnedSessionIds);
   const expandedGroupIds = useAppStore(s => s.expandedGroupIds);
   const setExpandedGroupIds = useAppStore(s => s.setExpandedGroupIds);
-  const pinnedOutOfWorktree = useAppStore(s => s.pinnedOutOfWorktree);
-  const setPinnedOutOfWorktree = useAppStore(s => s.setPinnedOutOfWorktree);
   /** Group focused in the sidebar. When set, the main pane renders the
    *  inline new-session composer (GroupComposer) instead of the active
    *  session's chat body. Cleared as soon as a session is selected. */
   const selectedGroupId = useAppStore(s => s.selectedGroupId);
   const setSelectedGroupId = useAppStore(s => s.setSelectedGroupId);
-  // Active top-level view in the main pane. 'sessions-board' shows the board;
-  // selecting any session or group snaps it back to 'sessions'.
-  const [activeNavView, setActiveNavView] = useState<'sessions' | 'sessions-board'>('sessions');
+  // Active top-level view in the main pane. 'sessions-board' shows the board and
+  // 'automations' the scheduler screen; selecting any session or group snaps it
+  // back to 'sessions'.
+  const [activeNavView, setActiveNavView] = useState<NavView>('sessions');
   // Server-persisted UI preferences now live in the Zustand store
   // (preferencesSlice). Read them here as fine-grained selectors so the rest
   // of ChatApp keeps referencing the same variable names; writes go through
@@ -364,6 +367,12 @@ export function ChatApp() {
   const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>([]);
   const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>({});
 
+  /** Each remote's own tab groups, as it reported them over its direct
+   *  connection. Kept apart from `tabGroups` (which is this machine's, and the
+   *  only thing ever persisted) and folded in for rendering by
+   *  `mergeRemoteGroups`. */
+  const [remoteGroupPrefs, setRemoteGroupPrefs] = useState<Record<string, RemoteGroupPrefs>>({});
+
   const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
   let groupColorIdx = Object.keys(tabGroups).length;
 
@@ -381,7 +390,7 @@ export function ChatApp() {
       : `Group ${Object.keys(tabGroups).length + 1}`;
     const newGroups: Record<string, TabGroupInfo> = {
       ...tabGroups,
-      [groupId]: { id: groupId, name: groupName, color, cwd: groupCwd, parentId: null, kind: 'manual' },
+      [groupId]: { id: groupId, name: groupName, color, cwd: groupCwd, parentId: null },
     };
     const newMap = { ...tabGroupMap };
     for (const id of tabIds) newMap[id] = groupId;
@@ -401,56 +410,62 @@ export function ChatApp() {
    *  goes into the sidebar before the POST comes back and is swapped for the
    *  real session (or dropped, on failure) in the `finally`.
    *
-   *  `cwdOverride` targets a specific worktree, used when the "+" was pressed on
-   *  a derived worktree group. Falls back to the first member's cwd for legacy
-   *  groups created before the cwd field existed, and backfills group.cwd at the
-   *  same time so it persists for next time. */
-  const handleNewSessionInGroup = async (groupId: string | null, cwdOverride?: string) => {
+   *  Falls back to the first member's cwd for legacy groups created before the
+   *  cwd field existed, and backfills group.cwd at the same time so it persists
+   *  for next time. */
+  const handleNewSessionInGroup = async (groupId: string) => {
     const c = clientRef.current;
     if (!c) return;
-    // `groupId: null` comes from a worktree cluster sitting at the sidebar root:
-    // the session spawns ungrouped, and the derivation reclaims it because the
-    // cwd matches.
-    const group = groupId ? tabGroups[groupId] : undefined;
-    if (groupId && !group) return;
-    const members = groupId ? sessions.filter(s => tabGroupMap[s.id] === groupId) : [];
+    // The merged view, so "+" also works on a folder that only exists on a
+    // remote — its definition never reaches `tabGroups`.
+    const group = sidebarGroups[groupId];
+    if (!group) return;
+    const members = sessions.filter(s => sidebarGroupMap[s.id] === groupId);
     const firstMember = members[0];
-    const cwd = cwdOverride || group?.cwd || firstMember?.cwd || '';
+    const cwd = group.cwd || firstMember?.cwd || '';
     if (!cwd) return;
     // If every member of this group lives on the same remote, the new
-    // session goes there too — otherwise it stays local.
-    const groupRemoteId = firstMember?.remoteId
-      && members.every(s => s.remoteId === firstMember.remoteId)
+    // session goes there too — otherwise it stays local. A remote-only folder
+    // says so in its id even when it currently holds no sessions.
+    const groupRemoteId = remoteOfGroupKey(groupId)
+      ?? (firstMember?.remoteId && members.every(s => s.remoteId === firstMember.remoteId)
         ? firstMember.remoteId
-        : null;
+        : null);
 
     const placeholder = makePlaceholderSession(cwd, groupRemoteId ?? null);
     setPendingSessions(prev => [...prev, placeholder]);
-    if (groupId) {
-      setPendingGroupMap(prev => ({ ...prev, [placeholder.id]: groupId }));
-      setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
-    }
+    setPendingGroupMap(prev => ({ ...prev, [placeholder.id]: groupId }));
+    setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
 
     try {
-      const session = await c.createSession(cwd, { remoteId: groupRemoteId, groupCwd: group?.cwd });
-      let newMap = tabGroupMap;
-      if (groupId) {
-        newMap = { ...tabGroupMap, [session.id]: groupId };
-        setTabGroupMap(newMap);
-      }
+      // A remote session is created on the remote bridge, which never sees our
+      // preferences — there the client stays the only writer of the mapping.
+      // Locally, `group_id` hands the write to the bridge so its automatic
+      // grouping can't race this explicit choice.
+      const session = await c.createSession(cwd, {
+        remoteId: groupRemoteId, groupCwd: group.cwd,
+        groupId: groupRemoteId ? undefined : groupId,
+      });
+      // Mirror it locally either way, so the row lands in the right place
+      // without waiting for the preferences broadcast — except for a folder
+      // that lives on the remote, whose membership is that machine's to record
+      // and reaches us through its own preferences.
+      const ownedHere = !isRemoteGroupKey(groupId);
+      const newMap = ownedHere ? { ...tabGroupMap, [session.id]: groupId } : tabGroupMap;
+      if (ownedHere) setTabGroupMap(newMap);
       // Persist the inferred cwd back into the group so subsequent
       // dropdown opens don't need the fallback path.
       let nextGroups = tabGroups;
-      const backfillCwd = !!groupId && !!group && !group.cwd && !cwdOverride;
+      const backfillCwd = ownedHere && !group.cwd;
       if (backfillCwd) {
-        nextGroups = { ...tabGroups, [groupId!]: { ...group!, cwd } };
+        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd } };
         setTabGroups(nextGroups);
       }
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
       persistPrefs({
-        ...(groupId ? { tabGroupMap: newMap } : {}),
+        ...(groupRemoteId && ownedHere ? { tabGroupMap: newMap } : {}),
         ...(backfillCwd ? { tabGroups: nextGroups } : {}),
       });
     } catch (err) {
@@ -481,7 +496,6 @@ export function ChatApp() {
         name: `Subgroup ${siblings + 1}`,
         cwd: parent.cwd,
         parentId,
-        kind: 'manual',
         allowEmpty: true,
       },
     };
@@ -522,19 +536,6 @@ export function ChatApp() {
     persistPrefs({ tabGroups: newGroups });
   };
 
-  /** Toggle a session's exemption from automatic worktree grouping. Set when
-   *  the user drags a row out of its worktree cluster (otherwise the derivation
-   *  would immediately reclaim it), cleared to let it rejoin. */
-  const handlePinOutOfWorktree = (sessionId: string) => {
-    setPinnedOutOfWorktree(prev => {
-      const next = new Set(prev);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
-      persistPrefs({ pinnedOutOfWorktree: [...next] });
-      return next;
-    });
-  };
-
   /** Open the worktree creation modal targeted at a group's repo. On
    *  success (handleWorktreeCreatedForGroup), spawn a session in the new
    *  worktree path and bind it to the group. Falls back to the first
@@ -551,7 +552,9 @@ export function ChatApp() {
     let packageManager: string | undefined;
     let worktrees: { path: string; branch: string }[] | undefined;
     try {
-      const info = await c.getGitInfo(cwd);
+      // Pinned to the group's host — the repo lives wherever the group does,
+      // not on whichever session is focused when the modal is opened.
+      const info = await c.getGitInfo(cwd, groupRemoteInfo[groupId]?.remoteId ?? null);
       hasEnv = info.has_env;
       packageManager = info.package_manager;
       worktrees = info.worktrees;
@@ -567,7 +570,16 @@ export function ChatApp() {
     const group = tabGroups[groupId];
     if (!group) return;
     try {
-      const session = await c.createSession(worktreePath);
+      // The worktree was created on the group's host, so the session has to be
+      // spawned there too — a local session pointed at a remote path would boot
+      // in a directory that doesn't exist here.
+      const wtRemoteId = groupRemoteInfo[groupId]?.remoteId ?? null;
+      const session = await c.createSession(worktreePath, {
+        remoteId: wtRemoteId,
+        // Local: the bridge owns the mapping write. Remote: it never reaches
+        // our preferences, so the client persists it below.
+        groupId: wtRemoteId ? undefined : groupId,
+      });
       const newMap = { ...tabGroupMap, [session.id]: groupId };
       setTabGroupMap(newMap);
       let nextGroups = tabGroups;
@@ -582,7 +594,10 @@ export function ChatApp() {
       setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
-      persistPrefs({ tabGroupMap: newMap, ...(group.cwd ? {} : { tabGroups: nextGroups }) });
+      persistPrefs({
+        ...(wtRemoteId ? { tabGroupMap: newMap } : {}),
+        ...(group.cwd ? {} : { tabGroups: nextGroups }),
+      });
     } catch (err) {
       console.error('[ChatApp] Failed to create session in worktree for group:', err);
     } finally {
@@ -609,14 +624,24 @@ export function ChatApp() {
   ) => {
     const c = clientRef.current;
     if (!c) return;
-    const group = tabGroups[groupId];
+    // Merged view: the composer also opens on folders that live on a remote.
+    const group = sidebarGroups[groupId];
     if (!group || !cwd) return;
+    // A folder owned by a remote records its own membership; we neither write
+    // nor persist a mapping into it.
+    const ownedHere = !isRemoteGroupKey(groupId);
     try {
-      const session = await c.createSession(cwd, { provider, model, permissionMode, effort, groupCwd: worktreeOrigin, remoteId: remoteId ?? null });
-      const newMap = { ...tabGroupMap, [session.id]: groupId };
-      setTabGroupMap(newMap);
+      // Local: the bridge owns the mapping write. Remote: it never reaches our
+      // preferences, so the client persists it below.
+      const session = await c.createSession(cwd, {
+        provider, model, permissionMode, effort, groupCwd: worktreeOrigin,
+        groupId: remoteId || !ownedHere ? undefined : groupId,
+        remoteId: remoteId ?? remoteOfGroupKey(groupId),
+      });
+      const newMap = ownedHere ? { ...tabGroupMap, [session.id]: groupId } : tabGroupMap;
+      if (ownedHere) setTabGroupMap(newMap);
       let nextGroups = tabGroups;
-      if (!group.cwd) {
+      if (ownedHere && !group.cwd) {
         // Prefer the parent repo over the worktree path so future opens
         // resolve to the main repo, matching handleWorktreeCreatedForGroup.
         nextGroups = { ...tabGroups, [groupId]: { ...group, cwd: worktreeOrigin || cwd } };
@@ -627,7 +652,10 @@ export function ChatApp() {
       subscribedRef.current.add(session.id);
       setSelectedGroupId(null);
       setActiveId(session.id);
-      persistPrefs({ tabGroupMap: newMap, ...(group.cwd ? {} : { tabGroups: nextGroups }) });
+      persistPrefs({
+        ...(remoteId && ownedHere ? { tabGroupMap: newMap } : {}),
+        ...(group.cwd || !ownedHere ? {} : { tabGroups: nextGroups }),
+      });
       if (prompt || images?.length) c.sendMessage(session.id, prompt || ' ', images);
     } catch (err) {
       console.error('[ChatApp] Failed to spawn session in group:', err);
@@ -672,6 +700,10 @@ export function ChatApp() {
 
   const handleAddToGroup = (tabId: string, groupId: string) => {
     if (isPendingSessionId(tabId)) return;
+    // A folder that only exists on a remote is owned there. We have no way to
+    // write into that machine's preferences, so the drop would survive until
+    // the next reload and then snap back — refuse it instead.
+    if (isRemoteGroupKey(groupId)) return;
     const newMap = { ...tabGroupMap, [tabId]: groupId };
     setTabGroupMap(newMap);
     setExpandedGroupIds(prev => {
@@ -775,7 +807,11 @@ export function ChatApp() {
   };
 
   const handleRenameGroup = (groupId: string, name: string) => {
-    const newGroups = { ...tabGroups, [groupId]: { ...tabGroups[groupId]!, name } };
+    // Remote-only folders are read-only here: the definition lives on the other
+    // machine, and writing one into `tabGroups` would fabricate a local group.
+    const current = tabGroups[groupId];
+    if (!current) return;
+    const newGroups = { ...tabGroups, [groupId]: { ...current, name } };
     setTabGroups(newGroups);
     persistPrefs({ tabGroups: newGroups });
   };
@@ -803,7 +839,9 @@ export function ChatApp() {
   };
 
   const handleChangeGroupColor = (groupId: string, color: string) => {
-    const newGroups = { ...tabGroups, [groupId]: { ...tabGroups[groupId]!, color } };
+    const current = tabGroups[groupId];
+    if (!current) return;
+    const newGroups = { ...tabGroups, [groupId]: { ...current, color } };
     setTabGroups(newGroups);
     persistPrefs({ tabGroups: newGroups });
   };
@@ -1852,9 +1890,6 @@ export function ChatApp() {
           if (Array.isArray(prefs.pinnedSessionIds)) {
             setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
           }
-          if (Array.isArray(prefs.pinnedOutOfWorktree)) {
-            setPinnedOutOfWorktree(new Set(prefs.pinnedOutOfWorktree as string[]));
-          }
           // Toggles + accents + global env vars are owned by preferencesSlice.
           hydratePreferences(prefs);
           if (prefs.shellRenames && typeof prefs.shellRenames === 'object') {
@@ -1867,6 +1902,24 @@ export function ChatApp() {
             const h = prefs.terminalsPanelHeight;
             if (h > 80 && h < 4000) setTerminalsPanelHeight(h);
           }
+        },
+
+        /** A remote's own preferences. Only its groups are kept, in a slot of
+         *  their own — they are folded into the sidebar for rendering and never
+         *  reach `tabGroups`, which is what gets persisted locally. An empty
+         *  blob means the remote was removed. */
+        onRemotePreferences: (remoteId, prefs) => {
+          const tabGroups = (prefs.tabGroups as Record<string, TabGroupInfo> | undefined) ?? {};
+          const tabGroupMap = (prefs.tabGroupMap as Record<string, string> | undefined) ?? {};
+          setRemoteGroupPrefs(prev => {
+            if (!Object.keys(tabGroups).length && !Object.keys(tabGroupMap).length) {
+              if (!prev[remoteId]) return prev;
+              const next = { ...prev };
+              delete next[remoteId];
+              return next;
+            }
+            return { ...prev, [remoteId]: { tabGroups, tabGroupMap } };
+          });
         },
 
         onRemoteStatus: (remoteId, status, lastError) => {
@@ -2464,6 +2517,23 @@ export function ChatApp() {
     setShowNewSession(true);
   };
 
+  /** Titlebar "+" — land on the group composer instead of the folder-browser
+   *  modal. The composer is the fuller starting point: prompt, folder, provider,
+   *  model and permission mode in one screen, with the folder browser still one
+   *  click away via its own "Browse folder". Deselecting the session is what
+   *  renders it (the `!activeId` branch of the main pane), so we also drop any
+   *  focused group and snap back to the sessions view — from the board or the
+   *  automations screen the composer wouldn't be mounted at all.
+   *
+   *  Focus layout has no composer screen (it shows placeholder panes), so there
+   *  the "+" keeps opening the modal. */
+  const handleNewSessionComposer = () => {
+    if (layoutMode === 'focus') { handleNewSession(); return; }
+    setSelectedGroupId(null);
+    setActiveNavView('sessions');
+    setActiveId(null);
+  };
+
   const handleToggleAutoGroup = (next: boolean) => setPreference('autoGroupSessions', next);
   const handleToggleGroupByWorktree = (next: boolean) => setPreference('groupSessionsByWorktree', next);
   const handleToggleAutoFocusBrowserOnAction = (next: boolean) => setPreference('autoFocusBrowserOnAction', next);
@@ -2841,6 +2911,46 @@ export function ChatApp() {
     deleteWorktrees: boolean;
     submitting: boolean;
   } | null>(null);
+
+  /** Plan produced by `GET /sessions/auto-group`, held while the user decides.
+   *  `error` doubles as the empty/failed state so the dialog always says
+   *  something rather than flashing open and shut. */
+  const [autoGroupPrompt, setAutoGroupPrompt] = useState<{
+    groups: { name: string; groupId: string | null; exists: boolean; sessionIds: string[] }[];
+    moved: number;
+    submitting: boolean;
+    error?: string;
+  } | null>(null);
+
+  /** Ask the bridge what it would do. The rules and the git repo-root
+   *  resolution live there, shared with the mobile client — the renderer only
+   *  shows the plan and relays the confirmation. */
+  const handleAutoGroupSessions = async () => {
+    const c = clientRef.current;
+    if (!c) return;
+    setAutoGroupPrompt({ groups: [], moved: 0, submitting: true });
+    try {
+      const plan = await c.autoGroupSessions(false);
+      setAutoGroupPrompt({ ...plan, submitting: false });
+    } catch (err) {
+      setAutoGroupPrompt({ groups: [], moved: 0, submitting: false, error: String(err) });
+    }
+  };
+
+  const confirmAutoGroup = async () => {
+    const c = clientRef.current;
+    const prompt = autoGroupPrompt;
+    if (!c || !prompt || prompt.submitting || !prompt.moved) return;
+    setAutoGroupPrompt({ ...prompt, submitting: true });
+    try {
+      // The bridge writes tabGroups + tabGroupMap in one go and broadcasts the
+      // result, which is what refreshes the sidebar — no local mirroring here.
+      await c.autoGroupSessions(true);
+      setAutoGroupPrompt(null);
+    } catch (err) {
+      setAutoGroupPrompt({ ...prompt, submitting: false, error: String(err) });
+    }
+  };
 
   const handleRequestDeleteGroup = async (groupId: string) => {
     const grp = tabGroups[groupId];
@@ -4019,9 +4129,31 @@ export function ChatApp() {
     () => (pendingSessions.length ? [...orderedOpenSessions, ...pendingSessions] : orderedOpenSessions),
     [orderedOpenSessions, pendingSessions],
   );
+  /** Session ids this machine's own bridge owns. Used to spot an id that also
+   *  exists on a remote (`main-session` is on every machine) so the remote's
+   *  grouping can't drag the local tab away. */
+  const localSessionIds = useMemo(
+    () => new Set(sessions.filter(s => !s.remoteId).map(s => s.id)),
+    [sessions],
+  );
+
+  /** The sidebar's view of the groups: this machine's, plus every remote's
+   *  folded in by name, so one project spread across two machines is one
+   *  folder. `tabGroups` / `tabGroupMap` stay local-only — they are what
+   *  `persistPrefs` writes — and nothing derived here is ever saved. */
+  const { groups: sidebarGroups, map: mergedGroupMap } = useMemo(
+    () => mergeRemoteGroups({
+      groups: tabGroups,
+      map: tabGroupMap,
+      remotes: remoteGroupPrefs,
+      localSessionIds,
+    }),
+    [tabGroups, tabGroupMap, remoteGroupPrefs, localSessionIds],
+  );
+
   const sidebarGroupMap = useMemo(
-    () => (pendingSessions.length ? { ...tabGroupMap, ...pendingGroupMap } : tabGroupMap),
-    [tabGroupMap, pendingGroupMap, pendingSessions.length],
+    () => (pendingSessions.length ? { ...mergedGroupMap, ...pendingGroupMap } : mergedGroupMap),
+    [mergedGroupMap, pendingGroupMap, pendingSessions.length],
   );
 
   /** Derive a remoteId/color/name for each tab group from its members. A
@@ -4035,9 +4167,11 @@ export function ChatApp() {
     // whose sessions all live in subgroups still shows the remote pill.
     const byGroup = new Map<string, SessionInfo[]>();
     for (const s of sessions) {
-      const gid = tabGroupMap[s.id];
+      // The merged view, so a session grouped on its own machine still counts
+      // towards the folder it renders in here.
+      const gid = mergedGroupMap[s.id];
       if (!gid) continue;
-      for (const ancestor of ancestorChain(tabGroups, gid)) {
+      for (const ancestor of ancestorChain(sidebarGroups, gid)) {
         let list = byGroup.get(ancestor);
         if (!list) { list = []; byGroup.set(ancestor, list); }
         list.push(s);
@@ -4055,8 +4189,21 @@ export function ChatApp() {
         remoteColor: first?.remoteColor ?? null,
       };
     }
+    // A folder that only exists on a remote keeps its pill even while that
+    // remote is offline and has no sessions to vote with.
+    for (const gid of Object.keys(sidebarGroups)) {
+      if (out[gid]) continue;
+      const remoteId = remoteOfGroupKey(gid);
+      if (!remoteId) continue;
+      const sample = sessions.find(s => s.remoteId === remoteId);
+      out[gid] = {
+        remoteId,
+        remoteName: sample?.remoteName ?? null,
+        remoteColor: sample?.remoteColor ?? null,
+      };
+    }
     return out;
-  }, [sessions, tabGroupMap, tabGroups]);
+  }, [sessions, mergedGroupMap, sidebarGroups]);
 
   // Sessions surfaced in the "+" dropdown's CLOSED section. Now backed by
   // the archived status — the legacy three-state model collapsed into
@@ -5285,7 +5432,7 @@ export function ChatApp() {
             )}
             <ActivityBarSessionActions
               closedSessions={closedSessions}
-              onNew={handleNewSession}
+              onNew={handleNewSessionComposer}
               onReopen={handleReopenSession}
               onArchive={handleArchiveSession}
             />
@@ -5428,8 +5575,8 @@ export function ChatApp() {
               sessionInterrupted={sessionInterrupted}
               sessionTurnComplete={turnCompleteIds}
               sessionHasPermission={sessionHasPermission}
-              tabGroups={tabGroups}
-              tabGroupMap={tabGroupMap}
+              tabGroups={sidebarGroups}
+              tabGroupMap={mergedGroupMap}
               groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
               onSelect={handleSelectSession}
@@ -5700,12 +5847,10 @@ export function ChatApp() {
               accentPalette={SESSION_ACCENT_PALETTE}
               getSessionAccent={getSessionAccent}
               onPickSessionAccent={colorChatBySession ? handlePickSessionAccent : undefined}
-              tabGroups={tabGroups}
+              tabGroups={sidebarGroups}
               tabGroupMap={sidebarGroupMap}
               groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
-              pinnedOutOfWorktree={pinnedOutOfWorktree}
-              groupByWorktree={groupSessionsByWorktree}
               onCreateGroup={handleCreateGroup}
               onGroupTabs={handleGroupTabs}
               onAddToGroup={handleAddToGroup}
@@ -5713,7 +5858,7 @@ export function ChatApp() {
               onToggleGroup={handleToggleGroup}
               onCreateSubgroup={handleCreateSubgroup}
               onMoveGroup={handleMoveGroup}
-              onPinSessionOutOfWorktree={handlePinOutOfWorktree}
+              onAutoGroupSessions={handleAutoGroupSessions}
               onOpenGroupComposer={handleSelectGroup}
               onRenameGroup={handleRenameGroup}
               onChangeGroupColor={handleChangeGroupColor}
@@ -5744,10 +5889,20 @@ export function ChatApp() {
                 lastMessageAt={sessionLastMessageAt}
                 lastPreview={sessionLastPreview}
                 prLinks={prLinks}
-                tabGroups={tabGroups}
-                tabGroupMap={tabGroupMap}
+                tabGroups={sidebarGroups}
+                tabGroupMap={mergedGroupMap}
                 onSelectSession={handleSelectSession}
                 onAssignGroup={(sid, gid) => gid ? handleAddToGroup(sid, gid) : handleUngroupTab(sid)}
+              />
+            ) : activeNavView === 'automations' ? (
+              <AutomationsView
+                client={client}
+                defaultCwd={
+                  [...sessions]
+                    .sort((a, b) => (sessionLastMessageAt[b.id] || 0) - (sessionLastMessageAt[a.id] || 0))
+                    .find(s => s.cwd)?.cwd || ''
+                }
+                onOpenSession={handleSelectSession}
               />
             ) : !activeId ? (
               <GroupComposer
@@ -5772,12 +5927,12 @@ export function ChatApp() {
                 {/* Unified session workspace — chat (left) + resources (right),
                     or the group composer, all inside one per-session PanelsWorkspace.
                     Sidebars stay outside; everything else in the central area is a tab. */}
-                {(activeId || (selectedGroupId && tabGroups[selectedGroupId])) && (() => {
-                  const groupMode = !!(selectedGroupId && tabGroups[selectedGroupId]);
+                {(activeId || (selectedGroupId && sidebarGroups[selectedGroupId])) && (() => {
+                  const groupMode = !!(selectedGroupId && sidebarGroups[selectedGroupId]);
                   const wsId = groupMode ? ('group:' + (selectedGroupId || 'x')) : (activeId || 'none');
                   const panelTabs: PanelTab[] = [];
                   if (groupMode) {
-                    panelTabs.push({ id: 'group-composer', kind: 'group-composer', title: tabGroups[selectedGroupId as string]!.name, icon: '✦', zone: 'chat', closable: false });
+                    panelTabs.push({ id: 'group-composer', kind: 'group-composer', title: sidebarGroups[selectedGroupId as string]!.name, icon: '✦', zone: 'chat', closable: false });
                   } else if (activeId) {
                     panelTabs.push({ id: 'chat', kind: 'chat', title: 'Chat', icon: '💬', zone: 'chat', closable: false });
                     // One panel tab per open file (VSCode-style). At most one
@@ -5842,10 +5997,10 @@ export function ChatApp() {
                       active session's chat (same path used by focus mode). */}
                   {selectedGroupId && tabGroups[selectedGroupId] ? (
                     <GroupComposer
-                      groupName={tabGroups[selectedGroupId]!.name}
+                      groupName={sidebarGroups[selectedGroupId]!.name}
                       groupCwd={
-                        tabGroups[selectedGroupId]!.cwd
-                          || sessions.find(s => tabGroupMap[s.id] === selectedGroupId)?.cwd
+                        sidebarGroups[selectedGroupId]!.cwd
+                          || sessions.find(s => sidebarGroupMap[s.id] === selectedGroupId)?.cwd
                           || ''
                       }
                       client={client}
@@ -6318,10 +6473,10 @@ export function ChatApp() {
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-y-auto">
                     <GroupComposer
-                      groupName={tabGroups[selectedGroupId]!.name}
+                      groupName={sidebarGroups[selectedGroupId]!.name}
                       groupCwd={
-                        tabGroups[selectedGroupId]!.cwd
-                          || sessions.find(s => tabGroupMap[s.id] === selectedGroupId)?.cwd
+                        sidebarGroups[selectedGroupId]!.cwd
+                          || sessions.find(s => sidebarGroupMap[s.id] === selectedGroupId)?.cwd
                           || ''
                       }
                       client={client}
@@ -7320,6 +7475,7 @@ export function ChatApp() {
             onClose={() => setWorktreeForGroup(null)}
             client={clientRef.current}
             repoPath={worktreeForGroup.cwd}
+            remoteId={groupRemoteInfo[worktreeForGroup.groupId]?.remoteId ?? null}
             hasEnv={worktreeForGroup.hasEnv}
             detectedPackageManager={worktreeForGroup.packageManager}
             worktrees={worktreeForGroup.worktrees}
@@ -7343,8 +7499,8 @@ export function ChatApp() {
           selectedIdx={switcher.idx}
           sessionStates={sessionStates}
           sessionLastMessageAt={sessionLastMessageAt}
-          tabGroups={tabGroups}
-          tabGroupMap={tabGroupMap}
+          tabGroups={sidebarGroups}
+          tabGroupMap={mergedGroupMap}
           onSelectIdx={(i) => setSwitcher(s => ({ ...s, idx: i }))}
           onCommit={() => {
             const target = switcher.ids[switcher.idx];
@@ -7542,6 +7698,60 @@ export function ChatApp() {
                   <Button className="bg-red-600 text-white" onPress={confirmDeleteGroup} isDisabled={p.submitting}>
                     {p.submitting ? 'Deleting…' : 'Delete'}
                   </Button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {autoGroupPrompt && (() => {
+          const p = autoGroupPrompt;
+          const created = p.groups.filter(g => !g.exists).length;
+          const dismiss = () => { if (!p.submitting) setAutoGroupPrompt(null); };
+          return (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={dismiss}>
+              <div className="absolute inset-0 bg-black/50" />
+              <div className="relative bg-surface border border-border-light rounded-xl shadow-2xl p-5 max-w-md w-full" onClick={e => e.stopPropagation()}>
+                <h3 className="text-sm font-semibold text-zinc-200 mb-2">Auto-group loose sessions</h3>
+
+                {p.error ? (
+                  <p className="text-[13px] text-red-300 mb-4">{p.error}</p>
+                ) : p.submitting && !p.groups.length ? (
+                  <p className="text-[13px] text-zinc-400 mb-4">Working out the plan…</p>
+                ) : !p.moved ? (
+                  <p className="text-[13px] text-zinc-400 mb-4">
+                    Nothing to do — every session is already in a group.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[13px] text-zinc-400 mb-3">
+                      File <span className="text-zinc-200">{p.moved} loose session{p.moved === 1 ? '' : 's'}</span>{' '}
+                      into {p.groups.length} group{p.groups.length === 1 ? '' : 's'}
+                      {created > 0 && <> ({created} new)</>}. This cannot be undone.
+                    </p>
+                    <div className="mb-4 max-h-48 overflow-y-auto rounded-md border border-border bg-base/40 divide-y divide-border">
+                      {p.groups.map(g => (
+                        <div key={g.name} className="px-3 py-1.5 text-[12px] flex items-center gap-2">
+                          <span className="text-zinc-300 truncate">{g.name}</span>
+                          {!g.exists && (
+                            <span className="text-[10px] text-emerald-400/80 shrink-0">new</span>
+                          )}
+                          <span className="ml-auto text-zinc-500 shrink-0">{g.sessionIds.length}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <Button variant="flat" onPress={dismiss} isDisabled={p.submitting}>
+                    {p.moved && !p.error ? 'Cancel' : 'Close'}
+                  </Button>
+                  {!!p.moved && !p.error && (
+                    <Button className="bg-indigo-600 text-white" onPress={confirmAutoGroup} isDisabled={p.submitting}>
+                      {p.submitting ? 'Grouping…' : 'Group them'}
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>

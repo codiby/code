@@ -1,0 +1,4 @@
+[test]
+# Points every suite at a throwaway database before the first test file loads.
+# See scripts/test-preload.ts for why this cannot live inside a test file.
+preload = ["./scripts/test-preload.ts"]

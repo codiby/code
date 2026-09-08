@@ -1,29 +1,19 @@
-import { beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { describe, expect, test } from 'bun:test';
+import * as repository from './repository';
+import * as scheduler from './scheduler';
+import { promptWithPayload } from './runner';
+import { automationPatchSchema } from './types';
 
-const testDir = mkdtempSync(join(tmpdir(), 'codiby-automations-'));
-process.env.CODIBY_DATABASE_FILE = join(testDir, 'database.sqlite');
-
-let repository: typeof import('./repository');
-let scheduler: typeof import('./scheduler');
-
-beforeAll(async () => {
-  repository = await import('./repository');
-  scheduler = await import('./scheduler');
-});
-
-// `bun test` runs every file in one process against a single sqlite handle and
-// a single database file, so closing or deleting them in afterAll would break
-// whichever suite runs next. Cleanup waits for the process to exit.
-process.on('exit', () => rmSync(testDir, { recursive: true, force: true }));
+// The sandbox database these run against comes from scripts/test-preload.ts:
+// setting CODIBY_DATABASE_FILE here instead would lose the race to any suite
+// that imports ../database first, and write these fixtures into the real one.
 
 describe('automation persistence', () => {
   test('creates, updates, lists, and soft-deletes an automation', () => {
     const automation = repository.createAutomation({
       name: 'Daily review',
       description: null,
+      triggerType: 'cron',
       cronExpression: '0 9 * * *',
       timezone: 'UTC',
       enabled: true,
@@ -57,6 +47,72 @@ describe('automation persistence', () => {
 
     expect(repository.deleteAutomation(automation.id)).toBe(true);
     expect(repository.getAutomation(automation.id)).toBeNull();
+  });
+});
+
+describe('patch validation', () => {
+  test('leaves out every field the caller did not send', () => {
+    // Zod applies `.default()` even through `.partial()`, so a patch schema
+    // built from the defaulted create schema silently rewrites untouched
+    // fields — renaming an automation used to downgrade its permissionMode to
+    // 'default' and its timezone to 'UTC'.
+    const patch = automationPatchSchema.parse({ name: 'Renamed' });
+
+    expect(patch).toEqual({ name: 'Renamed' });
+    expect(Object.keys(patch)).toEqual(['name']);
+  });
+
+  test('still rejects an empty patch', () => {
+    expect(() => automationPatchSchema.parse({})).toThrow();
+  });
+});
+
+describe('webhook automations', () => {
+  test('are stored without a cron and never get scheduled', () => {
+    const automation = repository.createAutomation({
+      name: 'On watcher event',
+      description: null,
+      triggerType: 'webhook',
+      cronExpression: null,
+      timezone: 'UTC',
+      enabled: true,
+      prompt: 'React to the event',
+      cwd: '/tmp/project',
+      provider: 'claude',
+      model: null,
+      permissionMode: 'default',
+      effort: null,
+      concurrencyPolicy: 'skip',
+      maxRuntimeMs: null,
+    }, null);
+
+    expect(automation.triggerType).toBe('webhook');
+    expect(automation.cronExpression).toBeNull();
+
+    // Enabled, but with nothing to fire it on a timer: the scheduler must leave
+    // `nextRunAt` empty instead of trying to parse a missing expression.
+    scheduler.scheduleAutomation(automation);
+    expect(repository.getAutomation(automation.id)?.nextRunAt).toBeNull();
+
+    repository.deleteAutomation(automation.id);
+  });
+
+  test('hand the POSTed body to the prompt, and leave the prompt alone without one', () => {
+    const event = JSON.stringify({ type: 'item.column_changed', to: 'code_review' });
+
+    expect(promptWithPayload('Review it', event))
+      .toBe(`Review it\n\n<webhook-payload>\n${event}\n</webhook-payload>`);
+    // No body, or a body of nothing but whitespace: the prompt is sent as-is
+    // rather than with an empty block the agent would have to interpret.
+    expect(promptWithPayload('Review it', null)).toBe('Review it');
+    expect(promptWithPayload('Review it', '   \n ')).toBe('Review it');
+  });
+
+  test('cut an oversized body instead of flooding the first turn', () => {
+    const result = promptWithPayload('Review it', 'x'.repeat(40_000));
+
+    expect(result).toContain('truncated at 32000 chars');
+    expect(result.length).toBeLessThan(33_000);
   });
 });
 

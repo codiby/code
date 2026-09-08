@@ -39,14 +39,28 @@ cd "$PROJECT_DIR"
 # Copy the per-platform ripgrep binary from @vscode/ripgrep so the packaged
 # app ships its own `rg` (the bridge resolves it via CODIBY_RG_PATH).
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64) RG_SRC="$PROJECT_DIR/node_modules/@vscode/ripgrep-darwin-arm64/bin/rg" ;;
-  Darwin-x86_64) RG_SRC="$PROJECT_DIR/node_modules/@vscode/ripgrep-darwin-x64/bin/rg" ;;
-  Linux-x86_64) RG_SRC="$PROJECT_DIR/node_modules/@vscode/ripgrep-linux-x64/bin/rg" ;;
-  Linux-aarch64) RG_SRC="$PROJECT_DIR/node_modules/@vscode/ripgrep-linux-arm64/bin/rg" ;;
-  MINGW*|MSYS*|CYGWIN*) RG_SRC="$PROJECT_DIR/node_modules/@vscode/ripgrep-win32-x64/bin/rg.exe" ;;
-  *) RG_SRC="" ;;
+  Darwin-arm64) RG_PKG="ripgrep-darwin-arm64"; RG_BIN="rg" ;;
+  Darwin-x86_64) RG_PKG="ripgrep-darwin-x64"; RG_BIN="rg" ;;
+  Linux-x86_64) RG_PKG="ripgrep-linux-x64"; RG_BIN="rg" ;;
+  Linux-aarch64) RG_PKG="ripgrep-linux-arm64"; RG_BIN="rg" ;;
+  MINGW*|MSYS*|CYGWIN*) RG_PKG="ripgrep-win32-x64"; RG_BIN="rg.exe" ;;
+  *) RG_PKG=""; RG_BIN="" ;;
 esac
-if [ -n "$RG_SRC" ] && [ -x "$RG_SRC" ]; then
+# `@vscode/ripgrep` is a dependency of packages/core, so under bun workspaces
+# the hoisted copy lives there and not at the project root. Ask bun where the
+# per-platform package actually resolved instead of guessing a path: guessing
+# is what made this step skip silently after the move to workspaces, shipping
+# a stale `rg` in every build since.
+RG_SRC=""
+if [ -n "$RG_PKG" ]; then
+  for candidate in \
+    "$PROJECT_DIR/node_modules/@vscode/$RG_PKG/bin/$RG_BIN" \
+    "$PROJECT_DIR/packages/core/node_modules/@vscode/$RG_PKG/bin/$RG_BIN" \
+    "$PROJECT_DIR/node_modules/.bun/@vscode+$RG_PKG@"*"/node_modules/@vscode/$RG_PKG/bin/$RG_BIN"; do
+    if [ -x "$candidate" ]; then RG_SRC="$candidate"; break; fi
+  done
+fi
+if [ -n "$RG_SRC" ]; then
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) RG_OUT="$OUT_DIR/rg.exe" ;;
     *) RG_OUT="$OUT_DIR/rg" ;;
@@ -55,7 +69,11 @@ if [ -n "$RG_SRC" ] && [ -x "$RG_SRC" ]; then
   cp "$RG_SRC" "$RG_OUT"
   chmod +x "$RG_OUT"
 else
-  echo "-- Skipping rg copy (no @vscode/ripgrep binary for $(uname -s)-$(uname -m))" >&2
+  # Hard failure: without `rg` the packaged app boots with a search handler that
+  # silently falls back to whatever is on PATH, or to nothing at all.
+  echo "Error: no @vscode/ripgrep binary found for $(uname -s)-$(uname -m)." >&2
+  echo "Run 'bun install' and check that @vscode/$RG_PKG resolved." >&2
+  exit 1
 fi
 
 # Swagger UI static assets — the bundled `server.js` ships no node_modules, so

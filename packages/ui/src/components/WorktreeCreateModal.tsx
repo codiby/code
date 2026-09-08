@@ -10,6 +10,9 @@ interface Props {
   onClose: () => void;
   client: ClaudeClient;
   repoPath: string;
+  /** Host that owns `repoPath` (`null` = this machine). Forwarded to the form
+   *  so `git worktree add` runs where the repo actually is. */
+  remoteId?: string | null;
   hasEnv?: boolean;
   detectedPackageManager?: string;
   /** Existing worktrees of `repoPath` — forwarded so the "Existing branch"
@@ -26,7 +29,7 @@ interface Props {
  * component, which is also embedded by `NewSessionModal`.
  */
 export function WorktreeCreateModal({
-  open, onClose, client, repoPath, hasEnv, detectedPackageManager, existingWorktrees, onCreated,
+  open, onClose, client, repoPath, remoteId, hasEnv, detectedPackageManager, existingWorktrees, onCreated,
 }: Props) {
   if (!open) return null;
 
@@ -57,6 +60,7 @@ export function WorktreeCreateModal({
           <WorktreeCreateForm
             client={client}
             repoPath={repoPath}
+            remoteId={remoteId}
             hasEnv={hasEnv}
             detectedPackageManager={detectedPackageManager}
             existingWorktrees={existingWorktrees}

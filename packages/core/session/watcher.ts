@@ -44,7 +44,8 @@ type Entry = {
    *  separators (`''` is the cwd itself), so a rename event doesn't attach a
    *  second one. */
   watchedDirs: Set<string>;
-  /** Set once we've reported hitting `MAX_WATCHES`, so it's logged one time. */
+  /** Set once we've reported that coverage is incomplete (either limit below),
+   *  so it's logged one time per session rather than per directory. */
   watchLimitLogged: boolean;
   broadcast: Broadcast;
   /** Coalesced changes keyed by relative path; last kind wins within a window. */
@@ -120,6 +121,27 @@ function childDirs(dir: string): string[] {
  *  hundreds of subdirectories) turning into an unbounded pile of watches. */
 const MAX_WATCHES = 1024;
 
+/**
+ * Directories a single planning walk will visit before it gives up on covering
+ * the rest of the tree.
+ *
+ * `MAX_WATCHES` alone doesn't bound the walk: a subtree with no ignored
+ * directory anywhere below it is covered by *one* recursive watch, so it emits
+ * nothing while still being read to the bottom. The walk is synchronous, so
+ * that read blocks the event loop — and the bridge's `/health` endpoint with
+ * it. A session cwd holding more non-ignored directories than this isn't a
+ * project tree (a home directory measured ~149k of them, twelve seconds of
+ * blocking); covering the part we can reach beats stalling the server.
+ */
+const MAX_PLAN_DIRS = 5_000;
+
+/** How much walking a plan may still do, and whether it ran out. */
+export type PlanBudget = { dirsLeft: number; truncated: boolean };
+
+export function newPlanBudget(): PlanBudget {
+  return { dirsLeft: MAX_PLAN_DIRS, truncated: false };
+}
+
 /** Attach one watcher covering `relDir` — a POSIX path relative to the session
  *  cwd, `''` for the cwd itself — and wire it into `entry`. `relDir` is
  *  prepended to the filenames the watcher reports so every path staged stays
@@ -182,8 +204,20 @@ export type PlannedWatch = { relDir: string; recursive: boolean };
  * its clean children — so the ignored directory ends up covered by nothing.
  *
  * Returns true when `relDir` came out clean and nothing was emitted for it.
+ *
+ * Out of budget, a directory reports itself *dirty* without being read. That
+ * makes its parent fall back to a non-recursive watch on itself, so the tree
+ * stays covered down to the cut and nothing below it is wrongly claimed as
+ * covered — the same trade `MAX_WATCHES` already makes, decided before the
+ * walk pays for it rather than after.
  */
-function planSubtree(cwd: string, relDir: string, out: PlannedWatch[]): boolean {
+function planSubtree(cwd: string, relDir: string, out: PlannedWatch[], budget: PlanBudget): boolean {
+  if (budget.dirsLeft <= 0 || out.length >= MAX_WATCHES) {
+    budget.truncated = true;
+    return false;
+  }
+  budget.dirsLeft--;
+
   const children = childDirs(relDir ? join(cwd, relDir) : cwd);
   const candidates = children.filter(name => !IGNORED_SEGMENTS.has(name));
   let dirty = candidates.length !== children.length;
@@ -191,7 +225,7 @@ function planSubtree(cwd: string, relDir: string, out: PlannedWatch[]): boolean 
   const cleanChildren: string[] = [];
   for (const name of candidates) {
     const childRel = relDir ? `${relDir}/${name}` : name;
-    if (planSubtree(cwd, childRel, out)) cleanChildren.push(childRel);
+    if (planSubtree(cwd, childRel, out, budget)) cleanChildren.push(childRel);
     else dirty = true; // a descendant had to be split up, so we can't be whole
   }
   if (!dirty) return true;
@@ -202,10 +236,11 @@ function planSubtree(cwd: string, relDir: string, out: PlannedWatch[]): boolean 
 }
 
 /** The watches that cover `relDir` (`''` for the whole cwd), always including
- *  one for `relDir` itself. Pure — exported for tests. */
-export function planWatches(cwd: string, relDir = ''): PlannedWatch[] {
+ *  one for `relDir` itself. Pass a `budget` to find out whether the tree was
+ *  too big to cover fully. Pure — exported for tests. */
+export function planWatches(cwd: string, relDir = '', budget: PlanBudget = newPlanBudget()): PlannedWatch[] {
   const out: PlannedWatch[] = [];
-  if (planSubtree(cwd, relDir, out)) out.push({ relDir, recursive: true });
+  if (planSubtree(cwd, relDir, out, budget)) out.push({ relDir, recursive: true });
   return out;
 }
 
@@ -213,8 +248,16 @@ export function planWatches(cwd: string, relDir = ''): PlannedWatch[] {
  *  that appear after startup. */
 function coverDir(entry: Entry, sessionId: string, relDir: string): void {
   if (entry.watchedDirs.has(relDir)) return;
-  for (const { relDir: dir, recursive } of planWatches(entry.cwd, relDir)) {
+  const budget = newPlanBudget();
+  for (const { relDir: dir, recursive } of planWatches(entry.cwd, relDir, budget)) {
     attachWatch(entry, sessionId, dir, recursive);
+  }
+  if (budget.truncated && !entry.watchLimitLogged) {
+    entry.watchLimitLogged = true;
+    logError(
+      `[watch] tree too large for ${sessionId.slice(0, 8)} at ${relDir ? join(entry.cwd, relDir) : entry.cwd} — ` +
+        `stopped planning after ${MAX_PLAN_DIRS} directories; changes deeper in the tree go unreported`,
+    );
   }
 }
 

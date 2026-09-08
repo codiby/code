@@ -28,10 +28,34 @@ export function configureAutomationRunner(nextDeps: RunnerDeps): void {
   deps = nextDeps;
 }
 
+/**
+ * A webhook body big enough to be useful but not big enough to blow the first
+ * turn's context. Anything past this is cut, with the cut announced inline so
+ * the agent knows it is looking at a fragment rather than the whole event.
+ */
+const MAX_PAYLOAD_CHARS = 32_000;
+
+/**
+ * Appends whatever the caller POSTed to the automation's prompt, so a
+ * webhook-triggered run knows *which* event woke it instead of having to
+ * re-derive it. Fenced and labelled because it is untrusted input: it comes
+ * from whatever service holds the URL.
+ */
+export function promptWithPayload(prompt: string, payload: string | null): string {
+  if (!payload) return prompt;
+  const trimmed = payload.trim();
+  if (!trimmed) return prompt;
+  const body = trimmed.length > MAX_PAYLOAD_CHARS
+    ? `${trimmed.slice(0, MAX_PAYLOAD_CHARS)}\n… truncated at ${MAX_PAYLOAD_CHARS} chars`
+    : trimmed;
+  return `${prompt}\n\n<webhook-payload>\n${body}\n</webhook-payload>`;
+}
+
 export async function runAutomation(
   automation: AutomationRecord,
   trigger: AutomationRunTrigger,
   scheduledFor: number | null = null,
+  payload: string | null = null,
 ): Promise<AutomationRunRecord | null> {
   if (!deps) throw new Error('Automation runner is not configured');
 
@@ -67,7 +91,7 @@ export async function runAutomation(
       timeoutHandles.set(run.id, handle);
     }
 
-    const sent = await deps.sendMessage(created.id, automation.prompt);
+    const sent = await deps.sendMessage(created.id, promptWithPayload(automation.prompt, payload));
     if (!sent.ok) {
       clearRunTimeout(run.id);
       finishRun(run.id, 'failed', sent.error || 'Failed to send automation prompt');

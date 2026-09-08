@@ -10,6 +10,9 @@ interface Props {
   client: ClaudeClient;
   /** Absolute path of the git top-level — the worktree's parent repo. */
   repoPath: string;
+  /** Host that owns `repoPath` (`null` = this machine). Forwarded down to the
+   *  create sub-modal so a remote group's worktree is created on its remote. */
+  remoteId?: string | null;
   /** Whether the repo has a `.env` file at its top-level (forwarded to
    *  the create sub-modal so it can prefill its copy-env checkbox). */
   hasEnv?: boolean;
@@ -33,7 +36,7 @@ interface Props {
  * `mobile/MobileWorktreeModal.tsx`.
  */
 export function WorktreeModal({
-  open, onClose, client, repoPath, hasEnv, detectedPackageManager, worktrees, onCreated,
+  open, onClose, client, repoPath, remoteId, hasEnv, detectedPackageManager, worktrees, onCreated,
 }: Props) {
   const [worktreeFilter, setWorktreeFilter] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -146,6 +149,7 @@ export function WorktreeModal({
         onClose={() => setShowCreateModal(false)}
         client={client}
         repoPath={repoPath}
+        remoteId={remoteId}
         hasEnv={hasEnv}
         detectedPackageManager={detectedPackageManager}
         existingWorktrees={worktrees}
