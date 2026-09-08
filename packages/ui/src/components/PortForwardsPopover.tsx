@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Network, Plus, Copy, ExternalLink, X, Check, RefreshCw, AlertTriangle, Radio } from 'lucide-react';
 import type { ClaudeClient, PublishedPort, SessionInfo } from '../lib/claude-client';
 
@@ -47,6 +48,9 @@ export function PortForwardsPopover({
   const [showForm, setShowForm] = useState(false);
   const [showPublishForm, setShowPublishForm] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
+  /** Viewport rect of the chip, measured while open. The panel is portalled
+   *  out of the titlebar (see below), so it can't anchor with `absolute`. */
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
 
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -80,6 +84,17 @@ export function PortForwardsPopover({
     if (!open) return;
     refresh();
   }, [open, refresh]);
+
+  // Keep the panel glued to the chip. Measured before paint so it never shows
+  // up in the top-left corner for a frame, and re-measured on resize because
+  // the chip is right-aligned in a titlebar that tracks the window width.
+  useLayoutEffect(() => {
+    if (!open) { setAnchor(null); return; }
+    const measure = () => setAnchor(btnRef.current?.getBoundingClientRect() ?? null);
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open]);
 
   // close on outside-click / Esc
   useEffect(() => {
@@ -131,10 +146,25 @@ export function PortForwardsPopover({
         ) : null}
       </button>
 
-      {open && (
+      {/* Portalled to <body> on purpose. Rendered in place, the panel is a
+       *  child of the titlebar, and the titlebar is one big
+       *  `-webkit-app-region: drag` rect — a rect Chromium caches until the
+       *  next relayout, and which swallows every mousedown over the panel as
+       *  a window drag. That is the "dialog ignores clicks until I switch
+       *  sessions and come back" bug: leaving the session unmounted the panel
+       *  (see the early return above) and remounting recomputed the region.
+       *  Out here there is no drag ancestor, and `no-drag` says so anyway. */}
+      {open && anchor && createPortal(
         <div
           ref={popRef}
-          className="absolute right-0 top-7 z-[10000] w-[360px] bg-surface border border-border-light rounded-lg shadow-2xl overflow-hidden"
+          style={{
+            position: 'fixed',
+            top: anchor.bottom + 6,
+            right: Math.max(8, window.innerWidth - anchor.right),
+            zIndex: 10000,
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
+          className="w-[360px] bg-surface border border-border-light rounded-lg shadow-2xl overflow-hidden"
         >
           {/* arrow */}
           <span className="absolute -top-1.5 right-6 w-2.5 h-2.5 bg-surface border-l border-t border-border-light rotate-45" />
@@ -206,8 +236,11 @@ export function PortForwardsPopover({
                 </div>
               )}
 
+              {/* The empty state's only job is to offer the form, so it steps
+               *  aside once the form is up — leaving both on screen reads as
+               *  "the button did nothing". */}
               {publishedPorts.length === 0 ? (
-                <PublishEmptyState onAdd={() => setShowPublishForm(true)} />
+                showPublishForm ? null : <PublishEmptyState onAdd={() => setShowPublishForm(true)} />
               ) : (
                 <ul className="py-1">
                   {publishedPorts.map(p => (
@@ -282,7 +315,7 @@ export function PortForwardsPopover({
               )}
 
               {forwards.length === 0 ? (
-                <EmptyState onAdd={() => setShowForm(true)} disabled={offline} />
+                showForm ? null : <EmptyState onAdd={() => setShowForm(true)} disabled={offline} />
               ) : (
                 <ul className="py-1">
                   {forwards.map(f => (
@@ -335,7 +368,8 @@ export function PortForwardsPopover({
               )}
             </>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
