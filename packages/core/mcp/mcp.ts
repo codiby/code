@@ -1499,7 +1499,13 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
         const sid = typeof args!.session_id === 'string' ? args!.session_id : '';
         if (!sid) return { content: [{ type: 'text', text: 'session_id is required' }], isError: true };
-        if (!sessions.has(sid)) return { content: [{ type: 'text', text: `Session not found: ${sid}` }], isError: true };
+        // Deliberately not checking `sessions.has(sid)`. A session running on
+        // another machine reaches the sidebar over the renderer's direct
+        // connection to that bridge and never enters this one's map, so the
+        // check rejected exactly the sessions the user most wants to file. What
+        // it writes is `tabGroupMap` — this machine's own sidebar layout, which
+        // already holds ids no local lookup can resolve. The group id below is
+        // the one that has to exist, and it is checked.
         const gid = typeof args!.group_id === 'string' ? args!.group_id : '';
 
         const prefs = _deps.loadPreferences();

@@ -23,6 +23,33 @@ import type { TabGroupInfo } from './tab-groups';
  *  form (`handlers/worktree.ts`), which is where grouping decisions are made. */
 export const WORKTREE_CWD_LOOSE_RE = /[\\/]\.(?:worktrees|wt)[\\/]/;
 
+/** The repo that owns a worktree cwd, or null when the path isn't in one.
+ *
+ *  The bridge's `WORKTREE_CWD_RE` anchors at the end, so it only recognises a
+ *  session sitting exactly at the worktree root. A session opened a few
+ *  directories below it is still on that branch, so this stops at the
+ *  `.worktrees` segment and returns whatever precedes it. */
+export function repoRootOfWorktreeCwd(cwd: string): string | null {
+  return cwd.match(/^(.*?)[\\/]\.(?:worktrees|wt)[\\/]/)?.[1] || null;
+}
+
+/** The group standing for `repoRoot` — where a worktree's group belongs.
+ *
+ *  Matches on `cwd` first, the field the bridge fills when it autogroups a
+ *  project, and falls back to the repo's folder name for groups made before
+ *  that field existed or renamed since. Root-level groups only: a subgroup
+ *  named after the repo is somebody's "Backend", not the project itself. */
+export function projectGroupIdForRepo(
+  repoRoot: string,
+  groups: Record<string, TabGroupInfo>,
+): string | null {
+  const roots = Object.values(groups).filter(g => !g.parentId);
+  const byCwd = roots.find(g => g.cwd === repoRoot);
+  if (byCwd) return byCwd.id;
+  const folder = repoRoot.split(/[\\/]/).filter(Boolean).pop();
+  return roots.find(g => g.name === folder)?.id ?? null;
+}
+
 /** Key used for root-level nodes in the parent-indexed maps. Real group ids are
  *  uuids, so the empty string is unambiguous. */
 export const ROOT_KEY = '';

@@ -3,7 +3,8 @@ import type { SessionInfo } from './claude-client';
 import type { TabGroupInfo } from './tab-groups';
 import {
   ancestorChain, buildGroupTree, descendantGroupIds, findGroupNode,
-  flattenSessionIds, isAncestorOf, resolveGroupColor,
+  flattenSessionIds, isAncestorOf, projectGroupIdForRepo, repoRootOfWorktreeCwd,
+  resolveGroupColor,
   type TreeNode,
 } from './group-tree';
 
@@ -224,5 +225,56 @@ describe('tree helpers', () => {
       map: { s1: 'root', s2: 'mid' },
     });
     expect(flattenSessionIds(tree)).toEqual(['s2', 's1', 'loose']);
+  });
+});
+
+describe('worktree groups nest under their repo', () => {
+  test('repoRootOfWorktreeCwd finds the repo from anywhere in the worktree', () => {
+    expect(repoRootOfWorktreeCwd(WT_A)).toBe(REPO);
+    expect(repoRootOfWorktreeCwd(`${WT_A}/packages/ui`)).toBe(REPO);
+    // `.wt` is the legacy directory; worktrees created by older versions still
+    // have to resolve.
+    expect(repoRootOfWorktreeCwd('/src/code/.wt/feat-a')).toBe(REPO);
+    expect(repoRootOfWorktreeCwd('C:\\src\\code\\.worktrees\\feat-a')).toBe('C:\\src\\code');
+  });
+
+  test('repoRootOfWorktreeCwd returns null off a worktree', () => {
+    expect(repoRootOfWorktreeCwd(REPO)).toBeNull();
+    // Nothing precedes the segment, so there is no repo to nest under.
+    expect(repoRootOfWorktreeCwd('/.worktrees/feat-a')).toBeNull();
+    // A directory that merely mentions worktrees is not one.
+    expect(repoRootOfWorktreeCwd('/src/code/worktrees/feat-a')).toBeNull();
+  });
+
+  test('projectGroupIdForRepo matches the repo group on cwd', () => {
+    const groups = {
+      code: group('code', { cwd: REPO }),
+      other: group('other', { cwd: '/src/taskr' }),
+    };
+    expect(projectGroupIdForRepo(REPO, groups)).toBe('code');
+    expect(projectGroupIdForRepo('/src/unknown', groups)).toBeNull();
+  });
+
+  test('projectGroupIdForRepo falls back to the folder name', () => {
+    // Groups created before `cwd` was persisted only carry the folder name.
+    const groups = { g1: group('g1', { name: 'code' }) };
+    expect(projectGroupIdForRepo(REPO, groups)).toBe('g1');
+  });
+
+  test('projectGroupIdForRepo ignores subgroups with the repo name', () => {
+    // Two repos can each hold a "code" subgroup; neither is the project.
+    const groups = {
+      root: group('root', { name: 'taskr', cwd: '/src/taskr' }),
+      nested: group('nested', { name: 'code', cwd: REPO, parentId: 'root' }),
+    };
+    expect(projectGroupIdForRepo(REPO, groups)).toBeNull();
+  });
+
+  test('cwd wins over a namesake group', () => {
+    const groups = {
+      renamed: group('renamed', { name: 'monorepo', cwd: REPO }),
+      namesake: group('namesake', { name: 'code', cwd: '/elsewhere/code' }),
+    };
+    expect(projectGroupIdForRepo(REPO, groups)).toBe('renamed');
   });
 });

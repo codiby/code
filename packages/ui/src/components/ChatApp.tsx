@@ -106,7 +106,10 @@ import { FocusBrowserAnchor } from './browser/FocusBrowserAnchor';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
 import { CHAT_WIDTH_CLASS, type ChatWidth } from '../lib/store/slices/preferencesSlice';
-import { ancestorChain, descendantGroupIds, isAncestorOf, WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
+import {
+  ancestorChain, descendantGroupIds, isAncestorOf, projectGroupIdForRepo,
+  repoRootOfWorktreeCwd, WORKTREE_CWD_LOOSE_RE,
+} from '../lib/group-tree';
 import {
   isRemoteGroupKey, mergeRemoteGroups, remoteOfGroupKey, type RemoteGroupPrefs,
 } from '../lib/remote-groups';
@@ -378,7 +381,6 @@ export function ChatApp() {
 
   const handleCreateGroup = (tabIds: string[]) => {
     const groupId = crypto.randomUUID();
-    const color = GROUP_COLORS[groupColorIdx++ % GROUP_COLORS.length]!;
     // A group always belongs to a project — capture the cwd from the first
     // member tab. This becomes the default cwd for any "+ New session in
     // group" actions later. Falls back to the active session's cwd, then
@@ -388,9 +390,22 @@ export function ChatApp() {
     const groupName = firstMember?.cwd
       ? (firstMember.cwd.split('/').filter(Boolean).pop() || `Group ${Object.keys(tabGroups).length + 1}`)
       : `Group ${Object.keys(tabGroups).length + 1}`;
+    // A worktree belongs to its repo, so its group nests under the project's
+    // instead of landing beside it as a sibling. Same shape the bridge gives
+    // the branch subgroups it creates itself: a branch icon, and no colour so
+    // the whole project reads as one family (`resolveGroupColor`). Without a
+    // group for the repo there is nothing to nest under, and it stays where it
+    // would have gone before.
+    const repoRoot = repoRootOfWorktreeCwd(groupCwd);
+    const parentId = repoRoot ? projectGroupIdForRepo(repoRoot, tabGroups) : null;
     const newGroups: Record<string, TabGroupInfo> = {
       ...tabGroups,
-      [groupId]: { id: groupId, name: groupName, color, cwd: groupCwd, parentId: null },
+      [groupId]: parentId
+        ? { id: groupId, name: groupName, cwd: groupCwd, parentId, icon: 'git-branch' }
+        : {
+            id: groupId, name: groupName, cwd: groupCwd, parentId: null,
+            color: GROUP_COLORS[groupColorIdx++ % GROUP_COLORS.length]!,
+          },
     };
     const newMap = { ...tabGroupMap };
     for (const id of tabIds) newMap[id] = groupId;
@@ -399,6 +414,8 @@ export function ChatApp() {
     setExpandedGroupIds(prev => {
       const next = new Set(prev);
       next.add(groupId);
+      // A subgroup inside a collapsed project would be created out of sight.
+      if (parentId) next.add(parentId);
       return next;
     });
     persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
