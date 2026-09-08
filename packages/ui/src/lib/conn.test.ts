@@ -15,6 +15,10 @@ class FakeWebSocket {
   static CLOSED = 3;
   static instances: FakeWebSocket[] = [];
 
+  /** When true, every new socket fails to connect instead of opening —
+   *  the "far end is down" shape (remote bridge dead, tunnel still up). */
+  static autoFail = false;
+
   readyState = FakeWebSocket.CONNECTING;
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
@@ -25,10 +29,14 @@ class FakeWebSocket {
   constructor(readonly url: string) {
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => {
-      if (this.readyState === FakeWebSocket.CONNECTING) {
-        this.readyState = FakeWebSocket.OPEN;
-        this.onopen?.();
+      if (this.readyState !== FakeWebSocket.CONNECTING) return;
+      if (FakeWebSocket.autoFail) {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.onclose?.();
+        return;
       }
+      this.readyState = FakeWebSocket.OPEN;
+      this.onopen?.();
     });
   }
 
@@ -78,6 +86,7 @@ function makeConn(opts: {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeWebSocket.autoFail = false;
   (globalThis as any).WebSocket = FakeWebSocket;
 });
 
@@ -165,6 +174,29 @@ describe('Conn socket lifecycle', () => {
     await sleep(RECONNECT_MS * 3);
 
     expect(openSockets().length).toBe(1);
+  });
+
+  test('backs off while the far end stays down, and retries at once on a new base', async () => {
+    // A remote bridge that is down but still reachable through the tunnel used
+    // to get one connect attempt every 2s forever; ssh logged a refused channel
+    // for each and eventually dropped the master, which respawned on a NEW
+    // local port. Backing off keeps the retry loop from being that hammer.
+    FakeWebSocket.autoFail = true;
+    makeConn();
+    // Delays go 20, 40, 80, 160… — four attempts (the initial one plus three
+    // retries) is all that fits in 160ms; a flat 20ms cadence would fire ~8.
+    await sleep(RECONNECT_MS * 8);
+    const withBackoff = FakeWebSocket.instances.length;
+    expect(withBackoff).toBeGreaterThan(1);
+    expect(withBackoff).toBeLessThanOrEqual(5);
+
+    // The tunnel respawning on a fresh port must not wait out the accumulated
+    // delay — that wait is what made a reconnect feel like it never happened.
+    FakeWebSocket.autoFail = false;
+    conn!.setBase('http://test-2');
+    await settle();
+    expect(openSockets().length).toBe(1);
+    expect(openSockets()[0]!.url.startsWith('ws://test-2')).toBe(true);
   });
 
   test('destroy closes the socket and stops the reconnect loop', async () => {

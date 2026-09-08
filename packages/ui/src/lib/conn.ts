@@ -37,6 +37,11 @@ export interface ConnHooks {
  *      previous socket before installing a new one.
  *   3. `reopen()` cancels a pending reconnect timer before connecting.
  */
+/** Ceiling for the reconnect backoff. Retries stay frequent enough that a
+ *  bridge restart is picked up quickly, without the loop turning into a
+ *  hammer while the far end is down for hours. */
+const MAX_RECONNECT_DELAY_MS = 15_000;
+
 export class Conn {
   ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -47,6 +52,9 @@ export class Conn {
    *  and finds itself superseded must abandon without touching `this.ws`. */
   private connectEpoch = 0;
   private readonly reconnectDelayMs: number;
+  /** Consecutive failed reconnects, for the backoff. Reset by a successful
+   *  open, a new base, and any user-driven reopen (foreground / pageshow). */
+  private reconnectAttempt = 0;
 
   constructor(
     readonly remoteId: string | null,
@@ -58,12 +66,23 @@ export class Conn {
     void this.connect();
   }
 
-  /** Point at a new base (e.g. the tunnel came online on a fresh port). */
+  /** Point at a new base (e.g. the tunnel came online on a fresh port). A new
+   *  base means the far end just changed, so retry immediately and from a
+   *  clean backoff rather than sitting out the previous delay. */
   setBase(base: string | null) {
     if (base && base !== this.base) {
       this.base = base;
+      this.reconnectAttempt = 0;
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) this.reopenSoon(0);
     }
+  }
+
+  /** Delay before the next attempt: `reconnectDelayMs`, doubling per
+   *  consecutive failure, capped. The first retry keeps the old cadence, so a
+   *  blip still recovers in ~2s; only a persistently dead far end backs off. */
+  private nextReconnectDelay(): number {
+    const attempt = this.reconnectAttempt++;
+    return Math.min(this.reconnectDelayMs * 2 ** attempt, MAX_RECONNECT_DELAY_MS);
   }
 
   private async connect() {
@@ -73,7 +92,7 @@ export class Conn {
       this.base = await this.hooks.resolveBase();
       if (this.closed || epoch !== this.connectEpoch) return;
     }
-    if (!this.base) { this.reopenSoon(this.reconnectDelayMs); return; }
+    if (!this.base) { this.reopenSoon(this.nextReconnectDelay()); return; }
     const token = this.hooks.token();
     const wsBase = this.base.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
     const url = token ? `${wsBase}?t=${encodeURIComponent(token)}` : wsBase;
@@ -88,6 +107,7 @@ export class Conn {
     this.ws = ws;
     ws.onopen = () => {
       if (this.ws !== ws) { try { ws.close(); } catch {} return; }
+      this.reconnectAttempt = 0;
       this.hooks.onStatus(this.remoteId, 'connected');
       this.hooks.onOpen?.((msg) => {
         try { ws.send(JSON.stringify(msg)); } catch {}
@@ -111,7 +131,7 @@ export class Conn {
         // Re-derive the base on reconnect — a remote tunnel may have respawned
         // on a different local port.
         this.base = null;
-        this.reopenSoon(this.reconnectDelayMs);
+        this.reopenSoon(this.nextReconnectDelay());
       }
     };
     ws.onerror = () => {
@@ -147,6 +167,9 @@ export class Conn {
     // A reconnect timer scheduled before we were backgrounded (or by a socket
     // that died since) must not fire on top of the connection we make now.
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    // Coming back to the window is the moment to try hardest: drop whatever
+    // backoff the loop had accumulated while the far end was down.
+    this.reconnectAttempt = 0;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       const prev = this.ws;
       this.ws = null;

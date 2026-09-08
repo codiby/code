@@ -27,7 +27,7 @@ import {
 // Remote traffic is no longer proxied by bun — the renderer connects directly
 // to each remote's tunnelled bridge (Electron main owns the SSH tunnels), so
 // the former gateway/ssh-tunnel imports are gone.
-import { getMergedRemoteGroups, isRemoteGroupId } from './network/remote-groups-cache';
+import { isRemoteGroupId } from './network/remote-groups-cache';
 import {
   bindSubscriptionMap,
   describeClientOrigin,
@@ -43,7 +43,6 @@ import {
   handleRemovePublishedPort,
   publishedPortsFor,
 } from './handlers/published-ports';
-import { isDerivedGroupId } from './config/group-chain';
 import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import {
   handleCancelAutomationRun,
@@ -53,6 +52,7 @@ import {
   handleGetAutomationRun,
   handleListAutomationRuns,
   handleListAutomations,
+  handleAutomationWebhook,
   handleRunAutomation,
   handleUpdateAutomation,
 } from './handlers/automations';
@@ -106,6 +106,7 @@ import {
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef, runShell } from './handlers/git';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
+import { planAutoGroup, planAutoGroupExisting, type AutoGroup } from './config/auto-group';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
 import { registerShutdownHandlers } from './lib/shutdown';
@@ -334,36 +335,19 @@ onPortlessStatus(broadcastPortlessStatus);
 onPortlessActionFired(broadcastPortlessFired);
 onPortlessUrlResolved(broadcastPortlessUrlResolved);
 
-/** Splice every known remote's cached tab groups into the local preferences
- *  blob so remote sessions render grouped. Group ids are UUIDs, so a flat
- *  merge can't collide with local groups. Done only on the wire to the
- *  frontend — never persisted to the local file (see updatePreferences). */
-function withRemoteGroups(prefs: Record<string, unknown>): Record<string, unknown> {
-  const { tabGroups, tabGroupMap } = getMergedRemoteGroups();
-  if (!Object.keys(tabGroups).length && !Object.keys(tabGroupMap).length) return prefs;
-  // A remote group's definition is owned by the remote, but the user can tweak
-  // cosmetic fields locally (e.g. recolour it). Those edits live in
-  // `remoteGroupOverrides` (see updatePreferences) and are layered on top here
-  // so they survive every re-merge instead of being clobbered by the remote's
-  // original value.
-  const overrides = (prefs.remoteGroupOverrides as Record<string, Record<string, unknown>>) ?? {};
-  const remoteGroups: Record<string, unknown> = { ...tabGroups };
-  for (const [gid, ov] of Object.entries(overrides)) {
-    if (remoteGroups[gid] && ov && typeof ov === 'object') {
-      remoteGroups[gid] = { ...(remoteGroups[gid] as Record<string, unknown>), ...ov };
-    }
-  }
-  return {
-    ...prefs,
-    tabGroups: { ...((prefs.tabGroups as Record<string, unknown>) ?? {}), ...remoteGroups },
-    tabGroupMap: { ...((prefs.tabGroupMap as Record<string, unknown>) ?? {}), ...tabGroupMap },
-  };
-}
-
 /** Broadcast the full preferences object so clients stay in sync after a
- *  server-side mutation (e.g. an MCP tool updating tab groups). */
+ *  server-side mutation (e.g. an MCP tool updating tab groups).
+ *
+ *  These preferences are this machine's, and nothing else. We used to splice in
+ *  every remote's cached tab groups here so remote sessions would render
+ *  grouped, but the frontend now holds a direct connection to each remote and
+ *  folds their groups in itself (`ui/src/lib/remote-groups.ts`) — from live
+ *  data, not from a cache that only `scheduleRemoteRefresh` ever wrote and
+ *  which nothing has called since sessions stopped being proxied. Splicing also
+ *  meant the client couldn't tell a remote group from a local one, so its next
+ *  write echoed them straight back into ui-preferences.json. */
 function broadcastPreferences(prefs: Record<string, unknown>) {
-  const msg = JSON.stringify({ type: 'preferences', preferences: withRemoteGroups(prefs) });
+  const msg = JSON.stringify({ type: 'preferences', preferences: prefs });
   for (const ws of frontendClients) {
     try { ws.send(msg); } catch {}
   }
@@ -394,54 +378,22 @@ function broadcastFocusSession(sessionId: string) {
  */
 function updatePreferences(partial: Record<string, unknown>): Record<string, unknown> {
   const prefs = loadPreferences();
-  // The frontend can't tell local groups from the remote groups we splice in
-  // (withRemoteGroups), so when it persists prefs it echoes the remote ones
-  // back. Strip them before saving so the local file never accumulates remote
-  // group definitions / mappings — they're re-merged on every broadcast.
+  // A group that lives on another machine is recognisable by its id prefix, and
+  // never belongs in this file. The frontend already drops them on the way out
+  // (`stripRemoteGroups`); this is the same rule at the only place that writes,
+  // so an older or third-party client can't reintroduce them either.
   const clean = { ...partial };
   if (clean.tabGroups && typeof clean.tabGroups === 'object') {
-    const remoteDefs = getMergedRemoteGroups().tabGroups as Record<string, Record<string, unknown>>;
-    const overrides: Record<string, Record<string, unknown>> = {
-      ...((prefs.remoteGroupOverrides as Record<string, Record<string, unknown>>) ?? {}),
-    };
-    const g = { ...(clean.tabGroups as Record<string, unknown>) };
-    for (const gid of Object.keys(g)) {
-      if (!isRemoteGroupId(gid)) continue;
-      // The remote owns the group definition, so it can't be persisted into the
-      // local file. But capture the fields the user changed relative to the
-      // remote's definition (e.g. color) as a local override so the tweak
-      // sticks — matching the remote again clears it.
-      const incoming = g[gid] as Record<string, unknown> | undefined;
-      const remoteDef = remoteDefs[gid];
-      if (incoming && remoteDef) {
-        const diff: Record<string, unknown> = {};
-        for (const k of Object.keys(incoming)) {
-          if (JSON.stringify(incoming[k]) !== JSON.stringify(remoteDef[k])) diff[k] = incoming[k];
-        }
-        if (Object.keys(diff).length) overrides[gid] = diff;
-        else delete overrides[gid];
-      }
-      delete g[gid];
-    }
-    clean.tabGroups = g;
-    clean.remoteGroupOverrides = overrides;
-  }
-  if (clean.tabGroups && typeof clean.tabGroups === 'object') {
-    // Worktree groups are derived by the sidebar on every render and must never
-    // reach the prefs file — a persisted one would shadow the live derivation
-    // and outlive the sessions it was built from.
-    const g = { ...(clean.tabGroups as Record<string, unknown>) };
-    for (const gid of Object.keys(g)) {
-      if (isDerivedGroupId(gid)) delete g[gid];
-    }
-    clean.tabGroups = g;
+    clean.tabGroups = Object.fromEntries(
+      Object.entries(clean.tabGroups as Record<string, unknown>)
+        .filter(([gid]) => !isRemoteGroupId(gid)),
+    );
   }
   if (clean.tabGroupMap && typeof clean.tabGroupMap === 'object') {
-    const m = { ...(clean.tabGroupMap as Record<string, unknown>) };
-    for (const [sid, gid] of Object.entries(m)) {
-      if (typeof gid === 'string' && (isRemoteGroupId(gid) || isDerivedGroupId(gid))) delete m[sid];
-    }
-    clean.tabGroupMap = m;
+    clean.tabGroupMap = Object.fromEntries(
+      Object.entries(clean.tabGroupMap as Record<string, unknown>)
+        .filter(([, gid]) => typeof gid !== 'string' || !isRemoteGroupId(gid)),
+    );
   }
   Object.assign(prefs, clean);
   savePreferences(prefs);
@@ -449,60 +401,82 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
   return prefs;
 }
 
-/** Auto-assigns a freshly-created session to a tab group whose name matches
- *  the cwd's project folder, mirroring the cycling-color behavior of the
- *  frontend's `handleCreateGroup`. Single source of truth for every
- *  session-creation entry point: HTTP `POST /sessions` (frontend, mobile,
- *  CLI) and MCP `ui_spawn_session`. No-ops if `autoGroupSessions` is off,
- *  if the cwd is empty, or if the session is already in a group (callers
- *  with an explicit group assignment win).
+/** Places a freshly-created session in the sidebar. Single source of truth for
+ *  every session-creation entry point: HTTP `POST /sessions` (frontend, mobile,
+ *  CLI) and MCP `ui_spawn_session`.
  *
- *  Worktree-aware: when the session is spawned under the standard
- *  `<repo>/.worktrees/<branch>` layout, the group name is derived from the
- *  root repo's folder, not the worktree branch. That way a session
- *  spawned in a worktree lands in the same group as the source repo
- *  rather than a freshly-minted "branch" group. Callers that already
- *  routed the original repo cwd through `group_cwd` are unaffected —
- *  by the time we get here the cwd is either the source repo or the
- *  worktree, both of which resolve to the same folder name. */
-const AUTOGROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
-type AutoGroup = {
-  id: string; name: string; color: string; cwd?: string; icon?: string;
-  /** Autogroups are always top-level projects; the user can nest them later. */
-  parentId?: string | null;
-  kind?: 'manual' | 'worktree';
-};
-function maybeAutoGroupSession(sessionId: string, cwd: string) {
+ *  IO wrapper only — the rules live in `planAutoGroup`. What this adds is the
+ *  one thing that needs the filesystem: resolving the repo that owns a worktree
+ *  cwd. Under the current `<repo>/.worktrees/<branch>` layout the regex capture
+ *  is already the repo, but legacy `<repo-parent>/.wt/<branch>` worktrees sit
+ *  *outside* it and the capture lands on the containing directory (`up` instead
+ *  of `utilityprofit`), so git gets asked first and the capture is the fallback.
+ *  Non-worktree cwds are left alone: a session started in a subdirectory keeps
+ *  grouping by that subdirectory.
+ *
+ *  `groupingCwd` is the cwd the *project* group is keyed on and may differ from
+ *  `sessionCwd`: worktree-creation callers pass the source repo through
+ *  `group_cwd` so the new tab joins the parent repo's group. `sessionCwd` is
+ *  where the session actually runs, and is what the branch subgroup keys on. */
+function maybeAutoGroupSession(sessionId: string, cwd: string, sessionCwd: string = cwd) {
   if (!cwd) return;
   const prefs = loadPreferences();
-  if (!prefs.autoGroupSessions) return;
-  const map: Record<string, string> = { ...((prefs.tabGroupMap as Record<string, string>) || {}) };
-  if (map[sessionId]) return;
-  // A session in a worktree groups under the repo that owns it, never under
-  // the worktree itself. Ask git for that repo — under the current
-  // `<repo>/.worktrees/<branch>` layout the regex capture is already the repo,
-  // but legacy `<repo-parent>/.wt/<branch>` worktrees sit *outside* it and the
-  // capture lands on the containing directory (`up` instead of `utilityprofit`).
-  // The capture stays as the fallback for when git can't answer. Non-worktree
-  // cwds are left alone: a session started in a subdirectory keeps grouping by
-  // that subdirectory, exactly as before.
-  const wtMatch = cwd.match(WORKTREE_CWD_RE);
-  const groupingCwd = wtMatch ? (rootRepoOf(cwd) ?? wtMatch[1]!) : cwd;
-  const folder = groupingCwd.split('/').filter(Boolean).pop()
-    || groupingCwd.split('\\').filter(Boolean).pop()
-    || '/';
-  const groups: Record<string, AutoGroup> = { ...((prefs.tabGroups as Record<string, AutoGroup>) || {}) };
-  // Match on top-level groups only: with nesting, a subgroup could legitimately
-  // share a name with a project (two repos each with a "Backend" subgroup), and
-  // autogrouping into one of those would be wrong.
-  let groupId = Object.keys(groups).find(gid => groups[gid]!.name === folder && !groups[gid]!.parentId);
-  if (!groupId) {
-    groupId = randomUUID();
-    const color = AUTOGROUP_COLORS[Object.keys(groups).length % AUTOGROUP_COLORS.length]!;
-    groups[groupId] = { id: groupId, name: folder, color, cwd: groupingCwd, parentId: null, kind: 'manual' };
-  }
-  map[sessionId] = groupId;
-  updatePreferences({ tabGroups: groups, tabGroupMap: map });
+  const projectMatch = cwd.match(WORKTREE_CWD_RE);
+  const result = planAutoGroup({
+    sessionId,
+    sessionCwd,
+    projectCwd: projectMatch ? (rootRepoOf(cwd) ?? projectMatch[1]!) : cwd,
+    groups: (prefs.tabGroups as Record<string, AutoGroup>) || {},
+    map: (prefs.tabGroupMap as Record<string, string>) || {},
+    sessionCwds: Object.fromEntries([...sessions.values()].map(s => [s.id, s.cwd])),
+    autoGroupSessions: !!prefs.autoGroupSessions,
+    groupSessionsByWorktree: prefs.groupSessionsByWorktree !== false,
+    newId: randomUUID,
+  });
+  if (!result) return;
+  updatePreferences({ tabGroups: result.groups, tabGroupMap: result.map });
+}
+
+/** Retroactively group the sessions sitting loose in the sidebar. Backs
+ *  `GET /sessions/auto-group` (plan only) and `POST` (plan + apply); the rules
+ *  are in `planAutoGroupExisting`, this resolves the repo roots and writes.
+ *
+ *  Only *this* bridge's sessions are considered. Remote sessions live on their
+ *  own bridge and never enter this map, so they are skipped for free — which is
+ *  what we want, since their cwd isn't a path on this machine.
+ *
+ *  Applying is a single `updatePreferences` carrying the *whole* `tabGroups`
+ *  and `tabGroupMap`: preferences are merged with `Object.assign` at the top
+ *  level, so sending only the moved entries would drop every other session's
+ *  group. */
+function autoGroupLooseSessions(apply: boolean) {
+  const prefs = loadPreferences();
+  const groups = (prefs.tabGroups as Record<string, AutoGroup>) || {};
+  const map = (prefs.tabGroupMap as Record<string, string>) || {};
+  const loose = [...sessions.values()].filter(s => s.status !== 'archived' && s.cwd && !map[s.id]);
+
+  // One git call per *distinct* directory: a dozen sessions across three repos
+  // costs three, not a dozen. A non-repo directory groups by itself, as before.
+  const roots = new Map<string, string>();
+  for (const s of loose) if (!roots.has(s.cwd)) roots.set(s.cwd, rootRepoOf(s.cwd) ?? s.cwd);
+
+  const result = planAutoGroupExisting({
+    sessions: loose.map(s => ({ sessionId: s.id, sessionCwd: s.cwd, projectCwd: roots.get(s.cwd)! })),
+    groups, map, newId: randomUUID,
+  });
+  if (apply && result.moved) updatePreferences({ tabGroups: result.groups, tabGroupMap: result.map });
+
+  return {
+    groups: result.plan.map(e => ({
+      name: e.name,
+      // A group that doesn't exist yet has no id to report until it is
+      // actually created — the planned one is discarded with the dry run.
+      groupId: apply || e.exists ? e.groupId : null,
+      exists: e.exists,
+      sessionIds: e.sessionIds,
+    })),
+    moved: result.moved,
+  };
 }
 
 const IMG_MIME_EXT: Record<string, string> = {
@@ -1282,6 +1256,7 @@ app.get('/automations/:id', (c) => handleGetAutomation(c.req.param('id')));
 app.patch('/automations/:id', (c) => handleUpdateAutomation(c.req.param('id'), c.req.raw));
 app.delete('/automations/:id', (c) => handleDeleteAutomation(c.req.param('id')));
 app.post('/automations/:id/run', (c) => handleRunAutomation(c.req.param('id')));
+app.post('/automations/:id/webhook', (c) => handleAutomationWebhook(c.req.param('id'), c.req.raw));
 app.get('/automations/:id/runs', (c) => handleListAutomationRuns(c.req.param('id'), c.req.raw));
 app.get('/automations/:id/runs/:runId', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId')));
 app.get('/automations/:id/runs/:runId/result', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId'), true));
@@ -1318,6 +1293,11 @@ app.post('/sessions/:id/loop/resume', (c) => handleResumeLoop(c.req.param('id'))
 app.post('/sessions/:id/loop/stop', (c) => handleStopLoop(c.req.param('id'), broadcastSessionList));
 
 // ── Sessions ───────────────────────────────────────────────────────────────
+// Registered ahead of `/sessions/:id` so the literal segment can never be read
+// as a session id.
+app.get('/sessions/auto-group', () => Response.json(autoGroupLooseSessions(false), { headers: corsHeaders }));
+app.post('/sessions/auto-group', () => Response.json(autoGroupLooseSessions(true), { headers: corsHeaders }));
+
 app.get('/sessions', () => {
   return Response.json(buildFullSessionList(), { headers: corsHeaders });
 });
@@ -1334,11 +1314,23 @@ app.post('/sessions', async (c) => {
   let createdId: string | null = null;
   if (resp.ok) {
     try {
-      const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string };
+      const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string; group_id?: string };
       if (created?.id) {
         createdId = created.id;
-        const groupingCwd = created.group_cwd || created.cwd;
-        if (groupingCwd) maybeAutoGroupSession(created.id, groupingCwd);
+        if (created.group_id) {
+          // The client already chose. Record it here rather than letting the
+          // client write the map itself, so this stays the only writer and an
+          // automatic rule can never race with an explicit choice.
+          const prefs = loadPreferences();
+          const map = { ...((prefs.tabGroupMap as Record<string, string>) || {}) };
+          if ((prefs.tabGroups as Record<string, unknown>)?.[created.group_id]) {
+            map[created.id] = created.group_id;
+            updatePreferences({ tabGroupMap: map });
+          }
+        } else {
+          const groupingCwd = created.group_cwd || created.cwd;
+          if (groupingCwd) maybeAutoGroupSession(created.id, groupingCwd, created.cwd || groupingCwd);
+        }
       }
     } catch {}
   }
@@ -1408,6 +1400,42 @@ app.patch('/sessions/:id', async (c) => {
 // Page of chat history older than `before_seq`. Subscribe replays only the
 // last MAX_CLIENT_MESSAGES; the "Show older" button pages the rest in from
 // here so the renderer never holds the full transcript.
+/**
+ * Tres respuestas que el usuario puede enviar de un toque, para el cliente
+ * móvil. Se pide bajo demanda al terminar un turno y no se guarda: cuesta una
+ * llamada corta y queda obsoleta en cuanto alguien escribe.
+ *
+ * Un fallo devuelve `[]` con 200, no un error. La fila de chips es un extra;
+ * si no se puede generar, simplemente no aparece.
+ */
+app.get('/sessions/:id/suggestions', async (c) => {
+  const sessionId = c.req.param('id');
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return Response.json({ error: 'session not found' }, { status: 404, headers: corsHeaders });
+  }
+
+  // El último mensaje del asistente que de verdad dice algo: una herramienta o
+  // un razonamiento no dan pie a una respuesta.
+  const messages = getSessionState(sessionId).messages;
+  let lastText = '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; content?: unknown; toolName?: unknown };
+    if (m.role !== 'assistant' || m.toolName) continue;
+    if (typeof m.content === 'string' && m.content.trim().length > 0) {
+      lastText = m.content;
+      break;
+    }
+  }
+  if (!lastText) {
+    return Response.json({ suggestions: [] }, { headers: corsHeaders });
+  }
+
+  const { suggestReplies } = await import('./suggestions/suggest');
+  const suggestions = await suggestReplies({ lastMessage: lastText, cwd: session.cwd });
+  return Response.json({ suggestions }, { headers: corsHeaders });
+});
+
 app.get('/sessions/:id/messages', (c) => {
   const sessionId = c.req.param('id');
   if (!sessions.has(sessionId)) {
@@ -2444,7 +2472,7 @@ const server = Bun.serve({
         // tabOrder/tabGroups/etc to decide which tabs to
         // show, so receiving the session list first would race the prefs and
         // briefly render every persisted session as an open tab.
-        ws.send(JSON.stringify({ type: 'preferences', preferences: withRemoteGroups(loadPreferences()) }));
+        ws.send(JSON.stringify({ type: 'preferences', preferences: loadPreferences() }));
         ws.send(JSON.stringify({ type: 'sessions', sessions: buildFullSessionList() }));
         return;
       }

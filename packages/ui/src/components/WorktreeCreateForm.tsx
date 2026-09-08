@@ -22,6 +22,12 @@ interface Props {
   client: ClaudeClient;
   /** Git top-level of the repo we're creating the worktree under. */
   repoPath: string;
+  /** Host that owns `repoPath` — `null` for this machine, a remote id for a
+   *  remote. Every git call here is pinned to it: the form can be mounted for
+   *  a repo on a different host than the focused session (the New Session
+   *  modal's remote tab, a remote group's composer), and following the focused
+   *  session instead sent `git worktree add` to the wrong machine. */
+  remoteId?: string | null;
   /** Whether the repo has a `.env` file (prefills the copy-env checkbox). */
   hasEnv?: boolean;
   /** Detected package manager (prefills the picker when depsMode === 'install'). */
@@ -65,6 +71,7 @@ interface Props {
 export function WorktreeCreateForm({
   client,
   repoPath,
+  remoteId,
   hasEnv,
   detectedPackageManager,
   existingWorktrees,
@@ -129,7 +136,7 @@ export function WorktreeCreateForm({
     setDeleting(path);
     setDeleteError(null);
     try {
-      await client.removeWorktree(repoPath, path);
+      await client.removeWorktree(repoPath, path, remoteId);
       setLocalWorktrees(prev => prev.filter(w => w.path !== path));
       setConfirmDelete(null);
     } catch (e) {
@@ -163,7 +170,7 @@ export function WorktreeCreateForm({
     let cancelled = false;
     (async () => {
       try {
-        const info = await client.listBranches(repoPath);
+        const info = await client.listBranches(repoPath, remoteId);
         if (cancelled) return;
         setBranchesInfo(info);
         setSourceBranch(info.current || info.local[0] || '');
@@ -172,7 +179,7 @@ export function WorktreeCreateForm({
       }
     })();
     return () => { cancelled = true; };
-  }, [repoPath, client]);
+  }, [repoPath, client, remoteId]);
 
   const availableBranches = useMemo(() => {
     if (!branchesInfo) return [] as string[];
@@ -257,6 +264,7 @@ export function WorktreeCreateForm({
           setStatus('error');
         },
       },
+      remoteId,
     );
   };
 

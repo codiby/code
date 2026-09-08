@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  Cog, Antenna, Sparkles, Settings, GitBranch, FolderPlus, MoreHorizontal,
+  Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -11,11 +11,14 @@ import type { SessionInfo, ConnectionStatus, SessionActivity } from '../lib/clau
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 import type { TabGroupInfo } from '../lib/tab-groups';
 import {
-  ancestorChain, buildGroupTree, descendantGroupIds, findGroupNode, isAncestorOf, isDerivedGroupId,
+  ancestorChain, buildGroupTree, descendantGroupIds, isAncestorOf,
   resolveGroupColor, type TreeNode,
 } from '../lib/group-tree';
 
 type TabGroup = TabGroupInfo;
+
+/** Top-level views the sidebar can swap into the main pane. */
+export type NavView = 'sessions' | 'sessions-board' | 'automations';
 
 interface Props {
   sessions: SessionInfo[];
@@ -56,28 +59,22 @@ interface Props {
   onAddToGroup: (tabId: string, groupId: string) => void;
   onUngroupTab: (tabId: string) => void;
   onToggleGroup: (groupId: string) => void;
-  /** Sessions the user pulled out of their automatic worktree group. They stop
-   *  counting towards the ≥2 rule until they're dropped back in. */
-  pinnedOutOfWorktree?: Set<string>;
-  /** Global "Group sessions by worktree" preference. Off skips the derivation
-   *  entirely, so every session renders as a direct child of its group. */
-  groupByWorktree?: boolean;
+  /** Retroactively file every loose session under its project. Opens a
+   *  confirmation showing the plan first — it writes preferences and there is
+   *  no undo. Distinct from the `autoGroupSessions` preference, which only ever
+   *  acts on sessions as they are created. */
+  onAutoGroupSessions?: () => void;
   /** Create an empty subgroup under `parentGroupId`. Nesting is unbounded. */
   onCreateSubgroup?: (parentGroupId: string) => void;
   /** Re-parent a group. `null` moves it back to the sidebar root. The host
    *  rejects moves that would put a group inside its own subtree. */
   onMoveGroup?: (groupId: string, newParentId: string | null) => void;
-  /** Detach a session from its derived worktree group (see rule: manual wins
-   *  over derived). Called on drag-out and from the session context menu. */
-  onPinSessionOutOfWorktree?: (sessionId: string) => void;
   onRenameGroup: (groupId: string, name: string) => void;
   onChangeGroupColor: (groupId: string, color: string) => void;
   onChangeGroupIcon?: (groupId: string, icon: string | null) => void;
   /** Spawn a session immediately in the group's saved cwd and add it to the
-   *  group — no composer step. `cwdOverride` targets a specific worktree when
-   *  the "+" was pressed on a derived worktree group; `groupId: null` spawns it
-   *  ungrouped, which is what a root-level worktree cluster needs. */
-  onNewSessionInGroup?: (groupId: string | null, cwdOverride?: string) => void;
+   *  group — no composer step. */
+  onNewSessionInGroup?: (groupId: string) => void;
   /** Open the inline GroupComposer for a group (the deliberate, configurable
    *  path — provider, model, first prompt). Offered from the group menu. */
   onOpenGroupComposer?: (groupId: string) => void;
@@ -110,9 +107,9 @@ interface Props {
   onToggleCollapsed?: () => void;
   /** Active top-level view shown in the main pane. Drives the nav highlight at
    *  the top of the sidebar. */
-  activeNavView?: 'sessions' | 'sessions-board';
+  activeNavView?: NavView;
   /** Switch the main pane to a top-level view. */
-  onSelectNavView?: (view: 'sessions' | 'sessions-board') => void;
+  onSelectNavView?: (view: NavView) => void;
   /** Footer actions pinned to the bottom of the sidebar. */
   onOpenSkills?: () => void;
   onOpenSettings?: () => void;
@@ -470,12 +467,12 @@ let activeGroupDragId: string | null = null;
  *  sibling above/below. */
 type DropSlot = 'above' | 'inside' | 'below';
 
-function SortableGroupTab({ group, color, derived, memberCount, isExpanded, hasActive, hasActivity, remoteName, remoteColor, canAcceptGroup, onToggle, onRename, onMenuOpen, onNewSession, onDropSession, onDropGroup }: {
-  group: TabGroup; color: string; derived?: boolean;
+function SortableGroupTab({ group, color, memberCount, isExpanded, hasActive, hasActivity, remoteName, remoteColor, canAcceptGroup, onToggle, onRename, onMenuOpen, onNewSession, onDropSession, onDropGroup }: {
+  group: TabGroup; color: string;
   memberCount: number; isExpanded: boolean; hasActive: boolean; hasActivity?: boolean;
   remoteName?: string | null; remoteColor?: string | null;
   /** Guards the nest/reorder drop — false rejects the drag outright (a group
-   *  can't land inside its own subtree, and derived groups take nothing). */
+   *  can't land inside its own subtree). */
   canAcceptGroup?: (fromGid: string, slot: DropSlot) => boolean;
   onToggle: (deep: boolean) => void; onRename: (name: string) => void; onMenuOpen: (x: number, y: number) => void;
   onNewSession: () => void; onDropSession: (sessionId: string) => void;
@@ -499,8 +496,7 @@ function SortableGroupTab({ group, color, derived, memberCount, isExpanded, hasA
     if (y > h * 0.7) return 'below';
     return 'inside';
   };
-  // Drag the header to reorder/nest the group; suppressed while renaming and
-  // for derived groups, which the system owns.
+  // Drag the header to reorder/nest the group; suppressed while renaming.
   const { dragProps, isDragging } = useDrag({
     getItems: () => [{ [GROUP_DRAG_TYPE]: group.id, 'text/plain': group.name }],
     onDragStart: () => { activeGroupDragId = group.id; },
@@ -514,7 +510,6 @@ function SortableGroupTab({ group, color, derived, memberCount, isExpanded, hasA
   const { dropProps, isDropTarget } = useDrop({
     ref,
     getDropOperation: (types) => {
-      if (derived) { dragKind.current = null; return 'cancel'; }
       dragKind.current = types.has(GROUP_DRAG_TYPE) ? 'group' : types.has(SESSION_DRAG_TYPE) ? 'session' : null;
       return dragKind.current ? 'move' : 'cancel';
     },
@@ -560,19 +555,19 @@ function SortableGroupTab({ group, color, derived, memberCount, isExpanded, hasA
   const colors = COLOR_MAP[color] || COLOR_MAP.blue!;
   // Only the tab-add affordance (session hover) lights the ring; group nesting
   // gets its own ring, reorder uses the above/below line.
-  const sessionHover = isDropTarget && pos === null && !derived;
+  const sessionHover = isDropTarget && pos === null;
   const nestHover = isDropTarget && pos === 'inside' && !rejected;
 
   // Vertical sidebar: drop the filled background and border — the colored dot
   // alone is enough, keeping the sidebar visually clean (Arc/Zen style).
-  const baseCls = `group relative flex items-center gap-1.5 px-2 h-[28px] text-[12px] ${derived ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'} rounded-md transition-colors ${
+  const baseCls = `group relative flex items-center gap-1.5 px-2 h-[28px] text-[12px] cursor-grab active:cursor-grabbing rounded-md transition-colors ${
     rejected ? 'ring-1 ring-red-400/50 bg-red-500/10'
       : nestHover ? `ring-1 ${colors.ring} bg-surface-light/60`
       : sessionHover ? `ring-1 ${colors.ring}` : ''
   } hover:bg-surface/60 ${hasActive && !isExpanded ? 'text-zinc-200' : 'text-zinc-400'}`;
 
   return (
-    <div ref={ref} {...mergeProps(editing || derived ? {} : dragProps, dropProps)}
+    <div ref={ref} {...mergeProps(editing ? {} : dragProps, dropProps)}
       className={baseCls}
       style={{ opacity: isDragging ? 0.4 : 1 }}
       onClick={e => onToggle(e.altKey)}
@@ -587,13 +582,8 @@ function SortableGroupTab({ group, color, derived, memberCount, isExpanded, hasA
       {isExpanded
         ? <ChevronDown size={12} className="shrink-0 text-zinc-500" />
         : <ChevronRight size={12} className="shrink-0 text-zinc-500" />}
-      {/* Derived worktree groups always show the branch glyph — they can't
-         carry a user-picked icon or colour. Otherwise: the group's icon when
-         set, else the original colored dot. */}
+      {/* The group's icon when set, else the original colored dot. */}
       {(() => {
-        if (derived) {
-          return <GitBranch size={12} className={`shrink-0 ${colors.text} ${hasActivity ? 'animate-pulse' : ''}`} strokeWidth={2.25} />;
-        }
         const Icon = group.icon ? ICON_MAP[group.icon] : null;
         if (Icon) {
           return (
@@ -621,18 +611,10 @@ function SortableGroupTab({ group, color, derived, memberCount, isExpanded, hasA
         </TextField>
       ) : (
         <span
-          className={`text-[12px] truncate flex-1 ${derived ? 'font-mono text-[11px]' : ''}`}
-          onDoubleClick={derived ? undefined : e => { e.stopPropagation(); setEditing(true); setName(group.name); }}
+          className="text-[12px] truncate flex-1"
+          onDoubleClick={e => { e.stopPropagation(); setEditing(true); setName(group.name); }}
         >
           {group.name}
-        </span>
-      )}
-      {derived && (
-        <span
-          className={`shrink-0 text-[9px] leading-none px-1 py-[2px] rounded-[3px] border border-dashed ${colors.border} ${colors.text} opacity-70`}
-          title="Automatic group: every session here shares a worktree. Dissolves on its own below two sessions."
-        >
-          wt
         </span>
       )}
       {remoteName && (
@@ -658,12 +640,12 @@ function SortableGroupTab({ group, color, derived, memberCount, isExpanded, hasA
         onPointerDown={e => e.stopPropagation()}
         className="shrink-0 hidden group-hover:flex items-center gap-0.5"
       >
-        <span title={derived ? 'New session in this worktree' : 'New session in group'} className="flex">
+        <span title="New session in group" className="flex">
           <Button
             isIconOnly
             size="sm"
             variant="ghost"
-            aria-label={derived ? 'New session in this worktree' : 'New session in group'}
+            aria-label="New session in group"
             className="w-4 h-4 min-w-0 p-0 flex items-center justify-center rounded-sm leading-none text-zinc-600 hover:text-zinc-300 hover:bg-surface-light"
             onPress={onNewSession}
           >
@@ -802,7 +784,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onOpenGroupComposer, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
-    onCreateSubgroup, onMoveGroup, onPinSessionOutOfWorktree,
+    onCreateSubgroup, onMoveGroup, onAutoGroupSessions,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
     activeNavView = 'sessions', onSelectNavView,
@@ -871,6 +853,9 @@ export const TabBar = memo(function TabBar(props: Props) {
   const [restoreSearch, setRestoreSearch] = useState('');
   const [restoreHighlight, setRestoreHighlight] = useState(0);
   const [groupMenu, setGroupMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
+  /** Overflow menu for actions on the sidebar as a whole, anchored to the "⋯"
+   *  beside the search field. */
+  const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -978,26 +963,6 @@ export const TabBar = memo(function TabBar(props: Props) {
     });
   };
 
-  // Derived worktree groups default to expanded — collapsing one is the
-  // exception, and their ids are regenerated from the members so they can't be
-  // tracked in the server-persisted `expandedGroupIds`.
-  const [collapsedDerived, setCollapsedDerived] = useState<Set<string>>(() => {
-    if (typeof window === 'undefined') return new Set();
-    try {
-      const raw = localStorage.getItem('tabBarCollapsedWorktreeGroups');
-      const arr = raw ? JSON.parse(raw) : [];
-      return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : []);
-    } catch { return new Set(); }
-  });
-  const toggleDerived = (id: string) => {
-    setCollapsedDerived(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      try { localStorage.setItem('tabBarCollapsedWorktreeGroups', JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  };
-
   const normalizedSessionSearch = sessionSearch.trim().toLowerCase();
   const visibleSessions = normalizedSessionSearch
     ? sessions.filter(s =>
@@ -1012,8 +977,6 @@ export const TabBar = memo(function TabBar(props: Props) {
     sessions: visibleSessions,
     groups: tabGroups,
     map: tabGroupMap,
-    pinnedOutOfWorktree: props.pinnedOutOfWorktree,
-    groupByWorktree: props.groupByWorktree,
     childOrder: groupOrder,
     sortSessions: (a, b) => {
       const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
@@ -1024,19 +987,13 @@ export const TabBar = memo(function TabBar(props: Props) {
       if (tb !== ta) return tb - ta;
       return (sessionIndex.get(a.id) ?? 0) - (sessionIndex.get(b.id) ?? 0);
     },
-  }), [visibleSessions, tabGroups, tabGroupMap, props.pinnedOutOfWorktree, props.groupByWorktree, groupOrder, pinnedSessionIds, sessionLastMessageAt, sessionIndex]);
+  }), [visibleSessions, tabGroups, tabGroupMap, groupOrder, pinnedSessionIds, sessionLastMessageAt, sessionIndex]);
 
   // react-aria drop handler for a tab dropped onto another tab. Mirrors the old
   // dnd-kit logic: Shift groups the two (or adds to the target's group), plain
   // drop reorders. Dropping onto a group header is handled by SortableGroupTab.
   const handleDropTab = (fromId: string, toId: string) => {
     if (fromId === toId) return;
-    // Dragging a session out of the worktree cluster it was auto-placed in is
-    // the documented escape hatch — without the pin the derivation would just
-    // reclaim it on the next render.
-    if (derivedMembership.has(fromId) && derivedMembership.get(fromId) !== derivedMembership.get(toId)) {
-      onPinSessionOutOfWorktree?.(fromId);
-    }
     if (shiftRef.current) {
       const targetGroupId = tabGroupMap[toId];
       if (targetGroupId) onAddToGroup(fromId, targetGroupId);
@@ -1064,51 +1021,27 @@ export const TabBar = memo(function TabBar(props: Props) {
 
   // ── Tree rendering ────────────────────────────────────────────────────────
 
-  /** sessionId → id of the derived worktree group it currently renders inside.
-   *  Drives the "manual wins over derived" rule: dragging one of these rows
-   *  anywhere else has to pin it out, or the derivation would just reclaim it
-   *  on the next render. */
-  const derivedMembership = useMemo(() => {
-    const out = new Map<string, string>();
-    const walk = (nodes: TreeNode[]) => {
-      for (const node of nodes) {
-        if (node.type !== 'group') continue;
-        if (node.derived) for (const child of node.children) out.set(child.id, node.id);
-        else walk(node.children);
-      }
-    };
-    walk(tree);
-    return out;
-  }, [tree]);
-
   const nodeSessionIds = (node: TreeNode): string[] => {
     if (node.type === 'session') return [node.id];
     return node.children.flatMap(nodeSessionIds);
   };
 
   const isNodeExpanded = (node: Extract<TreeNode, { type: 'group' }>) =>
-    !!normalizedSessionSearch || (node.derived ? !collapsedDerived.has(node.id) : expandedGroupIds.has(node.id));
+    !!normalizedSessionSearch || expandedGroupIds.has(node.id);
 
   /** Expand/collapse. Alt-click applies the new state to the whole subtree. */
   const toggleNode = (node: Extract<TreeNode, { type: 'group' }>, deep: boolean) => {
     const target = !isNodeExpanded(node);
     const apply = (n: Extract<TreeNode, { type: 'group' }>) => {
-      if (n.derived) {
-        if (collapsedDerived.has(n.id) === target) toggleDerived(n.id);
-      } else if (expandedGroupIds.has(n.id) !== target) {
-        onToggleGroup(n.id);
-      }
+      if (expandedGroupIds.has(n.id) !== target) onToggleGroup(n.id);
       if (!deep) return;
       for (const child of n.children) if (child.type === 'group') apply(child);
     };
     apply(node);
   };
 
-  /** A group may not land inside its own subtree, and derived groups accept
-   *  nothing (their membership is computed, not stored). */
+  /** A group may not land inside its own subtree. */
   const canAcceptGroup = (target: Extract<TreeNode, { type: 'group' }>, fromGid: string, slot: DropSlot) => {
-    if (target.derived) return false;
-    if (isDerivedGroupId(fromGid)) return false;
     if (slot === 'inside') return !isAncestorOf(tabGroups, fromGid, target.id);
     const destParent = tabGroups[target.id]?.parentId ?? null;
     return !destParent || !isAncestorOf(tabGroups, fromGid, destParent);
@@ -1125,14 +1058,8 @@ export const TabBar = memo(function TabBar(props: Props) {
     reorderGroupWithin(destParent ?? '', fromGid, target.id, slot);
   };
 
-  /** A session dropped on a group header. Landing on the group it already
-   *  belongs to only makes sense as "pull me out of my worktree cluster". */
+  /** A session dropped on a group header joins that group. */
   const handleDropSessionOnGroup = (sessionId: string, target: Extract<TreeNode, { type: 'group' }>) => {
-    if (target.derived) return;
-    if (derivedMembership.has(sessionId) && tabGroupMap[sessionId] === target.id) {
-      onPinSessionOutOfWorktree?.(sessionId);
-      return;
-    }
     onAddToGroup(sessionId, target.id);
   };
 
@@ -1151,9 +1078,7 @@ export const TabBar = memo(function TabBar(props: Props) {
 
     const memberIds = nodeSessionIds(node);
     const expanded = isNodeExpanded(node);
-    const color = node.derived
-      ? resolveGroupColor(tabGroups, node.group.parentId ?? null, 'violet')
-      : resolveGroupColor(tabGroups, node.id);
+    const color = resolveGroupColor(tabGroups, node.id);
     const colors = COLOR_MAP[color] || COLOR_MAP.blue!;
     const remote = groupRemoteInfo?.[node.id];
     // Past three levels the rail alone carries the hierarchy — keep clawing
@@ -1165,7 +1090,6 @@ export const TabBar = memo(function TabBar(props: Props) {
         <SortableGroupTab
           group={node.group}
           color={color}
-          derived={node.derived}
           memberCount={node.sessionCount}
           isExpanded={expanded}
           hasActive={memberIds.some(id => id === activeSessionId)}
@@ -1176,21 +1100,13 @@ export const TabBar = memo(function TabBar(props: Props) {
           onToggle={(deep) => toggleNode(node, deep)}
           onRename={name => onRenameGroup(node.id, name)}
           onMenuOpen={(x, y) => setGroupMenu({ groupId: node.id, x, y })}
-          onNewSession={() => {
-            // A derived group has no prefs entry of its own: the new session
-            // joins its parent (or stays ungrouped at the root) and lands in the
-            // shared worktree, which re-derives the same cluster.
-            if (node.derived) onNewSessionInGroup?.(node.group.parentId ?? null, node.group.worktreePath);
-            else onNewSessionInGroup?.(node.id);
-          }}
+          onNewSession={() => onNewSessionInGroup?.(node.id)}
           onDropSession={(id) => handleDropSessionOnGroup(id, node)}
           onDropGroup={(fromGid, slot) => handleDropGroup(node, fromGid, slot)}
         />
         {expanded && (
           // Indent + colored left rail spanning the full height of the subtree.
-          // Derived groups get a dashed rail so "the system owns this" reads at
-          // a glance even when the header scrolls out of view.
-          <div className={`flex flex-col gap-0.5 border-l-2 ${indent} ${colors.border} ${node.derived ? 'border-dashed' : ''}`}>
+          <div className={`flex flex-col gap-0.5 border-l-2 ${indent} ${colors.border}`}>
             {node.children.map(child => renderTreeNode(child))}
           </div>
         )}
@@ -1288,32 +1204,49 @@ export const TabBar = memo(function TabBar(props: Props) {
         title="Drag to resize"
       />
        <div className="flex flex-col gap-0.5 px-2 py-2 overflow-y-auto flex-1">
-         <div className="flex items-center gap-1.5 bg-[#1c1d22] border border-[#2a2b30] rounded-md px-2 h-8 shrink-0 mb-1">
-           <Search size={12} className="text-zinc-600 shrink-0" />
-           <input
-             type="search"
-             value={sessionSearch}
-             onChange={(e) => setSessionSearch(e.target.value)}
-             onKeyDown={(e) => {
-               if (e.key === 'Escape') {
-                 e.currentTarget.blur();
-                 setSessionSearch('');
-               }
+         <div className="flex items-center gap-1 shrink-0 mb-1">
+           <div className="flex items-center gap-1.5 bg-[#1c1d22] border border-[#2a2b30] rounded-md px-2 h-8 flex-1 min-w-0">
+             <Search size={12} className="text-zinc-600 shrink-0" />
+             <input
+               type="search"
+               value={sessionSearch}
+               onChange={(e) => setSessionSearch(e.target.value)}
+               onKeyDown={(e) => {
+                 if (e.key === 'Escape') {
+                   e.currentTarget.blur();
+                   setSessionSearch('');
+                 }
+               }}
+               placeholder="Search sessions..."
+               aria-label="Search sessions"
+               className="flex-1 min-w-0 bg-transparent text-[12px] text-zinc-300 placeholder:text-zinc-600 outline-none border-0"
+             />
+             {sessionSearch && (
+               <button
+                 type="button"
+                 onClick={() => setSessionSearch('')}
+                 className="text-zinc-600 hover:text-zinc-300 transition-colors"
+                 aria-label="Clear session search"
+               >
+                 <X size={12} />
+               </button>
+             )}
+           </div>
+           {/* Outside the search pill: these act on the sidebar, not the query. */}
+           <button
+             type="button"
+             onClick={(e) => {
+               const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+               // Right edge of the button; the menu is pulled left from there
+               // so it can't overflow a narrow sidebar.
+               setSidebarMenu({ x: r.right, y: r.bottom + 4 });
              }}
-             placeholder="Search sessions..."
-             aria-label="Search sessions"
-             className="flex-1 min-w-0 bg-transparent text-[12px] text-zinc-300 placeholder:text-zinc-600 outline-none border-0"
-           />
-           {sessionSearch && (
-             <button
-               type="button"
-               onClick={() => setSessionSearch('')}
-               className="text-zinc-600 hover:text-zinc-300 transition-colors"
-               aria-label="Clear session search"
-             >
-               <X size={12} />
-             </button>
-           )}
+             className="shrink-0 w-7 h-8 flex items-center justify-center rounded-md text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-colors"
+             aria-label="Sidebar options"
+             title="Sidebar options"
+           >
+             <MoreHorizontal size={14} />
+           </button>
          </div>
          {normalizedSessionSearch && (
            <div className="px-1 pb-1 text-[10px] text-zinc-600">
@@ -1329,6 +1262,24 @@ export const TabBar = memo(function TabBar(props: Props) {
 
       {/* Footer — fixed actions pinned to the bottom of the sidebar. */}
       <div className="flex flex-col gap-0.5 px-2 py-2 border-t border-border shrink-0">
+        {/* Automatizaciones swaps the main pane rather than opening a modal, so
+            unlike Skills/Settings it carries an active state. */}
+        <button
+          type="button"
+          onClick={() => onSelectNavView?.(activeNavView === 'automations' ? 'sessions' : 'automations')}
+          aria-pressed={activeNavView === 'automations'}
+          className={`flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium transition-colors group ${
+            activeNavView === 'automations'
+              ? 'bg-surface-light text-zinc-100'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
+          }`}
+        >
+          <Zap
+            size={15}
+            className={activeNavView === 'automations' ? 'text-indigo-400' : 'text-zinc-500 group-hover:text-violet-300 transition-colors'}
+          />
+          <span>Automatizaciones</span>
+        </button>
         <button
           type="button"
           onClick={onOpenSkills}
@@ -1347,13 +1298,27 @@ export const TabBar = memo(function TabBar(props: Props) {
         </button>
       </div>
 
+      {/* Sidebar overflow menu — actions on the whole sidebar. */}
+      {sidebarMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setSidebarMenu(null)} />
+          <div
+            className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl min-w-[190px] py-1"
+            style={{ top: sidebarMenu.y, left: sidebarMenu.x, transform: 'translateX(-100%)' }}
+          >
+            <Button variant="ghost" fullWidth
+              className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+              onPress={() => { setSidebarMenu(null); onAutoGroupSessions?.(); }}>
+              <FolderPlus size={12} className="text-zinc-500" />
+              Auto-group loose sessions
+            </Button>
+          </div>
+        </>
+      )}
+
       {/* Group dropdown menu */}
       {groupMenu && (() => {
-        const derived = isDerivedGroupId(groupMenu.groupId);
-        const derivedNode = derived ? findGroupNode(tree, groupMenu.groupId) : null;
-        // A derived group has no preferences entry, so its menu reads off the
-        // synthesised node instead of `tabGroups`.
-        const grp = derived ? derivedNode?.group : tabGroups[groupMenu.groupId];
+        const grp = tabGroups[groupMenu.groupId];
         if (!grp) return null;
         // Use the stored cwd, or fall back to the first member's cwd for
         // legacy groups that pre-date the cwd field. The fallback is what
@@ -1362,13 +1327,11 @@ export const TabBar = memo(function TabBar(props: Props) {
         const firstMember = sessions.find(s => tabGroupMap[s.id] === groupMenu.groupId);
         const grpCwd = grp.cwd || firstMember?.cwd || '';
         const parentId = grp.parentId ?? null;
-        const subtreeCount = derived
-          ? (derivedNode?.sessionCount ?? 0)
-          : [groupMenu.groupId, ...descendantGroupIds(tabGroups, groupMenu.groupId)]
-              .reduce((n, gid) => n + sessions.filter(s => tabGroupMap[s.id] === gid).length, 0);
+        const subtreeCount = [groupMenu.groupId, ...descendantGroupIds(tabGroups, groupMenu.groupId)]
+          .reduce((n, gid) => n + sessions.filter(s => tabGroupMap[s.id] === gid).length, 0);
         // "Move to" targets: every group that isn't this one or one of its own
         // descendants, plus the sidebar root.
-        const moveTargets = derived ? [] : Object.values(tabGroups)
+        const moveTargets = Object.values(tabGroups)
           .filter(g => g.id !== groupMenu.groupId && !isAncestorOf(tabGroups, groupMenu.groupId, g.id) && g.id !== parentId);
         const item = 'text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors';
         return (
@@ -1380,35 +1343,29 @@ export const TabBar = memo(function TabBar(props: Props) {
               style={{ top: groupMenu.y, left: groupMenu.x, maxHeight: `calc(100vh - ${groupMenu.y}px - 12px)` }}>
               {grpCwd && (
                 <div className="px-3 py-1 text-[10px] text-zinc-600 truncate font-mono" title={grpCwd}>
-                  {derived ? '⑂' : '📁'} {grpCwd.split('/').slice(-2).join('/') || grpCwd}
+                  📁 {grpCwd.split('/').slice(-2).join('/') || grpCwd}
                 </div>
               )}
               <Button variant="ghost" fullWidth className={item}
-                onPress={() => {
-                  if (derived) toggleDerived(groupMenu.groupId); else onToggleGroup(groupMenu.groupId);
-                  setGroupMenu(null);
-                }}>
-                {(derived ? !collapsedDerived.has(groupMenu.groupId) : expandedGroupIds.has(groupMenu.groupId)) ? 'Collapse' : 'Expand'}
+                onPress={() => { onToggleGroup(groupMenu.groupId); setGroupMenu(null); }}>
+                {expandedGroupIds.has(groupMenu.groupId) ? 'Collapse' : 'Expand'}
               </Button>
 
               {/* Creation — instant session, deliberate session, subgroup. */}
               <div className="h-px bg-border mx-2 my-1" />
               {onNewSessionInGroup && (
                 <Button variant="ghost" fullWidth className={item}
-                  onPress={() => {
-                    onNewSessionInGroup(derived ? (parentId ?? groupMenu.groupId) : groupMenu.groupId, derived ? grp.worktreePath : undefined);
-                    setGroupMenu(null);
-                  }}>
-                  New session {derived ? 'in this worktree' : 'here'}
+                  onPress={() => { onNewSessionInGroup(groupMenu.groupId); setGroupMenu(null); }}>
+                  New session here
                 </Button>
               )}
-              {onOpenGroupComposer && !derived && (
+              {onOpenGroupComposer && (
                 <Button variant="ghost" fullWidth className={item}
                   onPress={() => { onOpenGroupComposer(groupMenu.groupId); setGroupMenu(null); }}>
                   New session…
                 </Button>
               )}
-              {onCreateSubgroup && !derived && (
+              {onCreateSubgroup && (
                 <Button variant="ghost" fullWidth className={`${item} flex items-center gap-2`}
                   onPress={() => { onCreateSubgroup(groupMenu.groupId); setGroupMenu(null); }}>
                   <FolderPlus size={12} className="text-zinc-500" />
@@ -1416,13 +1373,7 @@ export const TabBar = memo(function TabBar(props: Props) {
                 </Button>
               )}
 
-              {derived ? (
-                <div className="px-3 py-2 text-[10px] text-zinc-600 leading-relaxed border-t border-border mt-1">
-                  Automatic group. Every session here shares the worktree
-                  <span className="font-mono text-zinc-500"> {grp.name}</span>. It dissolves on its own
-                  once fewer than two remain — drag a session out to detach it.
-                </div>
-              ) : (
+              {(
                 <>
                   <div className="px-3 py-1.5">
                     <div className="text-[10px] text-zinc-600 mb-1">
@@ -1520,23 +1471,6 @@ export const TabBar = memo(function TabBar(props: Props) {
                 }}>
                 Rename
               </Button>
-
-              {/* Detach from the automatic worktree group. The session stays in
-                  the same project group, it just stops being clustered. */}
-              {onPinSessionOutOfWorktree && derivedMembership.has(tabMenu.tabId) && (
-                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                  onPress={() => { onPinSessionOutOfWorktree(tabMenu.tabId); setTabMenu(null); }}>
-                  <GitBranch size={11} strokeWidth={2.25} className="text-zinc-500" />
-                  Detach from worktree group
-                </Button>
-              )}
-              {onPinSessionOutOfWorktree && props.pinnedOutOfWorktree?.has(tabMenu.tabId) && (
-                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                  onPress={() => { onPinSessionOutOfWorktree(tabMenu.tabId); setTabMenu(null); }}>
-                  <GitBranch size={11} strokeWidth={2.25} className="text-zinc-500" />
-                  Rejoin worktree group
-                </Button>
-              )}
 
               {/* Pin / Unpin (only for grouped tabs — pin order only matters
                   inside a group, where group members sort by recency). */}

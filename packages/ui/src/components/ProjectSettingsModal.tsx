@@ -689,8 +689,8 @@ function GeneralSection({
           className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border hover:border-border-light transition-colors cursor-pointer"
         >
           <div className="flex-1 min-w-0 text-left">
-            <div className="text-[12.5px] text-zinc-100">Group sessions by worktree</div>
-            <div className="text-[11px] text-zinc-500 mt-0.5">Inside a project, sessions that share a working directory collapse under a folder named after it — the branch for a linked worktree, "main" for the repo itself. Needs two or more sessions on the same checkout; it dissolves on its own below that. Off: every session stays a direct child of its project.</div>
+            <div className="text-[12.5px] text-zinc-100">Auto-group new sessions by branch</div>
+            <div className="text-[11px] text-zinc-500 mt-0.5">When a new session opens in a worktree that already holds another one, both move into a subgroup of the project named after the branch. It's an ordinary group from then on — rename it, move it, or drag sessions out and they stay out. Sessions in the repo itself stay directly in the project group.</div>
           </div>
           <SwitchControl>
             <SwitchThumb />
@@ -895,7 +895,7 @@ function ProjectGeneralPane({ group, onPatch }: { group: TabGroupInfo; onPatch: 
         )}
       </Field>
 
-      <Field label="Auto-claim new sessions" hint="Sessions opened inside this folder automatically join this group. Independent of the global auto-group toggle.">
+      <Field label="Auto-claim new sessions" hint="New sessions whose working directory is exactly this group's folder join it automatically, wherever the group sits in the sidebar. Set on branch subgroups when they are created; independent of the global auto-group toggles.">
         <Switch
           isSelected={!!group.autoClaim}
           onChange={(next) => onPatch({ autoClaim: next || undefined })}

@@ -1,11 +1,19 @@
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { rgPath as bundledRgPath } from '@vscode/ripgrep';
+import { createRequire } from 'module';
 import { corsHeaders } from '../config/config';
 
 export type CaseMode = 'smart' | 'sensitive' | 'insensitive';
 
 const EXCLUDE_DIRS = ['node_modules', '.git', 'dist', '.next', '.nuxt', '.output', '__pycache__', '.cache', 'coverage', '.turbo'];
+
+function requireBundledRgPath(): string | null {
+  try {
+    return createRequire(import.meta.url)('@vscode/ripgrep').rgPath ?? null;
+  } catch {
+    return null;
+  }
+}
 
 let cachedRgPath: string | null | undefined;
 
@@ -18,9 +26,14 @@ function getRgPath(): string | null {
     cachedRgPath = fromEnv;
     return cachedRgPath;
   }
-  // Dev: `@vscode/ripgrep` exports a path into node_modules.
-  if (bundledRgPath && existsSync(bundledRgPath)) {
-    cachedRgPath = bundledRgPath;
+  // Dev: `@vscode/ripgrep` exports a path into node_modules. Resolved lazily
+  // and behind a try: since 1.18.0 the package looks up a per-platform sibling
+  // (`@vscode/ripgrep-darwin-arm64`) as it loads, and throws when it is absent.
+  // The packaged `server.js` ships no node_modules, so a top-level import would
+  // take the whole sidecar down on boot — long before this fallback matters.
+  const fromPackage = requireBundledRgPath();
+  if (fromPackage && existsSync(fromPackage)) {
+    cachedRgPath = fromPackage;
     return cachedRgPath;
   }
   // Last resort: whatever the user has on PATH.

@@ -28,7 +28,9 @@ export function handleGetAutomation(id: string): Response {
 export async function handleCreateAutomation(req: Request): Promise<Response> {
   try {
     const input = automationInputSchema.parse(await req.json());
-    const nextRunAt = input.enabled ? nextRunFor(input.cronExpression, input.timezone) : null;
+    const nextRunAt = input.enabled && input.triggerType === 'cron' && input.cronExpression
+      ? nextRunFor(input.cronExpression, input.timezone)
+      : null;
     const automation = createAutomation(input, nextRunAt);
     scheduleAutomation(automation);
     return Response.json({ automation }, { status: 201, headers: corsHeaders });
@@ -42,15 +44,71 @@ export async function handleUpdateAutomation(id: string, req: Request): Promise<
   if (!current) return Response.json({ error: 'Automation not found' }, { status: 404, headers: corsHeaders });
   try {
     const patch = automationPatchSchema.parse(await req.json());
+    const triggerType = patch.triggerType ?? current.triggerType;
     const cronExpression = patch.cronExpression ?? current.cronExpression;
     const timezone = patch.timezone ?? current.timezone;
     const enabled = patch.enabled ?? current.enabled;
-    const nextRunAt = enabled ? nextRunFor(cronExpression, timezone) : null;
+    // Only the merged record can tell whether a cron automation still has an
+    // expression — e.g. switching a webhook automation over to cron.
+    if (triggerType === 'cron' && !cronExpression) {
+      return Response.json(
+        { error: 'cronExpression is required for cron automations' },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+    const nextRunAt = enabled && triggerType === 'cron' && cronExpression
+      ? nextRunFor(cronExpression, timezone)
+      : null;
     const automation = updateAutomation(id, patch, nextRunAt)!;
     scheduleAutomation(automation);
     return Response.json({ automation }, { headers: corsHeaders });
   } catch (error) {
     return invalidInput(error);
+  }
+}
+
+/**
+ * Webhook entry point — what an external watcher calls when its event fires.
+ *
+ * Deliberately not guarded by a per-automation secret: the bridge already
+ * trusts localhost for every route and demands the bearer token from anything
+ * else, so the automation id in the path inherits exactly the same trust model
+ * as `/automations/:id/run`.
+ */
+export async function handleAutomationWebhook(id: string, req?: Request): Promise<Response> {
+  const automation = getAutomation(id);
+  if (!automation) return Response.json({ error: 'Automation not found' }, { status: 404, headers: corsHeaders });
+  if (automation.triggerType !== 'webhook') {
+    return Response.json(
+      { error: 'This automation is not webhook-triggered' },
+      { status: 409, headers: corsHeaders },
+    );
+  }
+  if (!automation.enabled) {
+    return Response.json({ error: 'Automation is paused' }, { status: 409, headers: corsHeaders });
+  }
+  // The body is whatever the caller sends — the run gets it verbatim so the
+  // prompt can react to the specific event. A body that can't be read (or
+  // isn't there at all) is not an error: the automation still runs, blind.
+  let payload: string | null = null;
+  if (req) {
+    try {
+      const raw = (await req.text()).trim();
+      if (raw) payload = prettyJson(raw);
+    } catch {}
+  }
+  const run = await runAutomation(automation, 'webhook', null, payload);
+  return run
+    ? Response.json({ run }, { status: run.status === 'skipped' ? 409 : 202, headers: corsHeaders })
+    : Response.json({ error: 'Run already exists' }, { status: 409, headers: corsHeaders });
+}
+
+/** Re-indent JSON bodies so the agent reads a payload, not a single long line. */
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
   }
 }
 

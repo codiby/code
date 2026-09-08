@@ -1,8 +1,10 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { log, logError } from '../lib/logger';
-import { SESSIONS_FILE, CODIBY_DIR } from '../config/config';
+import { SESSIONS_FILE, CODIBY_DIR, MAIN_SESSION_ID } from '../config/config';
 import { DEFAULT_PROVIDER } from '../provider/registry';
-import { loadPreferences, savePreferences } from './storage';
+import {
+  loadPreferences, savePreferences, hasStoredMessages, loadUIState, deleteSessionData,
+} from './storage';
 import type { Session, PersistedSession, SessionStatus } from '../types';
 
 export const sessions = new Map<string, Session>();
@@ -100,6 +102,48 @@ export function loadSessions() {
   } catch {
     // No file or invalid — start fresh
   }
+  pruneEmptySessions();
+}
+
+/**
+ * A session the user opened and never wrote to is pure tab clutter, so a stray
+ * ⌘T doesn't survive a restart: no message ever reached its log and nothing is
+ * sitting in its composer. Runs once at boot, right after the session file is
+ * read, and drops both the record and its directory on disk.
+ *
+ * Deliberately left alone:
+ *  - the main session, whose id the Telegram bridge references externally;
+ *  - remote sessions, whose transcript lives on the other machine and would
+ *    never show up in the local message log.
+ */
+export function pruneEmptySessions() {
+  const pruned: string[] = [];
+  for (const s of sessions.values()) {
+    if (s.id === MAIN_SESSION_ID || s.remoteId) continue;
+    if (hasStoredMessages(s.id)) continue;
+    // An unsent draft still counts as work in progress.
+    const ui = loadUIState(s.id);
+    if (typeof ui.input === 'string' && ui.input.trim()) continue;
+    if (Array.isArray(ui.inputHistory) && ui.inputHistory.length > 0) continue;
+    pruned.push(s.id);
+  }
+  if (pruned.length === 0) return;
+
+  for (const id of pruned) {
+    sessions.delete(id);
+    deleteSessionData(id);
+  }
+  // Group membership is keyed by session id; stale ids would keep inflating
+  // the per-project session counts in the settings modal.
+  const prefs = loadPreferences();
+  const map = prefs.tabGroupMap as Record<string, string> | undefined;
+  if (map && typeof map === 'object') {
+    const before = Object.keys(map).length;
+    for (const id of pruned) delete map[id];
+    if (Object.keys(map).length !== before) savePreferences(prefs);
+  }
+  saveSessions();
+  log(`[persist] Pruned ${pruned.length} empty session(s)`);
 }
 
 export function broadcast(session: Session, data: string) {

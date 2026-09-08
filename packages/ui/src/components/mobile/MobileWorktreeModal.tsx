@@ -84,7 +84,7 @@ export function MobileWorktreeModal({
     let cancelled = false;
     (async () => {
       try {
-        const info = await client.listBranches(repoPath);
+        const info = await client.listBranches(repoPath, null);
         if (cancelled) return;
         setBranchesInfo(info);
         setSourceBranch(info.current || info.local[0] || '');
@@ -153,6 +153,9 @@ export function MobileWorktreeModal({
           setStatus('error');
         },
       },
+      // Mobile only ever spawns local sessions, so the worktree belongs here —
+      // pin it rather than following whichever session happens to be focused.
+      null,
     );
   };
 

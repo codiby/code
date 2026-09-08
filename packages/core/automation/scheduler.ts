@@ -24,7 +24,10 @@ export function startAutomationScheduler(): void {
 
 export function scheduleAutomation(automation: AutomationRecord): void {
   unscheduleAutomation(automation.id);
-  if (!automation.enabled || automation.deletedAt) {
+  // Webhook automations have no timer of their own — they only run when someone
+  // POSTs to their endpoint, so they never hold a job or a `nextRunAt`.
+  if (!automation.enabled || automation.deletedAt
+    || automation.triggerType !== 'cron' || !automation.cronExpression) {
     setAutomationNextRun(automation.id, null);
     return;
   }

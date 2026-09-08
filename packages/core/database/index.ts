@@ -5,6 +5,18 @@ import { drizzle } from 'drizzle-orm/bun-sqlite';
 import { CODIBY_DIR } from '../config/config';
 import * as schema from './schema';
 
+// Opening the handle here means the first module to import this file fixes the
+// path for the whole process. Under `bun test` that first import is whichever
+// suite happens to run first, so a test file cannot reliably point itself at a
+// sandbox — scripts/test-preload.ts does it before any of them load. Failing
+// loudly here beats a suite quietly writing its fixtures into the real data.
+if (process.env.NODE_ENV === 'test' && !process.env.CODIBY_DATABASE_FILE) {
+  throw new Error(
+    'Refusing to open the real database under `bun test`: CODIBY_DATABASE_FILE is unset. ' +
+    'Run tests from the repo root so bunfig.toml loads scripts/test-preload.ts.',
+  );
+}
+
 export const DATABASE_FILE = process.env.CODIBY_DATABASE_FILE || join(CODIBY_DIR, 'database.sqlite');
 mkdirSync(CODIBY_DIR, { recursive: true });
 
@@ -15,7 +27,8 @@ sqlite.exec('PRAGMA busy_timeout = 5000;');
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS automations (
     id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, description TEXT,
-    cron_expression TEXT NOT NULL, timezone TEXT NOT NULL,
+    trigger_type TEXT NOT NULL DEFAULT 'cron',
+    cron_expression TEXT, timezone TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1, prompt TEXT NOT NULL, cwd TEXT NOT NULL,
     provider TEXT NOT NULL, model TEXT, permission_mode TEXT NOT NULL, effort TEXT,
     concurrency_policy TEXT NOT NULL DEFAULT 'skip', max_runtime_ms INTEGER,
@@ -71,6 +84,60 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS requirement_events_session_idx
     ON requirement_events (session_id, created_at DESC);
 `);
+
+// ---------------------------------------------------------------------------
+// Additive migrations for databases created before a column existed. The
+// CREATE TABLE statements above only apply to fresh databases, so anything that
+// changed shape after shipping has to be patched here — guarded so it is safe
+// to run on every boot.
+// ---------------------------------------------------------------------------
+
+type ColumnInfo = { name: string; notnull: number };
+
+function columnsOf(table: string): ColumnInfo[] {
+  return sqlite.query(`PRAGMA table_info(${table})`).all() as ColumnInfo[];
+}
+
+{
+  const columns = columnsOf('automations');
+
+  // Webhook-triggered automations — added alongside the cron-only original.
+  if (!columns.some(c => c.name === 'trigger_type')) {
+    sqlite.exec(`ALTER TABLE automations ADD COLUMN trigger_type TEXT NOT NULL DEFAULT 'cron'`);
+  }
+
+  // `cron_expression` started out NOT NULL; webhook automations have no cron, so
+  // the constraint has to go. SQLite cannot drop NOT NULL in place, so rebuild
+  // the table — the only way to relax the column without losing rows.
+  if (columns.some(c => c.name === 'cron_expression' && c.notnull === 1)) {
+    sqlite.exec('PRAGMA foreign_keys = OFF;');
+    sqlite.transaction(() => {
+      sqlite.exec(`
+        CREATE TABLE automations_migrated (
+          id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, description TEXT,
+          trigger_type TEXT NOT NULL DEFAULT 'cron',
+          cron_expression TEXT, timezone TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1, prompt TEXT NOT NULL, cwd TEXT NOT NULL,
+          provider TEXT NOT NULL, model TEXT, permission_mode TEXT NOT NULL, effort TEXT,
+          concurrency_policy TEXT NOT NULL DEFAULT 'skip', max_runtime_ms INTEGER,
+          next_run_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+        INSERT INTO automations_migrated
+          SELECT id, name, description, trigger_type, cron_expression, timezone,
+                 enabled, prompt, cwd, provider, model, permission_mode, effort,
+                 concurrency_policy, max_runtime_ms, next_run_at, created_at,
+                 updated_at, deleted_at
+          FROM automations;
+        DROP TABLE automations;
+        ALTER TABLE automations_migrated RENAME TO automations;
+        CREATE INDEX IF NOT EXISTS automations_enabled_next_run_idx
+          ON automations (enabled, next_run_at);
+      `);
+    })();
+    sqlite.exec('PRAGMA foreign_keys = ON;');
+  }
+}
 
 export const database = drizzle(sqlite, { schema });
 export function closeDatabase(): void { sqlite.close(); }

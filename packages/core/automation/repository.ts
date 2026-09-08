@@ -27,6 +27,7 @@ export function createAutomation(input: AutomationInput, nextRunAt: number | nul
     id: `aut_${randomUUID()}`,
     ...input,
     description: input.description ?? null,
+    cronExpression: input.cronExpression ?? null,
     model: input.model ?? null,
     effort: input.effort ?? null,
     maxRuntimeMs: input.maxRuntimeMs ?? null,

@@ -4,7 +4,10 @@ export const automations = sqliteTable('automations', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
-  cronExpression: text('cron_expression').notNull(),
+  /** How the automation fires: 'cron' (the scheduler) or 'webhook' (an HTTP call). */
+  triggerType: text('trigger_type').notNull().default('cron'),
+  /** Null for webhook automations, which have no schedule of their own. */
+  cronExpression: text('cron_expression'),
   timezone: text('timezone').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   prompt: text('prompt').notNull(),

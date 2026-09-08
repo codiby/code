@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Button,
   Select, SelectTrigger, SelectValue, SelectPopover,
   ListBox, ListBoxItem,
+  TextField, Input,
 } from '@heroui/react';
+import { FolderPlus } from 'lucide-react';
 import type { ClaudeClient } from '../lib/claude-client';
 import { resolveServerUrl } from '../lib/claude-client';
-import { getNative } from '../lib/native';
+import { addRecentDir, getRecentDirs } from '../lib/recent-dirs';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
 
 interface RemoteInfo {
@@ -24,9 +26,7 @@ const REMOTE_DOT: Record<string, string> = {
 
 const TARGET_KEY = 'claude-ui-last-target';
 
-const RECENT_KEY = 'claude-ui-recent-dirs';
 const PROVIDER_KEY = 'claude-ui-last-provider';
-const MAX_RECENT = 10;
 const PROVIDER_OPTIONS = [
   { key: 'claude', label: 'Claude' },
   { key: 'codex', label: 'Codex' },
@@ -38,16 +38,6 @@ function getLastProvider(available: ReadonlyArray<{ key: string }>): ProviderKey
   const v = localStorage.getItem(PROVIDER_KEY);
   if (available.some(o => o.key === v)) return v as ProviderKey;
   return 'claude';
-}
-
-function getRecentDirs(): string[] {
-  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }
-  catch { return []; }
-}
-function addRecentDir(dir: string) {
-  const recent = getRecentDirs().filter(d => d !== dir);
-  recent.unshift(dir);
-  localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, MAX_RECENT)));
 }
 
 interface GitInfo {
@@ -104,19 +94,12 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
 
   const isRemote = target !== 'local';
 
-  // Resolve the base URL for the chosen target. Local → the bun sidecar; a
-  // remote → its DIRECT tunnel base (Electron main owns the tunnel), acquired
-  // over IPC. bun no longer proxies remote file/git browsing.
-  const targetUrl = useCallback(async (path: string): Promise<string> => {
-    if (!serverUrl) return path;
-    if (target === 'local') return `${serverUrl}${path}`;
-    try {
-      const native = getNative();
-      const res = await native?.invoke<{ port: number }>('remote_tunnel_acquire', { remoteId: target });
-      if (res?.port) return `http://127.0.0.1:${res.port}${path}`;
-    } catch {}
-    return `${serverUrl}${path}`;
-  }, [serverUrl, target]);
+  // Host every browse request is pinned to — `null` means this machine. The
+  // modal's target is chosen by the tabs above and is independent of whichever
+  // session tab happens to be focused, so we must never let the client fall
+  // back to its ambient "active remote": with a remote session focused, that
+  // answered the Local tab with the REMOTE's filesystem.
+  const remoteTarget = isRemote ? target : null;
 
   const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
   const [cwd, setCwd] = useState('/');
@@ -128,83 +111,115 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
 
   const [showWorktree, setShowWorktree] = useState(false);
 
+  // Inline "new folder" row at the top of the Browse list. `newFolder` is null
+  // when the affordance is closed, otherwise the name being typed.
+  const [newFolder, setNewFolder] = useState<string | null>(null);
+  const [newFolderError, setNewFolderError] = useState<string | null>(null);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+
   const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider(availableProviders));
 
-  const loadDir = useCallback(async (path: string) => {
+  // Every browse request carries the sequence number it was issued with, and
+  // only the newest one may write state. Local and remote listings travel over
+  // very different transports, so flipping the target (or a folder) while a
+  // slow `ls` is still in flight would otherwise let the stale response land on
+  // top of the current one — the same host mix-up by a different route.
+  const reqSeq = useRef(0);
+  const nextReq = () => ++reqSeq.current;
+  const isCurrent = (seq: number) => seq === reqSeq.current;
+
+  const loadDir = useCallback(async (path: string, seq: number) => {
+    if (!client) { setFolders([]); setLoading(false); return; }
     setLoading(true);
     try {
-      if (!isRemote && client) {
-        const dirs = await client.listDirs(path.endsWith('/') ? path : path + '/');
-        setFolders(dirs);
-      } else {
-        const p = path.endsWith('/') ? path : path + '/';
-        const res = await fetch(await targetUrl(`/ls?prefix=${encodeURIComponent(p)}`));
-        if (res.ok) {
-          const data = await res.json();
-          setFolders(Array.isArray(data) ? data : (data.dirs || []));
-        } else {
-          setFolders([]);
-        }
-      }
+      const dirs = await client.listDirs(path.endsWith('/') ? path : path + '/', remoteTarget);
+      if (isCurrent(seq)) setFolders(dirs);
     } catch {
-      setFolders([]);
+      if (isCurrent(seq)) setFolders([]);
     } finally {
-      setLoading(false);
+      if (isCurrent(seq)) setLoading(false);
     }
-  }, [client, isRemote, targetUrl]);
+  }, [client, remoteTarget]);
 
-  const checkGit = useCallback(async (path: string) => {
-    if (!path) { setGitInfo(null); return; }
+  const checkGit = useCallback(async (path: string, seq: number) => {
+    if (!path || !client) { setGitInfo(null); return; }
     try {
-      let info: GitInfo;
-      if (!isRemote && client) {
-        info = await client.getGitInfo(path);
-      } else {
-        const res = await fetch(await targetUrl(`/git/info?cwd=${encodeURIComponent(path)}`));
-        if (!res.ok) { setGitInfo(null); return; }
-        info = await res.json();
-      }
-      setGitInfo(info);
-    } catch { setGitInfo(null); }
-  }, [client, isRemote, targetUrl]);
+      const info: GitInfo = await client.getGitInfo(path, remoteTarget);
+      if (isCurrent(seq)) setGitInfo(info);
+    } catch { if (isCurrent(seq)) setGitInfo(null); }
+  }, [client, remoteTarget]);
 
   const fetchUserHome = useCallback(async (): Promise<string> => {
-    try {
-      if (!isRemote && client) return await client.getUserHome();
-      const res = await fetch(await targetUrl('/user-home'));
-      if (res.ok) {
-        const data = await res.json();
-        return data.home || '/';
-      }
-    } catch {}
+    if (!client) return '/';
+    try { return await client.getUserHome(remoteTarget); } catch {}
     return '/';
-  }, [client, isRemote, targetUrl]);
+  }, [client, remoteTarget]);
 
   useEffect(() => {
     if (!isOpen) return;
-    setRecentDirs(getRecentDirs());
+    // Scoped to the selected host: a path browsed on ryzen9 does not exist on
+    // this machine, so offering it under the Local tab only ever produces a
+    // session that boots in a missing directory.
+    setRecentDirs(getRecentDirs(remoteTarget));
     setShowWorktree(false);
-    let cancelled = false;
+    setNewFolder(null);
+    setNewFolderError(null);
+    const seq = nextReq();
+    // Clear the previous target's listing up front: showing one host's folders
+    // under another host's tab, even briefly, is the bug this guards against.
+    setFolders([]);
+    setGitInfo(null);
+    setLoading(true);
     (async () => {
       const home = await fetchUserHome();
-      if (cancelled) return;
+      if (!isCurrent(seq)) return;
       setCwd(home);
-      loadDir(home);
-      checkGit(home);
+      loadDir(home, seq);
+      checkGit(home, seq);
     })();
-    return () => { cancelled = true; };
-  }, [isOpen, target, fetchUserHome, loadDir, checkGit]);
+  }, [isOpen, target, remoteTarget, fetchUserHome, loadDir, checkGit]);
 
   const navigate = (path: string) => {
+    const seq = nextReq();
+    closeNewFolder();
     setCwd(path);
-    loadDir(path);
-    checkGit(path);
+    loadDir(path, seq);
+    checkGit(path, seq);
+  };
+
+  function closeNewFolder() {
+    setNewFolder(null);
+    setNewFolderError(null);
+  }
+
+  /** Create `newFolder` under the folder currently shown, then walk into it so
+   *  "Open here" starts the session there — same landing behaviour as a
+   *  freshly-created worktree. */
+  const handleCreateFolder = async () => {
+    const name = (newFolder ?? '').trim();
+    if (!name || !client || creatingFolder) return;
+    if (name.includes('/') || name === '.' || name === '..') {
+      setNewFolderError('Name cannot contain "/"');
+      return;
+    }
+    setCreatingFolder(true);
+    setNewFolderError(null);
+    const path = (cwd.endsWith('/') ? cwd : cwd + '/') + name;
+    try {
+      const res = await client.createDir(path, remoteTarget);
+      if (!res.ok) { setNewFolderError(res.error || 'Could not create folder'); return; }
+      navigate(path);
+    } catch (e: any) {
+      setNewFolderError(e?.message || 'Could not create folder');
+    } finally {
+      setCreatingFolder(false);
+    }
   };
 
   const segments = cwd.split('/').filter(Boolean);
 
   const handleCreate = () => {
-    addRecentDir(cwd);
+    addRecentDir(remoteTarget, cwd);
     localStorage.setItem(PROVIDER_KEY, provider);
     localStorage.setItem(TARGET_KEY, target);
     onCreate(cwd, provider, isRemote ? target : null);
@@ -214,10 +229,11 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
   /** Bubble the freshly-created worktree path back into the folder browser
    *  so the user lands on it and "Open here" creates a session there. */
   const handleWorktreeCreated = (path: string) => {
+    const seq = nextReq();
     setCwd(path);
-    addRecentDir(path);
-    loadDir(path);
-    checkGit(path);
+    addRecentDir(remoteTarget, path);
+    loadDir(path, seq);
+    checkGit(path, seq);
   };
 
   if (!isOpen) return null;
@@ -312,12 +328,59 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                   onPress={() => setTab(t)}
                 >{t === 'recent' ? `Recent (${recentDirs.length})` : 'Browse'}</Button>
               ))}
+              {tab === 'browse' && client && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ml-auto text-xs px-2 py-1.5 h-auto text-zinc-500 hover:text-zinc-200 flex items-center gap-1.5"
+                  onPress={() => { setNewFolderError(null); setNewFolder(''); }}
+                  aria-label="New folder"
+                >
+                  <FolderPlus size={13} />
+                  New folder
+                </Button>
+              )}
             </div>
 
             {/* Folder list */}
             <div className="flex-1 overflow-y-auto px-2 py-1 min-h-0">
               {tab === 'browse' ? (
-                loading ? <p className="text-xs text-zinc-600 text-center py-8">Loading...</p>
+                <>
+                {/* Inline creation row — sits above the listing so the new
+                 *  folder appears where it will land once created. */}
+                {newFolder !== null && (
+                  <div className="flex items-center gap-2 px-3 py-1.5">
+                    <span className="text-zinc-600 text-xs">&#x1F4C1;</span>
+                    <TextField
+                      aria-label="New folder name"
+                      value={newFolder}
+                      onChange={setNewFolder}
+                      isDisabled={creatingFolder}
+                      className="flex-1 min-w-0"
+                    >
+                      <Input
+                        autoFocus
+                        placeholder="folder-name"
+                        className="font-mono text-[13px]"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') { e.preventDefault(); handleCreateFolder(); }
+                          else if (e.key === 'Escape') { e.preventDefault(); closeNewFolder(); }
+                        }}
+                      />
+                    </TextField>
+                    <Button size="sm" variant="ghost" className="text-xs h-auto px-2 py-1" onPress={closeNewFolder}>Cancel</Button>
+                    <Button size="sm" className="text-xs h-auto px-2 py-1" isDisabled={!newFolder.trim() || creatingFolder} onPress={handleCreateFolder}>
+                      {creatingFolder ? 'Creating…' : 'Create'}
+                    </Button>
+                  </div>
+                )}
+                {newFolderError && (
+                  <p className="text-[11px] text-red-400 px-3 pb-1.5">{newFolderError}</p>
+                )}
+                {loading ? <p className="text-xs text-zinc-600 text-center py-8">Loading...</p>
                 : folders.length === 0 ? <p className="text-xs text-zinc-600 text-center py-8">No subdirectories</p>
                 : folders.map(dir => {
                     const name = dir.replace(/\/$/, '').split('/').pop() || dir;
@@ -332,7 +395,8 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                         <span className="truncate">{name}</span>
                       </Button>
                     );
-                  })
+                  })}
+                </>
               ) : (
                 recentDirs.length === 0 ? <p className="text-xs text-zinc-600 text-center py-8">No recent projects</p>
                 : recentDirs.map(dir => (
@@ -399,6 +463,7 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
                   <WorktreeCreateForm
                     client={client}
                     repoPath={gitInfo.top_level!}
+                    remoteId={remoteTarget}
                     hasEnv={gitInfo.has_env}
                     detectedPackageManager={gitInfo.package_manager}
                     existingWorktrees={gitInfo.worktrees}

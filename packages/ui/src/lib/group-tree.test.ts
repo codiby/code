@@ -2,8 +2,8 @@ import { describe, test, expect } from 'bun:test';
 import type { SessionInfo } from './claude-client';
 import type { TabGroupInfo } from './tab-groups';
 import {
-  ancestorChain, buildGroupTree, derivedGroupId, descendantGroupIds, findGroupNode,
-  flattenSessionIds, isAncestorOf, isDerivedGroupId, resolveGroupColor, worktreeOf,
+  ancestorChain, buildGroupTree, descendantGroupIds, findGroupNode,
+  flattenSessionIds, isAncestorOf, resolveGroupColor,
   type TreeNode,
 } from './group-tree';
 
@@ -28,38 +28,6 @@ function shape(nodes: TreeNode[]): unknown[] {
 
 const REPO = '/src/code';
 const WT_A = '/src/code/.worktrees/feat-a';
-const WT_B = '/src/code/.worktrees/feat-b';
-
-describe('worktreeOf', () => {
-  test('splits the standard <repo>/.worktrees/<branch> layout', () => {
-    expect(worktreeOf(WT_A)).toEqual({ repo: '/src/code', branch: 'feat-a' });
-  });
-
-  test('still splits the legacy .wt layout', () => {
-    // Pre-existing worktrees keep deriving. Note the `repo` here is the
-    // directory that *contained* the repo, not the repo — the legacy layout put
-    // worktrees outside it, which is exactly why the bridge asks git instead.
-    expect(worktreeOf('/src/.wt/feat-a')).toEqual({ repo: '/src', branch: 'feat-a' });
-  });
-
-  test('handles Windows separators', () => {
-    expect(worktreeOf('C:\\src\\code\\.worktrees\\feat-a')).toEqual({ repo: 'C:\\src\\code', branch: 'feat-a' });
-    expect(worktreeOf('C:\\src\\code\\.wt\\feat-a')).toEqual({ repo: 'C:\\src\\code', branch: 'feat-a' });
-  });
-
-  test('rejects a plain repo and a subdirectory of a worktree', () => {
-    expect(worktreeOf(REPO)).toBeNull();
-    // Only the worktree root counts — `packages/ui` inside it is a normal dir.
-    expect(worktreeOf(`${WT_A}/packages/ui`)).toBeNull();
-    expect(worktreeOf('')).toBeNull();
-    expect(worktreeOf(undefined)).toBeNull();
-  });
-
-  test('does not mistake a directory merely named like the marker', () => {
-    expect(worktreeOf('/src/code/worktrees/feat-a')).toBeNull();
-    expect(worktreeOf('/src/code/.worktrees-old/feat-a')).toBeNull();
-  });
-});
 
 describe('buildGroupTree — nesting', () => {
   const groups = {
@@ -126,6 +94,55 @@ describe('buildGroupTree — nesting', () => {
     });
     expect(shape(tree)).toEqual([{ p: [{ z: [] }, { x: [] }, { y: [] }] }]);
   });
+
+  test('sortSessions orders each parent independently', () => {
+    const tree = buildGroupTree({
+      sessions: [session('b', REPO), session('a', REPO), session('d', REPO), session('c', REPO)],
+      groups: { p: group('p') },
+      map: { a: 'p', b: 'p' },
+      sortSessions: (x, y) => x.id.localeCompare(y.id),
+    });
+    expect(shape(tree)).toEqual([{ p: ['a', 'b'] }, 'c', 'd']);
+  });
+});
+
+describe('buildGroupTree — sessions sharing a worktree', () => {
+  // Nothing clusters at render time any more: a branch group is a real group
+  // the bridge created when the session was born (`maybeAutoGroupSession`), so
+  // the tree just draws whatever `tabGroupMap` says.
+  const groups = {
+    proj: group('proj', { cwd: REPO, color: 'blue' }),
+    branch: group('branch', { name: 'feat-a', cwd: WT_A, parentId: 'proj', autoClaim: true }),
+  };
+
+  test('a branch group renders like any other subgroup', () => {
+    const tree = buildGroupTree({
+      sessions: [session('a', WT_A), session('b', WT_A), session('c', REPO)],
+      groups,
+      map: { a: 'branch', b: 'branch', c: 'proj' },
+    });
+    expect(shape(tree)).toEqual([{ proj: [{ branch: ['a', 'b'] }, 'c'] }]);
+  });
+
+  test('a session dragged out of its branch group stays out', () => {
+    // The whole point of persisting the grouping: sharing the cwd no longer
+    // pulls `a` back in on the next render.
+    const tree = buildGroupTree({
+      sessions: [session('a', WT_A), session('b', WT_A)],
+      groups,
+      map: { a: 'proj', b: 'branch' },
+    });
+    expect(shape(tree)).toEqual([{ proj: [{ branch: ['b'] }, 'a'] }]);
+  });
+
+  test('an emptied branch group disappears without being deleted', () => {
+    const tree = buildGroupTree({
+      sessions: [session('a', WT_A)],
+      groups,
+      map: { a: 'proj' },
+    });
+    expect(shape(tree)).toEqual([{ proj: ['a'] }]);
+  });
 });
 
 describe('buildGroupTree — empty groups', () => {
@@ -166,184 +183,6 @@ describe('buildGroupTree — empty groups', () => {
       map: { hit: 'a', miss: 'b' },
     });
     expect(shape(tree)).toEqual([{ a: ['hit'] }]);
-  });
-});
-
-describe('buildGroupTree — automatic worktree groups', () => {
-  const groups = { proj: group('proj', { color: 'blue' }) };
-
-  test('two sessions sharing a worktree materialise a derived group', () => {
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A), session('c', REPO)],
-      groups,
-      map: { a: 'proj', b: 'proj', c: 'proj' },
-    });
-    const wt = derivedGroupId('proj', WT_A);
-    expect(shape(tree)).toEqual([{ proj: [{ [wt]: ['a', 'b'] }, 'c'] }]);
-    const node = findGroupNode(tree, wt)!;
-    expect(node.derived).toBe(true);
-    expect(node.group.kind).toBe('worktree');
-    expect(node.group.name).toBe('feat-a');
-    expect(node.group.worktreePath).toBe(WT_A);
-    expect(isDerivedGroupId(node.id)).toBe(true);
-  });
-
-  test('a lone worktree session stays loose', () => {
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('c', REPO)],
-      groups,
-      map: { a: 'proj', c: 'proj' },
-    });
-    expect(shape(tree)).toEqual([{ proj: ['a', 'c'] }]);
-  });
-
-  test('different worktrees form separate groups', () => {
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A), session('c', WT_B), session('d', WT_B)],
-      groups,
-      map: { a: 'proj', b: 'proj', c: 'proj', d: 'proj' },
-    });
-    expect(shape(tree)).toEqual([{
-      proj: [
-        { [derivedGroupId('proj', WT_A)]: ['a', 'b'] },
-        { [derivedGroupId('proj', WT_B)]: ['c', 'd'] },
-      ],
-    }]);
-  });
-
-  test('the same worktree under two parents does not merge', () => {
-    const two = { p1: group('p1'), p2: group('p2') };
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A), session('c', WT_A), session('d', WT_A)],
-      groups: two,
-      map: { a: 'p1', b: 'p1', c: 'p2', d: 'p2' },
-    });
-    expect(shape(tree)).toEqual([
-      { p1: [{ [derivedGroupId('p1', WT_A)]: ['a', 'b'] }] },
-      { p2: [{ [derivedGroupId('p2', WT_A)]: ['c', 'd'] }] },
-    ]);
-  });
-
-  test('ungrouped worktree sessions cluster at the root', () => {
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A)],
-      groups: {},
-      map: {},
-    });
-    expect(shape(tree)).toEqual([{ [derivedGroupId('', WT_A)]: ['a', 'b'] }]);
-  });
-
-  test('pinning a session out drops it below the threshold and dissolves the group', () => {
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A)],
-      groups,
-      map: { a: 'proj', b: 'proj' },
-      pinnedOutOfWorktree: new Set(['a']),
-    });
-    expect(shape(tree)).toEqual([{ proj: ['a', 'b'] }]);
-  });
-
-  test('pinning one of three leaves the group standing without it', () => {
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A), session('c', WT_A)],
-      groups,
-      map: { a: 'proj', b: 'proj', c: 'proj' },
-      pinnedOutOfWorktree: new Set(['a']),
-    });
-    expect(shape(tree)).toEqual([{ proj: [{ [derivedGroupId('proj', WT_A)]: ['b', 'c'] }, 'a'] }]);
-  });
-
-  test('derived groups can appear at any nesting depth', () => {
-    const nested = { root: group('root'), sub: group('sub', { parentId: 'root' }) };
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A)],
-      groups: nested,
-      map: { a: 'sub', b: 'sub' },
-    });
-    expect(shape(tree)).toEqual([{ root: [{ sub: [{ [derivedGroupId('sub', WT_A)]: ['a', 'b'] }] }] }]);
-    expect(findGroupNode(tree, derivedGroupId('sub', WT_A))!.depth).toBe(2);
-  });
-
-  test('the repo root is a checkout too — it clusters as "main"', () => {
-    // git's own terms: the repo root is the main working tree, `.worktrees/*` are the
-    // linked ones. Both cluster; the root reads as `main`.
-    const proj = { proj: group('proj', { cwd: REPO }) };
-    const tree = buildGroupTree({
-      sessions: [session('a', REPO), session('b', REPO), session('c', WT_A), session('d', WT_A)],
-      groups: proj,
-      map: { a: 'proj', b: 'proj', c: 'proj', d: 'proj' },
-    });
-    expect(shape(tree)).toEqual([{
-      proj: [
-        { [derivedGroupId('proj', REPO)]: ['a', 'b'] },
-        { [derivedGroupId('proj', WT_A)]: ['c', 'd'] },
-      ],
-    }]);
-    expect(findGroupNode(tree, derivedGroupId('proj', REPO))!.group.name).toBe('main');
-    expect(findGroupNode(tree, derivedGroupId('proj', WT_A))!.group.name).toBe('feat-a');
-  });
-
-  test('a group living entirely in its own directory gains no child node', () => {
-    // Otherwise every single-checkout project would grow a lone `main` child
-    // repeating the parent — noise, not structure.
-    const proj = { proj: group('proj', { cwd: REPO }) };
-    const tree = buildGroupTree({
-      sessions: [session('a', REPO), session('b', REPO)],
-      groups: proj,
-      map: { a: 'proj', b: 'proj' },
-    });
-    expect(shape(tree)).toEqual([{ proj: ['a', 'b'] }]);
-  });
-
-  test('a lone linked worktree still gets its node — the branch is information', () => {
-    const proj = { proj: group('proj', { cwd: REPO }) };
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A)],
-      groups: proj,
-      map: { a: 'proj', b: 'proj' },
-    });
-    expect(shape(tree)).toEqual([{ proj: [{ [derivedGroupId('proj', WT_A)]: ['a', 'b'] }] }]);
-  });
-
-  test('a shared directory that is neither the project nor a worktree uses its folder name', () => {
-    const proj = { proj: group('proj', { cwd: REPO }) };
-    const tree = buildGroupTree({
-      sessions: [session('a', '/src/other'), session('b', '/src/other'), session('c', REPO)],
-      groups: proj,
-      map: { a: 'proj', b: 'proj', c: 'proj' },
-    });
-    expect(findGroupNode(tree, derivedGroupId('proj', '/src/other'))!.group.name).toBe('other');
-  });
-
-  test('groupByWorktree: false skips the derivation entirely', () => {
-    const proj = { proj: group('proj', { cwd: REPO }) };
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A), session('c', REPO)],
-      groups: proj,
-      map: { a: 'proj', b: 'proj', c: 'proj' },
-      groupByWorktree: false,
-    });
-    expect(shape(tree)).toEqual([{ proj: ['a', 'b', 'c'] }]);
-  });
-
-  test('groupByWorktree defaults to on when omitted', () => {
-    const proj = { proj: group('proj', { cwd: REPO }) };
-    const tree = buildGroupTree({
-      sessions: [session('a', WT_A), session('b', WT_A), session('c', REPO)],
-      groups: proj,
-      map: { a: 'proj', b: 'proj', c: 'proj' },
-    });
-    expect(shape(tree)).toEqual([{ proj: [{ [derivedGroupId('proj', WT_A)]: ['a', 'b'] }, 'c'] }]);
-  });
-
-  test('sortSessions applies inside derived groups too', () => {
-    const tree = buildGroupTree({
-      sessions: [session('b', WT_A), session('a', WT_A)],
-      groups,
-      map: { a: 'proj', b: 'proj' },
-      sortSessions: (x, y) => x.id.localeCompare(y.id),
-    });
-    expect(shape(tree)).toEqual([{ proj: [{ [derivedGroupId('proj', WT_A)]: ['a', 'b'] }] }]);
   });
 });
 

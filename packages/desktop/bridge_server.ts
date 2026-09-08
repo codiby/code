@@ -60,6 +60,33 @@ async function healthCheck(port: number): Promise<boolean> {
 }
 
 /**
+ * Health check that tolerates a stalled event loop.
+ *
+ * The bridge is single-threaded: a synchronous burst (planning file watches
+ * over a large cwd, a big git call) can hold it long enough for one 2s probe
+ * to time out on a server that is perfectly alive. Declaring it dead on that
+ * one probe is expensive — the caller replaces the sidecar and every live
+ * session dies with it — so only a run of failures counts as dead.
+ */
+async function healthCheckPersistent(port: number, attempts = 3): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (await healthCheck(port)) return true;
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+/** Wait for a killed sidecar to actually exit, so its replacement doesn't race
+ *  it for the port. Bounded — a wedged process shouldn't block startup. */
+async function waitForExit(child: ChildProcess, timeoutMs = 3000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, timeoutMs);
+    child.once('exit', () => { clearTimeout(t); resolve(); });
+  });
+}
+
+/**
  * Resolve absolute paths to the bundled `bun` binary and `server.js` script.
  * In dev, fall back to the host's `bun` (PATH lookup) and the source
  * `server/index.ts` so the watcher cycle works without a packaging step.
@@ -94,6 +121,19 @@ async function spawnSidecar(): Promise<number> {
 
   const { bunPath, serverScript, dev } = resolveSidecarPaths();
 
+  // Retire the previous sidecar BEFORE its replacement starts, and wait for it
+  // to go. Spawning first leaves both alive at once: the newcomer loses the
+  // race for the port, logs "Is port 3111 in use?", and — because the bridge
+  // keeps itself alive through uncaught exceptions — stays up as a process with
+  // no listener. We then kill the one process that was actually serving, and
+  // the app is left pointing at a bridge that answers nothing.
+  if (sidecarChild && !sidecarChild.killed) {
+    const previous = sidecarChild;
+    sidecarChild = null;
+    try { previous.kill(); } catch {}
+    await waitForExit(previous);
+  }
+
   // In a packaged build the ripgrep binary lives next to `bun` and `server.js`
   // in `process.resourcesPath`. In dev the handler resolves it through the
   // `@vscode/ripgrep` npm package, so we leave the env var unset.
@@ -116,7 +156,13 @@ async function spawnSidecar(): Promise<number> {
         ...process.env,
         CODIBY_CODE_PORT_FILE: portFile,
         CLAUDE_UI_PORT: '3111',
-        CLAUDE_UI_HOST: '127.0.0.1',
+        // Abierto a la red por decisión explícita, igual que el resto de las
+        // máquinas: el cliente móvil entra por la IP LAN sin intermediarios.
+        // Ojo con lo que implica: `authCheck` trata como confiable cualquier
+        // petición cuyo header `Host` sea 127.0.0.1, y ese header lo pone el
+        // cliente, así que en red abierta el token deja de ser una barrera.
+        // CLAUDE_UI_HOST=127.0.0.1 vuelve a encerrarlo en loopback.
+        CLAUDE_UI_HOST: process.env.CLAUDE_UI_HOST || '0.0.0.0',
         ...(rgPath ? { CODIBY_RG_PATH: rgPath } : {}),
         ...(swaggerDist ? { CODIBY_SWAGGER_DIST: swaggerDist } : {}),
       },
@@ -125,18 +171,24 @@ async function spawnSidecar(): Promise<number> {
     },
   );
 
-  if (sidecarChild && !sidecarChild.killed) {
-    try { sidecarChild.kill(); } catch {}
-  }
   sidecarChild = child;
 
   return new Promise<number>((resolve, reject) => {
     let lastStderr = '';
     let resolved = false;
-    const deadline = setTimeout(() => {
+    // A sidecar that never announces its port is useless but not necessarily
+    // dead — it keeps running after an uncaught exception. Reap it, or it lives
+    // on holding sessions and file watches nobody can reach.
+    function abandon(err: Error, alreadyExited = false) {
       if (resolved) return;
       resolved = true;
-      reject(new Error(`Timed out waiting for bun sidecar. Last stderr: ${lastStderr}`));
+      clearTimeout(deadline);
+      if (sidecarChild === child) sidecarChild = null;
+      if (!alreadyExited) { try { child.kill(); } catch {} }
+      reject(err);
+    }
+    const deadline = setTimeout(() => {
+      abandon(new Error(`Timed out waiting for bun sidecar. Last stderr: ${lastStderr}`));
     }, 15_000);
 
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -162,17 +214,14 @@ async function spawnSidecar(): Promise<number> {
     });
 
     child.on('exit', (code, signal) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(deadline);
-      reject(new Error(`bun sidecar exited before announcing port (code=${code}, signal=${signal}). stderr: ${lastStderr}`));
+      abandon(
+        new Error(`bun sidecar exited before announcing port (code=${code}, signal=${signal}). stderr: ${lastStderr}`),
+        true,
+      );
     });
 
     child.on('error', (err) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(deadline);
-      reject(err);
+      abandon(err instanceof Error ? err : new Error(String(err)));
     });
   });
 }
@@ -190,7 +239,10 @@ export async function getBridgePort(): Promise<number> {
     }
   }
 
-  if (cachedPort != null && await healthCheck(cachedPort)) {
+  // The port we already resolved gets the benefit of the doubt: replacing a
+  // live sidecar costs every session running inside it, so one timed-out probe
+  // isn't enough to condemn it.
+  if (cachedPort != null && await healthCheckPersistent(cachedPort)) {
     return cachedPort;
   }
   cachedPort = null;
@@ -220,6 +272,9 @@ export async function getBridgePort(): Promise<number> {
     }
     await new Promise((r) => setTimeout(r, 100));
   }
+  // It announced a port and then never served on it. Don't leave it running —
+  // the next attempt would find the port taken by a bridge that answers nothing.
+  killSidecar();
   throw new Error(`Spawned bun sidecar on port ${port} but health check never passed`);
 }
 
