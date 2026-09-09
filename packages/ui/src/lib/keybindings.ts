@@ -58,8 +58,8 @@ export type KeybindingOverrides = Record<string, string | null>;
 export const COMMANDS: CommandDef[] = [
   { id: 'command-palette',  title: 'Command Palette',      category: 'Navigation', when: 'always', defaultChord: 'mod+k' },
   { id: 'file-switcher',    title: 'Go to File',           category: 'Navigation', when: 'always', defaultChord: 'mod+p' },
-  { id: 'toggle-sidebar',   title: 'Toggle Sessions Sidebar', category: 'Navigation', when: 'always', defaultChord: 'mod+shift+b' },
-  { id: 'toggle-explorer',  title: 'Toggle File Explorer', category: 'Navigation', when: 'always', defaultChord: 'mod+b' },
+  { id: 'toggle-sidebar',   title: 'Toggle Sessions Sidebar', category: 'Navigation', when: 'always', defaultChord: 'mod+b' },
+  { id: 'toggle-explorer',  title: 'Toggle File Explorer', category: 'Navigation', when: 'always', defaultChord: 'mod+shift+b' },
   { id: 'toggle-terminals', title: 'Toggle Terminals',     category: 'Navigation', when: 'always', defaultChord: 'mod+j' },
   { id: 'new-terminal',     title: 'New Terminal',         category: 'Terminal',   when: 'terminalsFocused', defaultChord: 'mod+t' },
   { id: 'find-in-terminal', title: 'Find in Terminal',     category: 'Terminal',   when: 'terminalsFocused', defaultChord: 'mod+f' },
