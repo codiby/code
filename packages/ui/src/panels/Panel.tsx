@@ -17,20 +17,21 @@ export interface PanelProps {
   onClose: (tab: Tab) => void;
   onFocus: () => void;
   onSplit: (dir: 'row' | 'col') => void;
-  /** Double-click a tab pill — used to pin a preview tab. */
-  onPin?: (tabId: string) => void;
+  /** Double-click a tab pill. The caller decides what it means (pin a preview
+   *  tab, or maximize this panel when the tab is already permanent). */
+  onDoubleClickTab?: (tabId: string) => void;
   /** Host-rendered actions pinned to the right of this panel's tab strip
    *  (e.g. the session Resources chip on the chat panel). */
   renderTabBarExtra?: (node: PanelNode) => ReactNode;
 }
 
 function TabPill({
-  tab, active, focused, onActivate, onClose, onPin,
-}: { tab: Tab; active: boolean; focused: boolean; onActivate: () => void; onClose: () => void; onPin?: () => void }) {
+  tab, active, focused, onActivate, onClose, onDoubleClick,
+}: { tab: Tab; active: boolean; focused: boolean; onActivate: () => void; onClose: () => void; onDoubleClick?: () => void }) {
   return (
     <div
       onMouseDown={onActivate}
-      onDoubleClick={onPin}
+      onDoubleClick={onDoubleClick}
       // Active pill: bordered on top/sides only; the ::after strip paints
       // surface-colored over the tab bar's bottom border so the pill's open
       // bottom merges into the body (Chrome/Edge style). The pseudo-element is
@@ -62,7 +63,7 @@ function TabPill({
   );
 }
 
-export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit, onPin, renderTabBarExtra }: PanelProps) {
+export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onFocus, onSplit, onDoubleClickTab, renderTabBarExtra }: PanelProps) {
   const orderedTabs = node.tabIds.map((id) => tabs.get(id)).filter((t): t is Tab => !!t);
   // Resolve the active tab against the *live* tab set, falling back to the last
   // surviving tab. When a tab is closed the host drops it from `tabs` a render
@@ -158,7 +159,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
               focused={focused}
               onActivate={() => onActivate(t.id)}
               onClose={() => onClose(t)}
-              onPin={onPin ? () => onPin(t.id) : undefined}
+              onDoubleClick={onDoubleClickTab ? () => onDoubleClickTab(t.id) : undefined}
             />
           ))}
         </div>

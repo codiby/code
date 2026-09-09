@@ -15,7 +15,8 @@ export interface RenderCtx {
   store: PanelsStore;
   renderTab: (tab: Tab) => ReactNode;
   onCloseTab: (tab: Tab) => void;
-  /** Double-click a tab pill (e.g. pin a preview editor tab). */
+  /** Double-click on a *preview* tab pill — the host pins it. Double-clicks on
+   *  already-pinned tabs never reach the host; they maximize the panel. */
   onPin?: (tabId: string) => void;
   /** Host-rendered actions pinned to the right of a panel's tab strip. */
   renderTabBarExtra?: (node: LayoutNode & { type: 'panel' }) => ReactNode;
@@ -35,7 +36,13 @@ export function NodeView({ node, ctx }: { node: LayoutNode; ctx: RenderCtx }) {
         onClose={(tab) => ctx.onCloseTab(tab)}
         onFocus={() => ctx.store.focusPanel(node.id)}
         onSplit={(dir) => node.activeTabId && ctx.store.splitPanelWithTab(node.id, node.activeTabId, dir)}
-        onPin={ctx.onPin}
+        onDoubleClickTab={(tabId: string) => {
+          // VSCode's two-stage double-click: the first one promotes an italic
+          // preview tab to a permanent one (host-owned), and double-clicking a
+          // tab that is already permanent maximizes the panel it lives in.
+          if (ctx.tabs.get(tabId)?.preview) ctx.onPin?.(tabId);
+          else ctx.store.expandPanel(node.id);
+        }}
         renderTabBarExtra={ctx.renderTabBarExtra}
       />
     );

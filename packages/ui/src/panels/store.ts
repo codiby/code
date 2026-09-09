@@ -73,6 +73,25 @@ function fixActives(root: LayoutNode | null): void {
   }
 }
 
+/**
+ * Ancestors from the root down to `panelId`, each paired with the child index
+ * the path takes. Empty array = the root itself is the panel; null = not found.
+ */
+function pathToPanel(node: LayoutNode, panelId: string): { split: SplitNode; index: number }[] | null {
+  if (isPanel(node)) return node.id === panelId ? [] : null;
+  for (let i = 0; i < node.children.length; i++) {
+    const rest = pathToPanel(node.children[i], panelId);
+    if (rest) return [{ split: node, index: i }, ...rest];
+  }
+  return null;
+}
+
+/** Flex ratios giving child `index` `share` of the split, the rest split evenly. */
+function sizesWithShare(count: number, index: number, share: number): number[] {
+  const others = Math.max(1, count - 1);
+  return Array.from({ length: count }, (_, i) => (i === index ? share : (1 - share) / others));
+}
+
 function structureKey(s: WorkspaceState): string {
   return JSON.stringify([s.root, s.focusedPanelId]);
 }
@@ -86,6 +105,10 @@ const LS_PREFIX = 'codiby-panels-ws:';
 class PanelsStore {
   private state: WorkspaceState;
   private listeners = new Set<() => void>();
+  /** Ratios a split had before `expandPanel` maximized one of its children,
+   *  so the second double-click can put the layout back. Session-only: the
+   *  restore falls back to an even split when this is empty. */
+  private preExpandSizes = new Map<string, number[]>();
 
   constructor(private sessionId: string) {
     this.state = this.load();
@@ -238,6 +261,37 @@ class PanelsStore {
     const split: SplitNode = { id: uid('split'), type: 'split', direction, children: [source, newPanel], sizes: [1, 1] };
     const nextRoot = replaceNode(root, source.id, split);
     this.commit({ root: nextRoot, focusedPanelId: newPanel.id });
+  }
+
+  /**
+   * VSCode-style "maximize this editor group": give `panelId` `share` of its
+   * nearest ancestor split and squeeze the siblings into what's left. Calling
+   * it again while the panel is already at `share` restores the ratios it had
+   * before (or an even split, when nothing was remembered — e.g. after a
+   * reload), so the gesture toggles.
+   *
+   * A `col` ancestor stacks rather than divides width, so we walk up to the
+   * closest `row` split first; only when the panel has no row ancestor at all
+   * (a purely stacked layout) do we expand the vertical one instead.
+   */
+  expandPanel(panelId: string, share = 0.75) {
+    const root = this.state.root ? cloneNode(this.state.root) : null;
+    if (!root) return;
+    const path = pathToPanel(root, panelId);
+    if (!path || path.length === 0) return; // lone panel: already the whole area
+    const hop = [...path].reverse().find((h) => h.split.direction === 'row') ?? path[path.length - 1];
+    const { split, index } = hop;
+
+    const total = split.sizes.reduce((a, b) => a + b, 0) || 1;
+    const current = (split.sizes[index] ?? 0) / total;
+    if (Math.abs(current - share) < 0.005) {
+      split.sizes = this.preExpandSizes.get(split.id) ?? split.children.map(() => 1);
+      this.preExpandSizes.delete(split.id);
+    } else {
+      this.preExpandSizes.set(split.id, [...split.sizes]);
+      split.sizes = sizesWithShare(split.children.length, index, share);
+    }
+    this.commit({ ...this.state, root });
   }
 
   /** Persist new flex ratios for a split node after a drag-resize. */
