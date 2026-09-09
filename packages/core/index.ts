@@ -103,7 +103,7 @@ import {
   getTerminalOutput,
   removeTerminal,
 } from './handlers/terminals';
-import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, baseDiffRef, runShell } from './handlers/git';
+import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, handleGitDiscard, baseDiffRef, runShell } from './handlers/git';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
 import { planAutoGroup, planAutoGroupExisting, type AutoGroup } from './config/auto-group';
@@ -1811,6 +1811,11 @@ app.post('/git-stage', async (c) => {
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
   }
+});
+app.post('/git-discard', async (c) => {
+  const body = await c.req.raw.json() as { root: string; files: string[] };
+  if (!body.root || !body.files?.length) return Response.json({ error: 'root and files required' }, { status: 400, headers: corsHeaders });
+  return await handleGitDiscard(body.root, body.files);
 });
 app.get('/git-info', async (c) => {
   const dirPath = new URL(c.req.url).searchParams.get('path');

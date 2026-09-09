@@ -793,6 +793,14 @@ export const openApiSpec: OpenApiSpec = {
         responses: { 200: okResponse, 400: errorResponse('root and files required'), 500: errorResponse('git failed') },
       },
     },
+    '/git-discard': {
+      post: {
+        tags: ['Git'],
+        summary: 'Discard working-tree changes (restore tracked files, delete untracked ones)',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { root: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } }, required: ['root', 'files'] } } } },
+        responses: { 200: okResponse, 400: errorResponse('root and files required'), 500: errorResponse('git failed') },
+      },
+    },
     '/git-info': {
       get: {
         tags: ['Git'],

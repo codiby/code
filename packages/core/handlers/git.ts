@@ -1,7 +1,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, realpathSync, rmSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { corsHeaders } from '../config/config';
 import { detectPackageManager } from './files';
 
@@ -162,6 +162,53 @@ export async function handleGitModified(root: string, base?: string | null): Pro
     return Response.json(result, { headers: corsHeaders });
   } catch {
     return Response.json([], { headers: corsHeaders });
+  }
+}
+
+/** Single-quote a path for the shell, the way `/git-stage` does. */
+function shellQuote(p: string): string {
+  return `'${p.replace(/'/g, "'\\''")}'`;
+}
+
+/** Throw away working-tree changes for `files` (absolute paths): tracked files
+ *  are restored from the index (`git checkout --`), untracked ones are deleted
+ *  from disk. Paths outside the repo are ignored rather than trusted. This is
+ *  destructive and unrecoverable for untracked files, so the UI confirms first. */
+export async function handleGitDiscard(root: string, files: string[]): Promise<Response> {
+  try {
+    const gitTop = (await runShell('git rev-parse --show-toplevel', root)).trim();
+    if (!gitTop) return Response.json({ error: 'not a git repo' }, { status: 400, headers: corsHeaders });
+    // git reports the toplevel with symlinks resolved (/tmp → /private/tmp on
+    // macOS) while the UI hands us the session's own spelling of the path, so
+    // both sides are resolved before anything is compared.
+    const topReal = realpathSync(gitTop);
+
+    const untracked = new Set(
+      (await runShell('git ls-files --others --exclude-standard', gitTop))
+        .split('\n').filter(Boolean),
+    );
+    // Repo-relative, so a path outside the repo drops out here instead of being
+    // handed to `git checkout` or `rmSync`.
+    const rels: string[] = [];
+    for (const f of files) {
+      const abs = resolve(root, f);
+      let real: string;
+      try { real = join(realpathSync(dirname(abs)), basename(abs)); } catch { continue; }
+      const rel = relative(topReal, real);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+      rels.push(rel);
+    }
+    const restore = rels.filter(f => !untracked.has(f));
+    const remove = rels.filter(f => untracked.has(f));
+
+    if (restore.length) {
+      await runShell(`git checkout -- ${restore.map(shellQuote).join(' ')}`, gitTop);
+    }
+    for (const f of remove) rmSync(join(topReal, f), { force: true, recursive: true });
+
+    return Response.json({ ok: true, restored: restore.length, removed: remove.length }, { headers: corsHeaders });
+  } catch (e: any) {
+    return Response.json({ error: e.message || String(e) }, { status: 500, headers: corsHeaders });
   }
 }
 

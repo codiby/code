@@ -3551,6 +3551,27 @@ export function ChatApp() {
     updateLocalState(activeId, s => ({ ...s, reviewMode: false, reviewFiles: [], diffView: null, editorFullWidth: false }));
   };
 
+  /** Pending "discard this file's changes" confirmation, raised from the diff
+   *  viewer header. Only offered while the file has nothing staged, so the
+   *  discard throws away exactly what the viewer is showing. */
+  const [discardPrompt, setDiscardPrompt] = useState<{ path: string; untracked: boolean } | null>(null);
+
+  const confirmDiscard = async () => {
+    const p = discardPrompt;
+    const root = explorerRootRef.current;
+    if (!p || !clientRef.current || !root) return;
+    setDiscardPrompt(null);
+    const ok = await clientRef.current.gitDiscard(root, [p.path]);
+    if (!ok) return;
+    // The file matches HEAD again (or is gone) — nothing left to diff.
+    if (activeId) {
+      updateLocalState(activeId, s => (
+        s.diffView?.path === p.path ? { ...s, diffView: null, editorFullWidth: false } : s
+      ));
+    }
+    await refreshGitModified();
+  };
+
   const explorerRootRef = useRef<string | null>(null);
   // Mirrors the active session's open editor tabs so the file-watcher listener
   // (which runs outside render) can read the current set without re-subscribing.
@@ -6974,6 +6995,23 @@ export function ChatApp() {
                       <div className="flex items-center gap-1 shrink-0">
                         {!reviewMode && (
                           <>
+                            {/* Discard is only offered for work that is still
+                                unstaged: with something staged, `git checkout --`
+                                would restore from the index and leave the diff
+                                the viewer shows partly intact. The vs-main
+                                comparison hides it too — there `staged` is not
+                                computed and the diff spans commits. */}
+                            {changesCompare === 'uncommitted'
+                              && gitModified.unstaged.has(diffView.path)
+                              && !gitModified.staged.has(diffView.path) && (
+                              <button
+                                className="text-[11px] text-zinc-500 hover:text-red-400 px-1.5"
+                                onClick={() => setDiscardPrompt({ path: diffView.path, untracked: gitModified.untracked.has(diffView.path) })}
+                                title="Discard changes to this file"
+                              >
+                                Discard
+                              </button>
+                            )}
                             <button
                               className="text-[11px] text-zinc-500 hover:text-zinc-200 px-1.5"
                               onClick={() => { handleFileOpen(diffView.path); }}
@@ -7574,6 +7612,28 @@ export function ChatApp() {
             </div>
           </div>
         )}
+
+        {discardPrompt && (() => {
+          const p = discardPrompt;
+          const rel = explorerRoot && p.path.startsWith(explorerRoot) ? p.path.slice(explorerRoot.length + 1) : p.path;
+          return (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={() => setDiscardPrompt(null)}>
+              <div className="absolute inset-0 bg-black/50" />
+              <div className="relative bg-surface border border-border-light rounded-xl shadow-2xl p-5 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+                <h3 className="text-sm font-semibold text-zinc-200 mb-2">Discard Changes</h3>
+                <p className="text-[13px] text-zinc-400 mb-4">
+                  {p.untracked
+                    ? <>This will delete <span className="text-zinc-200 font-mono">{rel}</span> from disk. It is untracked, so this cannot be undone.</>
+                    : <>This will throw away all uncommitted changes to <span className="text-zinc-200 font-mono">{rel}</span>. This cannot be undone.</>}
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button variant="flat" onPress={() => setDiscardPrompt(null)}>Cancel</Button>
+                  <Button className="bg-red-600 text-white" onPress={confirmDiscard}>{p.untracked ? 'Delete' : 'Discard'}</Button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {closingSessionId && (() => {
           const s = sessions.find(s => s.id === closingSessionId);

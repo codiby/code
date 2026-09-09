@@ -1882,6 +1882,17 @@ export class ClaudeClient {
     return resp.ok;
   }
 
+  /** Throw away the working-tree changes of `files`: tracked files go back to
+   *  the index, untracked ones are deleted. Destructive — confirm first. */
+  async gitDiscard(root: string, files: string[]): Promise<boolean> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-discard`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ root, files }),
+    });
+    return resp.ok;
+  }
+
   /** `remoteId` pins the host (`null` = this machine); omit to follow the
    *  focused session. See `remoteUrl`. */
   async listBranches(cwd: string, remoteId?: string | null): Promise<{ current: string; local: string[]; remote: string[] }> {
