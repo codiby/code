@@ -11,7 +11,7 @@ import type { SessionInfo, ConnectionStatus, SessionActivity } from '../lib/clau
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 import type { TabGroupInfo } from '../lib/tab-groups';
 import {
-  ancestorChain, buildGroupTree, descendantGroupIds, isAncestorOf, pinOrder,
+  buildGroupTree, descendantGroupIds, isAncestorOf, pinOrder,
   resolveGroupColor, type TreeNode,
 } from '../lib/group-tree';
 
@@ -1333,10 +1333,6 @@ export const TabBar = memo(function TabBar(props: Props) {
         const parentId = grp.parentId ?? null;
         const subtreeCount = [groupMenu.groupId, ...descendantGroupIds(tabGroups, groupMenu.groupId)]
           .reduce((n, gid) => n + sessions.filter(s => tabGroupMap[s.id] === gid).length, 0);
-        // "Move to" targets: every group that isn't this one or one of its own
-        // descendants, plus the sidebar root.
-        const moveTargets = Object.values(tabGroups)
-          .filter(g => g.id !== groupMenu.groupId && !isAncestorOf(tabGroups, groupMenu.groupId, g.id) && g.id !== parentId);
         const item = 'text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors';
         return (
           <>
@@ -1407,26 +1403,6 @@ export const TabBar = memo(function TabBar(props: Props) {
                     </div>
                   )}
 
-                  {onMoveGroup && (parentId || moveTargets.length > 0) && (
-                    <>
-                      <div className="h-px bg-border mx-2 my-1" />
-                      <div className="px-3 py-1 text-[10px] text-zinc-600 uppercase tracking-wider">Move to</div>
-                      {parentId && (
-                        <Button variant="ghost" fullWidth className={item}
-                          onPress={() => { onMoveGroup(groupMenu.groupId, null); setGroupMenu(null); }}>
-                          Top level
-                        </Button>
-                      )}
-                      {moveTargets.slice(0, 12).map(g => (
-                        <Button key={g.id} variant="ghost" fullWidth className={`${item} flex items-center gap-2`}
-                          onPress={() => { onMoveGroup(groupMenu.groupId, g.id); setGroupMenu(null); }}>
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${(COLOR_MAP[resolveGroupColor(tabGroups, g.id)] || COLOR_MAP.blue!).dot}`} />
-                          <span className="truncate">{g.name}</span>
-                        </Button>
-                      ))}
-                    </>
-                  )}
-
                   <div className="h-px bg-border mx-2 my-1" />
                   <Button variant="ghost" fullWidth className={item}
                     onPress={() => {
@@ -1458,7 +1434,6 @@ export const TabBar = memo(function TabBar(props: Props) {
         const isGrouped = !!tabGroupMap[tabMenu.tabId];
         const tabGroupId = tabGroupMap[tabMenu.tabId];
         const otherUngroupedTabs = sessions.filter(s => s.id !== tabMenu.tabId && !tabGroupMap[s.id]);
-        const existingGroups = Object.values(tabGroups).filter(g => !tabGroupId || g.id !== tabGroupId);
 
         return (
           <>
@@ -1581,30 +1556,6 @@ export const TabBar = memo(function TabBar(props: Props) {
                       {t.name}
                     </Button>
                   ))}
-                </>
-              )}
-
-              {/* Add to existing group */}
-              {existingGroups.length > 0 && (
-                <>
-                  <div className="h-px bg-border mx-2 my-1" />
-                  <div className="px-3 py-1 text-[10px] text-zinc-600 uppercase tracking-wider">Add to group</div>
-                  {existingGroups.map(g => {
-                    const c = COLOR_MAP[resolveGroupColor(tabGroups, g.id)] || COLOR_MAP.blue!;
-                    // Nesting makes bare names ambiguous — show the path so two
-                    // "Backend" subgroups under different repos are telling apart.
-                    const path = ancestorChain(tabGroups, g.id).slice(1).reverse().map(id => tabGroups[id]?.name).filter(Boolean);
-                    return (
-                      <Button key={g.id} variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                        onPress={() => { onAddToGroup(tabMenu.tabId, g.id); setTabMenu(null); }}>
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${c.dot}`} />
-                        <span className="truncate">
-                          {path.length > 0 && <span className="text-zinc-600">{path.join(' › ')} › </span>}
-                          {g.name}
-                        </span>
-                      </Button>
-                    );
-                  })}
                 </>
               )}
 
