@@ -3243,6 +3243,23 @@ export function ChatApp() {
       historyDraftRef.current = '';
     }
 
+    if (text === '/restart') {
+      setInputForSession(sid, '');
+      const messageId = crypto.randomUUID();
+      const report = (content: string) => updateLocalState(sid, s => ({
+        ...s,
+        messages: [...s.messages.filter(m => m.id !== messageId), {
+          id: messageId, role: 'system', content, timestamp: Date.now(),
+        }],
+      }));
+      report('Restarting session…');
+      void clientRef.current.restartSession(sid).then(
+        () => report('Session restarted. Conversation preserved; configuration reloaded.'),
+        error => report(`Could not restart session: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      return;
+    }
+
     // Client-side `/clear`: archive the current chat under "Cleared: …" and
     // replace the active tab with a fresh session in the same slot. Never
     // sent to Claude. Lives above /terminal so a future SDK-side `/clear`
@@ -4573,7 +4590,7 @@ export function ChatApp() {
   }, [activeId, refreshGitModified]);
 
   // Client-side builtin slash commands (intercepted in handleSend, never sent to Claude).
-  const BUILTIN_SLASH_COMMANDS = ['terminal', 't'];
+  const BUILTIN_SLASH_COMMANDS = ['restart', 'terminal', 't'];
   const sdkSlashCommands = active.initInfo?.slashCommands || [];
   const slashCommands = [...BUILTIN_SLASH_COMMANDS, ...sdkSlashCommands.filter((c: string) => !BUILTIN_SLASH_COMMANDS.includes(c))];
   const slash = useSlashCommands(input, slashCommands);
@@ -5082,7 +5099,7 @@ export function ChatApp() {
     if (!s) return null;
     const sess = sessions.find(x => x.id === sid);
     const status: ConnectionStatus = statuses[sid] || 'disconnected';
-    const BUILTINS = ['terminal', 't'];
+    const BUILTINS = ['restart', 'terminal', 't'];
     const sdkCommands = s.initInfo?.slashCommands || [];
     const sessionSlashCommands = [
       ...BUILTINS,

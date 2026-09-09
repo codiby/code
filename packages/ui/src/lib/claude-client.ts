@@ -761,6 +761,7 @@ export interface SessionResource {
 }
 
 export class ClaudeClient {
+  private sessionRestarts = new Map<string, Promise<SessionInfo>>();
   private serverUrl: string;
   private callbacks: ClientCallbacks;
   private destroyed = false;
@@ -1589,11 +1590,20 @@ export class ClaudeClient {
   /** Restart the provider for a session in place — closes and re-spawns it
    *  with the same id so conversation history is preserved. Used to pick up
    *  MCP-config changes (added/removed servers only load at spawn time). */
-  async restartSession(sessionId: string): Promise<SessionInfo> {
-    const base = await this.sessionBase(sessionId);
-    const resp = await authedFetch(`${base}/sessions/${sessionId}/restart`, { method: 'POST' });
-    if (!resp.ok) throw new Error(`Failed to restart: ${resp.status}`);
-    return resp.json();
+  restartSession(sessionId: string): Promise<SessionInfo> {
+    const pending = this.sessionRestarts.get(sessionId);
+    if (pending) return pending;
+    const restart = (async () => {
+      const base = await this.sessionBase(sessionId);
+      const resp = await authedFetch(`${base}/sessions/${sessionId}/restart`, { method: 'POST' });
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => null) as { error?: string } | null;
+        throw new Error(detail?.error || `Failed to restart: ${resp.status}`);
+      }
+      return resp.json() as Promise<SessionInfo>;
+    })().finally(() => this.sessionRestarts.delete(sessionId));
+    this.sessionRestarts.set(sessionId, restart);
+    return restart;
   }
 
   async deleteSession(sessionId: string): Promise<void> {

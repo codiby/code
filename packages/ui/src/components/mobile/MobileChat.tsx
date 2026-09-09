@@ -132,6 +132,7 @@ export function MobileChat({
   type Attachment = { id: string; media_type: string; data: string; previewUrl: string; name: string };
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [restartStatus, setRestartStatus] = useState<Record<string, string>>({});
 
   // Per-session queue of messages typed while a turn is still streaming.
   // Drained one-at-a-time on the streaming→idle transition for that session.
@@ -542,6 +543,18 @@ export function MobileChat({
     if (!session) return;
     const text = input.trim();
     if (!text && attachments.length === 0) return;
+
+    if (text === '/restart') {
+      const sid = session.id;
+      setInput('');
+      const report = (message: string) => setRestartStatus(prev => ({ ...prev, [sid]: message }));
+      report('Restarting session…');
+      void client.restartSession(sid).then(
+        () => report('Session restarted. Conversation preserved; configuration reloaded.'),
+        error => report(`Could not restart session: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      return;
+    }
 
     // ─── Client-side `/clear` ────────────────────────────────────────────
     // Archive current chat under "Cleared: …" and replace the tab with a
@@ -1134,6 +1147,9 @@ export function MobileChat({
           </div>
         )}
 
+        {session && restartStatus[session.id] && (
+          <p role="status" className="px-4 py-2 text-xs text-zinc-400">{restartStatus[session.id]}</p>
+        )}
         {attachError && (
           <div className="mb-2 px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/30 text-[12px] text-red-300">
             {attachError}
