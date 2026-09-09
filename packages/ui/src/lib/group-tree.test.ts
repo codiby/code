@@ -3,8 +3,8 @@ import type { SessionInfo } from './claude-client';
 import type { TabGroupInfo } from './tab-groups';
 import {
   ancestorChain, buildGroupTree, descendantGroupIds, findGroupNode,
-  flattenSessionIds, isAncestorOf, projectGroupIdForRepo, repoRootOfWorktreeCwd,
-  resolveGroupColor,
+  flattenSessionIds, groupIdForCwd, isAncestorOf, projectGroupIdForRepo,
+  pinOrder, repoRootOfWorktreeCwd, resolveGroupColor,
   type TreeNode,
 } from './group-tree';
 
@@ -276,5 +276,66 @@ describe('worktree groups nest under their repo', () => {
       namesake: group('namesake', { name: 'code', cwd: '/elsewhere/code' }),
     };
     expect(projectGroupIdForRepo(REPO, groups)).toBe('renamed');
+  });
+});
+
+describe('groupIdForCwd — joining instead of duplicating', () => {
+  test('finds the folder already standing for the directory', () => {
+    const groups = {
+      home: group('home', { name: 'jovaz', cwd: '/Users/jovaz' }),
+      code: group('code', { cwd: REPO }),
+    };
+    expect(groupIdForCwd('/Users/jovaz', groups)).toBe('home');
+    expect(groupIdForCwd('/Users/jovaz/elsewhere', groups)).toBeNull();
+  });
+
+  test('searches subgroups too', () => {
+    // A second session on the same branch must join the branch folder, not
+    // mint a twin of it beside the project.
+    const groups = {
+      proj: group('proj', { cwd: REPO }),
+      branch: group('branch', { name: 'feat-a', cwd: WT_A, parentId: 'proj' }),
+    };
+    expect(groupIdForCwd(WT_A, groups)).toBe('branch');
+  });
+
+  test('never matches a namesake that carries a different cwd', () => {
+    // `~/vendor/code` is not `~/src/code`; an extra folder beats filing a
+    // session into the wrong project.
+    const groups = { other: group('other', { name: 'code', cwd: '/vendor/code' }) };
+    expect(groupIdForCwd(REPO, groups)).toBeNull();
+  });
+
+  test('falls back to the name only for cwd-less root groups', () => {
+    const legacy = { g1: group('g1', { name: 'code' }) };
+    expect(groupIdForCwd(REPO, legacy)).toBe('g1');
+    // A cwd-less *subgroup* is somebody's folder, not the project.
+    const nested = { root: group('root'), sub: group('sub', { name: 'code', parentId: 'root' }) };
+    expect(groupIdForCwd(REPO, nested)).toBeNull();
+  });
+
+  test('an empty cwd matches nothing', () => {
+    expect(groupIdForCwd('', { g: group('g', { name: '' }) })).toBeNull();
+  });
+});
+
+describe('pinOrder', () => {
+  test('ranks by when each session was pinned, not by activity', () => {
+    // The set is insertion-ordered, so this is the pin order: `a` first.
+    const rank = pinOrder(new Set(['a', 'b', 'c']));
+    const sorted = ['a', 'b', 'c'].sort((x, y) => (rank.get(y) ?? -1) - (rank.get(x) ?? -1));
+    // Newest pin on top; the one pinned first sinks to the bottom of the pins.
+    expect(sorted).toEqual(['c', 'b', 'a']);
+  });
+
+  test('unpinned ids rank below every pin', () => {
+    const rank = pinOrder(new Set(['a']));
+    expect(rank.get('loose') ?? -1).toBe(-1);
+    expect(rank.get('a')).toBe(0);
+  });
+
+  test('no pins at all is an empty ranking, not a crash', () => {
+    expect(pinOrder(undefined).size).toBe(0);
+    expect(pinOrder(new Set()).size).toBe(0);
   });
 });

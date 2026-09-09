@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ChevronDown, ChevronRight, Pin, Plus, RefreshCw, Search, Sun, X } from 'lucide-react';
 import { Button } from '@heroui/react';
 import type { ClaudeClient, ConnectionStatus, SessionInfo } from '../../lib/claude-client';
+import { pinOrder } from '../../lib/group-tree';
 import { MobileNewSessionModal } from './MobileNewSessionModal';
 import { MobileSessionMenu } from './MobileSessionMenu';
 
@@ -271,14 +272,15 @@ export function MobileHome({
 
   // Pinned sessions are lifted out of their group and float to the very top
   // of the list — on a phone the whole point of a pin is reaching a session
-  // without expanding the group it happens to live in. Most recently active
-  // first among themselves.
-  const pinnedSessions = useMemo(
-    () => openSessions
+  // without expanding the group it happens to live in. Ordered by pin, newest
+  // first: a pinned row that reshuffles on every incoming message defeats the
+  // muscle memory the pin was for.
+  const pinnedSessions = useMemo(() => {
+    const rank = pinOrder(pinnedSessionIds);
+    return openSessions
       .filter((s) => pinnedSessionIds?.has(s.id))
-      .sort((a, b) => (sessionLastMessageAt?.[b.id] || 0) - (sessionLastMessageAt?.[a.id] || 0)),
-    [openSessions, pinnedSessionIds, sessionLastMessageAt],
-  );
+      .sort((a, b) => (rank.get(b.id) ?? -1) - (rank.get(a.id) ?? -1));
+  }, [openSessions, pinnedSessionIds]);
 
   const renderList = useMemo<RenderItem[]>(() => {
     const list: RenderItem[] = [];

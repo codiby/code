@@ -71,6 +71,7 @@ import {
   type ConnectionStatus,
   type FileChange,
   type PermissionRequest,
+  type RemoteTarget,
   type SessionActivity,
   type SessionInfo,
   type SessionInitInfo,
@@ -107,11 +108,12 @@ import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
 import { CHAT_WIDTH_CLASS, type ChatWidth } from '../lib/store/slices/preferencesSlice';
 import {
-  ancestorChain, descendantGroupIds, isAncestorOf, projectGroupIdForRepo,
-  repoRootOfWorktreeCwd, WORKTREE_CWD_LOOSE_RE,
+  ancestorChain, descendantGroupIds, groupIdForCwd, isAncestorOf,
+  projectGroupIdForRepo, repoRootOfWorktreeCwd, WORKTREE_CWD_LOOSE_RE,
 } from '../lib/group-tree';
 import {
-  isRemoteGroupKey, mergeRemoteGroups, remoteOfGroupKey, type RemoteGroupPrefs,
+  groupIdOfRemoteKey, isRemoteGroupKey, mergeRemoteGroups, remoteGroupKey,
+  remoteOfGroupKey, type RemoteGroupPrefs,
 } from '../lib/remote-groups';
 import type { LocalSessionState } from '../lib/session-state';
 
@@ -376,6 +378,10 @@ export function ChatApp() {
    *  `mergeRemoteGroups`. */
   const [remoteGroupPrefs, setRemoteGroupPrefs] = useState<Record<string, RemoteGroupPrefs>>({});
 
+  /** Configured remotes, straight from the client's `/remotes` load and its
+   *  broadcasts. Feeds the composer's "where does this run" selector. */
+  const [remotes, setRemotes] = useState<RemoteTarget[]>([]);
+
   const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
   let groupColorIdx = Object.keys(tabGroups).length;
 
@@ -390,6 +396,24 @@ export function ChatApp() {
     const groupName = firstMember?.cwd
       ? (firstMember.cwd.split('/').filter(Boolean).pop() || `Group ${Object.keys(tabGroups).length + 1}`)
       : `Group ${Object.keys(tabGroups).length + 1}`;
+    // A folder for this directory may already exist — "Create group" on a
+    // second session in `~/jovaz` was minting a twin of the `jovaz` folder
+    // rather than filing the tab in it. Joining also skips the naming below:
+    // the existing folder keeps its name, colour and place in the tree.
+    const existingId = groupIdForCwd(groupCwd, tabGroups);
+    if (existingId) {
+      const joinedMap = { ...tabGroupMap };
+      for (const id of tabIds) joinedMap[id] = existingId;
+      setTabGroupMap(joinedMap);
+      setExpandedGroupIds(prev => {
+        const next = new Set(prev);
+        for (const id of ancestorChain(tabGroups, existingId)) next.add(id);
+        return next;
+      });
+      persistPrefs({ tabGroupMap: joinedMap });
+      return;
+    }
+
     // A worktree belongs to its repo, so its group nests under the project's
     // instead of landing beside it as a sibling. Same shape the bridge gives
     // the branch subgroups it creates itself: a branch icon, and no colour so
@@ -690,7 +714,7 @@ export function ChatApp() {
     model?: string,
     permissionMode?: string,
     worktreeOrigin?: string,
-    _remoteId?: string | null,
+    remoteId?: string | null,
     images?: { media_type: string; data: string }[],
     effort?: string,
   ) => {
@@ -701,7 +725,13 @@ export function ChatApp() {
       // name instead of the worktree branch. Server-side autogroup honors
       // the user's autoGroupSessions preference — if it's off, the session
       // still lands as an ungrouped tab.
-      const session = await c.createSession(cwd, { provider, model, permissionMode, effort, groupCwd: worktreeOrigin });
+      //
+      // `remoteId` is the composer's host selector. Dropping it — as this did
+      // — booted the session on this machine in a cwd that only exists on the
+      // remote; autogrouping then happens on whichever bridge creates it.
+      const session = await c.createSession(cwd, {
+        provider, model, permissionMode, effort, groupCwd: worktreeOrigin, remoteId,
+      });
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
       setActiveId(session.id);
@@ -835,7 +865,43 @@ export function ChatApp() {
 
   /** Drop a group and everything nested under it. Member sessions survive as
    *  ungrouped tabs; only the grouping goes away. */
+  /** Drop a folder that lives on another machine.
+   *
+   *  Its groups are that bridge's to keep, so the write goes there instead of
+   *  into our preferences (which strip remote ids on the way out — the reason
+   *  every menu entry silently did nothing on a remote folder). The sidebar is
+   *  updated optimistically and confirmed by the remote's own broadcast. */
+  const deleteRemoteGroup = async (remoteId: string, key: string) => {
+    const c = clientRef.current;
+    const prefs = remoteGroupPrefs[remoteId];
+    const realId = groupIdOfRemoteKey(key);
+    if (!c || !prefs || !realId || !prefs.tabGroups[realId]) return;
+    const doomed = new Set([realId, ...descendantGroupIds(prefs.tabGroups, realId)]);
+    const groups = { ...prefs.tabGroups };
+    for (const id of doomed) delete groups[id];
+    const map: Record<string, string> = {};
+    for (const [sid, gid] of Object.entries(prefs.tabGroupMap)) if (!doomed.has(gid)) map[sid] = gid;
+
+    setRemoteGroupPrefs(prev => ({ ...prev, [remoteId]: { tabGroups: groups, tabGroupMap: map } }));
+    setExpandedGroupIds(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const id of doomed) if (next.delete(remoteGroupKey(remoteId, id))) changed = true;
+      return changed ? next : prev;
+    });
+    try {
+      await c.updateRemotePreferences(remoteId, { tabGroups: groups, tabGroupMap: map });
+    } catch (err) {
+      // Put the folder back rather than leaving the sidebar claiming a deletion
+      // the remote never accepted.
+      console.error('[ChatApp] Failed to delete remote group:', err);
+      setRemoteGroupPrefs(prev => ({ ...prev, [remoteId]: prefs }));
+    }
+  };
+
   const handleDeleteGroup = (groupId: string) => {
+    const remoteId = remoteOfGroupKey(groupId);
+    if (remoteId) { void deleteRemoteGroup(remoteId, groupId); return; }
     if (!tabGroups[groupId]) return;
     const doomed = new Set([groupId, ...descendantGroupIds(tabGroups, groupId)]);
     const newGroups = { ...tabGroups };
@@ -1009,6 +1075,10 @@ export function ChatApp() {
   const visibleMessageCount = useAppStore(s => s.visibleMessageCount);
   const setVisibleMessageCount = useAppStore(s => s.setVisibleMessageCount);
   const [showNewSession, setShowNewSession] = useState(false);
+  /** Which machine the folder browser should open on, handed over by whichever
+   *  composer opened it. `undefined` = opened from somewhere with no opinion,
+   *  and the modal keeps using its own remembered target. */
+  const [browseTarget, setBrowseTarget] = useState<string | null | undefined>(undefined);
   const [worktreeForGroup, setWorktreeForGroup] = useState<{
     groupId: string;
     cwd: string;
@@ -1938,6 +2008,9 @@ export function ChatApp() {
             return { ...prev, [remoteId]: { tabGroups, tabGroupMap } };
           });
         },
+        /** The machines a session can be spawned on, for the composer's host
+         *  selector. */
+        onRemotes: (list) => setRemotes(list),
 
         onRemoteStatus: (remoteId, status, lastError) => {
           setRemoteStatuses(prev => ({ ...prev, [remoteId]: { status, lastError } }));
@@ -2568,7 +2641,12 @@ export function ChatApp() {
       subscribedRef.current.add(session.id);
       // Autogrouping runs server-side in POST /sessions; the updated tab
       // groups arrive via the next `preferences` broadcast.
-    } catch {}
+    } catch (err) {
+      // Creating on a remote whose tunnel is down now throws rather than
+      // quietly booting the session here, so this is reachable — say so
+      // instead of swallowing it and leaving the click looking ignored.
+      console.error('[ChatApp] Failed to create session:', err);
+    }
   };
 
   // In-flight "Show older" page fetches, keyed by session — a re-click while
@@ -2970,13 +3048,16 @@ export function ChatApp() {
   };
 
   const handleRequestDeleteGroup = async (groupId: string) => {
-    const grp = tabGroups[groupId];
+    // The merged view, so a folder owned by a remote can be deleted too — its
+    // groups never reach `tabGroups`, which is why this used to return here
+    // and the menu entry did nothing at all.
+    const grp = sidebarGroups[groupId];
     if (!grp) return;
     // Deleting a group takes its whole subtree with it, so the confirmation has
     // to account for every nested session, not just the direct members.
-    const doomed = new Set([groupId, ...descendantGroupIds(tabGroups, groupId)]);
+    const doomed = new Set([groupId, ...descendantGroupIds(sidebarGroups, groupId)]);
     const members = sessions
-      .filter(s => doomed.has(tabGroupMap[s.id] ?? ''))
+      .filter(s => doomed.has(sidebarGroupMap[s.id] ?? ''))
       .map(s => ({
         id: s.id,
         name: s.name,
@@ -3022,6 +3103,15 @@ export function ChatApp() {
     // race against shared parent-repo locks.
     for (const m of prompt.members) {
       await handlePurgeSession(m.id, { worktree: m.isWorktree && prompt.deleteWorktrees });
+    }
+    // A folder on another machine is that bridge's record: the members are
+    // purged above (each call routes to its own host), and the folder itself
+    // goes through the remote write.
+    const remoteId = remoteOfGroupKey(prompt.groupId);
+    if (remoteId) {
+      await deleteRemoteGroup(remoteId, prompt.groupId);
+      setDeleteGroupPrompt(null);
+      return;
     }
     // The orphan-pruning effect will remove the now-empty group entries, but
     // drop the whole subtree eagerly so the menu/sidebar updates without
@@ -5948,15 +6038,19 @@ export function ChatApp() {
                 groupCwd={
                   // Most recent session's cwd is a sensible default; the
                   // composer's folder picker still surfaces all recent dirs.
+                  // Local sessions only: this composer starts on this machine,
+                  // and a remote's path here put `/home/jovaz/...` in front of
+                  // a selector reading "Local".
                   [...sessions]
                     .sort((a, b) => (sessionLastMessageAt[b.id] || 0) - (sessionLastMessageAt[a.id] || 0))
-                    .find(s => s.cwd)?.cwd || ''
+                    .find(s => s.cwd && !s.remoteId)?.cwd || ''
                 }
                 client={client}
                 opencodeInfo={opencodeInfo}
                 claudeModels={claudeModels}
+                remotes={remotes}
                 onSpawn={handleSpawnHome}
-                onBrowseFolder={() => setShowNewSession(true)}
+                onBrowseFolder={(rid) => { setBrowseTarget(rid); setShowNewSession(true); }}
                 onBranchChanged={setGitBranch}
               />
             ) : (
@@ -6047,10 +6141,11 @@ export function ChatApp() {
                       remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
                       remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
                       remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
+                      remotes={remotes}
                       onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort) =>
                         handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
-                      onBrowseFolder={() => setShowNewSession(true)}
+                      onBrowseFolder={(rid) => { setBrowseTarget(rid); setShowNewSession(true); }}
                       onBranchChanged={setGitBranch}
                     />
                   ) : (
@@ -6523,10 +6618,11 @@ export function ChatApp() {
                       remoteId={groupRemoteInfo[selectedGroupId]?.remoteId ?? null}
                       remoteName={groupRemoteInfo[selectedGroupId]?.remoteName ?? null}
                       remoteColor={groupRemoteInfo[selectedGroupId]?.remoteColor ?? null}
+                      remotes={remotes}
                       onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort) =>
                         handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
-                      onBrowseFolder={() => setShowNewSession(true)}
+                      onBrowseFolder={(rid) => { setBrowseTarget(rid); setShowNewSession(true); }}
                       onBranchChanged={setGitBranch}
                     />
                           </div>
@@ -7359,6 +7455,7 @@ export function ChatApp() {
 
         <NewSessionModal
           isOpen={showNewSession}
+          initialTarget={browseTarget}
           client={clientRef.current}
           opencodeAvailable={opencodeInfo?.available ?? false}
           onClose={() => setShowNewSession(false)}

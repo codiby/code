@@ -55,9 +55,13 @@ interface Props {
   opencodeAvailable?: boolean;
   onClose: () => void;
   onCreate: (cwd: string, provider: string, remoteId?: string | null) => void;
+  /** Machine to open on, when the caller has an opinion — the composer's host
+   *  selector does. `null` means this one; `undefined` keeps the modal's own
+   *  remembered target, which is what the standalone entry points want. */
+  initialTarget?: string | null;
 }
 
-export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, onCreate }: Props) {
+export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, onCreate, initialTarget }: Props) {
   // -------------------------------------------------------------------------
   // Target (local vs one of the configured remotes). The header shows discrete
   // tabs; default is whichever target was used last (per machine, localStorage)
@@ -83,6 +87,14 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
       } catch {}
     })();
   }, [isOpen, serverUrl]);
+
+  // Follow the opener's host every time the modal opens. Without this the
+  // composer could read "Local" while the browser came up on ryzen9, listing
+  // directories that don't exist on the machine the session would run on.
+  useEffect(() => {
+    if (!isOpen || initialTarget === undefined) return;
+    setTarget(initialTarget || 'local');
+  }, [isOpen, initialTarget]);
 
   // If the saved target points to a remote that no longer exists, fall back
   // to 'local' on open.

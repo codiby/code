@@ -11,7 +11,7 @@ import type { SessionInfo, ConnectionStatus, SessionActivity } from '../lib/clau
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 import type { TabGroupInfo } from '../lib/tab-groups';
 import {
-  ancestorChain, buildGroupTree, descendantGroupIds, isAncestorOf,
+  ancestorChain, buildGroupTree, descendantGroupIds, isAncestorOf, pinOrder,
   resolveGroupColor, type TreeNode,
 } from '../lib/group-tree';
 
@@ -970,9 +970,11 @@ export const TabBar = memo(function TabBar(props: Props) {
         s.cwd.toLowerCase().includes(normalizedSessionSearch))
     : sessions;
 
-  // Sort each parent's sessions: pinned first, then by last-message recency,
-  // with the incoming order as a stable tiebreaker.
+  // Sort each parent's sessions: pinned first — among themselves by pin order,
+  // newest pin on top and frozen there — then everything else by last-message
+  // recency, with the incoming order as a stable tiebreaker.
   const sessionIndex = useMemo(() => new Map(sessions.map((s, i) => [s.id, i])), [sessions]);
+  const pinRank = useMemo(() => pinOrder(pinnedSessionIds), [pinnedSessionIds]);
   const tree = useMemo(() => buildGroupTree({
     sessions: visibleSessions,
     groups: tabGroups,
@@ -982,12 +984,14 @@ export const TabBar = memo(function TabBar(props: Props) {
       const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
       const pb = pinnedSessionIds?.has(b.id) ? 1 : 0;
       if (pa !== pb) return pb - pa;
+      // A pin stays where pinning put it; only another pin displaces it.
+      if (pa) return (pinRank.get(b.id) ?? -1) - (pinRank.get(a.id) ?? -1);
       const ta = sessionLastMessageAt?.[a.id] || 0;
       const tb = sessionLastMessageAt?.[b.id] || 0;
       if (tb !== ta) return tb - ta;
       return (sessionIndex.get(a.id) ?? 0) - (sessionIndex.get(b.id) ?? 0);
     },
-  }), [visibleSessions, tabGroups, tabGroupMap, groupOrder, pinnedSessionIds, sessionLastMessageAt, sessionIndex]);
+  }), [visibleSessions, tabGroups, tabGroupMap, groupOrder, pinnedSessionIds, pinRank, sessionLastMessageAt, sessionIndex]);
 
   // react-aria drop handler for a tab dropped onto another tab. Mirrors the old
   // dnd-kit logic: Shift groups the two (or adds to the target's group), plain

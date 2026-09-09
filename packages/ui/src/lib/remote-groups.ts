@@ -39,6 +39,16 @@ export function remoteOfGroupKey(groupId: string): string | null {
   return sep === -1 ? null : rest.slice(0, sep);
 }
 
+/** The id the group has on its own machine — what a write sent to that bridge
+ *  has to name. The remote's own ids may contain `:` (nothing forbids it), so
+ *  only the first separator is the boundary. */
+export function groupIdOfRemoteKey(groupId: string): string | null {
+  if (!isRemoteGroupKey(groupId)) return null;
+  const rest = groupId.slice(REMOTE_GROUP_PREFIX.length);
+  const sep = rest.indexOf(':');
+  return sep === -1 ? null : rest.slice(sep + 1) || null;
+}
+
 /** What one remote reported in its own `preferences` frame. */
 export interface RemoteGroupPrefs {
   tabGroups: Record<string, TabGroupInfo>;

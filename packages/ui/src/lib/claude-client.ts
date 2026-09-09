@@ -569,6 +569,13 @@ export type SessionActivity = {
   listeningPorts: ListeningPort[];
 };
 
+/** A machine a session can be spawned on, as the composers need to name it. */
+export interface RemoteTarget {
+  id: string;
+  name?: string | null;
+  color?: string | null;
+}
+
 type ClientCallbacks = {
   onSessions: (sessions: SessionInfo[]) => void;
   onSessionState: (sessionId: string, state: SessionState) => void;
@@ -629,6 +636,10 @@ type ClientCallbacks = {
    *  groups should be dropped. Optional: viewers without remote UI can omit it,
    *  and then a remote's preferences are simply ignored. */
   onRemotePreferences?: (remoteId: string, preferences: Record<string, unknown>) => void;
+  /** The set of configured remotes changed. Fires on the initial `/remotes`
+   *  load and on every `remotes` broadcast, so a composer can offer "where
+   *  should this session run" without fetching the list itself. */
+  onRemotes?: (remotes: RemoteTarget[]) => void;
   /** The keyboard-shortcut override map changed (the shortcuts editor saved,
    *  possibly in another window). */
   onKeybindings?: (overrides: Record<string, string | null>) => void;
@@ -959,9 +970,10 @@ export class ClaudeClient {
   /** Configure which remotes exist (from `/remotes`). Opens a connection per
    *  remote so its session list is discovered directly, and tears down any that
    *  were removed. Also records display metadata used to tag sessions. */
-  setRemotes(remotes: { id: string; color?: string | null; name?: string | null }[]) {
+  setRemotes(remotes: RemoteTarget[]) {
     const ids = new Set(remotes.map((r) => r.id));
     for (const r of remotes) this.remoteMeta.set(r.id, { color: r.color, name: r.name });
+    this.callbacks.onRemotes?.(remotes);
     for (const r of remotes) this.ensureRemoteConn(r.id);
     for (const [rid, conn] of [...this.remoteConns]) {
       if (!ids.has(rid)) {
@@ -1511,7 +1523,14 @@ export class ClaudeClient {
     let base = this.serverUrl;
     if (remoteId) {
       this.ensureRemoteConn(remoteId);
-      base = (await this.ensureRemoteBaseUp(remoteId)) ?? this.serverUrl;
+      const remoteBase = await this.ensureRemoteBaseUp(remoteId);
+      // Same rule `remoteUrl` follows for a pinned browse: a tunnel that won't
+      // come up is an error, not a reason to use the local bridge. Falling back
+      // booted the session on THIS machine while the mapping below still tagged
+      // it as the remote's — a tab that looks like ryzen9, runs on the Mac, and
+      // sends its first message into a cwd that may not even exist here.
+      if (!remoteBase) throw new Error(`Remote ${remoteId} is unreachable — its tunnel could not be opened`);
+      base = remoteBase;
     }
     const resp = await authedFetch(`${base}/sessions`, {
       method: 'POST',
@@ -2452,6 +2471,27 @@ export class ClaudeClient {
 
   async updatePreferences(patch: Record<string, unknown>): Promise<boolean> {
     const resp = await authedFetch(`${this.serverUrl}/preferences`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    return resp.ok;
+  }
+
+  /** Write preferences on a *remote's* bridge, through its tunnel.
+   *
+   *  A remote's folders are its own file's to keep — `persistPrefs` strips them
+   *  on the way out precisely so they never land in ours — which left the
+   *  sidebar rendering folders that no menu could touch. Sending the write to
+   *  the machine that owns them is the missing half: it persists there and
+   *  comes back to every viewer through that bridge's `preferences` broadcast.
+   *
+   *  Throws when the tunnel can't be opened, like every other pinned call. */
+  async updateRemotePreferences(remoteId: string, patch: Record<string, unknown>): Promise<boolean> {
+    this.ensureRemoteConn(remoteId);
+    const base = await this.ensureRemoteBaseUp(remoteId);
+    if (!base) throw new Error(`Remote ${remoteId} is unreachable — its tunnel could not be opened`);
+    const resp = await authedFetch(`${base}/preferences`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),

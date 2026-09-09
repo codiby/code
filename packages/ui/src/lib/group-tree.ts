@@ -36,9 +36,11 @@ export function repoRootOfWorktreeCwd(cwd: string): string | null {
 /** The group standing for `repoRoot` — where a worktree's group belongs.
  *
  *  Matches on `cwd` first, the field the bridge fills when it autogroups a
- *  project, and falls back to the repo's folder name for groups made before
- *  that field existed or renamed since. Root-level groups only: a subgroup
- *  named after the repo is somebody's "Backend", not the project itself. */
+ *  project. The folder-name fallback is only consulted for groups that carry
+ *  no cwd at all: those predate the field and so cannot contradict it, whereas
+ *  a group with a *different* cwd named `code` is a different checkout.
+ *  Root-level groups only — a subgroup named after the repo is somebody's
+ *  "Backend", not the project itself. */
 export function projectGroupIdForRepo(
   repoRoot: string,
   groups: Record<string, TabGroupInfo>,
@@ -47,12 +49,52 @@ export function projectGroupIdForRepo(
   const byCwd = roots.find(g => g.cwd === repoRoot);
   if (byCwd) return byCwd.id;
   const folder = repoRoot.split(/[\\/]/).filter(Boolean).pop();
-  return roots.find(g => g.name === folder)?.id ?? null;
+  return roots.find(g => !g.cwd && g.name === folder)?.id ?? null;
+}
+
+/** The folder already standing for `cwd`, at any depth.
+ *
+ *  "Create group" on a session should file it here rather than mint a second
+ *  folder for the same directory beside the first. Unlike the lookup above
+ *  this searches subgroups too: the twin of a branch subgroup is just as
+ *  duplicate as the twin of a project.
+ *
+ *  Exact cwd, with the same cwd-less-only name fallback — two checkouts can
+ *  share a folder name (`~/src/code` and `~/vendor/code`), and filing a
+ *  session into the wrong project is worse than one extra folder. */
+export function groupIdForCwd(
+  cwd: string,
+  groups: Record<string, TabGroupInfo>,
+): string | null {
+  if (!cwd) return null;
+  const all = Object.values(groups);
+  const byCwd = all.find(g => g.cwd === cwd);
+  if (byCwd) return byCwd.id;
+  const folder = cwd.split(/[\\/]/).filter(Boolean).pop();
+  return all.find(g => !g.cwd && !g.parentId && g.name === folder)?.id ?? null;
 }
 
 /** Key used for root-level nodes in the parent-indexed maps. Real group ids are
  *  uuids, so the empty string is unambiguous. */
 export const ROOT_KEY = '';
+
+/** sessionId → the position it was pinned in, oldest pin first.
+ *
+ *  `pinnedSessionIds` is insertion-ordered: the toggle appends, and the
+ *  persisted array round-trips that order, so the set already records *when*
+ *  each session was pinned. Comparators can therefore rank pins by this
+ *  instead of by activity — a pin that slides down the list the moment another
+ *  pinned session gets a message is the opposite of what pinning is for.
+ *
+ *  Sort descending to put the newest pin on top. Ids that aren't pinned are
+ *  absent; a `?? -1` default keeps them below every pin. */
+export function pinOrder(pinned: ReadonlySet<string> | undefined): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!pinned) return out;
+  let i = 0;
+  for (const id of pinned) out.set(id, i++);
+  return out;
+}
 
 export type TreeNode =
   | { type: 'session'; id: string; session: SessionInfo; depth: number }

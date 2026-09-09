@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'bun:test';
 import type { TabGroupInfo } from './tab-groups';
 import {
-  isRemoteGroupKey, mergeRemoteGroups, remoteGroupKey, remoteOfGroupKey,
+  groupIdOfRemoteKey, isRemoteGroupKey, mergeRemoteGroups, remoteGroupKey,
+  remoteOfGroupKey,
   stripRemoteGroups,
 } from './remote-groups';
 
@@ -57,6 +58,8 @@ describe('mergeRemoteGroups — folding by name', () => {
     expect(merged.map['remote-1']).toBe(key);
     expect(isRemoteGroupKey(key)).toBe(true);
     expect(remoteOfGroupKey(key)).toBe(RYZEN);
+    // The write that deletes or renames it has to name the id the remote knows.
+    expect(groupIdOfRemoteKey(key)).toBe('r9');
   });
 
   test('two remotes sharing a project name land in one folder', () => {
@@ -163,5 +166,20 @@ describe('stripRemoteGroups', () => {
 
   test('leaves a payload without groups untouched', () => {
     expect(stripRemoteGroups({ tabOrder: ['a'] } as Record<string, unknown>)).toEqual({ tabOrder: ['a'] });
+  });
+});
+
+describe('groupIdOfRemoteKey', () => {
+  test('splits on the first separator only', () => {
+    // Nothing stops a bridge from using ':' inside its own group ids, and
+    // cutting at the last one would address a group that does not exist.
+    expect(groupIdOfRemoteKey(remoteGroupKey(RYZEN, 'a:b:c'))).toBe('a:b:c');
+  });
+
+  test('returns null for anything that is not a remote key', () => {
+    expect(groupIdOfRemoteKey('e9418ebb-9638-4c1c-a731-8633ca6ed5fe')).toBeNull();
+    expect(groupIdOfRemoteKey('rmt:ryzen9')).toBeNull();
+    // A key with a remote but no group id names nothing to write.
+    expect(groupIdOfRemoteKey('rmt:ryzen9:')).toBeNull();
   });
 });

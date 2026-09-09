@@ -6,7 +6,7 @@ import {
 import {
   ChevronDown, FolderClosed, FolderSearch, Bot, GitBranch, GitFork,
 } from 'lucide-react';
-import type { ClaudeClient } from '../lib/claude-client';
+import type { ClaudeClient, RemoteTarget } from '../lib/claude-client';
 import { ChatComposer, type PastedImage } from './ChatComposer';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
 import { WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
@@ -41,12 +41,17 @@ interface Props {
   client: ClaudeClient | null;
   opencodeInfo?: OpencodeInfoLike | null;
   claudeModels?: { id: string; label: string }[];
-  /** When the group sits on a remote (all members share the same remoteId),
-   *  this is set so spawned sessions land on that remote and the composer
-   *  badges itself as remote. Null for local / mixed groups. */
+  /** Where the composer starts pointed: set when the group sits on a remote
+   *  (all members share the same remoteId), null for local groups, and null
+   *  for a *mixed* group — which is precisely the case the host selector below
+   *  exists for, since there is no unanimous answer to infer. */
   remoteId?: string | null;
   remoteName?: string | null;
   remoteColor?: string | null;
+  /** Every machine a session can be spawned on, this one aside. Renders the
+   *  host selector; empty (nobody configured a remote) hides it and the
+   *  composer stays local, as it was before there was anything to choose. */
+  remotes?: RemoteTarget[];
   onSpawn: (
     cwd: string,
     provider: string,
@@ -65,8 +70,10 @@ interface Props {
     effort?: string,
   ) => void;
   /** Opens the full folder-picker modal (parent-owned). Invoked from the
-   *  "Browse for folder…" item at the bottom of the project dropdown. */
-  onBrowseFolder?: () => void;
+   *  "Browse for folder…" item at the bottom of the project dropdown, and told
+   *  which machine to browse — the modal remembers its own last target, which
+   *  is not necessarily the one this composer is pointed at. */
+  onBrowseFolder?: (remoteId: string | null) => void;
   /** Keeps the app-wide git status indicator aligned with this composer's
    * branch selection before a session exists for the selected group. */
   onBranchChanged?: (branch: string | null) => void;
@@ -79,7 +86,7 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, onSpawn, onBrowseFolder, onBranchChanged }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBrowseFolder, onBranchChanged }: Props) {
   const [prompt, setPrompt] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [cwd, setCwd] = useState(groupCwd);
@@ -100,6 +107,14 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   const [worktreeOrigin, setWorktreeOrigin] = useState<string | null>(null);
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
+  // The machine this session will be created on. Seeded from the group's host
+  // and overridable, because a group holding sessions from two machines has no
+  // host to inherit — before this it silently meant "local", which spawned on
+  // this Mac from a composer that was showing a remote's folder.
+  const [target, setTarget] = useState<string | null>(remoteId ?? null);
+  const [hostMenuOpen, setHostMenuOpen] = useState(false);
+  const hostBtnRef = useRef<HTMLButtonElement>(null);
+  const hostMenuRef = useRef<HTMLDivElement>(null);
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const [branches, setBranches] = useState<{ local: string[]; remote: string[]; current: string } | null>(null);
   const [branchFilter, setBranchFilter] = useState('');
@@ -119,6 +134,40 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     setWorktreeOrigin(null);
   }, [groupCwd]);
 
+  // Follow the group's host when the user switches groups; an explicit pick
+  // only has to survive within one group.
+  useEffect(() => { setTarget(remoteId ?? null); }, [remoteId]);
+
+  /** Switch machines. The folder cannot come along — `/Users/jovaz/...` means
+   *  nothing on the remote — so it falls back to the newly-chosen host's most
+   *  recent directory, and to the folder picker when there is none. */
+  const changeTarget = (next: string | null) => {
+    setHostMenuOpen(false);
+    if (next === target) return;
+    setTarget(next);
+    const recents = getRecentDirs(next);
+    setCwd(recents[0] || '');
+    setWorktreeOrigin(null);
+    setGitInfo(null);
+    setBranches(null);
+  };
+
+  useEffect(() => {
+    if (!hostMenuOpen) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      const node = e.target as Node;
+      if (hostMenuRef.current?.contains(node) || hostBtnRef.current?.contains(node)) return;
+      setHostMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setHostMenuOpen(false); };
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [hostMenuOpen]);
+
   // Reload recent dirs from localStorage each time the dropdown opens — the
   // list may have grown since mount via other modals adding to it. Also wire
   // click-outside / Escape to dismiss. Recents are stored per host, so a remote
@@ -127,7 +176,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   // crash mid-turn → red dot).
   useEffect(() => {
     if (!folderMenuOpen) return;
-    setRecentDirs(getRecentDirs(remoteId));
+    setRecentDirs(getRecentDirs(target));
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (folderMenuRef.current?.contains(target)) return;
@@ -141,7 +190,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       document.removeEventListener('mousedown', onDocMouseDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [folderMenuOpen, remoteId]);
+  }, [folderMenuOpen, target]);
 
   // Build the dropdown list: current cwd first (so it's always reachable as a
   // visual anchor), then de-duped recent dirs.
@@ -161,16 +210,16 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     // Pinned to the group's host: a remote group's repo lives on the remote,
     // and a local group's on this machine, regardless of which session tab is
     // focused while the composer is open.
-    client.getGitInfo(cwd, remoteId ?? null).then(info => { if (!cancelled) setGitInfo(info); }).catch(() => {});
+    client.getGitInfo(cwd, target).then(info => { if (!cancelled) setGitInfo(info); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [client, cwd, remoteId]);
+  }, [client, cwd, target]);
 
   // Branch dropdown: fetch branches on open, wire click-outside / Escape.
   useEffect(() => {
     if (!branchMenuOpen) return;
     setBranchFilter('');
     if (client && cwd) {
-      client.listBranches(cwd, remoteId ?? null).then(data => {
+      client.listBranches(cwd, target).then(data => {
         setBranches({ local: data.local || [], remote: data.remote || [], current: data.current || '' });
         setTimeout(() => branchInputRef.current?.focus(), 50);
       }).catch(() => {});
@@ -188,7 +237,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       document.removeEventListener('mousedown', onDocMouseDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [branchMenuOpen, client, cwd, remoteId]);
+  }, [branchMenuOpen, client, cwd, target]);
 
   // When the user picks a branch that's already checked out in some worktree,
   // `git checkout` would fail with `fatal: '<branch>' is already used by
@@ -234,7 +283,12 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
 
   const opencodeAvailable = opencodeInfo?.available ?? false;
   const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
-  const folderName = cwd.split('/').filter(Boolean).pop() || groupName || cwd;
+  const folderName = cwd.split('/').filter(Boolean).pop() || groupName || cwd || 'Choose a folder';
+  // The picked host's own metadata, falling back to what the group reported —
+  // a remote can be selected before `/remotes` has been answered.
+  const targetMeta = target ? remotes.find(r => r.id === target) : null;
+  const targetLabel = target ? (targetMeta?.name || remoteName || 'remote') : 'Local';
+  const targetColor = target ? (targetMeta?.color || remoteColor || '#a78bfa') : '#71717a';
   const branchLabel = gitInfo?.is_git ? gitInfo.branch : null;
 
   const submit = () => {
@@ -249,7 +303,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       model || undefined,
       permissionMode && permissionMode !== 'default' ? permissionMode : undefined,
       worktreeOrigin || undefined,
-      remoteId ?? null,
+      target,
       images,
       (provider === 'claude' || provider === 'opencode') && effort ? effort : undefined,
     );
@@ -261,7 +315,51 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       <div className="w-full max-w-[720px] space-y-3">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[22px] text-zinc-400 font-light px-3">
           <span>New session in</span>
-          {remoteId && (
+          {remotes.length > 0 ? (
+            <div className="relative inline-flex">
+              <button
+                ref={hostBtnRef}
+                type="button"
+                onClick={() => setHostMenuOpen(o => !o)}
+                className="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider rounded-md px-2 py-0.5 border hover:brightness-125 transition"
+                style={{
+                  color: targetColor,
+                  background: `${targetColor}14`,
+                  borderColor: `${targetColor}40`,
+                }}
+                aria-haspopup="listbox"
+                aria-expanded={hostMenuOpen}
+                title={target ? `Runs on remote "${targetLabel}"` : 'Runs on this machine'}
+              >
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: targetColor }} />
+                {targetLabel}
+                <ChevronDown size={12} className="opacity-60" />
+              </button>
+              {hostMenuOpen && (
+                <div
+                  ref={hostMenuRef}
+                  role="listbox"
+                  className="absolute left-0 top-full mt-1 z-30 min-w-[180px] rounded-lg border border-white/10 bg-zinc-900/95 backdrop-blur py-1 shadow-xl"
+                >
+                  {[{ id: null as string | null, name: 'Local', color: '#71717a' }, ...remotes].map(h => (
+                    <button
+                      key={h.id ?? 'local'}
+                      type="button"
+                      role="option"
+                      aria-selected={target === h.id}
+                      onClick={() => changeTarget(h.id)}
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-left transition-colors ${
+                        target === h.id ? 'text-zinc-100 bg-white/5' : 'text-zinc-400 hover:bg-white/5'
+                      }`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: h.color || '#a78bfa' }} />
+                      {h.name || h.id}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : remoteId && (
             <span
               className="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider rounded-md px-2 py-0.5 border"
               style={{
@@ -326,7 +424,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
                     <div className="h-px bg-border my-1" />
                     <button
                       type="button"
-                      onClick={() => { setFolderMenuOpen(false); onBrowseFolder(); }}
+                      onClick={() => { setFolderMenuOpen(false); onBrowseFolder(target); }}
                       className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-zinc-300 hover:bg-surface-light/50 hover:text-zinc-100"
                     >
                       <FolderSearch size={14} className="text-zinc-500 shrink-0" />
@@ -490,7 +588,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
             <WorktreeCreateForm
               client={client}
               repoPath={gitInfo.top_level!}
-              remoteId={remoteId ?? null}
+              remoteId={target}
               hasEnv={gitInfo.has_env}
               detectedPackageManager={gitInfo.package_manager}
               existingWorktrees={gitInfo.worktrees}
