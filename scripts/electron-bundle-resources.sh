@@ -36,6 +36,8 @@ cd "$PROJECT_DIR"
   --target bun \
   --minify >/dev/null
 
+"$BUN_PATH" run scripts/bundle-codex.ts "$OUT_DIR"
+
 # Copy the per-platform ripgrep binary from @vscode/ripgrep so the packaged
 # app ships its own `rg` (the bridge resolves it via CODIBY_RG_PATH).
 case "$(uname -s)-$(uname -m)" in

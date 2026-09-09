@@ -1,398 +1,285 @@
-/**
- * CodexAdapter — OpenAI Codex SDK-backed provider adapter.
- *
- * Wraps `@openai/codex-sdk` behind the generic `ProviderAdapter` interface.
- * The SDK shells out to the bundled `codex exec --experimental-json` binary
- * (vendored via `@openai/codex`), writes the prompt to stdin once and reads
- * JSONL events from stdout. Auth is handled out-of-band — the SDK inherits
- * `process.env`, so credentials from `codex login` (or env vars like
- * `OPENAI_API_KEY` / `CODEX_API_KEY`) are picked up automatically. Taskr
- * does not store or prompt for an API key.
- *
- * Lifecycle differences vs ClaudeAdapter:
- *  - Claude has one continuous `query()` AsyncIterable for the whole session.
- *    Codex is per-turn — each `sendUserMessage` starts a fresh `runStreamed`
- *    and consumes its generator until the turn completes. Between turns no
- *    event loop runs. `onExit` fires only from `close()`.
- *  - The Codex SDK has no return channel (stdin closes after the first
- *    write), so per-tool approval callbacks (`canUseTool`) are not possible.
- *    `permissionMode` maps to a fixed `approvalPolicy` + `sandboxMode` pair
- *    set when the thread is created.
- *  - `setModel` / `setPermissionMode` cannot be live-updated. They're stored
- *    on the adapter and applied on the next thread start (effective after
- *    /clear). The session record's `model`/`permissionMode` fields drive
- *    the next spawn, so persisting via the bridge is enough.
- *
- * MCP integration: HTTP MCP servers from `opts.mcpServers` are forwarded to
- * Codex via `--config mcp_servers.<name>.url=...`. The in-process
- * `codiby-code-sdk` server (built with the Anthropic SDK's
- * `createSdkMcpServer`) is intentionally skipped — it cannot be re-hosted
- * for the Codex CLI without a stdio bridge. Practical effect: Codex
- * sessions don't get the `rename_session` / `post_system_note` /
- * `open_file_in_editor` / `post_image_to_session` tools.
- */
-
-import { Codex, type ApprovalMode, type SandboxMode, type Thread, type ThreadEvent, type ThreadItem, type Usage as CodexUsage, type UserInput } from '@openai/codex-sdk';
-import { randomUUID } from 'crypto';
-
-import type {
-  AssistantToolUseBlock,
-  ImageInput,
-  McpServerSpec,
-  PermissionMode,
-  ProviderEvents,
-  ProviderSession,
-  SpawnOptions,
-  TokenUsage,
-} from '../types';
+/** Codex app-server adapter: persistent JSONL connection, models and interactive approvals. */
+import { randomUUID } from 'node:crypto';
+import type { McpServerSpec, PermissionMode, ProviderEvents, ProviderSession, SpawnOptions, ImageInput, TokenUsage } from '../types';
 import { Adapter } from '../adapter';
 import { ProviderSessionBase } from '../session';
+import { CodexAppServer, listCodexModels, type CodexConnect, type CodexConnection } from '../codex-app-server';
 
-const PROVIDER_NAME = 'codex';
-
-// `CodexConfigObject` isn't re-exported from the SDK barrel, so we mirror its
-// shape here for the `Codex({ config })` constructor argument.
+// Configuration overrides sent to the app-server when opening a thread.
 type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
 type CodexConfigObject = { [key: string]: CodexConfigValue };
 
-function mapPermissionMode(mode: PermissionMode): { approvalPolicy: ApprovalMode; sandboxMode: SandboxMode } {
-  // The Codex SDK has no back-channel for approvals, so any policy other
-  // than "never" just causes the agent to deny actions. Always pick "never"
-  // and vary the sandbox tightness by the requested mode.
-  switch (mode) {
-    case 'plan': return { approvalPolicy: 'never', sandboxMode: 'read-only' };
-    case 'bypassPermissions':
-    case 'loop': return { approvalPolicy: 'never', sandboxMode: 'danger-full-access' };
-    case 'acceptEdits':
-    case 'default':
-    default: return { approvalPolicy: 'never', sandboxMode: 'workspace-write' };
-  }
-}
-
-function buildCodexConfig(mcpServers?: Record<string, McpServerSpec>): CodexConfigObject | undefined {
+export function buildCodexConfig(mcpServers?: Record<string, McpServerSpec>): CodexConfigObject | undefined {
   if (!mcpServers) return undefined;
   const codexMcp: CodexConfigObject = {};
   for (const [name, spec] of Object.entries(mcpServers)) {
-    // Only HTTP MCP servers can be passed through; stdio specs would need
-    // an explicit command/args mapping that the codiby-code bridge doesn't
-    // currently use, and the Anthropic SDK ones aren't portable at all.
+    // HTTP and stdio are portable. In-process Anthropic SDK servers are not.
     if (spec.type === 'http') {
       const entry: CodexConfigObject = { url: spec.url };
-      if (spec.headers) entry.headers = spec.headers as unknown as CodexConfigObject;
+      if (spec.headers) entry.http_headers = spec.headers as unknown as CodexConfigObject;
+      if (spec.timeoutMs != null) entry.tool_timeout_sec = spec.timeoutMs / 1000;
       codexMcp[name] = entry;
+    } else if (spec.type === 'stdio') {
+      codexMcp[name] = { command: spec.command, ...(spec.args ? { args: spec.args } : {}), ...(spec.env ? { env: spec.env } : {}) };
     }
   }
   if (Object.keys(codexMcp).length === 0) return undefined;
   return { mcp_servers: codexMcp };
 }
 
-async function buildCodexInput(text: string, images?: ImageInput[]): Promise<{ input: string | UserInput[]; cleanup: () => Promise<void> }> {
-  if (!images || images.length === 0) return { input: text, cleanup: async () => {} };
+export function codexPermissions(mode: PermissionMode, cwd: string) {
+  if (mode === 'bypassPermissions' || mode === 'loop') return { approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
+  const sandboxPolicy = mode === 'plan'
+    ? { type: 'readOnly', networkAccess: false }
+    : { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+  return { approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: mode === 'plan' ? 'read-only' : 'workspace-write', sandboxPolicy };
+}
 
-  // Codex consumes images as paths on disk via `--image`, so we materialise
-  // base64 payloads into temp files for the duration of the turn.
-  const { tmpdir } = await import('os');
-  const { join } = await import('path');
-  const { promises: fsp } = await import('fs');
-  const tempPaths: string[] = [];
-  const inputs: UserInput[] = [];
-  for (const img of images) {
-    const ext = (img.media_type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
-    const path = join(tmpdir(), `codex-img-${randomUUID()}.${ext}`);
-    await fsp.writeFile(path, Buffer.from(img.data, 'base64'));
-    tempPaths.push(path);
-    inputs.push({ type: 'local_image', path });
-  }
-  inputs.push({ type: 'text', text });
-  return {
-    input: inputs,
-    cleanup: async () => {
-      for (const p of tempPaths) {
-        try { await fsp.unlink(p); } catch {}
+type TurnState = {
+  id: string | null;
+  cancelled: boolean;
+  started: ReturnType<typeof Promise.withResolvers<string | null>>;
+  done: ReturnType<typeof Promise.withResolvers<any>>;
+  texts: Map<string, string>;
+  tools: Set<string>;
+  usage?: TokenUsage;
+};
+
+export class CodexProviderSession extends ProviderSessionBase {
+  private connection: CodexConnection;
+  private ready: Promise<void>;
+  private threadId = '';
+  private defaultModel: string | null = null;
+  private active: TurnState | null = null;
+  private running: TurnState | null = null;
+  private pendingRun: Promise<void> = Promise.resolve();
+  private approvals: Promise<unknown> = Promise.resolve();
+  private failed = false;
+
+  constructor(private opts: SpawnOptions, events: ProviderEvents, connect: CodexConnect) {
+    super('codex', opts.sessionId, events);
+    this.opts = { ...opts };
+    this.connection = connect({
+      notification: (method, params) => this.notification(method, params),
+      request: (method, params) => {
+        // The UI displays one decision at a time. Serialize concurrent
+        // requests so a later approval cannot hide an unanswered one.
+        const result = this.approvals.then(() => this.approve(method, params));
+        this.approvals = result.catch(() => {});
+        return result;
+      },
+      exit: error => {
+        if (this.closed || this.failed) return;
+        this.failed = true;
+        this.running?.done.resolve({ status: 'failed', error: { message: error.message } });
+        this.events.onError(error);
+        this.events.onExit(1);
+      },
+    });
+    this.ready = this.initialize();
+    void this.ready.catch(error => {
+      if (!this.closed && !this.failed) {
+        this.failed = true;
+        this.events.onError(error instanceof Error ? error : new Error(String(error)));
+        this.events.onExit(1);
+        void this.connection.close();
       }
-    },
-  };
-}
-
-function mapUsage(u: CodexUsage | null | undefined): TokenUsage | undefined {
-  if (!u) return undefined;
-  return {
-    input_tokens: u.input_tokens,
-    output_tokens: u.output_tokens,
-    cache_read_input_tokens: u.cached_input_tokens,
-  };
-}
-
-class CodexProviderSession extends ProviderSessionBase {
-  private readonly codex: Codex;
-  private thread: Thread;
-  private currentRun: AbortController | null = null;
-  private initSent = false;
-  private readonly model: string | null;
-  private readonly permissionMode: PermissionMode;
-  private readonly cwd: string;
-
-  constructor(opts: SpawnOptions, events: ProviderEvents) {
-    super(PROVIDER_NAME, opts.sessionId, events);
-    this.cwd = opts.cwd;
-    this.model = opts.model;
-    this.permissionMode = opts.permissionMode;
-
-    this.codex = new Codex({ config: buildCodexConfig(opts.mcpServers) });
-
-    const threadOptions = {
-      workingDirectory: opts.cwd,
-      skipGitRepoCheck: true,
-      ...(opts.model ? { model: opts.model } : {}),
-      ...mapPermissionMode(opts.permissionMode),
-    };
-
-    this.thread = opts.resumeSessionId
-      ? this.codex.resumeThread(opts.resumeSessionId, threadOptions)
-      : this.codex.startThread(threadOptions);
+    });
   }
 
-  async sendUserMessage(input: { text: string; images?: ImageInput[] }): Promise<void> {
+  private async initialize() {
+    await this.connection.ready;
+    const { sandboxPolicy, ...permissions } = codexPermissions(this.opts.permissionMode, this.opts.cwd);
+    const result = await this.connection.request(this.opts.resumeSessionId ? 'thread/resume' : 'thread/start', {
+      ...(this.opts.resumeSessionId ? { threadId: this.opts.resumeSessionId, excludeTurns: true } : {}),
+      cwd: this.opts.cwd, model: this.opts.model, ...permissions,
+      config: buildCodexConfig(this.opts.mcpServers),
+      developerInstructions: this.opts.extraSystemPrompt || null,
+    });
+    this.threadId = result.thread.id;
+    this.defaultModel = result.model;
     if (this.closed) return;
-    // One in-flight turn at a time. If a previous turn somehow leaked,
-    // abort it so the new one isn't queued behind a dead generator.
-    this.currentRun?.abort();
-    const controller = new AbortController();
-    this.currentRun = controller;
-
-    const { input: codexInput, cleanup } = await buildCodexInput(input.text, input.images);
-    void this.runTurn(codexInput, controller, cleanup);
+    this.events.onInit({ providerSessionId: this.threadId, cwd: this.opts.cwd, version: '', model: result.model || '', tools: [], slashCommands: [], permissionMode: this.opts.permissionMode });
+    void listCodexModels(this.connection).then(models => {
+      this.defaultModel = models.find(m => m.isDefault)?.model || this.defaultModel;
+      if (!this.closed) this.events.onModelsAvailable(models.map(m => ({ id: m.model, label: m.displayName })));
+    }).catch(() => {});
   }
 
-  private async runTurn(input: string | UserInput[], controller: AbortController, cleanup: () => Promise<void>): Promise<void> {
-    const agentTexts = new Map<string, string>();
-    let lastError: string | null = null;
+  async sendUserMessage(input: { text: string; images?: ImageInput[] }) {
+    if (this.closed) return;
+    if (this.active) { this.active.cancelled = true; void this.interruptTurn(this.active); }
+    const previous = this.pendingRun;
+    const state: TurnState = { id: null, cancelled: false, started: Promise.withResolvers(), done: Promise.withResolvers(), texts: new Map(), tools: new Set() };
+    this.active = state;
+    this.pendingRun = this.run(input, state, previous);
+  }
 
+  private async run(input: { text: string; images?: ImageInput[] }, state: TurnState, previous: Promise<void>) {
+    const current = () => !this.closed && !this.failed && this.active === state;
     try {
-      const { events } = await this.thread.runStreamed(input, { signal: controller.signal });
-      for await (const ev of events) {
-        if (this.closed) break;
-        this.dispatch(ev, agentTexts);
-        if (ev.type === 'error') lastError = ev.message;
-        else if (ev.type === 'turn.failed') lastError = ev.error.message;
-      }
-      if (lastError && !controller.signal.aborted) {
-        this.events.onError(new Error(lastError));
-      }
-    } catch (err) {
-      if (controller.signal.aborted) {
-        // User-initiated stop. Emit a turn-complete so the UI clears the
-        // streaming indicator without flagging the session as errored.
-        this.events.onTurnComplete({ stopReason: 'interrupted' });
-      } else {
-        this.events.onError(err instanceof Error ? err : new Error(String(err)));
-      }
-    } finally {
-      await cleanup();
-      if (this.currentRun === controller) this.currentRun = null;
-    }
-  }
-
-  private dispatch(ev: ThreadEvent, agentTexts: Map<string, string>): void {
-    if (ev.type === 'thread.started') {
-      if (!this.initSent) {
-        this.initSent = true;
-        this.events.onInit({
-          providerSessionId: ev.thread_id,
-          cwd: this.cwd,
-          version: '',
-          model: this.model || '',
-          tools: [],
-          slashCommands: [],
-          permissionMode: this.permissionMode,
-        });
-      }
-      return;
-    }
-
-    if (ev.type === 'turn.started') return;
-
-    if (ev.type === 'turn.completed') {
-      this.events.onTurnComplete({
-        stopReason: 'end_turn',
-        usage: mapUsage(ev.usage),
-        model: this.model || undefined,
+      await previous;
+      await this.ready;
+      if (!current() || state.cancelled) return;
+      this.running = state;
+      const { sandbox, ...permissions } = codexPermissions(this.opts.permissionMode, this.opts.cwd);
+      const result = await this.connection.request('turn/start', {
+        threadId: this.threadId,
+        input: [
+          ...(input.images || []).map(image => ({ type: 'image', url: `data:${image.media_type};base64,${image.data}` })),
+          { type: 'text', text: input.text, text_elements: [] },
+        ],
+        model: this.opts.model || this.defaultModel,
+        effort: this.opts.effort === 'max' ? 'xhigh' : this.opts.effort || null,
+        ...permissions,
       });
-      return;
-    }
-
-    if (ev.type === 'turn.failed' || ev.type === 'error') {
-      // The runTurn caller surfaces these via onError after the generator
-      // drains. Nothing to do here.
-      return;
-    }
-
-    if (ev.type === 'item.started') {
-      this.handleItemStarted(ev.item, agentTexts);
-      return;
-    }
-    if (ev.type === 'item.updated') {
-      this.handleItemUpdated(ev.item, agentTexts);
-      return;
-    }
-    if (ev.type === 'item.completed') {
-      this.handleItemCompleted(ev.item, agentTexts);
-      return;
-    }
-  }
-
-  private handleItemStarted(item: ThreadItem, agentTexts: Map<string, string>): void {
-    if (item.type === 'agent_message') {
-      agentTexts.set(item.id, item.text || '');
-      return;
-    }
-    if (item.type === 'command_execution') {
-      const tool: AssistantToolUseBlock = {
-        type: 'tool_use',
-        id: item.id,
-        name: 'Bash',
-        input: { command: item.command },
-        parentToolUseId: null,
-      };
-      this.events.onToolUse(tool);
-      return;
-    }
-  }
-
-  private handleItemUpdated(item: ThreadItem, agentTexts: Map<string, string>): void {
-    if (item.type === 'agent_message') {
-      agentTexts.set(item.id, item.text);
-      // Bridge's onAssistantDelta replaces partialText with the supplied
-      // string, so we hand it the latest snapshot rather than a diff.
-      this.events.onAssistantDelta(item.text);
-      return;
-    }
-  }
-
-  private handleItemCompleted(item: ThreadItem, agentTexts: Map<string, string>): void {
-    switch (item.type) {
-      case 'agent_message': {
-        agentTexts.delete(item.id);
-        this.events.onAssistantText(item.text, { model: this.model || undefined });
-        return;
-      }
-      case 'reasoning': {
-        // Drop chain-of-thought from the chat log.
-        return;
-      }
-      case 'command_execution': {
-        const isError = item.status === 'failed' || (typeof item.exit_code === 'number' && item.exit_code !== 0);
-        const body = item.aggregated_output ?? '';
-        const suffix = typeof item.exit_code === 'number' ? `\n[exit ${item.exit_code}]` : '';
-        this.events.onToolResult({
-          toolUseId: item.id,
-          content: body + suffix,
-          isError,
-          parentToolUseId: null,
-        });
-        return;
-      }
-      case 'file_change': {
-        const tool: AssistantToolUseBlock = {
-          type: 'tool_use',
-          id: item.id,
-          name: 'CodexEdit',
-          input: { changes: item.changes },
-          parentToolUseId: null,
-        };
-        this.events.onToolUse(tool);
-        const isError = item.status === 'failed';
-        const summary = item.changes?.map((c) => `${c.kind} ${c.path}`).join('\n') || '(no changes)';
-        this.events.onToolResult({
-          toolUseId: item.id,
-          content: isError ? `Patch failed:\n${summary}` : summary,
-          isError,
-          parentToolUseId: null,
-        });
-        return;
-      }
-      case 'mcp_tool_call': {
-        const toolName = `${item.server}__${item.tool}`;
-        const tool: AssistantToolUseBlock = {
-          type: 'tool_use',
-          id: item.id,
-          name: toolName,
-          input: (item.arguments as Record<string, unknown>) ?? {},
-          parentToolUseId: null,
-        };
-        this.events.onToolUse(tool);
-        const isError = item.status === 'failed';
-        let content: unknown;
-        if (isError) {
-          content = item.error?.message ?? 'MCP tool call failed';
-        } else if (item.result?.content) {
-          content = item.result.content;
-        } else {
-          content = item.result?.structured_content ?? '';
-        }
-        this.events.onToolResult({ toolUseId: item.id, content, isError, parentToolUseId: null });
-        return;
-      }
-      case 'web_search': {
-        const tool: AssistantToolUseBlock = {
-          type: 'tool_use',
-          id: item.id,
-          name: 'WebSearch',
-          input: { query: item.query },
-          parentToolUseId: null,
-        };
-        this.events.onToolUse(tool);
-        this.events.onToolResult({
-          toolUseId: item.id,
-          content: `Search complete: ${item.query}`,
-          parentToolUseId: null,
-        });
-        return;
-      }
-      case 'todo_list': {
-        // Reshape Codex's `{ text, completed }` into the `{ content, status,
-        // activeForm }` triple the bridge/UI use for TodoWrite output.
-        const todos = (item.items || []).map((t) => ({
-          content: t.text,
-          activeForm: t.text,
-          status: t.completed ? 'completed' : 'pending',
-        }));
-        this.events.onTodosUpdate(todos);
-        return;
-      }
-      case 'error': {
-        this.events.onError(new Error(item.message));
-        return;
+      state.id = result.turn.id;
+      state.started.resolve(state.id);
+      const turn = await state.done.promise;
+      if (!current()) return;
+      if (turn.status === 'interrupted') state.cancelled = true;
+      if (state.cancelled) return;
+      if (turn.status === 'failed') this.events.onError(new Error(turn.error?.message || 'Codex turn failed'));
+      else this.events.onTurnComplete({ stopReason: 'end_turn', usage: state.usage, model: this.opts.model || this.defaultModel || undefined });
+    } catch (error) {
+      if (current() && !state.cancelled) this.events.onError(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      state.started.resolve(null);
+      state.done.resolve({ status: 'interrupted' });
+      if (this.running === state) this.running = null;
+      if (current()) {
+        this.active = null;
+        if (state.cancelled) this.events.onTurnComplete({ stopReason: 'interrupted' });
       }
     }
   }
 
-  async interrupt(): Promise<void> {
-    this.currentRun?.abort();
+  private notification(method: string, params: any) {
+    if (this.closed || params.threadId !== this.threadId) return;
+    const state = this.running;
+    if (!state) return;
+    if (method === 'turn/started') {
+      state.id = params.turn.id;
+      state.started.resolve(state.id);
+      return;
+    }
+    if (params.turnId && state.id && params.turnId !== state.id) return;
+    if (method === 'turn/completed') {
+      if (state.id && params.turn.id !== state.id) return;
+      state.done.resolve(params.turn);
+      return;
+    }
+    if (this.active !== state || state.cancelled) return;
+    if (method === 'item/agentMessage/delta') {
+      const text = (state.texts.get(params.itemId) || '') + params.delta;
+      state.texts.set(params.itemId, text);
+      this.events.onAssistantDelta(text);
+    } else if (method === 'item/started') {
+      this.toolStarted(params.item, state);
+    } else if (method === 'item/completed') {
+      this.itemCompleted(params.item, state);
+    } else if (method === 'turn/plan/updated') {
+      this.events.onTodosUpdate((params.plan || []).map((item: any) => ({ content: item.step, activeForm: item.step, status: item.status === 'inProgress' ? 'in_progress' : item.status })));
+    } else if (method === 'thread/tokenUsage/updated') {
+      const usage = params.tokenUsage?.last;
+      if (usage) state.usage = { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, cache_read_input_tokens: usage.cachedInputTokens };
+    }
   }
 
-  async setModel(_model: string | null): Promise<void> {
-    // Codex bakes the model into the thread on creation. Updates take
-    // effect on the next session restart (the bridge already persists
-    // session.model). No-op at runtime.
+  private toolStarted(item: any, state: TurnState) {
+    if (state.tools.has(item.id)) return;
+    const tool = item.type === 'commandExecution' ? { name: 'Bash', input: { command: item.command, cwd: item.cwd } }
+      : item.type === 'fileChange' ? { name: 'CodexEdit', input: { changes: item.changes } }
+      : item.type === 'mcpToolCall' ? { name: `${item.server}__${item.tool}`, input: item.arguments || {} }
+      : item.type === 'webSearch' ? { name: 'WebSearch', input: { query: item.query } } : null;
+    if (!tool) return;
+    state.tools.add(item.id);
+    this.events.onToolUse({ type: 'tool_use', id: item.id, ...tool, parentToolUseId: null });
   }
 
-  async setPermissionMode(_mode: PermissionMode): Promise<void> {
-    // Same constraint as setModel — applied on next thread start.
+  private itemCompleted(item: any, state: TurnState) {
+    if (item.type === 'agentMessage') {
+      state.texts.delete(item.id);
+      this.events.onAssistantText(item.text, { model: this.opts.model || this.defaultModel || undefined });
+      return;
+    }
+    if (item.type === 'reasoning') {
+      // Only the public summary is surfaced; raw reasoning content is ignored.
+      const text = (item.summary || []).join('\n');
+      if (text) this.events.onThinking({ type: 'thinking', text });
+      return;
+    }
+    this.toolStarted(item, state);
+    if (!state.tools.has(item.id)) return;
+    const isError = item.status === 'failed' || item.status === 'declined' || (item.type === 'commandExecution' && item.exitCode != null && item.exitCode !== 0);
+    const content = item.type === 'commandExecution' ? `${item.aggregatedOutput || ''}${item.exitCode != null ? `\n[exit ${item.exitCode}]` : ''}`
+      : item.type === 'fileChange' ? (item.changes || []).map((change: any) => `${change.kind?.type || change.kind} ${change.path}`).join('\n')
+      : item.type === 'mcpToolCall' ? (item.error?.message || item.result?.content || item.result?.structuredContent || '')
+      : `Search complete: ${item.query || ''}`;
+    this.events.onToolResult({ toolUseId: item.id, content, isError, parentToolUseId: null });
   }
 
-  async close(): Promise<void> {
+  private async approve(method: string, params: any): Promise<unknown> {
+    const state = this.running;
+    const stale = () => this.closed || !state || state.cancelled || this.active !== state || params.threadId !== this.threadId || (params.turnId && state.id && params.turnId !== state.id);
+    const ask = async (toolName: string, input: Record<string, unknown>, description?: string) => {
+      if (stale()) return { allow: false } as const;
+      return this.events.onPermissionRequest({ requestId: randomUUID(), toolName, input, description });
+    };
+    if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
+      const decision = await ask(method.includes('commandExecution') ? 'Bash' : 'Edit', params, params.reason || undefined);
+      return { decision: !stale() && decision.allow ? 'accept' : 'decline' };
+    }
+    if (method === 'item/permissions/requestApproval') {
+      const decision = await ask('CodexPermissions', params, params.reason || 'Codex requests additional permissions');
+      return { permissions: !stale() && decision.allow ? params.permissions : {}, scope: 'turn' };
+    }
+    if (method === 'item/tool/requestUserInput') {
+      const questions = (params.questions || []).map((q: any) => ({ header: q.header, question: q.question, options: q.options || [], multiSelect: false }));
+      const decision = await ask('AskUserQuestion', { questions });
+      const selected = decision.allow ? (decision.updatedInput?.answers as Record<string, string> || {}) : {};
+      return { answers: Object.fromEntries((params.questions || []).map((q: any) => [q.id, { answers: !stale() && decision.allow ? [selected[q.header] || selected[q.question] || selected[q.id] || ''] : [] }])) };
+    }
+    if (method === 'mcpServer/elicitation/request') {
+      // Codex uses this channel for MCP approval forms as well as tool input.
+      // Never invent form values: forward fields to the existing question UI.
+      const properties = params.requestedSchema?.properties || {};
+      const keys = Object.keys(properties);
+      const questions = keys.map(key => ({ header: key, question: properties[key].description || properties[key].title || key, options: (properties[key].enum || (properties[key].type === 'boolean' ? ['true', 'false'] : [])).map((value: any) => ({ label: String(value), description: '' })), multiSelect: false }));
+      const decision = await ask(keys.length ? 'AskUserQuestion' : 'CodexMCPApproval', keys.length ? { questions, message: params.message } : params, params.message);
+      if (stale() || !decision.allow) return { action: 'decline', content: null, _meta: null };
+      const answers = (decision.updatedInput?.answers || {}) as Record<string, string>;
+      const content = Object.fromEntries(keys.map(key => {
+        const value = answers[key] ?? answers[properties[key].description || properties[key].title || key] ?? '';
+        if ((properties[key].type === 'number' || properties[key].type === 'integer') && (!value.trim() || !Number.isFinite(Number(value)))) throw new Error(`Invalid numeric answer for ${key}`);
+        const type = properties[key].type;
+        return [key, type === 'boolean' ? value === 'true' : type === 'integer' || type === 'number' ? Number(value) : value];
+      }));
+      return { action: 'accept', content: keys.length ? content : null, _meta: null };
+    }
+    throw new Error(`Unsupported Codex request: ${method}`);
+  }
+
+  private async interruptTurn(state: TurnState) {
+    const id = await state.started.promise;
+    if (!id || this.closed) return;
+    try { await this.connection.request('turn/interrupt', { threadId: this.threadId, turnId: id }); }
+    catch { state.done.resolve({ status: 'interrupted' }); }
+  }
+  async interrupt() { if (this.active) { this.active.cancelled = true; await this.interruptTurn(this.active); } }
+  async setModel(model: string | null) { this.opts.model = model; }
+  async setPermissionMode(mode: PermissionMode) { this.opts.permissionMode = mode; }
+  async close() {
     if (!this.beginClose()) return;
-    this.currentRun?.abort();
-    this.currentRun = null;
+    if (this.active) { this.active.cancelled = true; this.active.done.resolve({ status: 'interrupted' }); }
+    await this.connection.close();
+    await this.pendingRun;
     this.events.onExit(0);
   }
 }
 
 export class CodexAdapter extends Adapter {
-  readonly name = PROVIDER_NAME;
-
-  spawn(opts: SpawnOptions, events: ProviderEvents): ProviderSession {
-    return new CodexProviderSession(opts, events);
-  }
+  readonly name = 'codex';
+  constructor(private connect: CodexConnect = handlers => new CodexAppServer(handlers)) { super(); }
+  spawn(opts: SpawnOptions, events: ProviderEvents): ProviderSession { return new CodexProviderSession(opts, events, this.connect); }
 }

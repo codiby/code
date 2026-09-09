@@ -50,6 +50,8 @@ echo "-- Bundling server.js"
     --outfile "$SERVICE_DIR/server.js" \
     --target bun --minify >/dev/null
 
+"$BUN_PATH" run "$PROJECT_DIR/scripts/bundle-codex.ts" "$SERVICE_DIR"
+
 echo "-- Pinning bun binary"
 cp "$BUN_PATH" "$SERVICE_DIR/bun"
 chmod +x "$SERVICE_DIR/bun"

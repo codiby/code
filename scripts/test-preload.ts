@@ -16,6 +16,7 @@ import { join } from 'path';
 const sandbox = mkdtempSync(join(tmpdir(), 'codiby-test-'));
 
 process.env.CODIBY_DATABASE_FILE = join(sandbox, 'database.sqlite');
+process.env.CODIBY_DATA_DIR = sandbox;
 
 // The sqlite handle stays open for as long as the process lives, so cleanup
 // waits for exit rather than for any one suite to finish.

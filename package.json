@@ -101,6 +101,7 @@
         }
       ],
       "extraResources": [
+        { "from": "packages/desktop/resources/codex-runtime", "to": "codex-runtime" },
         {
           "from": "packages/desktop/resources/bun",
           "to": "bun"
@@ -113,6 +114,7 @@
         "nsis"
       ],
       "extraResources": [
+        { "from": "packages/desktop/resources/codex-runtime", "to": "codex-runtime" },
         {
           "from": "packages/desktop/resources/bun.exe",
           "to": "bun.exe"

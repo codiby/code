@@ -1,3 +1,4 @@
+import { useCodexModels, codexEfforts } from '../../lib/codex-models';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ClaudeClient,
@@ -788,16 +789,18 @@ export function MobileApp() {
   };
   const activeStatus = (activeId && statusBySession[activeId]) ||
     (activeSession?.ready ? 'connected' : connection);
+  const codex = useCodexModels(clientRef.current, activeSession?.provider === 'codex', activeSession?.remoteId);
   const activeModelOptions = useMemo(() => {
     if (!activeSession) return [];
     const providerModels = activeSession.provider === 'opencode'
       ? (opencodeInfo?.models ?? []).map((m) => ({ id: m.id, label: `${m.providerName} ${m.label}` }))
+      : activeSession.provider === 'codex' ? (codex.info?.models || supportedModelsBySession[activeSession.id] || [])
       : (supportedModelsBySession[activeSession.id]?.length ? supportedModelsBySession[activeSession.id]! : claudeModels);
     if (activeSession.model && !providerModels.some((m) => m.id === activeSession.model)) {
       return [{ id: activeSession.model, label: activeSession.model }, ...providerModels];
     }
     return providerModels;
-  }, [activeSession, opencodeInfo?.models, supportedModelsBySession, claudeModels]);
+  }, [activeSession, opencodeInfo?.models, supportedModelsBySession, claudeModels, codex.info]);
 
   // Derive per-session flags for the sessions sheet
   const streamingBySession = useMemo(() => {
@@ -954,6 +957,7 @@ export function MobileApp() {
           onClearSession={clearActiveSession}
           onPermissionModeChange={setPermissionModeForActive}
           modelOptions={activeModelOptions}
+          effortOptions={activeSession?.provider === 'codex' ? codexEfforts(codex.info, activeSession.model) : undefined}
           onModelChange={(model) => activeId && setModelForSession(activeId, model)}
           onEffortChange={(effort) => activeId && setEffortForSession(activeId, effort)}
           mockups={activeMockups}

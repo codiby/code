@@ -6,6 +6,7 @@ import {
   ListBox, ListBoxItem,
   Select, SelectPopover, SelectTrigger, SelectValue,
 } from '@heroui/react';
+import { useCodexModels, codexEfforts } from '../../lib/codex-models';
 import type { ClaudeClient } from '../../lib/claude-client';
 // The mobile client browses whichever bridge it is connected to and has no
 // host picker, so its recents belong to that bridge's own host bucket.
@@ -88,6 +89,8 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
   const [provider, setProvider] = useState<ProviderKey>(() => getLastProvider(availableProviders));
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
+  const codex = useCodexModels(client, open && provider === 'codex');
+  const effortOptions = provider === 'codex' ? codexEfforts(codex.info, model) : EFFORT_OPTIONS;
 
   // This sheet always creates a LOCAL session, so every browse call pins the
   // local host (`null`). Without the pin the client follows the focused
@@ -156,7 +159,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
         name: name.trim() || undefined,
         provider,
         model: model || null,
-        effort: (provider === 'claude' || provider === 'opencode') && effort ? effort : null,
+        effort: effort || null,
       });
       addRecentDir(null, cwd);
       localStorage.setItem(PROVIDER_KEY, provider);
@@ -179,13 +182,14 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
 
   const modelOptions = provider === 'opencode'
     ? opencodeModels.map((m) => ({ id: m.id, label: `${m.providerName} ${m.label}` }))
-    : claudeModels;
+    : provider === 'claude' ? claudeModels : codex.info?.models || [];
 
   return (
     <div
       className="fixed inset-0 z-50 bg-zinc-950 flex flex-col"
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
     >
+      {provider === 'codex' && (codex.loading || codex.info?.error) && <p role="status" className="px-4 text-sm text-zinc-400">{codex.loading ? 'Loading Codex models…' : codex.info?.error}</p>}
       {/* Header — Cancel / Title / Create. Title is a path breadcrumb too
           so the user always sees where they are. */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
@@ -432,7 +436,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
             </SelectPopover>
           </Select>
         </label>
-        {(provider === 'claude' || provider === 'opencode') && (
+        {(provider === 'claude' || provider === 'opencode' || provider === 'codex') && (
           <label className="flex items-center gap-2 min-w-0">
             <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Effort</span>
             <Select
@@ -449,7 +453,7 @@ export function MobileNewSessionModal({ open, onClose, client, opencodeAvailable
                   <ListBoxItem key="default" id="default" textValue="Default">
                     <span className="text-xs">Default</span>
                   </ListBoxItem>
-                  {EFFORT_OPTIONS.map((o) => (
+                  {effortOptions.map((o) => (
                     <ListBoxItem key={o.id} id={o.id} textValue={o.label}>
                       <span className="text-xs">{o.label}</span>
                     </ListBoxItem>

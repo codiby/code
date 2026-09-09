@@ -80,6 +80,7 @@ import { configureRequirementsRunner } from './requirements/runner';
 import { listBrowserPreviews } from './provider/sdk-tools';
 import { configureLoopDriver, isLooping, onLoopTurnComplete, stopLoop } from './loop/driver';
 import { handleListMcpServers, handleAddMcpServer, handleRemoveMcpServer } from './handlers/mcp-servers';
+import { getCodexInfo } from './handlers/codex-info';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
 import { ClaudeAdapter } from './provider/adapters/claude';
@@ -904,6 +905,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     // barge-in's send_message frame can be processed during that await, and
     // the preserved content must take its `seq` slots ahead of the new user
     // message.
+    clearPendingDecisionsForSession(sessionId, 'Interrupted by user');
     const stateAtStop = getSessionState(sessionId);
     const preserved: ChatMessage[] = [];
     if (stateAtStop.partialThinking?.trim()) {
@@ -1034,7 +1036,9 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!sessionId) return;
     const session = sessions.get(sessionId);
     if (!session) return;
-    const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+    const EFFORT_LEVELS = session.provider === 'codex'
+      ? (await getCodexInfo()).models.flatMap(model => model.efforts)
+      : ['low', 'medium', 'high', 'xhigh', 'max'];
     const next = effort && EFFORT_LEVELS.includes(effort) ? effort : null;
     if (session.effort === next) return;
     session.effort = next;
@@ -1347,6 +1351,8 @@ app.post('/sessions/:id/resume', (c) => {
   broadcastSessionList();
   return resp;
 });
+
+app.get('/providers/codex/info', async () => Response.json(await getCodexInfo(), { headers: corsHeaders }));
 
 app.get('/providers/opencode/info', async () => {
   const info = await getOpencodeInfo();

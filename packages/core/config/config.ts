@@ -72,7 +72,7 @@ export const CWD = process.env.CLAUDE_CWD || process.cwd();
  *  for the Claude CLI's own binary + settings (which our adapter still
  *  reads/writes — see ensure-mcp-config and mcp-config) and migrate
  *  everything we own to `~/.codiby/` on startup. */
-export const CODIBY_DIR = join(homedir(), '.codiby');
+export const CODIBY_DIR = process.env.CODIBY_DATA_DIR || join(homedir(), '.codiby');
 export const SESSIONS_FILE = join(CODIBY_DIR, 'ui-sessions.json');
 
 export const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'Read', 'Glob', 'Grep', 'NotebookEdit']);

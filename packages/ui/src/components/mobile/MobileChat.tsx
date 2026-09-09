@@ -77,6 +77,7 @@ interface Props {
    *  permission mode. Lets MobileApp optimistically update its session list
    *  while we also push the change to the server. */
   onPermissionModeChange?: (mode: string) => void;
+  effortOptions?: Array<{ id: string; label: string }>;
   modelOptions?: Array<{ id: string; label: string }>;
   onModelChange?: (model: string | null) => void;
   /** Change the reasoning effort of the active session. */
@@ -116,6 +117,7 @@ export function MobileChat({
   onClearSession,
   onPermissionModeChange,
   modelOptions,
+  effortOptions,
   onModelChange,
   onEffortChange,
   mockups,
@@ -1314,6 +1316,7 @@ export function MobileChat({
         sessionName={session?.name}
         model={session?.model}
         modelOptions={modelOptions}
+        effortOptions={effortOptions}
         onModelChange={onModelChange}
         provider={session?.provider}
         effort={session?.effort}

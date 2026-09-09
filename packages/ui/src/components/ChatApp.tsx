@@ -664,10 +664,10 @@ export function ChatApp() {
     effort?: string,
   ) => {
     const c = clientRef.current;
-    if (!c) return;
+    if (!c) throw new Error('Not connected. Please retry.');
     // Merged view: the composer also opens on folders that live on a remote.
     const group = sidebarGroups[groupId];
-    if (!group || !cwd) return;
+    if (!group || !cwd) throw new Error('Choose a project folder.');
     // A folder owned by a remote records its own membership; we neither write
     // nor persist a mapping into it.
     const ownedHere = !isRemoteGroupKey(groupId);
@@ -700,6 +700,7 @@ export function ChatApp() {
       if (prompt || images?.length) c.sendMessage(session.id, prompt || ' ', images);
     } catch (err) {
       console.error('[ChatApp] Failed to spawn session in group:', err);
+      throw err;
     }
   };
 
@@ -719,7 +720,7 @@ export function ChatApp() {
     effort?: string,
   ) => {
     const c = clientRef.current;
-    if (!c || !cwd) return;
+    if (!c || !cwd) throw new Error('Choose a folder and connect before creating a session.');
     try {
       // When the cwd is a worktree, autogroup under the parent repo's folder
       // name instead of the worktree branch. Server-side autogroup honors
@@ -738,6 +739,7 @@ export function ChatApp() {
       if (prompt || images?.length) c.sendMessage(session.id, prompt || ' ', images);
     } catch (err) {
       console.error('[ChatApp] Failed to spawn session from home:', err);
+      throw err;
     }
   };
 

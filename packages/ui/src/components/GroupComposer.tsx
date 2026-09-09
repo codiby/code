@@ -68,7 +68,7 @@ interface Props {
     images?: { media_type: string; data: string }[],
     /** Reasoning effort — forwarded for providers that support it. */
     effort?: string,
-  ) => void;
+  ) => Promise<void>;
   /** Opens the full folder-picker modal (parent-owned). Invoked from the
    *  "Browse for folder…" item at the bottom of the project dropdown, and told
    *  which machine to browse — the modal remembers its own last target, which
@@ -88,6 +88,9 @@ interface Props {
  */
 export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBrowseFolder, onBranchChanged }: Props) {
   const [prompt, setPrompt] = useState('');
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [cwd, setCwd] = useState(groupCwd);
   const [provider, setProvider] = useState<ProviderKey>(() => {
@@ -291,23 +294,35 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   const targetColor = target ? (targetMeta?.color || remoteColor || '#a78bfa') : '#71717a';
   const branchLabel = gitInfo?.is_git ? gitInfo.branch : null;
 
-  const submit = () => {
-    if (!prompt.trim() && pastedImages.length === 0) return;
+  const submit = async () => {
+    if (submittingRef.current || !cwd || (!prompt.trim() && pastedImages.length === 0)) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setSubmitError(null);
     const images = pastedImages.length > 0
       ? pastedImages.map(({ media_type, data }) => ({ media_type, data }))
       : undefined;
-    onSpawn(
-      cwd,
-      provider,
-      prompt.trim(),
-      model || undefined,
-      permissionMode && permissionMode !== 'default' ? permissionMode : undefined,
-      worktreeOrigin || undefined,
-      target,
-      images,
-      (provider === 'claude' || provider === 'opencode') && effort ? effort : undefined,
-    );
-    setPastedImages([]);
+    try {
+      await onSpawn(
+        cwd,
+        provider,
+        prompt.trim(),
+        model || undefined,
+        permissionMode && permissionMode !== 'default' ? permissionMode : undefined,
+        worktreeOrigin || undefined,
+        target,
+        images,
+        effort || undefined,
+      );
+      setPastedImages([]);
+      setPrompt('');
+      // Keep the lock after success until navigation unmounts this composer.
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+      submittingRef.current = false;
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -441,6 +456,8 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
             selectedKey={provider}
             onSelectionChange={(key) => {
               setProvider(key as ProviderKey);
+              setModel('');
+              setEffort('');
               localStorage.setItem(PROVIDER_KEY, String(key));
             }}
           >
@@ -461,7 +478,10 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
           </Select>
         </div>
 
+        {submitError && <p role="alert" className="px-3 text-sm text-red-400">{submitError}</p>}
+        {submitting && <p role="status" className="px-3 text-sm text-zinc-400">Creating session…</p>}
         <ChatComposer
+          submitting={submitting}
           sessionId="new-in-group"
           autoFocus
           input={prompt}
@@ -469,7 +489,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
           pastedImages={pastedImages}
           onChangePastedImages={(val) => setPastedImages(prev => (typeof val === 'function' ? val(prev) : val))}
           active={{ isStreaming: false, permRequest: null, inputHistory: [], supportedModels: undefined }}
-          activeSession={{ model: model || null, permission_mode: permissionMode, effort: effort || null, provider }}
+          activeSession={{ remoteId: target, model: model || null, permission_mode: permissionMode, effort: effort || null, provider }}
           connectionStatus="connected"
           opencodeInfo={opencodeInfo ?? null}
           claudeModels={claudeModels}

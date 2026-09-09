@@ -61,3 +61,15 @@ describe('findPendingDecision', () => {
     expect(findPendingDecision(s.id, 'ExitPlanMode')).toBeNull();
   });
 });
+
+import { createBridgeEvents } from './bridge';
+import { getSessionState, updateSessionState } from '../session/state';
+
+test('provider failures reach the transcript and clear the busy indicator', () => {
+  const s = { ...session('codex-error'), provider: 'codex', providerSessionGen: 1 };
+  const broadcasts: any[] = [];
+  updateSessionState(s.id, state => ({ ...state, isStreaming: true }));
+  createBridgeEvents(s, { ...deps, broadcastToSession: (_, msg) => broadcasts.push(msg) }).onError(new Error('Login required'));
+  expect(getSessionState(s.id).isStreaming).toBe(false);
+  expect(broadcasts.some(msg => msg.type === 'message' && msg.message.content.includes('Login required'))).toBe(true);
+});

@@ -335,6 +335,14 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onError(err) {
+      if (session.providerSessionGen !== gen) return;
+      const message: ChatMessage = {
+        id: randomUUID(), role: 'system', timestamp: Date.now(),
+        content: `${session.provider || 'Provider'}: ${err.message}`,
+      };
+      if (addMessage(session.id, message)) {
+        deps.broadcastToSession(session.id, { type: 'message', sessionId: session.id, message });
+      }
       deps.onError?.(session.id, err);
       logError(`[${sid8}] Provider error: ${err.message}`);
       // If a turn was in flight when the runtime errored, the indicator is

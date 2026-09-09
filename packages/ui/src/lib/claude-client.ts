@@ -1546,7 +1546,10 @@ export class ClaudeClient {
         group_id: opts.groupId,
       }),
     });
-    if (!resp.ok) throw new Error(`Failed to create session: ${resp.status}`);
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => null) as { error?: string } | null;
+      throw new Error(detail?.error || `Failed to create session: ${resp.status}`);
+    }
     const session = await resp.json() as SessionInfo;
     if (remoteId) {
       // Record the mapping so subsequent REST/WS route to this remote; the
@@ -1611,6 +1614,14 @@ export class ClaudeClient {
     const base = await this.sessionBase(sessionId);
     const resp = await authedFetch(`${base}/sessions/${sessionId}?${params}`, { method: 'DELETE' });
     if (!resp.ok) return { ok: false };
+    return resp.json();
+  }
+
+  async getCodexInfo(remoteId?: string | null): Promise<import('./codex-models').CodexInfo> {
+    const base = remoteId ? await this.ensureRemoteBaseUp(remoteId) : this.serverUrl;
+    if (!base) throw new Error('Remote host is unavailable');
+    const resp = await authedFetch(`${base}/providers/codex/info`);
+    if (!resp.ok) throw new Error(`Unable to load Codex models (${resp.status})`);
     return resp.json();
   }
 

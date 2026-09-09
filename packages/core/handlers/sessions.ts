@@ -117,7 +117,17 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   sessions.set(session.id, session);
 
   log(`[${session.id.slice(0,8)}] Creating new session, cwd=${cwd}, provider=${provider}`);
-  startProviderSession(session, port);
+  try {
+    startProviderSession(session, port);
+  } catch (err) {
+    // Failed creation must not leave an orphan visible on the next broadcast.
+    try { await session.providerSession?.close(); } catch {}
+    stopSessionWatcher(session.id);
+    sessions.delete(session.id);
+    const error = err instanceof Error ? err.message : String(err);
+    logError(`[${session.id.slice(0, 8)}] Failed to create ${provider} session: ${error}`);
+    return Response.json({ error: `Could not start ${provider}: ${error}` }, { status: 503, headers: corsHeaders });
+  }
   saveSessions();
 
   const payload = sessionToJSON(session, port);

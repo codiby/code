@@ -14,6 +14,7 @@ interface Props {
   onAction: (id: ActionSheetId) => void;
   sessionName?: string;
   model?: string | null;
+  effortOptions?: Array<{ id: string; label: string }>;
   modelOptions?: Array<{ id: string; label: string }>;
   onModelChange?: (model: string | null) => void;
   /** Provider of the active session — only Claude and OpenCode support effort. */
@@ -63,7 +64,7 @@ const TILES: Tile[] = [
  * `onAction(id)` and dismisses. Built on HeroUI's `Drawer` so swipe-down /
  * backdrop tap dismiss come for free.
  */
-export function MobileActionSheet({ open, onClose, onAction, sessionName, model, modelOptions = [], onModelChange, provider, effort, onEffortChange, permissionMode, onPermissionModeChange }: Props) {
+export function MobileActionSheet({ open, onClose, onAction, sessionName, model, modelOptions = [], effortOptions = EFFORT_OPTIONS, onModelChange, provider, effort, onEffortChange, permissionMode, onPermissionModeChange }: Props) {
   return (
     <Drawer isOpen={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <Drawer.Backdrop variant="blur">
@@ -104,7 +105,7 @@ export function MobileActionSheet({ open, onClose, onAction, sessionName, model,
                   </label>
                 </div>
               )}
-              {sessionName && onEffortChange && ((provider ?? 'claude') === 'claude' || provider === 'opencode') && (
+              {sessionName && onEffortChange && ((provider ?? 'claude') === 'claude' || provider === 'opencode' || provider === 'codex') && (
                 <div className="mb-4 rounded-2xl bg-zinc-900/55 border border-white/10 px-3 py-3">
                   <label className="flex items-center gap-3 min-w-0">
                     <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold shrink-0">Effort</div>
@@ -123,7 +124,7 @@ export function MobileActionSheet({ open, onClose, onAction, sessionName, model,
                           <ListBoxItem key="default" id="default" textValue="Default">
                             <span className="text-xs">Default</span>
                           </ListBoxItem>
-                          {EFFORT_OPTIONS.map((o) => (
+                          {effortOptions.map((o) => (
                             <ListBoxItem key={o.id} id={o.id} textValue={o.label}>
                               <span className="text-xs">{o.label}</span>
                             </ListBoxItem>

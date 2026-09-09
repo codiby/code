@@ -16,6 +16,7 @@
  *     manipulate this pane's input via `onChangeInput`).
  */
 import { useRef, useState } from 'react';
+import { useCodexModels, codexEfforts } from '../lib/codex-models';
 import { Send as SendIcon } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import { SlashCommandList, useSlashCommands } from './SlashCommandPicker';
@@ -72,6 +73,7 @@ interface ActiveLike {
 }
 
 interface ActiveSessionLike {
+  remoteId?: string | null;
   model?: string | null;
   permission_mode?: string;
   /** Reasoning-effort level; null/absent → provider default. */
@@ -129,6 +131,7 @@ interface Props {
   cwd: string | null;
 
   onSend: () => void;
+  submitting?: boolean;
   onInterrupt: () => void;
   onSelectModel: (modelId: string) => void;
   onSelectPermissionMode: (mode: string) => void;
@@ -151,7 +154,7 @@ export function ChatComposer(props: Props) {
     input, onChangeInput, pastedImages, onChangePastedImages,
     active, activeSession, connectionStatus, opencodeInfo, claudeModels,
     slashCommands, client, cwd,
-    onSend, onInterrupt, onSelectModel, onSelectPermissionMode, onSelectEffort, onFocus,
+    onSend, submitting = false, onInterrupt, onSelectModel, onSelectPermissionMode, onSelectEffort, onFocus,
     onRegisterSnippet, autoFocus, widthClass = 'max-w-4xl',
   } = props;
 
@@ -464,28 +467,26 @@ export function ChatComposer(props: Props) {
   };
   const refs = input.match(/@[\w.\/\-:]+/g);
   const isOpenCode = activeSession?.provider === 'opencode';
-  // Effort is a Claude Agent SDK concept — hide the dropdown for every other
-  // provider. Sessions always carry a provider (server defaults to 'claude'),
-  // so a missing value only happens for hosts that never set one.
   const isClaude = (activeSession?.provider ?? 'claude') === 'claude';
-  const supportsEffort = isClaude || activeSession?.provider === 'opencode';
+  const isCodex = activeSession?.provider === 'codex';
+  const codex = useCodexModels(client, isCodex, activeSession?.remoteId);
+  const effortChoices = isCodex ? codexEfforts(codex.info, activeSession?.model) : EFFORT_OPTIONS;
+  const supportsEffort = isClaude || isOpenCode || isCodex;
   const ocModels = isOpenCode ? (opencodeInfo?.models ?? null) : undefined;
   const ocLoading = isOpenCode && opencodeInfo === null;
   // Prefer this session's own SDK-reported list once it lands, then fall
   // back to the cross-session cache. Both come from the Agent SDK — there
   // is no hardcoded list anywhere.
-  const claudeModelChoices = isOpenCode
-    ? []
-    : (active.supportedModels && active.supportedModels.length > 0
-        ? active.supportedModels
-        : claudeModels);
+  const modelChoices = isClaude
+    ? (active.supportedModels?.length ? active.supportedModels : claudeModels)
+    : (isCodex && codex.info?.models.length ? codex.info.models : active.supportedModels ?? (activeSession?.model ? [{ id: activeSession.model, label: activeSession.model }] : []));
   // Terminal commands can't be queued offline (they run on the live pane), so
   // they still require a live connection. Chat messages, however, can be
   // composed while the session is closed — they're staged with a "sending"
   // loader and delivered when the remote session reconnects.
-  const sendDisabled = isTerminalMode
+  const sendDisabled = submitting || (isTerminalMode
     ? !cmdText.trim() || connectionStatus !== 'connected'
-    : !input.trim() && pastedImages.length === 0;
+    : !input.trim() && pastedImages.length === 0);
   const triggerCls =
     'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
 
@@ -639,6 +640,7 @@ export function ChatComposer(props: Props) {
               )}
             </div>
 
+            {isCodex && (codex.loading || codex.info?.error) && <p role={codex.info?.error ? 'alert' : 'status'} className="px-3 text-xs text-zinc-400">{codex.loading ? 'Loading Codex models…' : codex.info?.error}</p>}
             <div className="flex items-center gap-1 px-2 pb-2 pt-1.5">
               <Select
                 aria-label="Model"
@@ -648,7 +650,7 @@ export function ChatComposer(props: Props) {
                   onSelectModel(modelId);
                 }}
                 className={isOpenCode ? 'w-56' : 'w-32'}
-                isDisabled={ocLoading}
+                isDisabled={ocLoading || codex.loading}
               >
                 <SelectTrigger className={triggerCls}>
                   <SelectValue className="min-w-0 flex-1 truncate" />
@@ -666,7 +668,7 @@ export function ChatComposer(props: Props) {
                             </span>
                           </ListBoxItem>
                         ))
-                      : claudeModelChoices.map(m => (
+                      : modelChoices.map(m => (
                           <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
                             <span className="text-xs">{m.label}</span>
                           </ListBoxItem>
@@ -691,7 +693,7 @@ export function ChatComposer(props: Props) {
                   <SelectPopover>
                     <ListBox>
                       <ListBoxItem key="default" id="default" textValue="Effort"><span className="text-xs">Effort</span></ListBoxItem>
-                      {EFFORT_OPTIONS.map(o => (
+                      {effortChoices.map(o => (
                         <ListBoxItem key={o.id} id={o.id} textValue={o.label}>
                           <span className="text-xs">{o.label}</span>
                         </ListBoxItem>
