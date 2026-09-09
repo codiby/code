@@ -15,6 +15,7 @@ import { stopSessionWatcher } from '../session/watcher';
 import { closeSessionPortForwards } from '../network/port-forward';
 import { forgetViewerBriefing } from '../network/remote-viewer';
 import { rootRepoOf } from './worktree';
+import { deleteSessionNotes } from './session-notes';
 import type { Session } from '../types';
 
 /** True when `cwd` matches the worktree convention `<repo>/.worktrees/<branch>`
@@ -346,6 +347,7 @@ export async function handleDeleteSession(
     if (purge) {
       try {
         deleteSessionData(sessionId);
+        deleteSessionNotes(sessionId);
         purgeResult.history = true;
         log(`[${sessionId.slice(0, 8)}] Purged session data on disk`);
       } catch (err) {

@@ -515,6 +515,7 @@ export interface SessionState {
   todos: { content: string; status: string; activeForm?: string }[];
 }
 
+export type SessionNotes = { sessionId: string; content: string; revision: number; updatedAt: number };
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 /** How the bridge server was launched. Informational only — session spawn is
@@ -761,6 +762,22 @@ export interface SessionResource {
 }
 
 export class ClaudeClient {
+  async getSessionNotes(sessionId: string): Promise<SessionNotes> {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}/notes`);
+    if (!resp.ok) throw new Error(`Unable to load notes (${resp.status})`);
+    return resp.json();
+  }
+
+  async saveSessionNotes(sessionId: string, content: string, revision: number): Promise<SessionNotes> {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}/notes`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content, revision }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) throw new Error(result.error || `Unable to save notes (${resp.status})`);
+    return result;
+  }
   private sessionRestarts = new Map<string, Promise<SessionInfo>>();
   private serverUrl: string;
   private callbacks: ClientCallbacks;

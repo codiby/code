@@ -1,5 +1,12 @@
 import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
+export const sessionNotes = sqliteTable('session_notes', {
+  sessionId: text('session_id').primaryKey(),
+  content: text('content').notNull(),
+  revision: integer('revision').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
 export const automations = sqliteTable('automations', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),

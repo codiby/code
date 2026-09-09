@@ -12,6 +12,7 @@ import {
   FilePlus,
   FolderPlus,
   FolderTree,
+  StickyNote,
   Upload,
   GitBranch,
   GitPullRequest,
@@ -31,6 +32,7 @@ import { Button, TextField, Input } from '@heroui/react';
 import type { ClaudeClient, SessionInfo, ConnectionStatus, McpServerView, McpServerScope } from '../lib/claude-client';
 import { getNative } from '../lib/native';
 import { FILE_REFERENCE_MIME } from '../lib/file-reference-dnd';
+import { SessionNotes } from './SessionNotes';
 
 /** Session-switcher palette — kept inline so this section stays visually
  *  distinct from the rest of the explorer chrome. Mirrors the colors from
@@ -464,7 +466,7 @@ function CardHeader({ icon, iconColor, title, expanded, onToggle, meta }: {
  * at a time as a tabbed panel: the icon rail is the tab bar, and only the
  * active card renders below it. Tab order is user-defined (drag a tab to
  * reorder) and persisted to localStorage. */
-const DEFAULT_CARD_ORDER = ['files', 'changes', 'toolsmcp', 'processes', 'prs'] as const;
+const DEFAULT_CARD_ORDER = ['notes', 'files', 'changes', 'toolsmcp', 'processes', 'prs'] as const;
 // Bumped when the card set changes (tools+mcp were merged into 'toolsmcp'), so
 // stale saved orders don't pin the old layout.
 const CARD_ORDER_KEY = 'cardsOrder.v2';
@@ -479,7 +481,11 @@ function loadCardOrder(): string[] {
         // list (handles first run after a new card is introduced).
         const known = saved.filter((id): id is string => DEFAULT_CARD_ORDER.includes(id));
         const missing = DEFAULT_CARD_ORDER.filter(id => !known.includes(id));
-        return [...known, ...missing];
+        if (!known.includes('notes')) {
+          const index = known.indexOf('files');
+          known.splice(index < 0 ? 0 : index, 0, 'notes');
+        }
+        return [...known, ...missing.filter(id => !known.includes(id))];
       }
     }
   } catch {}
@@ -1844,12 +1850,14 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   const [cardsCollapsed, setCardsCollapsed] = useState<boolean>(false);
   const [processCount, setProcessCount] = useState(0);
   const [prCount, setPrCount] = useState(0);
+  const [hasNotes, setHasNotes] = useState(false);
+  useEffect(() => setHasNotes(false), [activeSessionId]);
   const cardsScrollRef = useRef<HTMLDivElement>(null);
 
   // Card tabs: persisted order (drag a tab to reorder) + which card is active.
   const [cardOrder, setCardOrder] = useState<string[]>(loadCardOrder);
   const [activeTab, setActiveTab] = useState<string>(() => {
-    try { return localStorage.getItem('activeCardTab') || ''; } catch { return ''; }
+    try { return localStorage.getItem('activeCardTab') || 'files'; } catch { return 'files'; }
   });
 
   useEffect(() => {
@@ -1909,6 +1917,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   const railItems: RailItem[] = useMemo(() => {
     const changesCount = new Set([...gitModified.staged, ...gitModified.unstaged]).size;
     const items: RailItem[] = [
+      { key: 'notes', title: 'Session notes', color: '#a78bfa', icon: <span className="relative"><StickyNote size={15} />{hasNotes && <span className="absolute -right-1 -top-1 w-1 h-1 rounded-full bg-violet-300" />}</span> },
       { key: 'files', title: 'Explorer', color: '#5aa6f0', icon: <FolderTree size={15} /> },
       { key: 'changes', title: 'Changes', color: MODIFIED_COLOR, icon: <GitBranch size={16} />, badge: changesCount || undefined },
       // Tools + MCP unified under a single tab/icon.
@@ -1918,7 +1927,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
     if (prCount > 0) items.push({ key: 'prs', title: 'Pull Requests', color: '#56b6e8', icon: <GitPullRequest size={15} />, badge: prCount });
     // Mirror the user's card order so the rail tabs line up with the panel.
     return items.sort((a, b) => cardOrder.indexOf(a.key) - cardOrder.indexOf(b.key));
-  }, [gitModified.staged, gitModified.unstaged, processCount, prCount, cardOrder]);
+  }, [gitModified.staged, gitModified.unstaged, processCount, prCount, cardOrder, hasNotes]);
 
   const fetchRoot = useCallback(async () => {
     if (!client || !rootPath) return;
@@ -2179,10 +2188,14 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
             />
             <CardDivider />
             <div ref={cardsScrollRef} className="flex-1 min-h-0 flex flex-col overflow-y-auto">
+              <div className={activeTab === 'notes' && !searchActive ? 'flex-1 min-h-0 flex flex-col' : 'hidden'}>
+                {client && activeSessionId ? <SessionNotes key={activeSessionId} client={client} sessionId={activeSessionId} sessionName={sessionName} onHasNotes={setHasNotes} /> : <p className="p-4 text-xs text-zinc-500">Select a session to add notes.</p>}
+              </div>
               {searchActive && renderSearchCard ? (
                 renderSearchCard(() => onSearchActiveChange?.(false))
               ) : (() => {
                 const cardNodes: Record<string, React.ReactNode> = {
+                  notes: <></>,
                   processes: <ProcessesSection client={client} sessionId={activeSessionId} onViewTerminal={onOpenTerminal} onCountChange={setProcessCount} />,
                   changes: <ChangesSection gitModified={gitModified} rootPath={rootPath} onFileDiff={onFileDiff || onFileOpen} onFileDiffFullView={onFileDiffFullView} onStartReview={onStartReview} client={client} onRefresh={onRefreshGit || (() => {})} activeDiffPath={activeDiffPath ?? null} compareMode={changesCompare ?? 'uncommitted'} onCompareModeChange={onChangesCompareChange} />,
                   prs: <PRsSection client={client} rootPath={rootPath} sessionName={sessionName} onCountChange={setPrCount} />,

@@ -81,6 +81,7 @@ import { listBrowserPreviews } from './provider/sdk-tools';
 import { configureLoopDriver, isLooping, onLoopTurnComplete, stopLoop } from './loop/driver';
 import { handleListMcpServers, handleAddMcpServer, handleRemoveMcpServer } from './handlers/mcp-servers';
 import { getCodexInfo } from './handlers/codex-info';
+import { handleSessionNotes } from './handlers/session-notes';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
 import { ClaudeAdapter } from './provider/adapters/claude';
@@ -1369,6 +1370,9 @@ app.post('/sessions/:id/stop', async (c) => {
   broadcastSessionList();
   return resp;
 });
+
+app.get('/sessions/:id/notes', c => handleSessionNotes(c.req.param('id'), c.req.raw));
+app.put('/sessions/:id/notes', c => handleSessionNotes(c.req.param('id'), c.req.raw));
 
 app.post('/sessions/:id/restart', async (c) => {
   const sid = c.req.param('id');

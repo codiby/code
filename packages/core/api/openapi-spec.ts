@@ -420,6 +420,19 @@ export const openApiSpec: OpenApiSpec = {
     '/sessions/{id}/restart': {
       post: { tags: ['Sessions'], summary: 'Restart provider preserving history', parameters: [sessionIdParam], responses: { 200: corsResponse } },
     },
+    '/sessions/{id}/notes': {
+      get: {
+        tags: ['Sessions'], summary: 'Read persistent notes for a session',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Notes content, revision and updatedAt' }, '404': { description: 'Session not found' } },
+      },
+      put: {
+        tags: ['Sessions'], summary: 'Save notes using their last-read revision',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content', 'revision'], properties: { content: { type: 'string', maxLength: 100000 }, revision: { type: 'integer', minimum: 0 } } } } } },
+        responses: { '200': { description: 'Saved notes with incremented revision' }, '400': { description: 'Invalid notes' }, '404': { description: 'Session not found' }, '409': { description: 'Notes changed since the supplied revision; reload before retrying' } },
+      },
+    },
     '/sessions/{id}/clear': {
       post: { tags: ['Sessions'], summary: 'Clear the conversation', parameters: [sessionIdParam], responses: { 200: corsResponse } },
     },
