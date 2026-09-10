@@ -1,22 +1,15 @@
-/**
- * Two icon buttons that live in the host's activity bar (40px column on the
- * left of the IDE in standard mode): a quick "+" to spawn a new session and a
- * history icon that pops open the list of recently-closed sessions for
- * one-click reopen. Replaces the inline toolbar that used to sit on top of
- * the vertical TabBar — keeping the TabBar pure tabs.
- */
+/** Titlebar history menu for reopening closed sessions. */
 import { useEffect, useRef, useState } from 'react';
-import { Plus, History, Search, Archive } from 'lucide-react';
+import { History, Search, Archive } from 'lucide-react';
 import type { SessionInfo } from '../lib/claude-client';
 
 interface Props {
   closedSessions: SessionInfo[];
-  onNew: () => void;
   onReopen: (id: string) => void;
   onArchive?: (id: string) => void;
 }
 
-export function ActivityBarSessionActions({ closedSessions, onNew, onReopen, onArchive }: Props) {
+export function ActivityBarSessionActions({ closedSessions, onReopen, onArchive }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState(0);
@@ -69,14 +62,6 @@ export function ActivityBarSessionActions({ closedSessions, onNew, onReopen, onA
 
   return (
     <>
-      <button
-        className="w-7 h-6 flex items-center justify-center rounded-md transition-colors text-zinc-500 hover:text-zinc-200 hover:bg-surface-light"
-        onClick={onNew}
-        title="New session"
-        aria-label="New session"
-      >
-        <Plus className="w-3.5 h-3.5" />
-      </button>
       <button
         ref={btnRef}
         className={`w-7 h-6 flex items-center justify-center rounded-md transition-colors ${

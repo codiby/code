@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -1207,7 +1207,7 @@ export const TabBar = memo(function TabBar(props: Props) {
         }}
         title="Drag to resize"
       />
-       <div className="flex flex-col gap-0.5 px-2 py-2 overflow-y-auto flex-1">
+      <div className="px-2 pt-2 shrink-0">
          <div className="flex items-center gap-1 shrink-0 mb-1">
            <div className="flex items-center gap-1.5 bg-[#1c1d22] border border-[#2a2b30] rounded-md px-2 h-8 flex-1 min-w-0">
              <Search size={12} className="text-zinc-600 shrink-0" />
@@ -1252,6 +1252,21 @@ export const TabBar = memo(function TabBar(props: Props) {
              <MoreHorizontal size={14} />
            </button>
          </div>
+        <button
+          type="button"
+          onClick={onNew}
+          aria-pressed={activeNavView === 'sessions' && !activeSessionId}
+          className={`w-full flex items-center gap-2.5 h-9 px-3 rounded-md text-[12px] font-medium transition-colors ${
+            activeNavView === 'sessions' && !activeSessionId
+              ? 'bg-surface-light text-zinc-100'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
+          }`}
+        >
+          <SquarePen size={15} />
+          <span>New chat</span>
+        </button>
+      </div>
+       <div className="flex flex-col gap-0.5 px-2 py-2 overflow-y-auto flex-1">
          {normalizedSessionSearch && (
            <div className="px-1 pb-1 text-[10px] text-zinc-600">
              {visibleSessions.length} {visibleSessions.length === 1 ? 'result' : 'results'}

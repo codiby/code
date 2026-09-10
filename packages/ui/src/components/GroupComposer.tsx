@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import type { ClaudeClient, RemoteTarget } from '../lib/claude-client';
 import { ChatComposer, type PastedImage } from './ChatComposer';
+import { NewSessionModal } from './NewSessionModal';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
 import { WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
 import { getRecentDirs } from '../lib/recent-dirs';
@@ -69,11 +70,6 @@ interface Props {
     /** Reasoning effort — forwarded for providers that support it. */
     effort?: string,
   ) => Promise<void>;
-  /** Opens the full folder-picker modal (parent-owned). Invoked from the
-   *  "Browse for folder…" item at the bottom of the project dropdown, and told
-   *  which machine to browse — the modal remembers its own last target, which
-   *  is not necessarily the one this composer is pointed at. */
-  onBrowseFolder?: (remoteId: string | null) => void;
   /** Keeps the app-wide git status indicator aligned with this composer's
    * branch selection before a session exists for the selected group. */
   onBranchChanged?: (branch: string | null) => void;
@@ -86,7 +82,8 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBrowseFolder, onBranchChanged }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBranchChanged }: Props) {
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const submittingRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
@@ -434,19 +431,17 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
                     </button>
                   );
                 })}
-                {onBrowseFolder && (
-                  <>
+                <>
                     <div className="h-px bg-border my-1" />
                     <button
                       type="button"
-                      onClick={() => { setFolderMenuOpen(false); onBrowseFolder(target); }}
+                      onClick={() => { setFolderMenuOpen(false); setFolderBrowserOpen(true); }}
                       className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-zinc-300 hover:bg-surface-light/50 hover:text-zinc-100"
                     >
                       <FolderSearch size={14} className="text-zinc-500 shrink-0" />
                       <span>Browse for folder…</span>
                     </button>
-                  </>
-                )}
+                </>
               </div>
             )}
           </div>
@@ -621,6 +616,19 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
           </div>
         )}
       </div>
+      <NewSessionModal
+        isOpen={folderBrowserOpen}
+        initialTarget={target}
+        client={client}
+        opencodeAvailable={opencodeInfo?.available ?? false}
+        onClose={() => setFolderBrowserOpen(false)}
+        onCreate={(path, nextProvider, nextTarget) => {
+          setCwd(path);
+          setProvider(nextProvider as ProviderKey);
+          setTarget(nextTarget ?? null);
+          setWorktreeOrigin(null);
+        }}
+      />
     </div>
   );
 }

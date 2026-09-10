@@ -24,7 +24,7 @@ const built = await Bun.build({
 });
 if (!built.success) throw new Error(built.logs.join('\n'));
 const js = await built.outputs.find(x => x.kind === 'entry-point')!.text();
-const server = Bun.serve({ hostname: '127.0.0.1', port: 41829, fetch(req) {
+const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(req) {
   return new URL(req.url).pathname === '/fixture.js'
     ? new Response(js, { headers: { 'Content-Type': 'text/javascript' } })
     : new Response('<!doctype html><html><body><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>', { headers: { 'Content-Type': 'text/html' } });
@@ -53,6 +53,11 @@ function assert(condition: unknown, message: string) { if (!condition) throw new
 try {
   await until('!!document.querySelector("[contenteditable=true]")');
   await until('!document.body.innerText.includes("Loading Codex models")');
+  assert(await evaluate('window.calls.length === 0'), 'Opening the draft created a session');
+  await evaluate('document.querySelector("[contenteditable=true]").focus()');
+  await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  assert(await evaluate('window.calls.length === 0'), 'Empty Enter created a session');
   // Codex must not inherit the global Claude model cache.
   await evaluate('document.querySelector("[aria-label=Model]").click()');
   await until('!!document.querySelector("[role=listbox]")');

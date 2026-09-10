@@ -5,6 +5,32 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] — 2026-09-10
+
+### Added
+
+- **New chat in the sidebar.** Search stays first, followed by a New chat item
+  that replaces the titlebar's plus button. A group's plus opens a selected
+  New chat draft with that group's folder and host. The session is created
+  only when the first message is sent; browsing for a folder keeps the draft.
+- Persistent session notes with agent follow-up tools.
+- A restart command to reload session configuration.
+- Codex app-server runtime integration, model selection, and approvals.
+- Server-side automations and shared automatic session grouping.
+
+### Changed
+
+- New sessions can target a selected host and browse remote folders.
+- Remote groups fold into the sidebar, and worktree groups nest under their repo.
+- Double-clicking a pinned panel tab maximizes the panel.
+- The diff viewer can discard a file's unstaged changes.
+- Swapped sidebar and explorer shortcuts and simplified group menus.
+
+### Fixed
+
+- Bundle Inter and JetBrains Mono for consistent app typography.
+- Render the port-forward popover outside the titlebar so it remains visible.
+
 ## [0.29.0] — 2026-08-26
 
 ### Added

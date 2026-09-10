@@ -365,9 +365,8 @@ export function ChatApp() {
     });
   };
 
-  /** Optimistic sidebar rows for sessions whose POST is still in flight, so
-   *  pressing "+" on a group paints a tab immediately instead of after the
-   *  round-trip. Merged into the list handed to the TabBar and dropped in the
+  /** Optimistic sidebar rows for worktree sessions whose POST is in flight.
+   *  Merged into the list handed to the TabBar and dropped in the
    *  creator's `finally` — a failed create leaves no ghost behind. */
   const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>([]);
   const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>({});
@@ -445,80 +444,13 @@ export function ChatApp() {
     persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
   };
 
-  /** Create a new session whose cwd matches the group's saved project path,
-   *  then add it to the group automatically. Triggered from the "+" on a group
-   *  header — it spawns straight away, no composer step, so an optimistic row
-   *  goes into the sidebar before the POST comes back and is swapped for the
-   *  real session (or dropped, on failure) in the `finally`.
-   *
-   *  Falls back to the first member's cwd for legacy groups created before the
-   *  cwd field existed, and backfills group.cwd at the same time so it persists
-   *  for next time. */
-  const handleNewSessionInGroup = async (groupId: string) => {
-    const c = clientRef.current;
-    if (!c) return;
-    // The merged view, so "+" also works on a folder that only exists on a
-    // remote — its definition never reaches `tabGroups`.
-    const group = sidebarGroups[groupId];
-    if (!group) return;
-    const members = sessions.filter(s => sidebarGroupMap[s.id] === groupId);
-    const firstMember = members[0];
-    const cwd = group.cwd || firstMember?.cwd || '';
-    if (!cwd) return;
-    // If every member of this group lives on the same remote, the new
-    // session goes there too — otherwise it stays local. A remote-only folder
-    // says so in its id even when it currently holds no sessions.
-    const groupRemoteId = remoteOfGroupKey(groupId)
-      ?? (firstMember?.remoteId && members.every(s => s.remoteId === firstMember.remoteId)
-        ? firstMember.remoteId
-        : null);
-
-    const placeholder = makePlaceholderSession(cwd, groupRemoteId ?? null);
-    setPendingSessions(prev => [...prev, placeholder]);
-    setPendingGroupMap(prev => ({ ...prev, [placeholder.id]: groupId }));
-    setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
-
-    try {
-      // A remote session is created on the remote bridge, which never sees our
-      // preferences — there the client stays the only writer of the mapping.
-      // Locally, `group_id` hands the write to the bridge so its automatic
-      // grouping can't race this explicit choice.
-      const session = await c.createSession(cwd, {
-        remoteId: groupRemoteId, groupCwd: group.cwd,
-        groupId: groupRemoteId ? undefined : groupId,
-      });
-      // Mirror it locally either way, so the row lands in the right place
-      // without waiting for the preferences broadcast — except for a folder
-      // that lives on the remote, whose membership is that machine's to record
-      // and reaches us through its own preferences.
-      const ownedHere = !isRemoteGroupKey(groupId);
-      const newMap = ownedHere ? { ...tabGroupMap, [session.id]: groupId } : tabGroupMap;
-      if (ownedHere) setTabGroupMap(newMap);
-      // Persist the inferred cwd back into the group so subsequent
-      // dropdown opens don't need the fallback path.
-      let nextGroups = tabGroups;
-      const backfillCwd = ownedHere && !group.cwd;
-      if (backfillCwd) {
-        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd } };
-        setTabGroups(nextGroups);
-      }
-      setActiveId(session.id);
-      c.subscribe(session.id);
-      subscribedRef.current.add(session.id);
-      persistPrefs({
-        ...(groupRemoteId && ownedHere ? { tabGroupMap: newMap } : {}),
-        ...(backfillCwd ? { tabGroups: nextGroups } : {}),
-      });
-    } catch (err) {
-      console.error('[ChatApp] Failed to create session in group:', err);
-    } finally {
-      setPendingSessions(prev => prev.filter(s => s.id !== placeholder.id));
-      setPendingGroupMap(prev => {
-        const next = { ...prev };
-        delete next[placeholder.id];
-        return next;
-      });
-    }
+  /** Open a draft in this group; creating the session waits for first send. */
+  const handleNewSessionInGroup = (groupId: string) => {
+    if (!sidebarGroups[groupId]) return;
+    setSelectedGroupId(groupId);
+    setActiveNavView('sessions');
+    setActiveId(null);
+    setExpandedGroupIds(prev => new Set([...prev, groupId]));
   };
 
   /** Create an empty subgroup under `parentId`. Nesting is unbounded; the group
@@ -649,7 +581,7 @@ export function ChatApp() {
   /** Spawn a session from the inline GroupComposer. The composer supplies
    *  the final cwd (which may be a freshly-created worktree path), the
    *  provider, and an optional first prompt to send right after the
-   *  session boots. Mirrors handleNewSessionInGroup's group-binding +
+   *  session boots. Handles group binding and
    *  legacy cwd backfill, plus a primer message. */
   const handleSpawnInGroup = async (
     groupId: string,
@@ -1077,10 +1009,6 @@ export function ChatApp() {
   const visibleMessageCount = useAppStore(s => s.visibleMessageCount);
   const setVisibleMessageCount = useAppStore(s => s.setVisibleMessageCount);
   const [showNewSession, setShowNewSession] = useState(false);
-  /** Which machine the folder browser should open on, handed over by whichever
-   *  composer opened it. `undefined` = opened from somewhere with no opinion,
-   *  and the modal keeps using its own remembered target. */
-  const [browseTarget, setBrowseTarget] = useState<string | null | undefined>(undefined);
   const [worktreeForGroup, setWorktreeForGroup] = useState<{
     groupId: string;
     cwd: string;
@@ -2609,16 +2537,7 @@ export function ChatApp() {
     setShowNewSession(true);
   };
 
-  /** Titlebar "+" — land on the group composer instead of the folder-browser
-   *  modal. The composer is the fuller starting point: prompt, folder, provider,
-   *  model and permission mode in one screen, with the folder browser still one
-   *  click away via its own "Browse folder". Deselecting the session is what
-   *  renders it (the `!activeId` branch of the main pane), so we also drop any
-   *  focused group and snap back to the sessions view — from the board or the
-   *  automations screen the composer wouldn't be mounted at all.
-   *
-   *  Focus layout has no composer screen (it shows placeholder panes), so there
-   *  the "+" keeps opening the modal. */
+  /** Open the unbound New chat draft. */
   const handleNewSessionComposer = () => {
     if (layoutMode === 'focus') { handleNewSession(); return; }
     setSelectedGroupId(null);
@@ -5558,7 +5477,7 @@ export function ChatApp() {
           {/* Reserve room for macOS traffic lights / Windows left padding */}
           {IS_MAC ? <div className="w-20 shrink-0" /> : <div className="w-3 shrink-0" />}
 
-          {/* Session controls — collapse toggle (standard only) + new +
+          {/* Session controls — collapse toggle (standard only) +
               history. Live in the titlebar so the activity bar stays focused
               on view switching, and so they're reachable in every mode. */}
           <div
@@ -5579,7 +5498,6 @@ export function ChatApp() {
             )}
             <ActivityBarSessionActions
               closedSessions={closedSessions}
-              onNew={handleNewSessionComposer}
               onReopen={handleReopenSession}
               onArchive={handleArchiveSession}
             />
@@ -5986,7 +5904,7 @@ export function ChatApp() {
               pinnedSessionIds={pinnedSessionIds}
               onTogglePin={handleTogglePin}
               onSelect={handleSelectSession}
-              onNew={handleNewSession}
+              onNew={handleNewSessionComposer}
               onClose={handleCloseTab}
               onReopen={handleReopenSession}
               onRename={handleRenameSession}
@@ -6053,8 +5971,10 @@ export function ChatApp() {
               />
             ) : !activeId ? (
               <GroupComposer
-                groupName=""
+                key={selectedGroupId || "new-chat"}
+                groupName={selectedGroupId ? sidebarGroups[selectedGroupId]?.name || "" : ""}
                 groupCwd={
+                  (selectedGroupId ? sidebarGroups[selectedGroupId]?.cwd || sessions.find(s => sidebarGroupMap[s.id] === selectedGroupId)?.cwd : null) ||
                   // Most recent session's cwd is a sensible default; the
                   // composer's folder picker still surfaces all recent dirs.
                   // Local sessions only: this composer starts on this machine,
@@ -6068,8 +5988,12 @@ export function ChatApp() {
                 opencodeInfo={opencodeInfo}
                 claudeModels={claudeModels}
                 remotes={remotes}
-                onSpawn={handleSpawnHome}
-                onBrowseFolder={(rid) => { setBrowseTarget(rid); setShowNewSession(true); }}
+                remoteId={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteId ?? null : null}
+                remoteName={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteName ?? null : null}
+                remoteColor={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteColor ?? null : null}
+                onSpawn={selectedGroupId
+                  ? (...args) => handleSpawnInGroup(selectedGroupId, ...args)
+                  : handleSpawnHome}
                 onBranchChanged={setGitBranch}
               />
             ) : (
@@ -6164,7 +6088,6 @@ export function ChatApp() {
                       onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort) =>
                         handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
-                      onBrowseFolder={(rid) => { setBrowseTarget(rid); setShowNewSession(true); }}
                       onBranchChanged={setGitBranch}
                     />
                   ) : (
@@ -6641,7 +6564,6 @@ export function ChatApp() {
                       onSpawn={(cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort) =>
                         handleSpawnInGroup(selectedGroupId, cwd, provider, prompt, model, permissionMode, worktreeOrigin, remoteId, images, effort)
                       }
-                      onBrowseFolder={(rid) => { setBrowseTarget(rid); setShowNewSession(true); }}
                       onBranchChanged={setGitBranch}
                     />
                           </div>
@@ -7474,7 +7396,6 @@ export function ChatApp() {
 
         <NewSessionModal
           isOpen={showNewSession}
-          initialTarget={browseTarget}
           client={clientRef.current}
           opencodeAvailable={opencodeInfo?.available ?? false}
           onClose={() => setShowNewSession(false)}
