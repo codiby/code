@@ -1,20 +1,8 @@
-/**
- * Read-only view of the configured remotes for the Electron main process.
- *
- * A "remote" is a named pointer to a Host entry in ~/.ssh/config (the alias)
- * plus the port where a bun bridge listens on that machine. The bun sidecar
- * owns the canonical CRUD + persistence (server/remotes.ts → ~/.codiby/
- * ui-remotes.json); main only needs to READ it to resolve alias/bunPort when
- * spawning an SSH tunnel. We re-read the file on demand (it's tiny and changes
- * rarely) so edits made through Settings are picked up without an IPC notify.
- */
-import { readFileSync } from 'node:fs';
+/** Bun owns the remote registry. Electron only owns its direct SSH tunnels. */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export const CODIBY_DIR = join(homedir(), '.codiby');
-const REMOTES_FILE = join(CODIBY_DIR, 'ui-remotes.json');
-
 export interface Remote {
   id: string;
   name: string;
@@ -22,18 +10,27 @@ export interface Remote {
   bunPort: number;
   color: string;
   createdAt: number;
+  ssh?: { identityFile: string; knownHostsFile: string; hostKeyAlias: string; port: number };
 }
 
-export function loadRemotes(): Remote[] {
-  try {
-    const data = JSON.parse(readFileSync(REMOTES_FILE, 'utf-8'));
-    if (Array.isArray(data)) return data as Remote[];
-  } catch {
-    // No file yet / unreadable — treat as no remotes configured.
+let registryUrl: (() => Promise<string>) | undefined;
+export function configureRemoteRegistry(resolveUrl: () => Promise<string>) {
+  registryUrl = resolveUrl;
+}
+
+export async function loadRemotes(): Promise<Remote[]> {
+  if (!registryUrl) throw new Error('Remote registry is not configured');
+  const response = await fetch(`${await registryUrl()}/remotes`, { signal: AbortSignal.timeout(8000) });
+  if (!response.ok) throw new Error(`Remote registry unavailable (HTTP ${response.status})`);
+  const data = await response.json();
+  if (!Array.isArray(data) || data.some(r => !r || typeof r.id !== 'string'
+    || typeof r.alias !== 'string' || !/^[a-zA-Z0-9_][a-zA-Z0-9_.@:-]*$/.test(r.alias)
+    || !Number.isInteger(r.bunPort) || r.bunPort < 1 || r.bunPort > 65535)) {
+    throw new Error('Invalid remote registry response');
   }
-  return [];
+  return data as Remote[];
 }
 
-export function getRemote(id: string): Remote | null {
-  return loadRemotes().find((r) => r.id === id) ?? null;
+export async function getRemote(id: string): Promise<Remote | null> {
+  return (await loadRemotes()).find(r => r.id === id) ?? null;
 }

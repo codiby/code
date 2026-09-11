@@ -9,7 +9,7 @@
  * Persistence: ~/.codiby/ui-remotes.json (mirrors ui-sessions.json naming).
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { log, logError } from '../lib/logger';
@@ -37,6 +37,11 @@ export function loadRemotes() {
         bunPort: r.bunPort,
         color: r.color,
         createdAt: r.createdAt,
+        hostId: r.hostId,
+        serverAlias: r.serverAlias,
+        coordination: r.coordination ?? 'off',
+        pairingId: r.pairingId,
+        ssh: r.ssh,
       });
     }
     log(`[remotes] Loaded ${data.length} remotes`);
@@ -48,9 +53,12 @@ export function loadRemotes() {
 export function saveRemotes() {
   try {
     mkdirSync(CODIBY_DIR, { recursive: true });
-    writeFileSync(REMOTES_FILE, JSON.stringify([...remotes.values()], null, 2));
+    const temporary = `${REMOTES_FILE}.tmp`;
+    writeFileSync(temporary, JSON.stringify([...remotes.values()], null, 2), { mode: 0o600 });
+    renameSync(temporary, REMOTES_FILE);
   } catch (e) {
     logError(`[remotes] Failed to save: ${e}`);
+    throw e;
   }
 }
 
@@ -69,10 +77,12 @@ export type AddRemoteInput = {
   alias: string;
   bunPort?: number;
   color?: string | 'auto';
+  serverAlias?: string;
+  coordination?: 'off' | 'read' | 'write';
 };
 
 export type RemoteValidationError = {
-  field: 'name' | 'alias' | 'bunPort';
+  field: 'name' | 'alias' | 'bunPort' | 'serverAlias' | 'coordination';
   message: string;
 };
 
@@ -80,11 +90,20 @@ export function validateRemoteInput(
   input: Partial<AddRemoteInput>,
   ignoreId?: string,
 ): RemoteValidationError | null {
-  if (!input.name || !input.name.trim()) {
+  if (typeof input.name !== 'string' || !input.name.trim()) {
     return { field: 'name', message: 'Display name is required.' };
   }
-  if (!input.alias || !input.alias.trim()) {
+  if (typeof input.alias !== 'string' || !input.alias.trim()) {
     return { field: 'alias', message: 'SSH alias is required.' };
+  }
+  for (const field of ['alias', 'serverAlias'] as const) {
+    const alias = input[field];
+    if (alias !== undefined && (typeof alias !== 'string' || (alias !== '' && !/^[a-zA-Z0-9_][a-zA-Z0-9_.@:-]*$/.test(alias)))) {
+      return { field, message: 'Use a single SSH host alias or user@hostname, without spaces or options.' };
+    }
+  }
+  if (input.coordination !== undefined && !['off', 'read', 'write'].includes(input.coordination)) {
+    return { field: 'coordination', message: 'Invalid coordination permission.' };
   }
   if (input.bunPort != null) {
     const p = Number(input.bunPort);
@@ -112,12 +131,14 @@ export function addRemote(input: AddRemoteInput): Remote {
     id: `rmt_${randomUUID()}`,
     name: input.name.trim(),
     alias: input.alias.trim(),
-    bunPort: input.bunPort ?? 3111,
+    bunPort: Number(input.bunPort ?? 3111),
     color,
     createdAt: Date.now(),
+    serverAlias: input.serverAlias || undefined,
+    coordination: input.coordination ?? 'off',
   };
   remotes.set(remote.id, remote);
-  saveRemotes();
+  try { saveRemotes(); } catch (error) { remotes.delete(remote.id); throw error; }
   log(`[remotes] Added ${remote.name} (${remote.alias})`);
   return remote;
 }
@@ -130,6 +151,8 @@ export function updateRemote(id: string, patch: Partial<AddRemoteInput>): Remote
     alias: patch.alias ?? cur.alias,
     bunPort: patch.bunPort ?? cur.bunPort,
     color: patch.color ?? cur.color,
+    serverAlias: patch.serverAlias ?? cur.serverAlias,
+    coordination: patch.coordination ?? cur.coordination,
   };
   const err = validateRemoteInput(merged, id);
   if (err) throw new Error(err.message);
@@ -137,11 +160,14 @@ export function updateRemote(id: string, patch: Partial<AddRemoteInput>): Remote
     ...cur,
     name: merged.name.trim(),
     alias: merged.alias.trim(),
-    bunPort: merged.bunPort ?? cur.bunPort,
+    bunPort: Number(merged.bunPort ?? cur.bunPort),
+    serverAlias: merged.serverAlias || undefined,
+    coordination: merged.coordination ?? 'off',
+    hostId: merged.alias !== cur.alias || merged.bunPort !== cur.bunPort || (merged.serverAlias || undefined) !== cur.serverAlias ? undefined : cur.hostId,
     color: !merged.color || merged.color === 'auto' ? cur.color : merged.color,
   };
   remotes.set(id, next);
-  saveRemotes();
+  try { saveRemotes(); } catch (error) { remotes.set(id, cur); throw error; }
   log(`[remotes] Updated ${next.name} (${next.alias})`);
   return next;
 }
@@ -150,7 +176,7 @@ export function removeRemote(id: string): Remote | null {
   const cur = remotes.get(id);
   if (!cur) return null;
   remotes.delete(id);
-  saveRemotes();
+  try { saveRemotes(); } catch (error) { remotes.set(id, cur); throw error; }
   // Drop the cached session list for this remote — sessions on the remote
   // itself are untouched, but locally we've forgotten about them.
   clearRemoteCache(id);
@@ -165,4 +191,24 @@ export function getRemote(id: string): Remote | null {
 
 export function listRemotes(): Remote[] {
   return [...remotes.values()].sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** Bind a configured route to the host actually reached through authenticated SSH. */
+export function pinRemoteHost(id: string, hostId: string) {
+  const remote = remotes.get(id);
+  if (!remote) throw new Error('Remote was removed');
+  if (remote.hostId && remote.hostId !== hostId) throw new Error('Remote host identity changed; verify and reconfigure the remote');
+  if (remote.hostId === hostId) return;
+  remote.hostId = hostId;
+  try { saveRemotes(); } catch (error) { delete remote.hostId; throw error; }
+}
+
+/** Internal pairing transaction; transport paths are generated locally, never accepted from CRUD input. */
+export function putPairedRemote(remote: Remote) {
+  const previous = remotes.get(remote.id);
+  remotes.set(remote.id, remote);
+  try { saveRemotes(); } catch (error) {
+    if (previous) remotes.set(remote.id, previous); else remotes.delete(remote.id);
+    throw error;
+  }
 }

@@ -184,8 +184,9 @@ function classifySshError(stderr: string): string {
 async function spawnMaster(state: TunnelState): Promise<void> {
   // Defensive: never launch a second master while one is already alive.
   if (state.master) return;
-  const remote = getRemote(state.remoteId);
+  const remote = await getRemote(state.remoteId);
   if (!remote) throw new Error(`Remote ${state.remoteId} not found`);
+  if (tunnels.get(state.remoteId) !== state) throw new Error('Remote connection was cancelled');
 
   ensureControlDir();
   try { if (existsSync(state.controlSocket)) unlinkSync(state.controlSocket); } catch {}
@@ -199,7 +200,10 @@ async function spawnMaster(state: TunnelState): Promise<void> {
     '-o', 'ServerAliveInterval=30',
     '-o', 'ServerAliveCountMax=3',
     '-o', 'ExitOnForwardFailure=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', remote.ssh ? 'StrictHostKeyChecking=yes' : 'StrictHostKeyChecking=accept-new',
+    ...(remote.ssh ? ['-i', remote.ssh.identityFile, '-p', String(remote.ssh.port),
+      '-o', 'IdentitiesOnly=yes', '-o', `UserKnownHostsFile=${remote.ssh.knownHostsFile}`,
+      '-o', `HostKeyAlias=${remote.ssh.hostKeyAlias}`] : []),
     '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=10', // fail fast when the remote is unreachable
     '-L', `${localPort}:localhost:${remote.bunPort}`,
@@ -237,6 +241,10 @@ async function spawnMaster(state: TunnelState): Promise<void> {
   });
 
   await waitForPort(localPort, 15_000);
+  if (tunnels.get(state.remoteId) !== state || state.master !== proc) {
+    try { proc.kill('SIGTERM'); } catch {}
+    throw new Error('Remote connection was cancelled');
+  }
   state.reconnectAttempt = 0;
   setStatus(state, 'online', null);
   while (state.pendingReady.length) {
@@ -281,15 +289,7 @@ function scheduleReconnect(state: TunnelState) {
 
 async function ensureMaster(state: TunnelState): Promise<TunnelState> {
   if (state.status === 'online' && state.master) return state;
-  // A spawn is already in flight (status flips to 'connecting' synchronously
-  // below, before the first `await`). Concurrent acquires must wait on it
-  // instead of each launching their own `ssh` master — otherwise many masters
-  // race for the same control socket and the tunnel thrashes.
-  if (state.status === 'connecting') {
-    return new Promise<TunnelState>((resolve, reject) => {
-      state.pendingReady.push({ resolve, reject });
-    });
-  }
+  if (state.spawnInFlight) { await state.spawnInFlight; return state; }
   setStatus(state, 'connecting', null);
   try {
     await ensureSpawn(state);
@@ -312,7 +312,7 @@ export async function acquireTunnel(remoteId: string): Promise<{ localTunnelPort
     state.graceTimer = null;
   }
   state.paneRefcount++;
-  await ensureMaster(state);
+  try { await ensureMaster(state); } catch (error) { releaseTunnel(remoteId); throw error; }
   if (state.localTunnelPort == null) throw new Error('Tunnel is up but no local port assigned (internal error)');
   return { localTunnelPort: state.localTunnelPort };
 }
@@ -394,8 +394,8 @@ export function getTunnelLocalPort(remoteId: string): number | null {
 // Per-session port forwards (multiplexed over the master via `ssh -O`)
 // ---------------------------------------------------------------------------
 
-function runSshControlCommand(state: TunnelState, op: 'forward' | 'cancel', localPort: number, remotePort: number): Promise<void> {
-  const remote = getRemote(state.remoteId);
+async function runSshControlCommand(state: TunnelState, op: 'forward' | 'cancel', localPort: number, remotePort: number): Promise<void> {
+  const remote = await getRemote(state.remoteId);
   if (!remote) return Promise.reject(new Error(`Remote ${state.remoteId} not found`));
   if (!existsSync(state.controlSocket)) {
     return Promise.reject(new Error(`Master socket missing — tunnel not ready`));
@@ -462,7 +462,7 @@ export async function probeRemoteHealth(remoteId: string, timeoutMs = 8_000): Pr
   | { ok: true; bridgeUp: true }
   | { ok: false; reason: string }
 > {
-  const remote = getRemote(remoteId);
+  const remote = await getRemote(remoteId);
   if (!remote) return { ok: false, reason: `Remote ${remoteId} not configured.` };
 
   const state = getOrCreateState(remoteId);

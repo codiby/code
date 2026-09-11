@@ -115,7 +115,11 @@ import { registerShutdownHandlers } from './lib/shutdown';
 import { startTelegramBot, notifyTelegramIfMainSession, restartTelegramBot, isTelegramBotRunning, setTelegramBroadcaster } from './integrations/telegram';
 import { ensureMcpConfig } from './mcp/ensure-mcp-config';
 import * as pluginHost from './plugin-host/index';
-import { handleMcpRequest, setMcpDeps } from './mcp/mcp';
+import { getHostIdentity } from './network/host-identity';
+import { pairings, pairingDefaults, startPairingMaintenance } from './network/pairings';
+import { createPeerHandler, isLoopback } from './network/peer-protocol';
+import { peerReceipts } from './network/peers';
+import { handleMcpRequest, setMcpDeps, executeLocalMcpTool } from './mcp/mcp';
 import {
   getSessionState,
   updateSessionState,
@@ -1551,6 +1555,10 @@ app.post('/save-commands', async (c) => {
 });
 
 // ── Remotes ────────────────────────────────────────────────────────────────
+app.get('/pairings', () => Response.json({ pairings: pairings.list(), defaults: pairingDefaults() }, { headers: corsHeaders }));
+
+app.get('/host', () => Response.json(getHostIdentity(), { headers: corsHeaders }));
+
 app.get('/remotes', () => handleListRemotes());
 app.post('/remotes', async (c) => {
   const resp = await handleAddRemote(c.req.raw);
@@ -2312,6 +2320,31 @@ const server = Bun.serve({
       return new Response('Unauthorized', { status: 401, headers: corsHeaders });
     }
 
+    if (url.pathname === '/peer/tools') {
+      try { pairings.authorize(req, await req.clone().json()); }
+      catch (error: any) { return Response.json({ error: error.message }, { status: 403, headers: corsHeaders }); }
+      return createPeerHandler(getHostIdentity, peerReceipts, executeLocalMcpTool)(req, server.requestIP(req)?.address);
+    }
+
+    // Enrollment mutates trust/configuration, so it requires a real loopback/SSH
+    // connection, not merely a localhost Host header or a mobile bearer token.
+    const pairRemote = url.pathname.match(/^\/remotes\/([^/]+)\/pair$/);
+    const unpair = url.pathname.match(/^\/pairings\/([a-f0-9-]+)$/);
+    const incomingPair = url.pathname.match(/^\/peer\/pair\/(prepare|configure|commit|cancel)$/);
+    if (pairRemote || unpair || incomingPair) {
+      if (!isLoopback(server.requestIP(req)?.address)) return Response.json({ error: 'Pairing requires a local or SSH connection' }, { status: 403, headers: corsHeaders });
+      try {
+        if (unpair && req.method === 'DELETE') return Response.json(await pairings.unpair(unpair[1]), { headers: corsHeaders });
+        if (unpair) return new Response('DELETE required', { status: 405 });
+        if (req.method !== 'POST' || !req.headers.get('content-type')?.startsWith('application/json')) return new Response('JSON POST required', { status: 405 });
+        const raw = await req.text();
+        if (raw.length > 16_384) return new Response('Pairing request too large', { status: 413 });
+        const body = JSON.parse(raw);
+        const result = pairRemote ? await pairings.pair(pairRemote[1], body) : await pairings.receive(incomingPair![1], body);
+        return Response.json(result, { headers: corsHeaders });
+      } catch (error: any) { return Response.json({ error: error.message }, { status: 400, headers: corsHeaders }); }
+    }
+
     // (Remote routing removed: the renderer now talks to each remote's
     // tunnelled bridge directly, so there is no `?remoteId=` forwarding here.)
 
@@ -2679,6 +2712,7 @@ setMcpDeps({
     return true;
   },
 });
+startPairingMaintenance(server.port!, broadcastRemoteList);
 configureAutomationRunner({ port: server.port!, sendMessage: sendMessageToSession, broadcastSessionList });
 startAutomationScheduler();
 setTelegramBroadcaster(broadcastToSession);

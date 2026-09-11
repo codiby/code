@@ -1,3 +1,5 @@
+import { stopPairingMaintenance } from '../network/pairings';
+import { closeAllTunnels } from '../network/ssh-tunnel';
 import { log } from './logger';
 import { sessions } from '../session/sessions';
 import { stopTelegramBot } from '../integrations/telegram';
@@ -24,6 +26,8 @@ export function registerShutdownHandlers() {
     cleanedUp = true;
     stopAutomationScheduler();
     closeAllProviderSessions();
+    stopPairingMaintenance();
+    closeAllTunnels();
     stopTelegramBot();
     stopAllPortless();
     closeDatabase();

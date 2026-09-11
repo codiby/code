@@ -39,6 +39,7 @@ interface TunnelState {
   remoteId: string;
   status: TunnelStatus;
   master: ChildProcess | null;
+  spawnInFlight: Promise<TunnelState> | null;
   controlSocket: string;
   localTunnelPort: number | null;
   lastError: string | null;
@@ -54,7 +55,7 @@ interface TunnelState {
 
 const tunnels = new Map<string, TunnelState>();
 
-const CONTROL_DIR = join(CODIBY_DIR, 'ssh-control');
+const CONTROL_DIR = join(CODIBY_DIR, 'ssh-control-server');
 const GRACE_MS = 5 * 60 * 1000;
 const BACKOFF_SEQ_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
 
@@ -153,6 +154,7 @@ function getOrCreateState(remoteId: string): TunnelState {
       remoteId,
       status: 'idle',
       master: null,
+      spawnInFlight: null,
       controlSocket: controlSocketFor(remoteId),
       localTunnelPort: null,
       lastError: null,
@@ -201,10 +203,14 @@ async function spawnMaster(state: TunnelState): Promise<void> {
     '-o', 'ServerAliveInterval=30',
     '-o', 'ServerAliveCountMax=3',
     '-o', 'ExitOnForwardFailure=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', remote.ssh ? 'StrictHostKeyChecking=yes' : 'StrictHostKeyChecking=accept-new',
+    ...(remote.ssh ? ['-i', remote.ssh.identityFile, '-p', String(remote.ssh.port),
+      '-o', 'IdentitiesOnly=yes', '-o', `UserKnownHostsFile=${remote.ssh.knownHostsFile}`,
+      '-o', `HostKeyAlias=${remote.ssh.hostKeyAlias}`] : []),
+    '-o', 'ConnectTimeout=10',
     '-o', 'BatchMode=yes',                             // never prompt; rely on ssh-agent
     '-L', `${localPort}:localhost:${remote.bunPort}`,
-    remote.alias,
+    remote.serverAlias || remote.alias,
   ];
 
   log(`[ssh-tunnel:${remote.name}] spawn ssh ${args.join(' ')}`);
@@ -219,6 +225,9 @@ async function spawnMaster(state: TunnelState): Promise<void> {
     if (stderrBuf.length > 4_000) stderrBuf = stderrBuf.slice(-4_000);
   });
 
+  proc.on('error', error => {
+    setStatus(state, 'offline', error.message);
+  });
   proc.on('exit', (code, signal) => {
     const wasOnline = state.status === 'online';
     state.master = null;
@@ -242,6 +251,10 @@ async function spawnMaster(state: TunnelState): Promise<void> {
 
   // Wait for the local end of the forward to start accepting connections.
   await waitForPort(localPort, 15_000);
+  if (state.master !== proc || state.paneRefcount === 0) {
+    try { proc.kill('SIGTERM'); } catch {}
+    throw new Error('SSH connection was closed during setup');
+  }
   state.reconnectAttempt = 0;
   setStatus(state, 'online', null);
   while (state.pendingReady.length) {
@@ -263,7 +276,7 @@ function scheduleReconnect(state: TunnelState) {
       return;
     }
     try {
-      await spawnMaster(state);
+      await ensureMaster(state);
     } catch (e: any) {
       setStatus(state, 'reconnecting', e?.message || String(e));
       scheduleReconnect(state);
@@ -276,20 +289,16 @@ function scheduleReconnect(state: TunnelState) {
  * await the same spawn.
  */
 async function ensureMaster(state: TunnelState): Promise<TunnelState> {
+  if (state.spawnInFlight) return state.spawnInFlight;
   if (state.status === 'online' && state.master) return state;
-  if (state.master && state.status === 'connecting') {
-    return new Promise<TunnelState>((resolve, reject) => {
-      state.pendingReady.push({ resolve, reject });
-    });
-  }
   setStatus(state, 'connecting', null);
-  try {
-    await spawnMaster(state);
-    return state;
-  } catch (e: any) {
-    setStatus(state, 'offline', e?.message || String(e));
-    throw e;
-  }
+  const work = spawnMaster(state).then(() => state).catch(error => {
+    closeMaster(state);
+    setStatus(state, 'offline', error.message);
+    throw error;
+  }).finally(() => { state.spawnInFlight = null; });
+  state.spawnInFlight = work;
+  return work;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +428,7 @@ function runSshControlCommand(state: TunnelState, op: 'forward' | 'cancel', loca
       '-S', state.controlSocket,
       '-O', op,
       '-L', `${localPort}:localhost:${remotePort}`,
-      remote.alias,
+      remote.serverAlias || remote.alias,
     ];
     const proc = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';

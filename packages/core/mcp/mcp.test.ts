@@ -1,5 +1,46 @@
 import { describe, expect, test } from 'bun:test';
-import { canRenameOwnedSession, keepAlive, matchesMcpSessionOwner, owningUiSessionId } from './mcp';
+import { canRenameOwnedSession, keepAlive, matchesMcpSessionOwner, owningUiSessionId, executeLocalMcpTool, handleMcpRequest } from './mcp';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { sessions } from '../session/sessions';
+import { updateSessionState, clearSessionState } from '../session/state';
+
+test('MCP advertises remote coordination and preserves local execution', async () => {
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: handleMcpRequest });
+  const client = new Client({ name: 'coordination-test', version: '1' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', server.url)));
+    const { tools } = await client.listTools();
+    expect(tools.some(t => t.name === 'ui_list_hosts')).toBe(true);
+    for (const name of ['ui_list_sessions', 'ui_read_session_messages', 'ui_send_message', 'ui_spawn_session']) {
+      expect(tools.find(t => t.name === name)?.inputSchema.properties).toHaveProperty('host_id');
+    }
+    const result = await client.callTool({ name: 'ui_read_session_messages', arguments: { session_id: 'missing-fixture' } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('Session not found');
+  } finally { await client.close(); server.stop(true); }
+});
+
+test('incremental context reads page forward without dropping intervening messages', async () => {
+  const id = `test-peer-pagination-${crypto.randomUUID()}`;
+  sessions.set(id, { id } as any);
+  updateSessionState(id, state => ({ ...state, messages: Array.from({ length: 45 }, (_, i) => ({
+    id: `m${i + 1}`, seq: i + 1, timestamp: Date.now(), role: 'assistant', content: `answer-${i + 1}`,
+  })) }));
+  try {
+    const first = JSON.stringify(await executeLocalMcpTool('ui_read_session_messages', { session_id: id, since_seq: 0, limit: 20 }, 'caller'));
+    expect(first).toContain('next_seq=20');
+    expect(first).toContain('has_more=true');
+    expect(first).toContain('answer-1');
+    expect(first).not.toContain('answer-21');
+    const second = JSON.stringify(await executeLocalMcpTool('ui_read_session_messages', { session_id: id, since_seq: 20, limit: 20 }, 'caller'));
+    expect(second).toContain('next_seq=40');
+    expect(second).toContain('answer-21');
+    const third = JSON.stringify(await executeLocalMcpTool('ui_read_session_messages', { session_id: id, since_seq: 40, limit: 20 }, 'caller'));
+    expect(third).toContain('next_seq=45');
+    expect(third).toContain('has_more=false');
+  } finally { clearSessionState(id); sessions.delete(id); }
+});
 
 describe('keepAlive', () => {
   test('keeps the connection busy while a tool waits on the user', async () => {

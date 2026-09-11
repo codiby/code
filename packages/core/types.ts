@@ -11,6 +11,11 @@ export type Remote = {
   bunPort: number;     // port where the bun server listens on the remote (default 3111)
   color: string;       // one of GROUP_COLORS; drives tab tint
   createdAt: number;
+  hostId?: string; // pinned identity learned over SSH
+  serverAlias?: string; // SSH alias resolved on Bun; defaults to alias
+  coordination?: 'off' | 'read' | 'write'; // outbound MCP access
+  pairingId?: string;
+  ssh?: { identityFile: string; knownHostsFile: string; hostKeyAlias: string; port: number };
 };
 
 /** Per-session port forward declaration. localPort=null → pick a free one at open time. */

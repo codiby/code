@@ -23,6 +23,10 @@ interface Remote {
   bunPort: number;
   color: string;
   createdAt: number;
+  hostId?: string;
+  pairingId?: string;
+  serverAlias?: string;
+  coordination?: 'off' | 'read' | 'write';
   status?: TunnelStatus;
   lastError?: string | null;
 }
@@ -131,6 +135,7 @@ export function RemotesSection({ serverUrl }: Props) {
               remote={r}
               isConfirmingDelete={confirmingDelete === r.id}
               onEdit={() => setEditing(r)}
+              onChanged={refresh}
               onAskDelete={() => setConfirmingDelete(r.id)}
               onCancelDelete={() => setConfirmingDelete(null)}
               onConfirmDelete={() => handleDelete(r.id)}
@@ -168,9 +173,10 @@ function statusLabel(s: TunnelStatus | undefined): { label: string; tone: string
 }
 
 function RemoteRow({
-  remote, isConfirmingDelete, onEdit, onAskDelete, onCancelDelete, onConfirmDelete, serverUrl,
+  remote, isConfirmingDelete, onEdit, onAskDelete, onCancelDelete, onConfirmDelete, serverUrl, onChanged,
 }: {
   remote: Remote;
+  onChanged: () => void;
   isConfirmingDelete: boolean;
   onEdit: () => void;
   onAskDelete: () => void;
@@ -182,6 +188,8 @@ function RemoteRow({
   const { label, tone } = statusLabel(remote.status);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [peerResult, setPeerResult] = useState<string | null>(null);
+  const [pairing, setPairing] = useState(false);
 
   async function handleTest() {
     setTesting(true);
@@ -200,6 +208,18 @@ function RemoteRow({
     }
   }
 
+  async function handlePeerTest() {
+    if (!serverUrl) return;
+    setTesting(true);
+    setPeerResult(null);
+    try {
+      const response = await fetch(`${serverUrl}/remotes/${remote.id}/test`, { method: 'POST' });
+      const data = await response.json();
+      setPeerResult(data.ok ? `Server connected · ${data.hostId} · MCP ${data.coordination}` : `Server connection failed: ${data.reason || data.error}`);
+    } catch (error: any) { setPeerResult(`Server connection failed: ${error.message}`); }
+    finally { setTesting(false); }
+  }
+
   return (
     <div className="flex flex-col gap-1 px-2 py-2 rounded-md bg-zinc-900/60 border border-border">
       <div className="flex items-center gap-2">
@@ -208,6 +228,10 @@ function RemoteRow({
         <span className="text-[11px] text-zinc-500 font-mono truncate">{remote.alias}:{remote.bunPort}</span>
         <span className={`ml-auto text-[10px] uppercase tracking-wider ${tone}`}>{label}</span>
       </div>
+      <div className="text-[11px] text-zinc-500 px-1">Agent coordination: {remote.coordination || 'off'}{remote.hostId ? ` · ${remote.hostId}` : ''}</div>
+      {peerResult && <div className="text-[11px] text-zinc-400 px-1 break-words">{peerResult}</div>}
+      {pairing && serverUrl && <PairingDialog serverUrl={serverUrl} remote={remote}
+        onClose={() => setPairing(false)} onChanged={onChanged} />}
       {remote.lastError && remote.status !== 'online' && (
         <div className="text-[11px] text-red-400/90 px-1 truncate" title={remote.lastError}>{remote.lastError}</div>
       )}
@@ -218,14 +242,23 @@ function RemoteRow({
           isDisabled={testing}
           className="h-auto px-2 py-0.5 min-w-0 text-[10px] uppercase tracking-wider text-zinc-400 hover:text-zinc-200 bg-transparent hover:bg-zinc-800"
         >
-          {testing ? 'Testing…' : 'Test'}
+          {testing ? 'Testing…' : 'Test desktop'}
         </Button>
         <Button
           size="sm"
           onPress={onEdit}
+          isDisabled={!!remote.pairingId || testing}
           className="h-auto px-2 py-0.5 min-w-0 text-[10px] uppercase tracking-wider text-zinc-400 hover:text-zinc-200 bg-transparent hover:bg-zinc-800"
         >
           Edit
+        </Button>
+        <Button size="sm" onPress={handlePeerTest} isDisabled={testing}
+          className="h-auto px-2 py-0.5 min-w-0 text-[10px] text-zinc-400 bg-transparent hover:bg-zinc-800">
+          Test server
+        </Button>
+        <Button size="sm" onPress={() => setPairing(true)} isDisabled={testing}
+          className="h-auto px-2 py-0.5 min-w-0 text-[10px] text-blue-300 bg-transparent hover:bg-zinc-800">
+          {remote.pairingId ? 'Pairing…' : 'Pair both hosts'}
         </Button>
         {!isConfirmingDelete ? (
           <Button
@@ -278,6 +311,8 @@ function RemoteEditDialog({
   const isEdit = !!initial;
   const [name, setName] = useState(initial?.name ?? '');
   const [alias, setAlias] = useState(initial?.alias ?? '');
+  const [serverAlias, setServerAlias] = useState(initial?.serverAlias ?? '');
+  const [coordination, setCoordination] = useState<'off' | 'read' | 'write'>(initial?.coordination ?? 'off');
   const [bunPort, setBunPort] = useState(String(initial?.bunPort ?? 3111));
   const [color, setColor] = useState<RemoteColor>(((initial?.color ?? 'auto') as RemoteColor));
   const [saving, setSaving] = useState(false);
@@ -289,6 +324,8 @@ function RemoteEditDialog({
     const body = {
       name: name.trim(),
       alias: alias.trim(),
+      serverAlias: serverAlias.trim(),
+      coordination,
       bunPort: Number(bunPort) || 3111,
       color,
     };
@@ -350,6 +387,22 @@ function RemoteEditDialog({
           </div>
 
           <div>
+            <label className="block text-[11px] text-zinc-500 mb-1 px-1">SSH alias on the Bun server (optional)</label>
+            <TextField value={serverAlias} onChange={setServerAlias} aria-label="SSH alias on Bun server">
+              <Input placeholder="Use the desktop alias" className="font-mono text-[12px]" />
+            </TextField>
+          </div>
+          <div>
+            <label className="block text-[11px] text-zinc-500 mb-1 px-1" htmlFor="remote-coordination">Agent coordination from this server</label>
+            <select id="remote-coordination" value={coordination} onChange={e => setCoordination(e.target.value as 'off' | 'read' | 'write')}
+              className="w-full bg-zinc-800 text-zinc-200 text-[12px] rounded-md p-2">
+              <option value="off">Off</option>
+              <option value="read">Read sessions and context</option>
+              <option value="write">Read, send messages and create sessions</option>
+            </select>
+            <p className="mt-1 text-[10px] text-zinc-500">After saving, use Pair both hosts to configure and verify agent access in both directions.</p>
+          </div>
+          <div>
             <label className="block text-[11px] text-zinc-500 mb-1 px-1">Color</label>
             <div className="flex items-center gap-1.5">
               {REMOTE_COLORS.map(c => (
@@ -396,4 +449,88 @@ function RemoteEditDialog({
       </div>
     </div>
   );
+}
+
+
+type PairSummary = { id: string; remoteId?: string; status: string; role: string; permission: 'read' | 'write' };
+function PairingDialog({ serverUrl, remote, onClose, onChanged }: {
+  serverUrl: string; remote: Remote; onClose: () => void; onChanged: () => void;
+}) {
+  const [returnAlias, setReturnAlias] = useState('');
+  const [sshPort, setSshPort] = useState('22');
+  const [permission, setPermission] = useState<'read' | 'write'>('write');
+  const [record, setRecord] = useState<PairSummary | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${serverUrl}/pairings`).then(async response => {
+      if (!response.ok) throw new Error('Unable to load pairing settings');
+      const data = await response.json();
+      if (cancelled) return;
+      setReturnAlias(data.defaults.returnAlias);
+      setSshPort(String(data.defaults.sshPort));
+      setRecord(data.pairings.find((pair: PairSummary) => pair.remoteId === remote.id && pair.status !== 'revoked') ?? null);
+      setLoaded(true);
+    }).catch(error => { if (!cancelled) setError(error.message); });
+    return () => { cancelled = true; };
+  }, [serverUrl, remote.id]);
+  async function submit() {
+    setBusy(true); setError(''); setMessage('Creating the return connection and checking both servers…');
+    try {
+      const response = await fetch(`${serverUrl}/remotes/${remote.id}/pair`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnAlias, sshPort: Number(sshPort), permission }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Pairing failed');
+      setRecord(data);
+      setMessage('Both hosts are paired. Agents can now connect directly in either direction.');
+      onChanged();
+    } catch (error: any) { setMessage(''); setError(error.message); }
+    finally { setBusy(false); }
+  }
+  async function unpair() {
+    if (!record) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`${serverUrl}/pairings/${record.id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to unpair');
+      setRecord(null);
+      setMessage(data.remoteNotified ? 'Pairing removed from both hosts.' : 'Local access revoked. The other host was unreachable; remove its stale pairing when it is online.');
+      onChanged();
+    } catch (error: any) { setError(error.message); }
+    finally { setBusy(false); }
+  }
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div role="dialog" aria-modal="true" aria-label="Pair Codiby hosts" className="w-[460px] max-w-[92vw] p-4 rounded-lg bg-zinc-900 border border-border shadow-2xl space-y-3">
+      <div className="text-[13px] font-medium text-zinc-200">Pair with {remote.name}</div>
+      {record ? <p className="text-[12px] text-zinc-400">{record.status === 'paired' ? `Paired · ${record.permission === 'write' ? 'read and write' : 'read only'} in both directions.` : 'An incomplete pairing exists. Remove it before trying again.'}</p> : <>
+        <p className="text-[12px] text-zinc-400">Codiby creates a dedicated SSH key on the other host, authorizes its public key here, and saves both connections. Enable SSH / Remote Login on this computer first.</p>
+        <TextField value={returnAlias} onChange={setReturnAlias} aria-label="Return SSH address" isDisabled={busy}>
+          <label className="text-[11px] text-zinc-500">This computer, reachable from {remote.name}</label>
+          <Input placeholder="user@192.168.1.10" className="font-mono text-[12px]" />
+        </TextField>
+        <TextField value={sshPort} onChange={setSshPort} aria-label="Return SSH port" isDisabled={busy}>
+          <label className="text-[11px] text-zinc-500">SSH port on this computer</label>
+          <Input className="text-[12px]" />
+        </TextField>
+        <label className="block text-[11px] text-zinc-500">Agent permissions in both directions
+          <select value={permission} onChange={event => setPermission(event.target.value as 'read' | 'write')} disabled={busy}
+            className="w-full mt-1 bg-zinc-800 text-zinc-200 text-[12px] rounded-md p-2">
+            <option value="read">Read sessions and context</option>
+            <option value="write">Read, send messages and create sessions</option>
+          </select>
+        </label>
+      </>}
+      {error && <p role="alert" className="text-[12px] text-red-400 break-words">{error}</p>}
+      {message && <p role="status" className="text-[12px] text-zinc-300 break-words">{message}</p>}
+      <div className="flex justify-end gap-2">
+        <Button size="sm" onPress={onClose} isDisabled={busy}>Close</Button>
+        {record ? <Button size="sm" onPress={unpair} isDisabled={busy}>Unpair</Button>
+          : <Button size="sm" onPress={submit} isDisabled={busy || !loaded || !returnAlias.trim()}>{busy ? 'Pairing…' : 'Pair both hosts'}</Button>}
+      </div>
+    </div>
+  </div>;
 }

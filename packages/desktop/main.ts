@@ -12,6 +12,7 @@ import { app, BrowserWindow, ipcMain, shell, dialog, Notification, crashReporter
 import { join, basename } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 
+import { configureRemoteRegistry } from './remotes';
 import { getBridgePort, killSidecar } from './bridge_server';
 import { installCliScript } from './cli_installer';
 import { wireRendererDiagnostics, diagnosticsLogPath, logMain } from './diagnostics';
@@ -63,6 +64,8 @@ import {
 
 const DEV = process.env.ELECTRON_DEV === '1' || !app.isPackaged;
 const DEV_URL = process.env.CODIBY_DEV_URL || 'http://localhost:3111';
+
+configureRemoteRegistry(async () => `http://127.0.0.1:${await getBridgePort()}`);
 
 let mainWindow: BrowserWindow | null = null;
 

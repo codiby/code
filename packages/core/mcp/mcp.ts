@@ -4,6 +4,9 @@
  * Handles /mcp route — Claude connects via SSE.
  */
 
+import { getHostIdentity } from '../network/host-identity';
+import { peers } from '../network/peers';
+import { isPeerTool } from '../network/peer-protocol';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -207,12 +210,6 @@ async function setSessionsStatus(
   return { text: parts.join('\n\n'), isError: done.length === 0 };
 }
 
-function createMcpServer(uiSessionId: string) {
-  const mcpServer = new Server(
-    { name: 'codiby-code', version: '1.0.0' },
-    { capabilities: { tools: {} } },
-  );
-
 async function api(path: string, opts?: RequestInit): Promise<any> {
   const resp = await fetch(`http://localhost:${_serverPort}${path}`, opts);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
@@ -286,9 +283,16 @@ const AUTOMATION_FIELDS = {
   enabled: { type: 'boolean', description: 'Whether it is active. Defaults to true. A paused automation is neither scheduled nor reachable by webhook.' },
 } as const;
 
+function createMcpServer(uiSessionId: string) {
+  const mcpServer = new Server(
+    { name: 'codiby-code', version: '1.0.0' },
+    { capabilities: { tools: {} } },
+  );
+
 // Register tools
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    { name: 'ui_list_hosts', description: 'Discover hosts configured on this Bun server and their MCP coordination permissions. Works without Electron. Remote sessions are addressed by host_id plus session_id. Disabled or unreachable hosts are reported individually.', inputSchema: { type: 'object' as const, properties: {} } },
     {
       name: 'ui_search',
       description: 'Search file contents using ripgrep across the project',
@@ -411,7 +415,9 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'List all Codiby Code sessions (chat tabs). Returns each session\'s id, name, status, and working directory. Use this to find the session_id to pass to ui_send_message. When mentioning any of these sessions to the user, link to them as `[Session Name](codiby-session:<id>)` rather than printing the raw id — the UI renders that as a clickable chip.',
       inputSchema: {
         type: 'object' as const,
-        properties: {},
+        properties: {
+          host_id: { type: 'string', description: 'Target host_id from ui_list_hosts. Omit for this host. Paths and session IDs belong to the target host.' },
+        },
       },
     },
     {
@@ -431,6 +437,8 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object' as const,
         properties: {
+          host_id: { type: 'string', description: 'Target host_id from ui_list_hosts. Omit for this host. Paths and session IDs belong to the target host.' },
+          request_id: { type: 'string', description: 'For remote writes, use a unique ID and reuse it with identical arguments on retries to avoid duplicate execution.' },
           cwd: {
             type: 'string',
             description:
@@ -509,6 +517,8 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object' as const,
         properties: {
+          host_id: { type: 'string', description: 'Target host_id from ui_list_hosts. Omit for this host. Paths and session IDs belong to the target host.' },
+          request_id: { type: 'string', description: 'For remote writes, use a unique ID and reuse it with identical arguments on retries to avoid duplicate execution.' },
           session_id: { type: 'string', description: 'Id of the target session (from ui_list_sessions or ui_spawn_session).' },
           text: { type: 'string', description: 'Message text to send as the user.' },
         },
@@ -521,9 +531,10 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object' as const,
         properties: {
+          host_id: { type: 'string', description: 'Target host_id from ui_list_hosts. Omit for this host. Paths and session IDs belong to the target host.' },
           session_id: { type: 'string', description: 'Id of the session to read (from ui_list_sessions).' },
           limit: { type: 'number', description: 'Max number of most-recent messages to return. Default 20. Pass 0 for no limit.' },
-          since_seq: { type: 'number', description: 'If set, only return messages with seq strictly greater than this. Useful for polling for new messages after a previous read.' },
+          since_seq: { type: 'number', description: 'If set, only return messages with seq strictly greater than this. Reads the next page after this cursor without skipping messages. Use next_seq from the result for the next call.' },
           include_tools: { type: 'boolean', description: 'Include tool_use and tool_result messages. Default true. Set false for a cleaner user/assistant transcript.' },
           max_chars_per_message: { type: 'number', description: 'Per-message truncation cap. Default 500. Pass 0 to disable truncation.' },
         },
@@ -906,7 +917,29 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-  const { name, arguments: args } = request.params;
+  const { name, arguments: args = {} } = request.params;
+  try {
+    if (name === 'ui_list_hosts') return { content: [{ type: 'text', text: JSON.stringify(await peers.listHosts(), null, 2) }] };
+    const hostId = args.host_id;
+    if (hostId !== undefined && (typeof hostId !== 'string' || !hostId)) throw new Error('host_id must be a non-empty string');
+    if (hostId && hostId !== 'local' && hostId !== getHostIdentity().hostId) {
+      if (!isPeerTool(name)) throw new Error('This tool does not support remote hosts');
+      return await keepAlive(request.params._meta?.progressToken, extra.sendNotification,
+        () => peers.call(hostId as string, name, args, uiSessionId));
+    }
+    return await executeLocalMcpTool(name, args, uiSessionId, request.params._meta?.progressToken, extra.sendNotification);
+  } catch (error: any) {
+    return { content: [{ type: 'text', text: error.message }], isError: true };
+  }
+});
+  return mcpServer;
+}
+
+/** Local implementation shared by MCP and the restricted peer endpoint. Never forwards. */
+export async function executeLocalMcpTool(
+  name: string, args: Record<string, unknown>, uiSessionId: string,
+  progressToken?: string | number, sendNotification?: (n: ServerNotification) => Promise<void>,
+): Promise<CallToolResult> {
   try {
     switch (name) {
       case 'ui_search': {
@@ -1133,12 +1166,12 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       case 'ui_list_sessions': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
         const list = [...sessions.values()].map(s => sessionToJSON(s, _deps!.port));
-        if (list.length === 0) return { content: [{ type: 'text', text: 'No sessions.' }] };
+        if (list.length === 0) return { content: [{ type: 'text', text: `Host: ${getHostIdentity().hostId} — No sessions.` }] };
         const text = list.map(s => {
           const runtime = s.ready ? 'ready' : s.runtime_status;
           return `${s.id}  [${s.status}/${runtime}]  ${s.name}  (${s.cwd})`;
         }).join('\n');
-        return { content: [{ type: 'text', text }] };
+        return { content: [{ type: 'text', text: `Host: ${getHostIdentity().hostId}\n${text}` }] };
       }
       case 'ui_spawn_session': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
@@ -1265,6 +1298,9 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         if (!sessionId || !text) {
           return { content: [{ type: 'text', text: 'session_id and text are required' }], isError: true };
         }
+        if (!uiSessionId && getSessionState(sessionId).isStreaming) {
+          return { content: [{ type: 'text', text: 'Target session is busy. Wait until it is idle before sending a new request_id.' }], isError: true };
+        }
         const result = await _deps.sendMessageToSession(sessionId, text);
         if (!result.ok) {
           return { content: [{ type: 'text', text: `Failed: ${result.error ?? 'unknown error'}` }], isError: true };
@@ -1288,10 +1324,11 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         let msgs: ChatMessage[] = state.messages;
         if (sinceSeq !== undefined) msgs = msgs.filter(m => (m.seq ?? 0) > sinceSeq);
         if (!includeTools) msgs = msgs.filter(m => !m.toolName && !m.isToolResult);
-        if (limit > 0 && msgs.length > limit) msgs = msgs.slice(-limit);
+        const available = msgs.length;
+        if (limit > 0 && msgs.length > limit) msgs = sinceSeq !== undefined ? msgs.slice(0, limit) : msgs.slice(-limit);
 
         if (msgs.length === 0) {
-          return { content: [{ type: 'text', text: '(no messages)' }] };
+          return { content: [{ type: 'text', text: `(no messages; next_seq=${sinceSeq ?? 0})` }] };
         }
 
         const truncate = (s: string) => {
@@ -1323,7 +1360,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const header = `Session ${sessionId} — ${msgs.length} message${msgs.length === 1 ? '' : 's'}` +
           (msgs.length < totalInSession ? ` of ${totalInSession} total` : '') +
           (state.isStreaming ? ' (streaming...)' : '');
-        return { content: [{ type: 'text', text: header + '\n' + lines.join('\n') }] };
+        return { content: [{ type: 'text', text: header + ` · next_seq=${msgs.at(-1)?.seq ?? sinceSeq ?? 0} · has_more=${sinceSeq !== undefined && available > msgs.length}` + '\n' + lines.join('\n') }] };
       }
       case 'ui_update_session': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
@@ -1566,7 +1603,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const inFlight = findPendingDecision(session.id, 'ExitPlanMode');
         if (inFlight) return answer(await inFlight);
 
-        const decision = await keepAlive(request.params._meta?.progressToken, extra?.sendNotification, () => requestPermissionDecision(session, {
+        const decision = await keepAlive(progressToken, sendNotification, () => requestPermissionDecision(session, {
           broadcastToSession: _deps!.broadcastToSession,
           sendBrowserRequest: _deps!.broadcastToSession,
           broadcastSessionList: _deps!.broadcastSessionList,
@@ -1820,10 +1857,6 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   } catch (e: any) {
     return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
   }
-});
-
-// Transport — one per session, managed by route handler
-  return mcpServer;
 }
 
 const transports = new Map<string, {
