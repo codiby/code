@@ -33,6 +33,7 @@ type SessionRuntime = {
   /** Live-streaming reasoning text. Mirrors desktop's `partialThinking`. */
   partialThinking: string;
   isStreaming: boolean;
+  isCompacting?: boolean;
   /** Last turn died without onTurnComplete — drives the red dot. */
   wasInterrupted: boolean;
   permRequest: PermissionRequest | null;
@@ -246,6 +247,7 @@ export function MobileApp() {
             partialText: state.partialText || '',
             partialThinking: state.partialThinking || '',
             isStreaming: !!state.isStreaming,
+            isCompacting: !!state.isCompacting,
             wasInterrupted: !!state.wasInterrupted,
             permRequest: state.permRequest,
             hydrated: true,
@@ -301,7 +303,19 @@ export function MobileApp() {
           return { ...prev, [sessionId]: { ...cur, permRequest: null } };
         });
       },
+      onCompaction: (sessionId, active) => {
+        setRuntime(prev => {
+          const cur = prev[sessionId] || EMPTY_RUNTIME;
+          return { ...prev, [sessionId]: { ...cur, isCompacting: active, isStreaming: active || cur.isStreaming } };
+        });
+      },
       onStatus: (sessionId, status) => {
+        if (['turn_complete', 'interrupted', 'disconnected', 'error'].includes(status)) {
+          setRuntime(prev => {
+            const cur = prev[sessionId];
+            return cur ? { ...prev, [sessionId]: { ...cur, isCompacting: false } } : prev;
+          });
+        }
         setStatusBySession((prev) => ({ ...prev, [sessionId]: status }));
         if (status === 'streaming') {
           // Server flips this on as soon as the user message is dispatched —
@@ -935,6 +949,7 @@ export function MobileApp() {
           partialText={activeRuntime.partialText}
           partialThinking={activeRuntime.partialThinking}
           isStreaming={activeRuntime.isStreaming}
+          isCompacting={activeRuntime.isCompacting}
           permRequest={activeRuntime.permRequest}
           status={activeStatus}
           hydrated={activeRuntime.hydrated}

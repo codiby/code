@@ -484,6 +484,7 @@ export interface SessionState {
    */
   partialThinking: string;
   isStreaming: boolean;
+  isCompacting?: boolean;
   /** Set by the server when the previous turn died without onTurnComplete. */
   wasInterrupted: boolean;
   permRequest: PermissionRequest | null;
@@ -583,6 +584,7 @@ type ClientCallbacks = {
   onMessage: (sessionId: string, msg: ChatMessage) => void;
   onPartialText: (sessionId: string, text: string) => void;
   onPartialThinking: (sessionId: string, text: string) => void;
+  onCompaction?: (sessionId: string, active: boolean) => void;
   onPermissionRequest: (sessionId: string, req: PermissionRequest) => void;
   onPermissionCancelled: (sessionId: string, requestId: string) => void;
   onStatus: (sessionId: string, status: string) => void;
@@ -1127,6 +1129,9 @@ export class ClaudeClient {
         break;
       case 'partial_thinking':
         this.callbacks.onPartialThinking(sessionId, (msg.text as string) || '');
+        break;
+      case 'compaction':
+        this.callbacks.onCompaction?.(sessionId, msg.active === true);
         break;
       case 'permission_request':
         this.callbacks.onPermissionRequest(sessionId, msg.request as PermissionRequest);

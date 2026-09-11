@@ -102,6 +102,7 @@ export interface SessionState {
    */
   partialThinking: string;
   isStreaming: boolean;
+  isCompacting?: boolean;
   /**
    * The previous turn ended without an `onTurnComplete` — usually a provider
    * crash, hard exit, or socket teardown mid-tool. Set in the bridge when the
@@ -158,6 +159,7 @@ export function emptyState(): SessionState {
     partialText: '',
     partialThinking: '',
     isStreaming: false,
+    isCompacting: false,
     wasInterrupted: false,
     permRequest: null,
     initInfo: null,
@@ -324,6 +326,7 @@ export function getStateForClient(sessionId: string) {
     partialText: state.partialText,
     partialThinking: state.partialThinking,
     isStreaming: state.isStreaming,
+    isCompacting: !!state.isCompacting && state.isStreaming && !state.wasInterrupted,
     wasInterrupted: state.wasInterrupted,
     permRequest: state.permRequest,
     initInfo: state.initInfo,

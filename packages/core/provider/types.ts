@@ -150,6 +150,8 @@ export type PermissionDecision =
  * decision (which may come from auto-accept logic or a user click).
  */
 export interface ProviderEvents {
+  /** Provider-reported context compaction; never inferred from response latency. */
+  onCompaction?(active: boolean): void;
   onInit(info: InitInfo): void;
   onAssistantDelta(text: string): void;
   onAssistantText(text: string, meta?: { model?: string; usage?: TokenUsage; parentToolUseId?: string | null }): void;

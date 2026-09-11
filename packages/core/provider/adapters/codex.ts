@@ -108,6 +108,7 @@ export class CodexProviderSession extends ProviderSessionBase {
 
   async sendUserMessage(input: { text: string; images?: ImageInput[] }) {
     if (this.closed) return;
+    this.events.onCompaction?.(false);
     if (this.active) { this.active.cancelled = true; void this.interruptTurn(this.active); }
     const previous = this.pendingRun;
     const state: TurnState = { id: null, cancelled: false, started: Promise.withResolvers(), done: Promise.withResolvers(), texts: new Map(), tools: new Set() };
@@ -148,6 +149,7 @@ export class CodexProviderSession extends ProviderSessionBase {
       state.done.resolve({ status: 'interrupted' });
       if (this.running === state) this.running = null;
       if (current()) {
+        this.events.onCompaction?.(false);
         this.active = null;
         if (state.cancelled) this.events.onTurnComplete({ stopReason: 'interrupted' });
       }
@@ -170,6 +172,14 @@ export class CodexProviderSession extends ProviderSessionBase {
       return;
     }
     if (this.active !== state || state.cancelled) return;
+    if ((method === 'item/started' || method === 'item/completed') && params.item?.type === 'contextCompaction') {
+      this.events.onCompaction?.(method === 'item/started');
+      return;
+    }
+    if (method === 'thread/compacted') {
+      this.events.onCompaction?.(false);
+      return;
+    }
     if (method === 'item/agentMessage/delta') {
       const text = (state.texts.get(params.itemId) || '') + params.delta;
       state.texts.set(params.itemId, text);
@@ -266,7 +276,10 @@ export class CodexProviderSession extends ProviderSessionBase {
     try { await this.connection.request('turn/interrupt', { threadId: this.threadId, turnId: id }); }
     catch { state.done.resolve({ status: 'interrupted' }); }
   }
-  async interrupt() { if (this.active) { this.active.cancelled = true; await this.interruptTurn(this.active); } }
+  async interrupt() {
+    this.events.onCompaction?.(false);
+    if (this.active) { this.active.cancelled = true; await this.interruptTurn(this.active); }
+  }
   async setModel(model: string | null) { this.opts.model = model; }
   async setPermissionMode(mode: PermissionMode) { this.opts.permissionMode = mode; }
   async close() {

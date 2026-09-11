@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CompactionIndicator } from '../CompactionIndicator';
 import gsap from 'gsap';
 import { ChevronDown, ChevronRight, ArrowDown, LayoutGrid, X as XIcon, Sparkles } from 'lucide-react';
 import { Button, TextField, TextArea } from '@heroui/react';
@@ -35,6 +36,7 @@ interface Props {
   /** Live-streaming reasoning text — rendered as a transient italic bubble. */
   partialThinking: string;
   isStreaming: boolean;
+  isCompacting?: boolean;
   permRequest: PermissionRequest | null;
   status: string;
   /** False until the first `session_state` snapshot lands. While false,
@@ -102,6 +104,7 @@ export function MobileChat({
   partialText,
   partialThinking,
   isStreaming,
+  isCompacting,
   permRequest,
   status,
   hydrated,
@@ -1150,6 +1153,7 @@ export function MobileChat({
         {session && restartStatus[session.id] && (
           <p role="status" className="px-4 py-2 text-xs text-zinc-400">{restartStatus[session.id]}</p>
         )}
+        <CompactionIndicator active={!!isCompacting && isStreaming} />
         {attachError && (
           <div className="mb-2 px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/30 text-[12px] text-red-300">
             {attachError}

@@ -139,3 +139,29 @@ test('stop during initialization completes without starting a turn and permits r
   expect(h.output.filter(x => x.event === 'onTurnComplete')).toHaveLength(2);
   await h.session.close();
 });
+
+test('compaction has explicit start/end events and ignores other or cancelled turns', async () => {
+  const h = harness();
+  await h.session.sendUserMessage({ text: 'Continue' }); await settle();
+  const states = () => h.output.filter(x => x.event === 'onCompaction').map(x => x.args[0]);
+  h.notify('item/started', { item: { id: 'compact', type: 'contextCompaction' }, threadId: 'other' });
+  expect(states()).toEqual([false]);
+  h.notify('item/started', { item: { id: 'compact', type: 'contextCompaction' } });
+  expect(states().at(-1)).toBe(true);
+  h.notify('item/completed', { item: { id: 'compact', type: 'contextCompaction' } });
+  expect(states().at(-1)).toBe(false);
+  h.notify('item/started', { item: { id: 'compact-2', type: 'contextCompaction' } });
+  await h.session.interrupt();
+  expect(states().at(-1)).toBe(false);
+  h.notify('item/started', { item: { id: 'late', type: 'contextCompaction' } });
+  expect(states().at(-1)).toBe(false);
+  h.complete('interrupted'); await settle(); await h.session.close();
+});
+
+test('turn completion clears compaction even when its item-completed event is absent', async () => {
+  const h = harness(); await h.session.sendUserMessage({ text: 'Continue' }); await settle();
+  h.notify('item/started', { item: { id: 'compact', type: 'contextCompaction' } });
+  h.complete(); await settle();
+  expect(h.output.filter(x => x.event === 'onCompaction').at(-1)?.args[0]).toBe(false);
+  await h.session.close();
+});

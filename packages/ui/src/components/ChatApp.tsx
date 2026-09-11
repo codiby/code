@@ -1630,7 +1630,13 @@ export function ChatApp() {
           });
         },
 
+        onCompaction: (sid, active) => {
+          updateLocalState(sid, s => ({ ...s, isCompacting: active, isStreaming: active || s.isStreaming }));
+        },
         onStatus: (sid, status) => {
+          if (['turn_complete', 'interrupted', 'disconnected', 'error'].includes(status)) {
+            updateLocalState(sid, s => ({ ...s, isCompacting: false }));
+          }
           if (status === 'connected' || status === 'disconnected' || status === 'connecting' || status === 'error') {
             setStatuses(prev => ({ ...prev, [sid]: status as ConnectionStatus }));
           }

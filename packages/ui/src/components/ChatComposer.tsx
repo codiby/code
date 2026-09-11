@@ -18,6 +18,7 @@
 import { useRef, useState } from 'react';
 import { useCodexModels, codexEfforts } from '../lib/codex-models';
 import { Send as SendIcon } from 'lucide-react';
+import { CompactionIndicator } from './CompactionIndicator';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import { SlashCommandList, useSlashCommands } from './SlashCommandPicker';
 import { FileMentionList, useFileMention } from './FileMentionPicker';
@@ -67,6 +68,7 @@ function readImage(file: File, media_type: string): Promise<PastedImage> {
 
 interface ActiveLike {
   isStreaming: boolean;
+  isCompacting?: boolean;
   permRequest: unknown;
   inputHistory: string[];
   supportedModels?: { id: string; label: string }[];
@@ -521,6 +523,7 @@ export function ChatComposer(props: Props) {
           </div>
         </div>
         <div className="relative">
+          <CompactionIndicator active={!!active.isCompacting && active.isStreaming} />
           {/* Ambient color spots — four point-lights bouncing in pairs.
               Clipped to the composer's rounded bounds. Fades in while
               the session is streaming. */}

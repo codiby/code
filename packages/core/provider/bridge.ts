@@ -35,6 +35,14 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
   // onExit fires, we'll know the exit is for a previous provider and skip
   // the state mutations so they don't clobber the fresh one.
   const gen = session.providerSessionGen;
+  const compaction = (active: boolean) => {
+    if (session.providerSessionGen !== gen) return;
+    const state = getSessionState(session.id);
+    if (active && state.wasInterrupted) return;
+    if (!!state.isCompacting === active) return;
+    updateSessionState(session.id, s => ({ ...s, isCompacting: active, isStreaming: active || s.isStreaming }));
+    deps.broadcastToSession(session.id, { type: 'compaction', sessionId: session.id, active });
+  };
 
   const commitText = (text: string, meta?: { model?: string; usage?: any; parentToolUseId?: string | null }) => {
     const trimmed = text.trim();
@@ -55,6 +63,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
   };
 
   return {
+    onCompaction: compaction,
     onInit(info) {
       session.claudeSessionId = info.providerSessionId;
       saveSessions();
@@ -301,6 +310,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onTurnComplete(info) {
+      compaction(false);
       deps.onTurnComplete?.(session.id, info);
       if (info.resultText) {
         const chatMsg: ChatMessage = {
@@ -335,6 +345,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onError(err) {
+      compaction(false);
       if (session.providerSessionGen !== gen) return;
       const message: ChatMessage = {
         id: randomUUID(), role: 'system', timestamp: Date.now(),
@@ -356,6 +367,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onExit(code) {
+      compaction(false);
       // A previous provider's exit arriving after a new one was spawned
       // (typically the case for `handleRestartSession`, where we close
       // and re-spawn in the same handler). Drop the stale state
