@@ -86,6 +86,11 @@ export const PLAN_DENY_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash']
  */
 export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   'mcp__codiby-code-sdk__rename_session',
+  // Same operation over HTTP. Codex and OpenCode never see the SDK server
+  // (neither can re-host an in-process one), so this is the only rename tool
+  // they have — it needs the same pre-approval or the naming policy in the
+  // system prompt would raise an approval card on their very first turn.
+  'mcp__codiby-code__ui_rename_session',
   // Invoking the plan tool is not the decision point — the tool's own handler
   // (mcp.ts) raises a second, richer permission request carrying the plan
   // markdown, and that's what the user actually approves or rejects. Prompting
@@ -105,6 +110,14 @@ export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   // public listener and stays behind the normal permission flow; reading the
   // list back does nothing and the agent has to check it before forwarding.
   'mcp__codiby-code__ui_list_port_forwards',
+  // Associating a PR with the session it was written in is bookkeeping: it
+  // writes one entry in ui-pr-links.json and repaints a badge. The agent is
+  // told to do it the moment a PR exists (see CODIBY_CODE_SYSTEM_PROMPT_APPEND),
+  // so prompting for it would put an approval card in front of the user on
+  // every single PR — in every permission mode, including plan.
+  'mcp__codiby-code__ui_link_pr',
+  'mcp__codiby-code__ui_unlink_pr',
+  'mcp__codiby-code__ui_list_pr_links',
 ]);
 
 /**

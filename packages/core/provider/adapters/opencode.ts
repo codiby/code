@@ -52,7 +52,13 @@
  * `codiby-code-sdk` server is intentionally skipped — it cannot be
  * re-hosted across the HTTP boundary. Practical effect: opencode
  * sessions don't get the `rename_session` / `post_system_note` /
- * `open_file_in_editor` / `post_image_to_session` tools.
+ * `open_file_in_editor` / `post_image_to_session` tools — they use the
+ * HTTP equivalents where one exists (`ui_rename_session`, and the
+ * `ui_link_pr` family), which is what the shared system prompt points at.
+ *
+ * System prompt: Codiby's shared steering (provider/system-prompt.ts)
+ * arrives as an instruction file listed in `Config.instructions`, which
+ * opencode appends to its agent prompt the same way it picks up AGENTS.md.
  */
 
 import { createServer } from 'net';
@@ -81,6 +87,7 @@ import type {
 } from '../types';
 import { Adapter } from '../adapter';
 import { ProviderSessionBase } from '../session';
+import { removeOpencodeInstructions, writeOpencodeInstructions } from '../system-prompt';
 
 const PROVIDER_NAME = 'opencode';
 
@@ -436,6 +443,11 @@ class OpenCodeProviderSession extends ProviderSessionBase {
     if (opts.model) config.model = opts.model;
     const mcp = buildOpenCodeMcpConfig(opts.mcpServers);
     if (mcp) config.mcp = mcp;
+    // Codiby's UI steering reaches opencode as an instruction file, which it
+    // appends to its own agent prompt (same path as AGENTS.md). The per-prompt
+    // `system` field is not used for this — plan mode already owns it.
+    const instructions = writeOpencodeInstructions(opts.sessionId, opts.extraSystemPrompt);
+    if (instructions) config.instructions = [instructions];
 
     const port = await findFreePort();
     const server = await createOpencodeServer({
@@ -869,6 +881,7 @@ class OpenCodeProviderSession extends ProviderSessionBase {
     } catch {
       // Boot never completed; no server to close.
     }
+    removeOpencodeInstructions(this.sessionId);
     this.events.onExit(0);
   }
 }

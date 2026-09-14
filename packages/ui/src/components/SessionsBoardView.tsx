@@ -21,7 +21,15 @@ import { GROUP_HEX_COLOR, type TabGroupInfo } from '../lib/tab-groups';
 // check-runs are a future enrichment (would need a /session-review-status
 // endpoint) and slot into the QA badge + the "Needs you" lane.
 
-type PRLink = { prNumber: number; title: string; url: string; headRefName: string; state: string };
+type PRLink = { prNumber: number; title: string; url: string; headRefName: string; state: string; repo?: string };
+
+/** The PR a row is summarised by when a session has several (one per repo).
+ *  An open PR outranks a merged or closed one: a session whose API PR merged
+ *  but whose client PR is still in review has not finished review. */
+function primaryPr(links: PRLink[]): PRLink | undefined {
+  const done = (l: PRLink) => ['MERGED', 'CLOSED'].includes((l.state || '').toUpperCase());
+  return links.find(l => !done(l)) ?? links[0];
+}
 
 export interface SessionsBoardViewProps {
   sessions: SessionInfo[];
@@ -30,7 +38,7 @@ export interface SessionsBoardViewProps {
   hasPermission: Record<string, boolean>;
   lastMessageAt: Record<string, number>;
   lastPreview: Record<string, string>;
-  prLinks: Record<string, PRLink>;
+  prLinks: Record<string, PRLink[]>;
   tabGroups: Record<string, TabGroupInfo>;
   tabGroupMap: Record<string, string>;
   onSelectSession: (id: string) => void;
@@ -86,7 +94,10 @@ interface Row {
   groupId: string;
   live: Live;
   qa: QA;
+  /** The PR the row is summarised by, or undefined when nothing is linked. */
   pr: PRLink | undefined;
+  /** Every PR on the session — more than one when it spanned two repos. */
+  prs: PRLink[];
   branch: string;
   ago: string;
   preview: string;
@@ -115,7 +126,8 @@ export function SessionsBoardView(props: SessionsBoardViewProps) {
     };
     const out: Row[] = [];
     for (const s of sessions) {
-      const pr = prLinks[s.id];
+      const prs = prLinks[s.id] || [];
+      const pr = primaryPr(prs);
       const st = (pr?.state || '').toUpperCase();
       let lane: LaneId;
       if (hasPermission[s.id]) lane = 'needs';
@@ -124,15 +136,18 @@ export function SessionsBoardView(props: SessionsBoardViewProps) {
       else if (s.status === 'archived') lane = 'done';
       else lane = 'working';
 
+      // With several PRs the extras are folded into a "+n" suffix rather than
+      // listed — the board is a scannable summary, the chat tab has the detail.
+      const extra = prs.length > 1 ? ` +${prs.length - 1}` : '';
       let qa: QA;
-      if (st === 'MERGED') qa = { tone: 'pass', label: 'Merged' };
-      else if (st === 'CLOSED') qa = { tone: 'closed', label: 'PR closed' };
-      else if (pr) qa = { tone: 'open', label: `PR #${pr.prNumber}` };
+      if (st === 'MERGED') qa = { tone: 'pass', label: `Merged${extra}` };
+      else if (st === 'CLOSED') qa = { tone: 'closed', label: `PR closed${extra}` };
+      else if (pr) qa = { tone: 'open', label: `PR #${pr.prNumber}${extra}` };
       else if (s.status === 'archived') qa = { tone: 'closed', label: 'Closed' };
       else qa = { tone: 'none', label: 'No PR' };
 
       out.push({
-        s, lane, pr,
+        s, lane, pr, prs,
         groupId: tabGroupMap[s.id] || NO_GROUP,
         live: liveOf(s),
         qa,
@@ -151,7 +166,8 @@ export function SessionsBoardView(props: SessionsBoardViewProps) {
       r.s.name.toLowerCase().includes(q) ||
       r.preview.toLowerCase().includes(q) ||
       r.branch.toLowerCase().includes(q) ||
-      (r.pr ? `#${r.pr.prNumber}`.includes(q) : false));
+      // Searching "#42" must find the session even when #42 is its second PR.
+      r.prs.some(pr => `#${pr.prNumber}`.includes(q) || (pr.repo || '').toLowerCase().includes(q)));
   }, [rows, query]);
 
   const byLane = useMemo(() => {
@@ -271,11 +287,16 @@ function QABadge({ qa }: { qa: QA }) {
   );
 }
 
-function PRChip({ pr }: { pr: PRLink | undefined }) {
+function PRChip({ prs }: { prs: PRLink[] }) {
+  const pr = primaryPr(prs);
   if (!pr) return <span className="text-[10.5px] text-zinc-600 font-mono">—</span>;
   return (
-    <span className="inline-flex items-center gap-1.5 text-[10.5px] font-semibold text-zinc-400 font-mono">
+    <span
+      className="inline-flex items-center gap-1.5 text-[10.5px] font-semibold text-zinc-400 font-mono"
+      title={prs.map(l => `${l.repo ? `${l.repo} ` : ''}#${l.prNumber} ${l.title}`).join('\n')}
+    >
       <GitPullRequest size={11} strokeWidth={2} />#{pr.prNumber}
+      {prs.length > 1 && <span className="text-zinc-600">+{prs.length - 1}</span>}
     </span>
   );
 }
@@ -483,7 +504,7 @@ function ListRow({ r, onOpen }: { r: Row; onOpen: (id: string) => void }) {
         <div className="text-[11.5px] text-zinc-500 truncate mt-0.5">{r.preview || basename(r.s.cwd)}</div>
       </div>
       <QABadge qa={r.qa} />
-      <PRChip pr={r.pr} />
+      <PRChip prs={r.prs} />
       <span className="text-[11px] text-zinc-600 text-right">{r.ago}</span>
     </button>
   );
@@ -494,7 +515,7 @@ function ListRow({ r, onOpen }: { r: Row; onOpen: (id: string) => void }) {
 function Drawer({ row, onClose, onPrev, onNext, onOpenSession }: {
   row: Row; onClose: () => void; onPrev: () => void; onNext: () => void; onOpenSession: () => void;
 }) {
-  const { s, pr, live, qa, branch, ago, preview } = row;
+  const { s, pr, prs, live, qa, branch, ago, preview } = row;
   return (
     <>
       <div className="absolute inset-0 bg-black/50 z-40" onClick={onClose} />
@@ -509,7 +530,9 @@ function Drawer({ row, onClose, onPrev, onNext, onOpenSession }: {
           </div>
           <h2 className="text-[17px] font-bold text-zinc-100 leading-tight mb-2.5">{s.name}</h2>
           <div className="flex items-center gap-2 flex-wrap">
-            {pr && <MetaChip><GitPullRequest size={11} strokeWidth={2} />#{pr.prNumber}</MetaChip>}
+            {prs.map(p => (
+              <MetaChip key={`${p.repo || ''}#${p.prNumber}`}><GitPullRequest size={11} strokeWidth={2} />#{p.prNumber}</MetaChip>
+            ))}
             {branch && <MetaChip mono><GitBranch size={11} strokeWidth={2} />{branch}</MetaChip>}
             {s.model && <MetaChip>{s.model.replace(/^claude-/, '')}</MetaChip>}
             {s.cwd && <MetaChip mono>{basename(s.cwd)}</MetaChip>}
@@ -523,17 +546,21 @@ function Drawer({ row, onClose, onPrev, onNext, onOpenSession }: {
             <div className={`rounded-xl border px-3.5 py-3 ${qaHero(qa.tone)}`}>
               <div className="flex items-center gap-2.5 text-[13px] font-bold">
                 {qa.tone === 'pass' ? <CheckCircle2 size={15} strokeWidth={2.2} /> : <GitPullRequest size={15} strokeWidth={2.2} />}
-                {qaHeroLabel(qa, pr)}
+                {qaHeroLabel(qa, pr, prs)}
               </div>
-              {pr && (
+              {/* One row per PR: a session that touched two repos has two, and
+                  both need to be reachable from here. */}
+              {prs.map(p => (
                 <button
+                  key={`${p.repo || ''}#${p.prNumber}`}
                   type="button"
-                  onClick={() => window.open(pr.url, '_blank')}
-                  className="mt-2.5 inline-flex items-center gap-1.5 text-[11.5px] font-medium text-sky-400 hover:underline"
+                  onClick={() => window.open(p.url, '_blank')}
+                  className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-sky-400 hover:underline text-left"
                 >
-                  <ExternalLink size={12} strokeWidth={2} />{pr.title || `Open PR #${pr.prNumber}`}
+                  <ExternalLink size={12} strokeWidth={2} className="shrink-0" />
+                  <span className="truncate">{p.repo ? `${p.repo} · ` : ''}{p.title || `Open PR #${p.prNumber}`}</span>
                 </button>
-              )}
+              ))}
               <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
                 CI check status isn't wired yet — once a <code className="font-mono text-zinc-400">/session-review-status</code> endpoint lands, per-check ✓/✕ shows here.
               </p>
@@ -590,10 +617,11 @@ function qaHero(tone: QA['tone']): string {
     : tone === 'closed' ? 'border-zinc-500/25 bg-surface-light text-zinc-400'
     : 'border-border bg-surface-light text-zinc-400';
 }
-function qaHeroLabel(qa: QA, pr: PRLink | undefined): string {
-  if (qa.tone === 'pass') return 'Approved & merged';
-  if (qa.tone === 'open') return pr ? `In review — PR #${pr.prNumber} open` : 'In review';
-  if (qa.tone === 'closed') return pr ? `PR #${pr.prNumber} closed` : 'Session closed';
+function qaHeroLabel(qa: QA, pr: PRLink | undefined, prs: PRLink[] = []): string {
+  const across = prs.length > 1 ? ` (${prs.length} PRs)` : '';
+  if (qa.tone === 'pass') return `Approved & merged${across}`;
+  if (qa.tone === 'open') return (pr ? `In review — PR #${pr.prNumber} open` : 'In review') + across;
+  if (qa.tone === 'closed') return (pr ? `PR #${pr.prNumber} closed` : 'Session closed') + across;
   return 'No PR opened yet — work in progress';
 }
 

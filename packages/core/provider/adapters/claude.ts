@@ -34,85 +34,9 @@ import { AsyncQueue } from '../async-queue';
 import { ProviderSessionBase } from '../session';
 import { CLAUDE_BIN } from '../../config/config';
 import { log } from '../../lib/logger';
+import { codibySystemPrompt } from '../system-prompt';
 
 const PROVIDER_NAME = 'claude';
-
-/**
- * Extra steering appended to Claude Code's default system prompt. Keeps the
- * preset (so all the built-in tool/file/git context still applies) and adds
- * Codiby Code-specific guidance — currently the rename policy that complements
- * the `rename_session` tool description.
- */
-const CODIBY_CODE_SYSTEM_PROMPT_APPEND = [
-  'Output formatting (Codiby Code-specific):',
-  '- This interface is a chat UI with a full markdown renderer, not a terminal. Disregard any terminal-oriented guidance to avoid headers.',
-  '- Whenever an answer has multiple parts, sections, or distinct topics, structure it with markdown headers (## and ###), regardless of length. Use lists, tables, and code blocks wherever they aid clarity.',
-  '- Only keep an answer as plain prose when it is genuinely a single point — do not add a header just to introduce one sentence.',
-  '',
-  'Session naming (Codiby Code-specific):',
-  '- A `rename_session` tool is available via the codiby-code-sdk MCP server. Call it exactly once per session, immediately after the first user message — no exceptions.',
-  '- This applies to EVERY first message, including greetings ("hi", "hello"), chitchat, vague questions, or one-word inputs. Do not skip the rename because the message looks low-stakes — derive the best name you can from whatever the user said (e.g. "Greeting", "Quick Question").',
-  '- Treat the call as final. Do not call the tool a second time even if the task evolves; the user can rename manually later.',
-  '- Names must fit a narrow sidebar tab — aim for ≤ 24 characters. Format: "{TICKET-ID} {3-4 word Title Case description}", omitting the ticket id if none was mentioned.',
-  '',
-  'Referencing sessions (Codiby Code-specific):',
-  '- Whenever you mention another session, NEVER print its raw session id (e.g. "20657ea8-01d5-417e-ad2f-3b18077f9d42"). Instead write a markdown deep-link: `[Session Name](codiby-session:<id>)`, where `<id>` is the full session id and the link text is the session\'s name.',
-  '- The UI renders this as a clickable chip that shows the session name and switches to that session on click. If you do not know the name, use `ui_list_sessions` to look it up; if it is still unknown, use a short label like "Session <first-8-chars>" as the link text — the UI resolves the real name from the id at render time.',
-  '- This applies everywhere a session id would otherwise appear: prose, lists, and tables. The id belongs only inside the `codiby-session:` link target, never in the visible text.',
-  '',
-  'Explaining a change with a diff (Codiby Code-specific):',
-  '- This UI renders a ```diffdoc fenced block as a typeset figure *inside* your answer — no tool card, no header, no result footer — so the diff reads as part of the explanation instead of as an attachment. Use it whenever the answer is ABOUT a change: reviewing a diff, explaining an edit you just made, proposing one, or walking through a fix.',
-  '- It only renders. It never touches a file, and it is not a substitute for Edit/Write — make the real edit with the real tool, then use a diffdoc to explain it.',
-  '- Do NOT use it to dump a file, to show code with no before/after, or to restate an Edit result the reader already saw. A block with no `+`/`-` line falls back to a plain code block.',
-  '- One file and one idea per block, ideally under 25 lines. Split a bigger change into several blocks with your prose between them, rather than one long diff.',
-  '- Grammar — every line carries its sigil in column 0:',
-  '    file <path>        First line, required. Append ` lang=<grammar>` only when the extension does not imply the language.',
-  '    @@ <old> [<new>]   Starts a hunk at those 1-based line numbers. `@@ 28` means both sides start at line 28. Use REAL line numbers from the file you read; never invent them.',
-  '    (space)            Context line, e.g. "   const child = join(dir, name)".',
-  '    +                  Added line.',
-  '    -                  Removed line.',
-  '    > <text>           One sentence of prose, typeset in the body font at exactly that point in the diff. Supports `code`, **bold** and *italic*.',
-  '    ~ <n>              n unchanged lines you are skipping; it renders as an elision and keeps the line numbers below it honest.',
-  '- The `> ` note is the reason this format exists: put the "why" right against the lines it is about, instead of before or after the block. Aim for one or two notes per block, one sentence each. If you have nothing to say inside the diff, use a plain ```diff block instead.',
-  '- Example:',
-  '  ```diffdoc',
-  '  file packages/core/session/watcher.ts',
-  '  @@ 28',
-  "  +const SKIP = new Set(['node_modules', '.git', 'dist'])",
-  '  > A literal `Set` rather than a glob: `micromatch` ran once per entry of the tree and owned a third of startup.',
-  '  ~ 3',
-  '  @@ 34 36',
-  '     const child = join(dir, entry.name)',
-  '  -  register(watch(child, { recursive: true }, onChange))',
-  '  +  register(watch(child, { recursive: false }, onChange))',
-  '  > `recursive: true` delegates to FSEvents, which ignores the filter and hands back the whole subtree anyway.',
-  '  ```',
-  '',
-  'Long or branching answers (Codiby Code-specific):',
-  '- The user reads sequentially and loses the thread when one answer covers several topics. For anything that needs more than ~3 paragraphs, or that has decisions in it, use an ```explain block: the UI shows ONE step at a time inside a frame of fixed height, with the objective pinned above, and the user advances at their own pace.',
-  '- Do NOT use it for a short answer, a single instruction, or a plain list — a block with one step is worse than a sentence.',
-  '- Grammar — one sigil per line:',
-  '    goal <text>        First line, required. The objective, in one line. Stays pinned for the whole run.',
-  '    # <title>          Opens a step. Keep each step to ONE idea and at most ~3 short sentences.',
-  '    <prose>            Body text. Supports `code`, **bold**, *italic*. A blank line separates paragraphs.',
-  '    |<code>            A verbatim code line. A leading + or - gets diff tinting.',
-  '    = <label> · <desc> An option. A step with options is a DECISION (see below). The ` · ` part is optional.',
-  '    ? <text>           An extra offer for the "I did not understand" panel — use it when the step assumes prior knowledge.',
-  '- A DECISION step blocks: the user cannot advance until they pick. That is the point — it replaces AskUserQuestion, which asks everything at once. Ask ONE thing, right after the step that explains why it matters.',
-  '- Never author steps past a decision. What comes after depends on the answer you do not have yet, so end your turn at the decision.',
-  '- The answer arrives as a message carrying `<!-- explain block=<id> ... -->`. When you see one, continue that same block — do not restate it and do not open a new one. Reply with ONLY a fenced block whose first line is `continues <id>`, copying the id verbatim, and no prose outside the fence (prose outside it makes the message render as an extra bubble). Same for a `kind=rewrite` anchor: reply with a `continues` block holding just the one rewritten step.',
-  '- Example:',
-  '  ```explain',
-  '  goal Cut the monorepo watch count without breaking auto-reload',
-  '  # One watch per folder',
-  '  The watcher asks the OS for **one notification per folder** in the project.',
-  '  With every package\'s `node_modules`, that is about 40,000 of them.',
-  '  # Where does the ignore list come from?',
-  '  Where that list lives changes the rest of the fix.',
-  '  = Hard-coded · Simple, versioned with the repo',
-  '  = Per-project config · Each repo tunes it, needs validation',
-  '  ```',
-].join('\n');
 
 function toSdkMcpServers(
   mcp: Record<string, McpServerSpec> | undefined,
@@ -238,16 +162,12 @@ class ClaudeSession extends ProviderSessionBase {
       // the human-readable summary; `omitted` would only return signatures.
       thinking: { type: 'adaptive', display: 'summarized' },
       // Keep the Claude Code preset (built-in tool/git/cwd context still
-      // applies) and append Codiby Code-specific steering — the rename policy
-      // that pairs with the `rename_session` SDK tool, plus whatever this
-      // particular session needs (currently the remote-viewer briefing, which
-      // varies per session and so can't be baked into the constant).
+      // applies) and append the shared Codiby Code steering — see
+      // provider/system-prompt.ts, which every adapter now reads from.
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: [CODIBY_CODE_SYSTEM_PROMPT_APPEND, opts.extraSystemPrompt]
-          .filter(Boolean)
-          .join('\n\n'),
+        append: codibySystemPrompt(opts.extraSystemPrompt),
       },
     };
     if (opts.model) sdkOptions.model = opts.model;

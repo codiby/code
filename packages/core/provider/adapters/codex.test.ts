@@ -29,6 +29,19 @@ function harness(options = opts, startup = Promise.resolve()) {
   const complete = (status = 'completed') => notify('turn/completed', { turn: { id: String(turn), status } });
   return { session, calls, output, notify, complete, approval, get handlers() { return handlers; } };
 }
+test('carries Codiby UI steering on thread/start, alongside per-session extras', async () => {
+  const h = harness({ ...opts, extraSystemPrompt: 'Remote viewer briefing.' });
+  await settle();
+  const start = h.calls.find(x => x.method === 'thread/start');
+  const instructions = start.params.developerInstructions as string;
+  // Codex never sees the in-process SDK server, so the shared prompt has to
+  // point it at the HTTP rename tool and the PR-link tools it does have.
+  expect(instructions).toContain('ui_rename_session');
+  expect(instructions).toContain('ui_link_pr');
+  expect(instructions).toContain('Remote viewer briefing.');
+  await h.session.close();
+});
+
 test('normal mode supports interactive approvals and bypass remains explicit', () => {
   expect(codexPermissions('default', '/tmp').approvalPolicy).toBe('on-request');
   expect(codexPermissions('plan', '/tmp').sandboxPolicy.type).toBe('readOnly');

@@ -4,6 +4,7 @@ import type { McpServerSpec, PermissionMode, ProviderEvents, ProviderSession, Sp
 import { Adapter } from '../adapter';
 import { ProviderSessionBase } from '../session';
 import { CodexAppServer, listCodexModels, type CodexConnect, type CodexConnection } from '../codex-app-server';
+import { codibySystemPrompt } from '../system-prompt';
 
 // Configuration overrides sent to the app-server when opening a thread.
 type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
@@ -94,7 +95,10 @@ export class CodexProviderSession extends ProviderSessionBase {
       ...(this.opts.resumeSessionId ? { threadId: this.opts.resumeSessionId, excludeTurns: true } : {}),
       cwd: this.opts.cwd, model: this.opts.model, ...permissions,
       config: buildCodexConfig(this.opts.mcpServers),
-      developerInstructions: this.opts.extraSystemPrompt || null,
+      // Codex's own instructions stay in place; this is added on top, so a
+      // Codex session follows the same UI rules (markdown, rename, PR linking)
+      // as a Claude one.
+      developerInstructions: codibySystemPrompt(this.opts.extraSystemPrompt),
     });
     this.threadId = result.thread.id;
     this.defaultModel = result.model;

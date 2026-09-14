@@ -137,31 +137,102 @@ export function listSessionDirs(): string[] {
 
 const PR_LINKS_FILE = join(CODIBY_DIR,'ui-pr-links.json');
 
-type PRLink = { prNumber: number; title: string; url: string; headRefName: string; state: string };
+/**
+ * A pull request associated with a session. `repo` and `cwd` exist because a
+ * session can span two checkouts (e.g. an API change plus its client), and
+ * "PR #42" is only unambiguous once you know which repository it belongs to —
+ * the detail pane also needs `cwd` to shell out to `gh` in the right place.
+ * Both are optional so links written before multi-repo support still load.
+ */
+export type PRLink = {
+  prNumber: number;
+  title: string;
+  url: string;
+  headRefName: string;
+  state: string;
+  repo?: string;
+  cwd?: string;
+  linkedAt?: number;
+  linkedBy?: 'user' | 'agent';
+};
 
-export function loadPRLinks(): Record<string, PRLink> {
+/** Normalize one persisted entry. The file used to hold a single object per
+ *  session; anything written before the multi-PR change reads back as a
+ *  one-element list rather than being dropped. */
+function toLinkList(value: unknown): PRLink[] {
+  const raw = Array.isArray(value) ? value : value ? [value] : [];
+  return raw.filter((l): l is PRLink => !!l && typeof (l as PRLink).prNumber === 'number');
+}
+
+/** True when two links point at the same PR. A link whose `repo` is unknown
+ *  (legacy, or resolved without a remote) matches on number alone, so
+ *  re-linking it with the repo filled in updates the entry instead of
+ *  duplicating it. */
+function sameLink(a: PRLink, b: PRLink): boolean {
+  if (a.prNumber !== b.prNumber) return false;
+  if (!a.repo || !b.repo) return true;
+  return a.repo.toLowerCase() === b.repo.toLowerCase();
+}
+
+export function loadPRLinks(): Record<string, PRLink[]> {
+  let parsed: Record<string, unknown>;
   try {
-    return JSON.parse(readFileSync(PR_LINKS_FILE, 'utf-8'));
+    parsed = JSON.parse(readFileSync(PR_LINKS_FILE, 'utf-8'));
   } catch {
     return {};
   }
+  const out: Record<string, PRLink[]> = {};
+  for (const [sessionId, value] of Object.entries(parsed || {})) {
+    const list = toLinkList(value);
+    if (list.length) out[sessionId] = list;
+  }
+  return out;
 }
 
-export function savePRLink(sessionId: string, link: PRLink) {
-  const links = loadPRLinks();
-  links[sessionId] = link;
+function writePRLinks(links: Record<string, PRLink[]>) {
   mkdirSync(CODIBY_DIR, { recursive: true });
   writeFileSync(PR_LINKS_FILE, JSON.stringify(links, null, 2));
 }
 
-export function removePRLink(sessionId: string) {
-  const links = loadPRLinks();
-  delete links[sessionId];
-  writeFileSync(PR_LINKS_FILE, JSON.stringify(links, null, 2));
+export function getPRLinks(sessionId: string): PRLink[] {
+  return loadPRLinks()[sessionId] || [];
 }
 
-export function getPRLink(sessionId: string): PRLink | null {
-  return loadPRLinks()[sessionId] || null;
+/** Add a PR to a session, replacing the existing entry for the same PR so a
+ *  re-link refreshes title/state instead of piling up duplicates. An existing
+ *  entry keeps its position — re-linking a PR shouldn't reshuffle the badges. */
+export function addPRLink(sessionId: string, link: PRLink): PRLink[] {
+  const all = loadPRLinks();
+  const current = all[sessionId] || [];
+  const at = current.findIndex(l => sameLink(l, link));
+  const next = at === -1
+    ? [...current, link]
+    : current.map((l, i) => (i === at ? link : l));
+  all[sessionId] = next;
+  writePRLinks(all);
+  return next;
+}
+
+/** Replace a session's whole list. Used by the bulk PUT form. */
+export function setPRLinks(sessionId: string, links: PRLink[]): PRLink[] {
+  const all = loadPRLinks();
+  if (links.length) all[sessionId] = links;
+  else delete all[sessionId];
+  writePRLinks(all);
+  return links;
+}
+
+/** Remove one PR from a session, or every PR when `match` is omitted. */
+export function removePRLink(sessionId: string, match?: { prNumber: number; repo?: string }): PRLink[] {
+  const all = loadPRLinks();
+  const current = all[sessionId] || [];
+  const next = match
+    ? current.filter(l => !sameLink(l, { ...match, title: '', url: '', headRefName: '', state: '' }))
+    : [];
+  if (next.length) all[sessionId] = next;
+  else delete all[sessionId];
+  writePRLinks(all);
+  return next;
 }
 
 // ---------------------------------------------------------------------------

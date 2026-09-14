@@ -1,6 +1,7 @@
 import type { SessionState } from './claude-client';
 import type { MockupComment } from './mockup-inspector';
 import type { PlanComment } from '../components/PlanPanel';
+import type { PRInfo } from '../components/PRDetail';
 import type { LoopState, RequirementProgress, RequirementsSnapshot } from './requirements';
 
 /** A user message composed while the session was offline / mid-turn, staged
@@ -55,6 +56,10 @@ export type LocalSessionState = SessionState & {
   // user closes it manually while permission is still pending.
   openPlan: { content: string; allowedPrompts?: { tool: string; prompt: string }[] } | null;
   lastPlan: { content: string; allowedPrompts?: { tool: string; prompt: string }[] } | null;
+  /** PR open in the side panel. Per-session because a PR belongs to the work
+   *  in one tab: when this was global, switching sessions carried the previous
+   *  tab's PR along and showed it against the new session's repo. */
+  openPR: PRInfo | null;
   planComments: PlanComment[];
   planRequestId: string | null;
   /** Requirements + Target snapshot, pushed by the bridge. Server-owned data,

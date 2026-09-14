@@ -232,6 +232,40 @@ function jsonBody(method: 'POST' | 'PATCH', payload: unknown): RequestInit {
   return { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) };
 }
 
+// ---------------------------------------------------------------------------
+// PR links — helpers shared by ui_link_pr / ui_unlink_pr / ui_list_pr_links.
+// ---------------------------------------------------------------------------
+
+/** Accept "42", "#42" or a GitHub pull-request URL and return the form `gh pr
+ *  view` understands. Anything else returns null — the reference is
+ *  interpolated into a `gh` command line downstream, so this doubles as the
+ *  gate that keeps an agent-supplied string out of the shell. */
+export function normalizePrRef(raw: unknown): string | null {
+  const value = String(raw ?? '').trim();
+  if (/^#?\d+$/.test(value)) return value.replace(/^#/, '');
+  if (/^https:\/\/[\w.-]+\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(value)) return value;
+  return null;
+}
+
+/** "https://github.com/acme/api/pull/42" -> "acme/api". Undefined when the URL
+ *  isn't shaped like a PR URL, which leaves the link matching on number alone. */
+export function repoFromPrUrl(url: unknown): string | undefined {
+  const m = String(url ?? '').match(/^https:\/\/[\w.-]+\/([\w.-]+\/[\w.-]+)\/pull\/\d+$/);
+  return m ? m[1] : undefined;
+}
+
+type PrLinkLike = { prNumber: number; title: string; state: string; headRefName: string; repo?: string };
+
+function describePrLink(l: PrLinkLike): string {
+  return `${l.repo ? `${l.repo}#` : '#'}${l.prNumber} ${l.title} (${l.state}) — ${l.headRefName}`;
+}
+
+function renderPrLinks(links: unknown): string {
+  const list = (Array.isArray(links) ? links : []) as PrLinkLike[];
+  if (!list.length) return 'This session has no linked pull requests.';
+  return `Linked to this session:\n${list.map(l => `  ${describePrLink(l)}`).join('\n')}`;
+}
+
 /** The endpoint an external watcher POSTs to in order to fire a webhook automation. */
 function automationWebhookUrl(id: string): string {
   return `http://localhost:${_serverPort}/automations/${id}/webhook`;
@@ -346,6 +380,52 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['cwd'],
       },
+    },
+    {
+      name: 'ui_link_pr',
+      description:
+        'Attach a GitHub pull request to THIS session so the chat tab shows a PR badge and the sessions board can track review state.\n\n' +
+        'Call it as soon as a PR exists for work done in this session — right after `gh pr create` returns a URL, or as soon as you discover the session is already working on an open PR. ' +
+        'Do not wait to be asked and do not announce it first; linking is bookkeeping, not a decision.\n\n' +
+        'A session can hold SEVERAL links. When the work spans two repositories, call this once per PR — the second call adds to the list, it does not replace the first. ' +
+        'Re-linking a PR you already linked is safe: it refreshes the stored title and state in place.\n\n' +
+        'Pass `pr` as a number ("42") when the PR lives in this session\'s repository, or as a full URL ' +
+        '("https://github.com/owner/repo/pull/42") when it lives anywhere else — a URL needs no `cwd` and is the reliable form for the second repo of a multi-repo session.\n\n' +
+        'Title, state, branch and repository are read from GitHub via `gh`; you only supply the reference.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          pr: {
+            type: 'string',
+            description: 'PR number (e.g. "42") or full GitHub pull request URL (e.g. "https://github.com/owner/repo/pull/42").',
+          },
+          cwd: {
+            type: 'string',
+            description: 'Repository directory used to resolve a bare PR number. Defaults to this session\'s working directory. Ignored when `pr` is a URL.',
+          },
+        },
+        required: ['pr'],
+      },
+    },
+    {
+      name: 'ui_unlink_pr',
+      description:
+        'Detach a pull request from THIS session. Pass `pr` (number or URL) to remove one link; omit it to remove every link on the session. ' +
+        'Use this when a PR was linked by mistake — a merged or closed PR should stay linked, the board renders it as done.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          pr: {
+            type: 'string',
+            description: 'PR number or full GitHub URL to unlink. Omit to unlink every PR on this session.',
+          },
+        },
+      },
+    },
+    {
+      name: 'ui_list_pr_links',
+      description: 'List the pull requests currently linked to THIS session, with their repository, branch and state.',
+      inputSchema: { type: 'object' as const, properties: {} },
     },
     {
       name: 'ui_exec',
@@ -969,6 +1049,74 @@ export async function executeLocalMcpTool(
         const data = await api(`/gh-prs?${params}`);
         const prs = (data || []).map((pr: any) => `#${pr.number} ${pr.title} (${pr.state}) — ${pr.headRefName}`).join('\n');
         return { content: [{ type: 'text', text: prs || 'No pull requests found' }] };
+      }
+      case 'ui_link_pr': {
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const ref = normalizePrRef(args!.pr);
+        if (!ref) {
+          return {
+            content: [{ type: 'text', text: '`pr` must be a PR number (e.g. "42") or a full GitHub pull request URL (e.g. "https://github.com/owner/repo/pull/42").' }],
+            isError: true,
+          };
+        }
+        const cwd = (args!.cwd as string | undefined)?.trim() || sessions.get(uiSessionId)?.cwd;
+        if (!cwd && !ref.startsWith('http')) {
+          return { content: [{ type: 'text', text: 'Pass `cwd`, or a full PR URL — a bare PR number needs a repository to resolve against.' }], isError: true };
+        }
+        const params = new URLSearchParams({ number: ref });
+        if (cwd) params.set('cwd', cwd);
+        const detail = await apiResult(`/pr-detail?${params}`);
+        if (!detail.ok || !detail.body || detail.body.error || typeof detail.body.number !== 'number') {
+          const why = detail.body?.error || `HTTP ${detail.status}`;
+          return { content: [{ type: 'text', text: `Could not read ${ref} from GitHub: ${why}` }], isError: true };
+        }
+        const pr = detail.body;
+        const link = {
+          prNumber: pr.number,
+          title: pr.title,
+          url: pr.url,
+          headRefName: pr.headRefName,
+          state: pr.state,
+          repo: repoFromPrUrl(pr.url),
+          cwd,
+          linkedAt: Date.now(),
+          linkedBy: 'agent',
+        };
+        const saved = await apiResult(`/pr-link/${encodeURIComponent(uiSessionId)}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(link),
+        });
+        if (!saved.ok) {
+          return { content: [{ type: 'text', text: `Could not save the link (HTTP ${saved.status}).` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: `Linked ${describePrLink(link)}\n\n${renderPrLinks(saved.body?.links)}` }] };
+      }
+      case 'ui_unlink_pr': {
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const query = new URLSearchParams();
+        if (args!.pr !== undefined) {
+          const ref = normalizePrRef(args!.pr);
+          const number = ref && (ref.startsWith('http') ? ref.split('/').pop() : ref);
+          if (!number || !/^\d+$/.test(number)) {
+            return { content: [{ type: 'text', text: '`pr` must be a PR number or a full GitHub pull request URL. Omit it to unlink every PR.' }], isError: true };
+          }
+          query.set('prNumber', number);
+          const repo = ref!.startsWith('http') ? repoFromPrUrl(ref!) : undefined;
+          if (repo) query.set('repo', repo);
+        }
+        const suffix = query.toString() ? `?${query}` : '';
+        const res = await apiResult(`/pr-link/${encodeURIComponent(uiSessionId)}${suffix}`, { method: 'DELETE' });
+        if (!res.ok) {
+          return { content: [{ type: 'text', text: `Could not unlink (HTTP ${res.status}).` }], isError: true };
+        }
+        const what = query.get('prNumber') ? `PR #${query.get('prNumber')}` : 'every PR';
+        return { content: [{ type: 'text', text: `Unlinked ${what} from this session.\n\n${renderPrLinks(res.body?.links)}` }] };
+      }
+      case 'ui_list_pr_links': {
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const data = await api(`/pr-link/${encodeURIComponent(uiSessionId)}`);
+        return { content: [{ type: 'text', text: renderPrLinks(data?.links) }] };
       }
 
       // --- Automations -----------------------------------------------------

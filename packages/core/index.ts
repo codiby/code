@@ -106,6 +106,7 @@ import {
   removeTerminal,
 } from './handlers/terminals';
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, handleGitDiscard, baseDiffRef, runShell } from './handlers/git';
+import { handlePrComment, handlePrDetail, handlePrDiff, handlePrMerge, handlePrReviewThreads } from './handlers/pr';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
 import { planAutoGroup, planAutoGroupExisting, type AutoGroup } from './config/auto-group';
@@ -131,7 +132,8 @@ import {
   clearSessionState,
 } from './session/state';
 import type { ChatMessage } from './session/state';
-import { loadPRLinks, savePRLink, removePRLink, getPRLink, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './session/storage';
+import { loadPRLinks, addPRLink, setPRLinks, removePRLink, getPRLinks, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './session/storage';
+import type { PRLink } from './session/storage';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './config/claude-settings';
 import { createDocsApp } from './api/swagger';
 import { Hono } from 'hono';
@@ -354,6 +356,16 @@ onPortlessUrlResolved(broadcastPortlessUrlResolved);
  *  write echoed them straight back into ui-preferences.json. */
 function broadcastPreferences(prefs: Record<string, unknown>) {
   const msg = JSON.stringify({ type: 'preferences', preferences: prefs });
+  for (const ws of frontendClients) {
+    try { ws.send(msg); } catch {}
+  }
+}
+
+/** Broadcast the whole session→PRs map after a write. Global rather than
+ *  session-scoped because the sessions board renders a PR chip for every row,
+ *  not just the tab in front of the user. */
+function broadcastPrLinks() {
+  const msg = JSON.stringify({ type: 'pr_links', prLinks: loadPRLinks() });
   for (const ws of frontendClients) {
     try { ws.send(msg); } catch {}
   }
@@ -1857,37 +1869,51 @@ app.get('/gh-prs', async (c) => {
   if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
   return await handleGhPrs(cwd, sessionName);
 });
-app.get('/pr-detail', async (c) => {
+// The PR panel's routes all live in handlers/pr.ts, which spawns `gh` with an
+// argv array rather than through a shell — comment bodies and merge subjects
+// are free-text and must never reach `sh -c`.
+app.get('/pr-detail', (c) => {
   const url = new URL(c.req.url);
-  const prNumber = url.searchParams.get('number');
-  const cwd = url.searchParams.get('cwd') || CWD;
-  if (!prNumber) return Response.json({ error: 'missing number' }, { status: 400, headers: corsHeaders });
-  try {
-    const prJson = await runShell(
-      `gh pr view ${prNumber} --json number,title,body,headRefName,baseRefName,state,url,isDraft,additions,deletions,changedFiles,commits,reviews,comments,labels,author,createdAt,updatedAt,mergedAt,mergeable`,
-      cwd,
-      15000,
-    );
-    return Response.json(JSON.parse(prJson), { headers: corsHeaders });
-  } catch (e: any) {
-    return Response.json({ error: e.message || String(e) }, { status: 502, headers: corsHeaders });
-  }
+  return handlePrDetail(url.searchParams.get('number'), url.searchParams.get('cwd') || CWD);
 });
+app.get('/pr-diff', (c) => {
+  const url = new URL(c.req.url);
+  return handlePrDiff(url.searchParams.get('number'), url.searchParams.get('cwd') || CWD);
+});
+app.get('/pr-review-threads', (c) => {
+  const url = new URL(c.req.url);
+  return handlePrReviewThreads(url.searchParams.get('number'), url.searchParams.get('cwd') || CWD);
+});
+app.post('/pr-comment', async (c) => handlePrComment(await c.req.raw.json()));
+app.post('/pr-merge', async (c) => handlePrMerge(await c.req.raw.json()));
 
 // ── PR Links ─────────────────────────────────────────────────────────────────
+// A session holds a *list* of PRs, not one: work that spans two repos produces
+// two pull requests and both belong on the same tab. Writes broadcast so the
+// badge repaints when the agent links a PR through `ui_link_pr` rather than the
+// user picking one from the dropdown.
 app.get('/pr-links', () => Response.json(loadPRLinks(), { headers: corsHeaders }));
 app.get('/pr-link/:sessionId', (c) => {
-  const link = getPRLink(c.req.param('sessionId'));
-  return Response.json({ link }, { headers: corsHeaders });
+  return Response.json({ links: getPRLinks(c.req.param('sessionId')) }, { headers: corsHeaders });
 });
 app.put('/pr-link/:sessionId', async (c) => {
-  const body = await c.req.raw.json() as { prNumber: number; title: string; url: string; headRefName: string; state: string };
-  savePRLink(c.req.param('sessionId'), body);
-  return Response.json({ ok: true }, { headers: corsHeaders });
+  const sessionId = c.req.param('sessionId');
+  const body = await c.req.raw.json() as PRLink | { links: PRLink[] };
+  // `{ links: [...] }` replaces the list wholesale; a bare link is an upsert.
+  const links = Array.isArray((body as { links?: PRLink[] }).links)
+    ? setPRLinks(sessionId, (body as { links: PRLink[] }).links)
+    : addPRLink(sessionId, body as PRLink);
+  broadcastPrLinks();
+  return Response.json({ ok: true, links }, { headers: corsHeaders });
 });
 app.delete('/pr-link/:sessionId', (c) => {
-  removePRLink(c.req.param('sessionId'));
-  return Response.json({ ok: true }, { headers: corsHeaders });
+  const url = new URL(c.req.url);
+  const prNumber = parseInt(url.searchParams.get('prNumber') || '', 10);
+  const links = Number.isFinite(prNumber)
+    ? removePRLink(c.req.param('sessionId'), { prNumber, repo: url.searchParams.get('repo') || undefined })
+    : removePRLink(c.req.param('sessionId'));
+  broadcastPrLinks();
+  return Response.json({ ok: true, links }, { headers: corsHeaders });
 });
 
 // ── MCP servers (config CRUD) ────────────────────────────────────────────────

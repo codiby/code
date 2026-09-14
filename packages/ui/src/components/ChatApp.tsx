@@ -35,7 +35,8 @@ import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
-import { PRDetail } from './PRDetail';
+import { PRDetail, type PRInfo } from './PRDetail';
+import { repoFromPrUrl, type PrLink } from '../lib/store/slices/prSlice';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
 import { tryInvokeNative } from '../lib/native';
@@ -1060,8 +1061,6 @@ export function ChatApp() {
   const setShowPrDropdown = useAppStore(s => s.setShowPrDropdown);
   const sessionPrs = useAppStore(s => s.sessionPrs);
   const setSessionPrs = useAppStore(s => s.setSessionPrs);
-  const openPR = useAppStore(s => s.openPR);
-  const setOpenPR = useAppStore(s => s.setOpenPR);
 
   const gitModifiedCacheRef = useRef<Record<string, GitModifiedState>>({});
   // Git working-tree state now lives in the store (gitSlice).
@@ -1227,6 +1226,7 @@ export function ChatApp() {
     browsers: {}, activeBrowserName: null,
     browserComments: {}, browserInspect: {},
     openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
+    openPR: null,
     pastedImages: [],
     requirements: null, requirementsOpen: false, requirementsRunning: [],
     loop: null, loopProgress: null,
@@ -1501,6 +1501,7 @@ export function ChatApp() {
                 browserInspect: existing?.browserInspect ?? {},
                 openPlan: existing?.openPlan ?? null,
                 lastPlan: existing?.lastPlan ?? null,
+                openPR: existing?.openPR ?? null,
                 planComments: existing?.planComments ?? [],
                 planRequestId: existing?.planRequestId ?? null,
                 // Requirements/loop arrive over their own broadcasts and via a
@@ -1900,6 +1901,9 @@ export function ChatApp() {
         // sessions between groups). Session visibility (open/archived)
         // lives on each session, not in preferences.
         onKeybindings: (overrides) => setKbOverrides(overrides || {}),
+        // Repaints the PR badge when the agent links a PR through ui_link_pr,
+        // or when another window links one.
+        onPrLinks: (links) => setPrLinks((links || {}) as Record<string, PrLink[]>),
         onPreferences: (prefs) => {
           if (Array.isArray(prefs.tabOrder)) {
             setTabOrder(prefs.tabOrder as string[]);
@@ -2239,6 +2243,12 @@ export function ChatApp() {
   const browserOpen = !!active.activeBrowserName && !!active.browsers[active.activeBrowserName];
   const activeBrowser = browserOpen ? active.browsers[active.activeBrowserName as string] : null;
   const anyBrowserOpen = Object.keys(active.browsers).length > 0;
+  // Per-session, like every other side panel: switching tabs must not carry
+  // this session's PR into the next one.
+  const openPR = active.openPR;
+  const setOpenPR = (next: PRInfo | null) => {
+    if (activeId) updateLocalState(activeId, s => ({ ...s, openPR: next }));
+  };
   // Unified reveal request handed to the PanelsWorkspace: switch its active tab
   // to whatever was last opened/focused (editor or browser) whenever
   // `panelFocusSeq` bumps, so re-opening an already-open tab still surfaces it.
@@ -2246,6 +2256,56 @@ export function ChatApp() {
     ? { tabId: active.panelFocusTabId, nonce: active.panelFocusSeq }
     : null;
   const hasRightPanel = anyEditorOpen || !!openMockup || anyBrowserOpen || !!openPlan || !!openTerminal || !!diffView || pluginDetailOpen || !!openPR;
+
+  // ── Linked PRs ───────────────────────────────────────────────────────────
+  // A session that shipped changes to two repositories carries one link per
+  // repo, so this is a list. Writes are optimistic *and* broadcast by the
+  // server (`pr_links`), which is what makes an agent's `ui_link_pr` land here
+  // without a reload.
+  const linkedPrs: PrLink[] = (activeId && prLinks[activeId]) || [];
+  /** Mirrors the server's matching rule: a link with no `repo` (legacy, or a
+   *  PR resolved without a GitHub remote) matches on number alone. */
+  const samePrLink = (a: { prNumber: number; repo?: string }, b: { prNumber: number; repo?: string }) =>
+    a.prNumber === b.prNumber && (!a.repo || !b.repo || a.repo.toLowerCase() === b.repo.toLowerCase());
+  const persistPrLink = (link: PrLink) => {
+    const sid = activeId!;
+    setPrLinks(prev => ({ ...prev, [sid]: [...(prev[sid] || []).filter(l => !samePrLink(l, link)), link] }));
+    resolveServerUrl().then(base =>
+      fetch(`${base}/pr-link/${sid}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(link),
+      }).catch(() => {})
+    );
+  };
+  /** Drop one link, or every link on the session when `link` is omitted. */
+  const dropPrLink = (link?: PrLink) => {
+    const sid = activeId!;
+    setPrLinks(prev => {
+      const next = { ...prev };
+      const remaining = link ? (next[sid] || []).filter(l => !samePrLink(l, link)) : [];
+      if (remaining.length) next[sid] = remaining;
+      else delete next[sid];
+      return next;
+    });
+    const query = link
+      ? `?prNumber=${link.prNumber}${link.repo ? `&repo=${encodeURIComponent(link.repo)}` : ''}`
+      : '';
+    resolveServerUrl().then(base =>
+      fetch(`${base}/pr-link/${sid}${query}`, { method: 'DELETE' }).catch(() => {})
+    );
+  };
+  /** Open a link in the right-hand PR pane. `cwd` rides along so a PR from the
+   *  session's *second* repo still resolves — `gh` runs where the PR lives. */
+  const openLinkedPr = (link: PrLink) => {
+    setOpenPR({
+      number: link.prNumber, title: link.title, url: link.url,
+      headRefName: link.headRefName, state: link.state, cwd: link.cwd,
+    });
+    if (activeId) updateLocalState(activeId, s => ({ ...s, diffView: null }));
+    // Clear any active plugin detail view so the PR can take the right pane.
+    window.dispatchEvent(new CustomEvent('codiby-code:linked-item-changed', { detail: { providerId: '', item: null } }));
+  };
   // While the inline GroupComposer is mounted (a group is focused but no
   // session inside it is selected) the main pane belongs to the composer, so
   // the per-session PanelsWorkspace must NOT render — otherwise the browser's
@@ -5540,79 +5600,101 @@ export function ChatApp() {
               {/* Plugin-contributed linked-item pickers (e.g. ticket linker) */}
               <PluginLinkedItemPickers sessionId={activeId} />
 
-              {/* PR badge */}
-              <div className="relative">
-                {prLinks[activeId] ? (
+              {/* PR badges — one chip per linked PR, so a session spanning two
+                  repos shows both. The trailing button opens the picker. */}
+              <div className="relative flex items-center gap-1">
+                {linkedPrs.map(link => (
                   <button
+                    key={`${link.repo || ''}#${link.prNumber}`}
                     className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const linked = prLinks[activeId!];
-                      setOpenPR({ number: linked.prNumber, title: linked.title, url: linked.url, headRefName: linked.headRefName, state: linked.state });
-                      if (activeId) updateLocalState(activeId, s => ({ ...s, diffView: null }));
-                      // Clear any active plugin detail view so the PR can take the right pane.
-                      window.dispatchEvent(new CustomEvent('codiby-code:linked-item-changed', { detail: { providerId: '', item: null } }));
-                    }}
+                    onClick={(e) => { e.stopPropagation(); openLinkedPr(link); }}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
-                    title={`PR #${prLinks[activeId].prNumber}: ${prLinks[activeId].title} (right-click to change)`}
+                    title={`${link.repo ? `${link.repo} ` : ''}PR #${link.prNumber}: ${link.title} (right-click to change)`}
                   >
                     <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
-                    #{prLinks[activeId].prNumber}
+                    #{link.prNumber}
                   </button>
-                ) : (
-                  <button
-                    className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent transition-colors"
-                    onClick={(e) => { e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
-                    title="Link a PR"
-                  >
-                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
-                    Link PR
-                  </button>
-                )}
+                ))}
+                <button
+                  className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] text-zinc-600 hover:text-zinc-400 hover:bg-surface-light border border-transparent transition-colors"
+                  onClick={(e) => { e.stopPropagation(); setShowPrDropdown(!showPrDropdown); }}
+                  title={linkedPrs.length ? 'Link another PR' : 'Link a PR'}
+                >
+                  {linkedPrs.length ? (
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" strokeLinecap="round" /></svg>
+                  ) : (
+                    <>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 9a9 9 0 01-9 9" /></svg>
+                      Link PR
+                    </>
+                  )}
+                </button>
 
                 {showPrDropdown && (
                   <div
-                    className="absolute left-0 top-7 z-50 w-80 max-h-64 bg-[#2a2a2a] border border-border-light rounded-lg shadow-xl overflow-hidden"
+                    className="absolute left-0 top-7 z-50 w-80 max-h-80 bg-[#2a2a2a] border border-border-light rounded-lg shadow-xl overflow-hidden"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {prLinks[activeId!] && (
-                      <button
-                        className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-surface-light transition-colors border-b border-border text-left"
-                        onClick={() => {
-                          const sid = activeId!;
-                          setPrLinks(prev => { const next = { ...prev }; delete next[sid]; return next; });
-                          setShowPrDropdown(false);
-                          resolveServerUrl().then(base =>
-                            fetch(`${base}/pr-link/${sid}`, { method: 'DELETE' }).catch(() => {})
-                          );
-                        }}
-                      >
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" /></svg>
-                        Unlink #{prLinks[activeId!].prNumber}
-                      </button>
+                    {/* Already-linked PRs first. They're listed here as well as
+                        below because a link from the session's *other* repo
+                        never appears in `sessionPrs`, and would otherwise be
+                        impossible to unlink from the UI. */}
+                    {linkedPrs.length > 0 && (
+                      <div className="border-b border-border">
+                        {linkedPrs.map(link => (
+                          <div
+                            key={`linked-${link.repo || ''}#${link.prNumber}`}
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] hover:bg-surface-light transition-colors"
+                          >
+                            <span className="text-green-400 shrink-0">#{link.prNumber}</span>
+                            <span className="text-zinc-400 truncate flex-1 min-w-0">{link.repo || link.title}</span>
+                            <button
+                              className="text-zinc-600 hover:text-red-400 transition-colors shrink-0"
+                              title={`Unlink #${link.prNumber}`}
+                              onClick={() => {
+                                dropPrLink(link);
+                                if (linkedPrs.length === 1) setShowPrDropdown(false);
+                              }}
+                            >
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" /></svg>
+                            </button>
+                          </div>
+                        ))}
+                        {linkedPrs.length > 1 && (
+                          <button
+                            className="w-full px-3 py-1.5 text-[11px] text-red-400 hover:bg-surface-light transition-colors text-left"
+                            onClick={() => { dropPrLink(); setShowPrDropdown(false); }}
+                          >
+                            Unlink all
+                          </button>
+                        )}
+                      </div>
                     )}
                     <div className="overflow-y-auto max-h-52">
                       {sessionPrs.length === 0 ? (
                         <div className="px-3 py-3 text-[11px] text-zinc-600">No pull requests found for this repo.</div>
                       ) : sessionPrs.map(pr => {
-                        const isLinked = prLinks[activeId!]?.prNumber === pr.number;
+                        const isLinked = linkedPrs.some(l => l.prNumber === pr.number);
                         const stateColor = pr.isDraft ? 'bg-amber-400' : pr.state === 'OPEN' ? 'bg-green-400' : pr.state === 'MERGED' ? 'bg-violet-400' : 'bg-zinc-500';
                         return (
                           <button
                             key={pr.number}
                             className={`w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-surface-light transition-colors ${isLinked ? 'bg-green-500/10' : ''}`}
+                            title={isLinked ? 'Click to unlink' : 'Click to link'}
                             onClick={() => {
-                              const sid = activeId!;
-                              const link = { prNumber: pr.number, title: pr.title, url: pr.url, headRefName: pr.headRefName, state: pr.state };
-                              setPrLinks(prev => ({ ...prev, [sid]: link }));
+                              const link: PrLink = {
+                                prNumber: pr.number, title: pr.title, url: pr.url,
+                                headRefName: pr.headRefName, state: pr.state,
+                                repo: repoFromPrUrl(pr.url),
+                                cwd: activeSession?.cwd,
+                                linkedAt: Date.now(), linkedBy: 'user',
+                              };
+                              // Clicking a linked PR toggles it off — that's how
+                              // you swap one of several links without losing the
+                              // others.
+                              if (isLinked) dropPrLink(link);
+                              else persistPrLink(link);
                               setShowPrDropdown(false);
-                              resolveServerUrl().then(base =>
-                                fetch(`${base}/pr-link/${sid}`, {
-                                  method: 'PUT',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify(link),
-                                }).catch(() => {})
-                              );
                             }}
                           >
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${stateColor}`} />
@@ -6967,7 +7049,9 @@ export function ChatApp() {
                         if (!(openPR)) return null;
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
-                  <PRDetail pr={openPR} cwd={active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
+                  {/* The link's own cwd wins: a PR from the session's second
+                      repo can't be read with `gh` from the session's cwd. */}
+                  <PRDetail pr={openPR} cwd={openPR.cwd || active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd} onClose={() => setOpenPR(null)} />
                           </div>
                         );
                       }

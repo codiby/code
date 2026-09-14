@@ -863,26 +863,30 @@ export const openApiSpec: OpenApiSpec = {
 
     // ───────────────────────── PR Links ─────────────────────────
     '/pr-links': {
-      get: { tags: ['PR Links'], summary: 'All persisted PR links', responses: { 200: corsResponse } },
+      get: { tags: ['PR Links'], summary: 'All persisted PR links, keyed by session id (each value is a list)', responses: { 200: corsResponse } },
     },
     '/pr-link/{sessionId}': {
       get: {
         tags: ['PR Links'],
-        summary: 'Get the PR link for a session',
+        summary: 'List the PRs linked to a session',
         parameters: [{ name: 'sessionId', in: 'path', required: true, schema: { type: 'string' } }],
         responses: { 200: corsResponse },
       },
       put: {
         tags: ['PR Links'],
-        summary: 'Associate a PR with a session',
+        summary: 'Link a PR to a session (upsert), or replace the whole list with { links: [...] }',
         parameters: [{ name: 'sessionId', in: 'path', required: true, schema: { type: 'string' } }],
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { prNumber: { type: 'integer' }, title: { type: 'string' }, url: { type: 'string' }, headRefName: { type: 'string' }, state: { type: 'string' } } } } } },
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { prNumber: { type: 'integer' }, title: { type: 'string' }, url: { type: 'string' }, headRefName: { type: 'string' }, state: { type: 'string' }, repo: { type: 'string' }, cwd: { type: 'string' }, links: { type: 'array', items: { type: 'object' } } } } } } },
         responses: { 200: okResponse },
       },
       delete: {
         tags: ['PR Links'],
-        summary: 'Remove a session\'s PR link',
-        parameters: [{ name: 'sessionId', in: 'path', required: true, schema: { type: 'string' } }],
+        summary: 'Unlink one PR from a session, or all of them when prNumber is omitted',
+        parameters: [
+          { name: 'sessionId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'prNumber', in: 'query', required: false, schema: { type: 'integer' }, description: 'Unlink just this PR; omit to unlink every PR on the session' },
+          { name: 'repo', in: 'query', required: false, schema: { type: 'string' }, description: '"owner/name" — disambiguates when a session spans two repositories' },
+        ],
         responses: { 200: okResponse },
       },
     },

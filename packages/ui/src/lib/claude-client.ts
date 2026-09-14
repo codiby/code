@@ -646,6 +646,10 @@ type ClientCallbacks = {
   /** The keyboard-shortcut override map changed (the shortcuts editor saved,
    *  possibly in another window). */
   onKeybindings?: (overrides: Record<string, string | null>) => void;
+  /** The session→PRs map changed. Fires on every write, which is what makes an
+   *  agent-driven `ui_link_pr` show up in the header without a reload. Like
+   *  preferences, this is the sending machine's map, so a remote's is ignored. */
+  onPrLinks?: (prLinks: Record<string, unknown[]>) => void;
   onFocusSession: (sessionId: string) => void;
   /** Tunnel status for a remote changed. Used by the chat header chip to
    *  show "tunnel offline" / "reconnecting" without polling. Optional —
@@ -1242,6 +1246,11 @@ export class ClaudeClient {
         // Per-machine, like preferences below: a remote's shortcut overrides
         // are not this window's.
         if (!remoteId) this.callbacks.onKeybindings?.(msg.keybindings as Record<string, string | null>);
+        break;
+      case 'pr_links':
+        // Per-machine, like keybindings and preferences: a remote's links are
+        // keyed by its own session ids and would collide with this window's.
+        if (!remoteId) this.callbacks.onPrLinks?.(msg.prLinks as Record<string, unknown[]>);
         break;
       case 'preferences':
         // Preferences belong to the machine that sent them. Handing a remote's
