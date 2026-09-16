@@ -107,6 +107,7 @@ import { SearchPanel } from './search/SearchPanel';
 import { FocusBrowserAnchor } from './browser/FocusBrowserAnchor';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
+import { parseGroupOrder, takeLegacyGroupOrder } from '../lib/group-order';
 import { CHAT_WIDTH_CLASS, type ChatWidth } from '../lib/store/slices/preferencesSlice';
 import {
   ancestorChain, descendantGroupIds, groupIdForCwd, isAncestorOf,
@@ -298,6 +299,7 @@ export function ChatApp() {
   const setPinnedSessionIds = useAppStore(s => s.setPinnedSessionIds);
   const expandedGroupIds = useAppStore(s => s.expandedGroupIds);
   const setExpandedGroupIds = useAppStore(s => s.setExpandedGroupIds);
+  const setGroupOrder = useAppStore(s => s.setGroupOrder);
   /** Group focused in the sidebar. When set, the main pane renders the
    *  inline new-session composer (GroupComposer) instead of the active
    *  session's chat body. Cleared as soon as a session is selected. */
@@ -1916,6 +1918,18 @@ export function ChatApp() {
           }
           if (Array.isArray(prefs.pinnedSessionIds)) {
             setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
+          }
+          const groupOrder = parseGroupOrder(prefs.groupOrder);
+          if (groupOrder) {
+            setGroupOrder(groupOrder);
+          } else {
+            // A server that has never stored an order adopts the one this
+            // window kept in localStorage before the order moved server-side.
+            const legacy = takeLegacyGroupOrder();
+            if (legacy) {
+              setGroupOrder(legacy);
+              persistPrefs({ groupOrder: legacy });
+            }
           }
           // Toggles + accents + global env vars are owned by preferencesSlice.
           hydratePreferences(prefs);

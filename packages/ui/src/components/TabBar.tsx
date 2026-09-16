@@ -14,6 +14,8 @@ import {
   buildGroupTree, descendantGroupIds, isAncestorOf, pinOrder,
   resolveGroupColor, type TreeNode,
 } from '../lib/group-tree';
+import { useAppStore } from '../lib/store';
+import { persistPrefs } from '../lib/store/persist-prefs';
 
 type TabGroup = TabGroupInfo;
 
@@ -911,37 +913,15 @@ export const TabBar = memo(function TabBar(props: Props) {
   const startRename = (s: SessionInfo) => { setEditingId(s.id); setEditName(s.name); };
   const commitRename = () => { if (editingId && editName.trim()) onRename(editingId, editName.trim()); setEditingId(null); };
 
-  // Manual ordering of tab groups, persisted per parent: `''` holds the
-  // root-level order, every other key holds one group's child order. Groups not
-  // in a list are appended (new groups go to the end), so the order is explicit
-  // and never reshuffles on its own as member activity changes.
-  const [groupOrder, setGroupOrder] = useState<Record<string, string[]>>(() => {
-    if (typeof window === 'undefined') return {};
-    const readArray = (raw: string | null): string[] => {
-      try {
-        const arr = raw ? JSON.parse(raw) : [];
-        return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
-      } catch { return []; }
-    };
-    try {
-      const raw = localStorage.getItem('tabBarGroupOrderByParent');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          const out: Record<string, string[]> = {};
-          for (const [k, v] of Object.entries(parsed)) {
-            if (Array.isArray(v)) out[k] = v.filter((x): x is string => typeof x === 'string');
-          }
-          return out;
-        }
-      }
-      // Migrate the pre-nesting flat order into the root bucket.
-      const legacy = readArray(localStorage.getItem('tabBarGroupOrder'));
-      return legacy.length ? { '': legacy } : {};
-    } catch { return {}; }
-  });
+  // Manual ordering of tab groups, per parent: `''` holds the root-level order,
+  // every other key holds one group's child order. Groups not in a list are
+  // appended (new groups go to the end), so the order is explicit and never
+  // reshuffles on its own as member activity changes. Lives in the server's
+  // preferences so every window and device shares it.
+  const groupOrder = useAppStore(s => s.groupOrder);
+  const setGroupOrder = useAppStore(s => s.setGroupOrder);
   const persistGroupOrder = (next: Record<string, string[]>) => {
-    try { localStorage.setItem('tabBarGroupOrderByParent', JSON.stringify(next)); } catch {}
+    persistPrefs({ groupOrder: next });
   };
   /** Place `fromGid` next to `toGid` inside `parentKey`'s child list. The
    *  re-parenting itself is the host's job (`onMoveGroup`); this only fixes the

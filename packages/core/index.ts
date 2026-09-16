@@ -110,6 +110,7 @@ import { handlePrComment, handlePrDetail, handlePrDiff, handlePrMerge, handlePrR
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
 import { planAutoGroup, planAutoGroupExisting, type AutoGroup } from './config/auto-group';
+import { dedupePreferenceGroups } from './config/group-dedupe';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
 import { registerShutdownHandlers } from './lib/shutdown';
@@ -413,10 +414,23 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
         .filter(([, gid]) => typeof gid !== 'string' || !isRemoteGroupId(gid)),
     );
   }
-  Object.assign(prefs, clean);
-  savePreferences(prefs);
-  broadcastPreferences(prefs);
-  return prefs;
+  // Same-name sibling groups fold into one here, so every client (desktop,
+  // Android, other windows) renders the same folders from the broadcast below
+  // instead of each resolving duplicates its own way.
+  const next = dedupePreferenceGroups(Object.assign(prefs, clean));
+  savePreferences(next);
+  broadcastPreferences(next);
+  return next;
+}
+
+/** Fold the duplicates an older build left behind, before any client reads. */
+{
+  const prefs = loadPreferences();
+  const next = dedupePreferenceGroups(prefs);
+  if (next !== prefs) {
+    savePreferences(next);
+    log('[prefs] folded duplicate tab groups');
+  }
 }
 
 /** Places a freshly-created session in the sidebar. Single source of truth for
