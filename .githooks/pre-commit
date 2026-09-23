@@ -1,0 +1,9 @@
+#!/bin/sh
+# Bumps the patch version on every commit — see scripts/hooks/bump-on-commit.ts.
+# `exec` so the script's parent is git itself; it reads git's argv to spot `--amend`.
+BUN=$(command -v bun || { [ -x "$HOME/.bun/bin/bun" ] && echo "$HOME/.bun/bin/bun"; })
+if [ -z "$BUN" ]; then
+  echo "[version] bun not found; committing without a version bump" >&2
+  exit 0
+fi
+exec "$BUN" "$(git rev-parse --show-toplevel)/scripts/hooks/bump-on-commit.ts"

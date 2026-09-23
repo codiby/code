@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.30.0",
+  "version": "0.30.1",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "electron-dist/main.js",
@@ -20,6 +20,7 @@
     "bridge:dev": "bun --watch packages/core/index.ts",
     "start": "bash run.sh",
     "version:bump": "bun run scripts/bump-version.ts",
+    "prepare": "git config core.hooksPath .githooks || true",
     "electron:typecheck": "bunx tsc -p packages/desktop/tsconfig.json --noEmit",
     "electron:build:main": "bunx tsc -p packages/desktop/tsconfig.json && bun -e \"require('fs').writeFileSync('electron-dist/package.json', '{\\\"type\\\":\\\"commonjs\\\"}\\n')\"",
     "electron:bundle-resources": "bash scripts/electron-bundle-resources.sh",
