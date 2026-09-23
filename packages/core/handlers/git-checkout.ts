@@ -20,7 +20,7 @@ const COMMIT_TIMEOUT = 120000;
 
 type GitResult = { ok: boolean; stdout: string; stderr: string };
 
-async function runGit(args: string[], cwd: string, timeout = GIT_TIMEOUT): Promise<GitResult> {
+export async function runGit(args: string[], cwd: string, timeout = GIT_TIMEOUT): Promise<GitResult> {
   let proc: ReturnType<typeof Bun.spawn<'ignore', 'pipe', 'pipe'>>;
   try {
     proc = Bun.spawn(['git', ...args], {

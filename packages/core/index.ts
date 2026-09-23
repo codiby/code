@@ -109,6 +109,7 @@ import {
 import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitDiscard, baseDiffRef, runShell } from './handlers/git';
 import { handleGitCheckout, type CheckoutRequest } from './handlers/git-checkout';
 import { APP_VERSION } from './config/version';
+import { BOOT_COMMIT, handleSelfUpdate, selfUpdateSupport } from './handlers/self-update';
 import { handlePrComment, handlePrDetail, handlePrDiff, handlePrMerge, handlePrReviewThreads } from './handlers/pr';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
@@ -1614,8 +1615,19 @@ app.post('/save-commands', async (c) => {
 app.get('/pairings', () => Response.json({ pairings: pairings.list(), defaults: pairingDefaults() }, { headers: corsHeaders }));
 
 // `appVersion` rides along so a desktop app can tell when a remote bridge is
-// older than itself. Peers ignore the extra field.
-app.get('/host', () => Response.json({ ...getHostIdentity(), appVersion: APP_VERSION }, { headers: corsHeaders }));
+// older than itself, `canSelfUpdate` whether it may offer `/self-update`, and
+// `commit` when the restart that follows has actually landed. Peers ignore them.
+app.get('/host', () => {
+  const update = selfUpdateSupport();
+  return Response.json({
+    ...getHostIdentity(),
+    appVersion: APP_VERSION,
+    commit: BOOT_COMMIT,
+    canSelfUpdate: update.canSelfUpdate,
+    ...(update.canSelfUpdate ? {} : { selfUpdateBlocker: update.reason }),
+  }, { headers: corsHeaders });
+});
+app.post('/self-update', () => handleSelfUpdate());
 
 app.get('/remotes', () => handleListRemotes());
 app.post('/remotes', async (c) => {
