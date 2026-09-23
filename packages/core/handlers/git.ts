@@ -310,24 +310,3 @@ export async function handleGitBranches(cwd: string): Promise<Response> {
   }
 }
 
-export async function handleGitCheckout(cwd: string, branch: string): Promise<Response> {
-  try {
-    await runShell(`git checkout ${JSON.stringify(branch)} 2>&1`, cwd, 10000);
-    const current = (await runShell('git branch --show-current', cwd)).trim();
-    return Response.json({ ok: true, branch: current }, { headers: corsHeaders });
-  } catch (e: any) {
-    // When the branch is already checked out in another worktree, git prints
-    // `fatal: '<branch>' is already used by worktree at '<path>'`. Surface the
-    // path so the caller can switch into that worktree instead of failing.
-    const msg = String(e?.stdout || e?.message || e);
-    const m = msg.match(/already (?:used by|checked out at) worktree at ['"]?([^'"\n]+)['"]?/i)
-      || msg.match(/is already checked out at ['"]?([^'"\n]+)['"]?/i);
-    if (m) {
-      return Response.json(
-        { ok: false, error: msg, alreadyInWorktree: { path: m[1]!.trim(), branch } },
-        { status: 409, headers: corsHeaders },
-      );
-    }
-    return Response.json({ ok: false, error: msg }, { status: 400, headers: corsHeaders });
-  }
-}

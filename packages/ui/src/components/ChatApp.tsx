@@ -87,6 +87,7 @@ import { BrowserPanel } from './BrowserPanel';
 import { PlanPanel } from './PlanPanel';
 import { RequirementsPanel } from './RequirementsPanel';
 import { LoopBanner } from './LoopBanner';
+import { RemoteVersionBanner } from './RemoteVersionBanner';
 import type { RequirementsSnapshot } from '../lib/requirements';
 import {
   ChatFocusLayout,
@@ -7562,6 +7563,7 @@ export function ChatApp() {
           client={client}
           projectRoot={sessions.find(s => s.id === activeId)?.cwd ?? null}
         />
+        <RemoteVersionBanner client={client} remotes={remotes} remoteStatuses={remoteStatuses} />
         <PortlessActionToast />
         {tabContextMenu && (() => {
           const menu = tabContextMenu;

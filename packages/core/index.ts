@@ -106,7 +106,9 @@ import {
   getTerminalOutput,
   removeTerminal,
 } from './handlers/terminals';
-import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitCheckout, handleGitDiscard, baseDiffRef, runShell } from './handlers/git';
+import { handleGitModified, handleGitInfo, handleGhPrs, handleGitBranches, handleGitDiscard, baseDiffRef, runShell } from './handlers/git';
+import { handleGitCheckout, type CheckoutRequest } from './handlers/git-checkout';
+import { APP_VERSION } from './config/version';
 import { handlePrComment, handlePrDetail, handlePrDiff, handlePrMerge, handlePrReviewThreads } from './handlers/pr';
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
@@ -1611,7 +1613,9 @@ app.post('/save-commands', async (c) => {
 // ── Remotes ────────────────────────────────────────────────────────────────
 app.get('/pairings', () => Response.json({ pairings: pairings.list(), defaults: pairingDefaults() }, { headers: corsHeaders }));
 
-app.get('/host', () => Response.json(getHostIdentity(), { headers: corsHeaders }));
+// `appVersion` rides along so a desktop app can tell when a remote bridge is
+// older than itself. Peers ignore the extra field.
+app.get('/host', () => Response.json({ ...getHostIdentity(), appVersion: APP_VERSION }, { headers: corsHeaders }));
 
 app.get('/remotes', () => handleListRemotes());
 app.post('/remotes', async (c) => {
@@ -1900,9 +1904,9 @@ app.get('/git-branches', async (c) => {
   return await handleGitBranches(cwd);
 });
 app.post('/git-checkout', async (c) => {
-  const body = await c.req.raw.json() as { cwd: string; branch: string };
-  if (!body.cwd || !body.branch) return Response.json({ error: 'cwd and branch required' }, { status: 400, headers: corsHeaders });
-  return await handleGitCheckout(body.cwd, body.branch);
+  const { cwd, ...req } = await c.req.raw.json() as CheckoutRequest & { cwd: string };
+  if (!cwd || !req.branch) return Response.json({ error: 'cwd and branch required' }, { status: 400, headers: corsHeaders });
+  return await handleGitCheckout(cwd, req);
 });
 app.get('/gh-prs', async (c) => {
   const url = new URL(c.req.url);

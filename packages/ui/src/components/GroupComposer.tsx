@@ -10,6 +10,7 @@ import type { ClaudeClient, RemoteTarget } from '../lib/claude-client';
 import { ChatComposer, type PastedImage } from './ChatComposer';
 import { NewSessionModal } from './NewSessionModal';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
+import { BranchBlockedPanel, type DirtyFile, type ResolveMode } from './BranchBlockedPanel';
 import { WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
 import { getRecentDirs } from '../lib/recent-dirs';
 
@@ -119,6 +120,16 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   const [branches, setBranches] = useState<{ local: string[]; remote: string[]; current: string } | null>(null);
   const [branchFilter, setBranchFilter] = useState('');
   const [checkingOut, setCheckingOut] = useState(false);
+  // git's own refusal (dirty tree, unknown ref…). Without it a failed checkout
+  // just closed the menu and left the old branch showing, like a no-op.
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  // Local changes git refused to overwrite, held until the user stashes,
+  // commits, or stays put.
+  const [blocked, setBlocked] = useState<{ branch: string; current: string; files: DirtyFile[] } | null>(null);
+  const [resolving, setResolving] = useState<ResolveMode | null>(null);
+  const [resolveError, setResolveError] = useState<string | null>(null);
+  // One-line receipt after a resolved switch; a stash can still be undone.
+  const [switched, setSwitched] = useState<{ branch: string; previous: string; stash?: { sha: string; message: string }; mode: ResolveMode } | null>(null);
   const folderBtnRef = useRef<HTMLButtonElement>(null);
   const folderMenuRef = useRef<HTMLDivElement>(null);
   const branchBtnRef = useRef<HTMLButtonElement>(null);
@@ -205,6 +216,9 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
 
   // Refresh git info whenever cwd changes (group switch OR worktree picked).
   useEffect(() => {
+    setCheckoutError(null);
+    setBlocked(null);
+    setSwitched(null);
     if (!client || !cwd) { setGitInfo(null); return; }
     let cancelled = false;
     // Pinned to the group's host: a remote group's repo lives on the remote,
@@ -218,6 +232,9 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   useEffect(() => {
     if (!branchMenuOpen) return;
     setBranchFilter('');
+    setCheckoutError(null);
+    setBlocked(null);
+    setSwitched(null);
     if (client && cwd) {
       client.listBranches(cwd, target).then(data => {
         setBranches({ local: data.local || [], remote: data.remote || [], current: data.current || '' });
@@ -250,6 +267,51 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     setWorktreeOrigin(isMain ? null : (main?.path ?? null));
   };
 
+  const refreshAfterSwitch = async () => {
+    if (!client) return;
+    const info = await client.getGitInfo(cwd, target);
+    setGitInfo(info);
+    onBranchChanged?.(info.is_git ? info.branch || null : null);
+  };
+
+  const resolveBlocked = async (mode: ResolveMode, message: string, includeUntracked: boolean) => {
+    if (!client || !blocked) return;
+    setResolving(mode);
+    setResolveError(null);
+    try {
+      const result = await client.checkoutBranch(cwd, blocked.branch, target, { resolve: { mode, message, includeUntracked } });
+      if (result.ok) {
+        setBlocked(null);
+        setSwitched({ branch: result.branch || blocked.branch, previous: result.previous || blocked.current, stash: result.stash, mode });
+        await refreshAfterSwitch();
+      } else if (result.alreadyInWorktree?.path) {
+        setBlocked(null);
+        switchToWorktree(result.alreadyInWorktree.path);
+        onBranchChanged?.(blocked.branch);
+      } else {
+        setResolveError(result.error?.trim() || `Could not check out ${blocked.branch}`);
+      }
+    } catch (err) {
+      setResolveError(err instanceof Error ? err.message : `Could not check out ${blocked.branch}`);
+    } finally {
+      setResolving(null);
+    }
+  };
+
+  const undoStash = async () => {
+    if (!client || !switched?.stash) return;
+    const { previous, stash } = switched;
+    setSwitched(null);
+    try {
+      const result = await client.checkoutBranch(cwd, previous, target, { restoreStash: stash.sha });
+      if (!result.ok) setCheckoutError(result.error?.trim() || `Could not go back to ${previous}`);
+      else if (result.warning) setCheckoutError(result.warning);
+      await refreshAfterSwitch();
+    } catch (err) {
+      setCheckoutError(err instanceof Error ? err.message : `Could not go back to ${previous}`);
+    }
+  };
+
   const doCheckout = async (branch: string) => {
     if (!client || !cwd) return;
     // Preflight: if we already know the branch is in a worktree (different
@@ -264,17 +326,22 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     }
     setCheckingOut(true);
     try {
-      const result = await client.checkoutBranch(cwd, branch);
+      const result = await client.checkoutBranch(cwd, branch, target);
       if (result.ok) {
-        const info = await client.getGitInfo(cwd);
-        setGitInfo(info);
-        onBranchChanged?.(info.is_git ? info.branch || null : null);
+        await refreshAfterSwitch();
       } else if (result.alreadyInWorktree?.path) {
         // Stale gitInfo: the server saw the branch in a worktree we didn't
         // know about. Switch instead of failing.
         switchToWorktree(result.alreadyInWorktree.path);
         onBranchChanged?.(branch);
+      } else if (result.dirty) {
+        setResolveError(null);
+        setBlocked({ branch, current: result.dirty.current, files: result.dirty.files });
+      } else {
+        setCheckoutError(result.error?.trim() || `Could not check out ${branch}`);
       }
+    } catch (err) {
+      setCheckoutError(err instanceof Error ? err.message : `Could not check out ${branch}`);
     } finally {
       setCheckingOut(false);
       setBranchMenuOpen(false);
@@ -597,6 +664,36 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
             )}
           </div>
         </div>
+        {checkoutError && (
+          <p role="alert" className="px-3 -mt-1 text-xs text-red-400 whitespace-pre-wrap font-mono">{checkoutError}</p>
+        )}
+        {blocked && (
+          <BranchBlockedPanel
+            target={blocked.branch}
+            current={blocked.current}
+            host={targetLabel}
+            path={cwd}
+            files={blocked.files}
+            busy={resolving}
+            error={resolveError}
+            onResolve={resolveBlocked}
+            onStay={() => { setBlocked(null); setResolveError(null); }}
+          />
+        )}
+        {switched && (
+          <p role="status" className="px-3 -mt-1 flex items-center gap-2 text-xs text-zinc-400">
+            <span className="text-green-500">✓</span>
+            <span>
+              Switched to <span className="font-mono text-zinc-200">{switched.branch}</span>
+              {switched.stash
+                ? <> · stashed as <span className="font-mono text-zinc-200">{switched.stash.message}</span></>
+                : <> · committed on <span className="font-mono text-zinc-200">{switched.previous}</span></>}
+            </span>
+            {switched.stash && (
+              <button type="button" onClick={undoStash} className="text-violet-400 hover:text-violet-300">Undo</button>
+            )}
+          </p>
+        )}
 
         {showWorktreeForm && gitInfo?.is_git && client && (
           <div className="border border-border rounded-xl bg-surface/40 px-4 py-4">

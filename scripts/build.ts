@@ -30,6 +30,9 @@ const OUT = join(ROOT, 'dist');
 const WATCH = process.argv.includes('--watch');
 const BUILD_DEFINES = {
   'process.env.NODE_ENV': JSON.stringify(WATCH ? 'development' : 'production'),
+  // The release this UI ships in — same `package.json` version the GitHub
+  // release is tagged with. Compared against each remote bridge's `/host`.
+  'process.env.CODIBY_APP_VERSION': JSON.stringify((await Bun.file(new URL('../package.json', import.meta.url)).json()).version),
 };
 
 /**

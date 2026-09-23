@@ -1967,6 +1967,14 @@ export class ClaudeClient {
     return data.content || '';
   }
 
+  /** A bridge's identity and release. `appVersion` is missing on bridges that
+   *  predate it. `null` = this machine's bridge. */
+  async getHostInfo(remoteId: string | null): Promise<{ hostId: string; name: string; appVersion?: string } | null> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/host`, remoteId));
+    if (!resp.ok) return null;
+    return resp.json();
+  }
+
   /** `remoteId` pins the host (`null` = this machine); omit to follow the
    *  focused session. See `remoteUrl`. */
   async getGitInfo(path: string, remoteId?: string | null): Promise<{
@@ -2015,19 +2023,31 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async checkoutBranch(cwd: string, branch: string): Promise<{
+  /** `remoteId` pins the host (`null` = this machine); omit to follow the
+   *  focused session. See `remoteUrl`. */
+  async checkoutBranch(cwd: string, branch: string, remoteId?: string | null, opts: {
+    /** Clear the local changes that blocked a previous attempt first. */
+    resolve?: { mode: 'stash' | 'commit'; message: string; includeUntracked?: boolean };
+    /** Undo a `resolve: stash`: pop this stash sha after switching. */
+    restoreStash?: string;
+  } = {}): Promise<{
     ok: boolean;
     branch?: string;
+    previous?: string;
     error?: string;
+    warning?: string;
+    stash?: { sha: string; message: string };
+    /** Set when uncommitted changes blocked the switch. */
+    dirty?: { current: string; files: { path: string; status: string; additions?: number; deletions?: number }[] };
     /** Set when the branch is already checked out in another worktree.
      *  The caller can switch its cwd to `path` instead of treating this
      *  as a failure. */
     alreadyInWorktree?: { path: string; branch: string };
   }> {
-    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-checkout`), {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-checkout`, remoteId), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cwd, branch }),
+      body: JSON.stringify({ cwd, branch, ...opts }),
     });
     return resp.json();
   }
