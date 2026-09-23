@@ -59,12 +59,17 @@ export function PortForwardsPopover({
   const remoteId = session?.remoteId ?? null;
   const offline = tunnelStatus === 'offline' || tunnelStatus === 'reconnecting';
 
-  // Published ports live on the bridge's machine, so the URL that works for
-  // whoever is clicking is the host *this page* came from — not whatever the
-  // server guessed for the agent.
+  // A port published by the LOCAL bridge is reachable at the host this page
+  // came from, and that beats whatever hostname the server guessed for the
+  // agent. A remote session's ports live on the remote's machine, though —
+  // there this page's hostname is simply the wrong host, so the server's URL
+  // (built on the machine that owns the port) is the only one with a chance.
   const publishedUrl = useCallback(
-    (p: PublishedPort) => `${window.location.protocol}//${window.location.hostname}:${p.publicPort}`,
-    [],
+    (p: PublishedPort) =>
+      remoteId
+        ? p.url
+        : `${window.location.protocol}//${window.location.hostname}:${p.publicPort}`,
+    [remoteId],
   );
 
   const refresh = useCallback(async () => {

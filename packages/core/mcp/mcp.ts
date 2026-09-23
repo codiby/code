@@ -53,6 +53,7 @@ import {
 } from '../network/port-forward';
 import type { SessionPortForward } from '../network/port-forward';
 import { publishedPortUrl, publishedUrlIsGuess } from '../network/remote-viewer';
+import { requestViewerForward, type SendForwardRequest } from '../network/viewer-forward';
 
 /** How often a tool that's blocked on the user pokes the connection so Bun's
  *  `idleTimeout` doesn't reap it mid-review. Comfortably under the 10s default
@@ -100,6 +101,9 @@ type McpDeps = {
   maybeAutoGroupSession: (sessionId: string, cwd: string, sessionCwd?: string) => void;
   /** Persist and apply a permission mode change for an MCP-owned session. */
   setSessionPermissionMode: (sessionId: string, mode: 'plan' | 'acceptEdits') => Promise<boolean>;
+  /** Ask the viewers watching a session to tunnel a port back to their own
+   *  machine. Returns how many got the request. See network/viewer-forward. */
+  sendForwardRequest: SendForwardRequest;
 };
 
 let _deps: McpDeps | null = null;
@@ -442,14 +446,18 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ui_forward_port',
       description:
-        'Publish a port running on THIS machine so the user\'s browser can reach it.\n\n' +
+        'Make a port running on THIS machine reachable from the user\'s browser.\n\n' +
         'Use this whenever the user is viewing Codiby Code from another computer (the system prompt says so when they are) ' +
         'and you want to hand them a URL for something you started — a dev server, a preview, an API, a docs site. ' +
-        'Their browser cannot open `localhost` here; this binds the port on every network interface and returns the URL that does work.\n\n' +
+        'Their browser cannot open `localhost` here; this returns a URL that does work.\n\n' +
+        'Two routes, picked for you. When the user is watching over an SSH tunnel, the forward is opened on THEIR machine ' +
+        '(the same thing the "Add forward" button in their port panel does) and the URL is a real `localhost` one they can close from that panel. ' +
+        'Otherwise the port is published on every network interface here and the URL names this host. Either way, use the URL the tool returns.\n\n' +
         'Raw TCP, so HTTP, WebSockets and TLS all pass through.\n\n' +
         'Leave `public_port` unset and the tool picks one — it mirrors `port` when it can, otherwise any free port; ' +
         'either way the URL it returns is the one to use. Set `public_port` explicitly and a conflict is an ERROR: ' +
-        'the tool answers "already in use" and you must pick a different number rather than retry the same one.\n\n' +
+        'the tool answers "already in use" and you must pick a different number rather than retry the same one. ' +
+        '`public_port` only applies to the published route; over SSH the user\'s machine decides the local port.\n\n' +
         'The published port has no authentication in front of it: anyone who can route to this machine can reach the service. ' +
         'Forward what the user asked to see, not everything you have running. The forward lives until you close it or the session ends.\n\n' +
         'Not needed for browser-automation tools (`browser_open`, `browser_navigate`) — those drive a browser on this machine and can use `localhost` directly.',
@@ -1235,6 +1243,45 @@ export async function executeLocalMcpTool(
         if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
         const targetPort = args!.port as number;
         const targetHost = ((args!.host as string) || '127.0.0.1').trim() || '127.0.0.1';
+        const label = (args!.label as string) ?? null;
+
+        // First choice: have the viewer tunnel the port back to its own
+        // machine, exactly as "Add forward" in the port popover does. That
+        // yields a real `localhost` URL and a forward the user can close from
+        // the same panel — publishing on this host's `0.0.0.0` yields neither
+        // when the user is watching from somewhere else.
+        //
+        // Only a loopback target can be tunnelled: `-L` lands on the session
+        // host's own loopback, so a port on some third machine has to go out
+        // the published route.
+        if (targetHost === '127.0.0.1' || targetHost === 'localhost') {
+          try {
+            const viewer = await requestViewerForward(uiSessionId, targetPort, label, _deps!.sendForwardRequest);
+            if (viewer.ok) {
+              const listening = await isTargetListening(targetHost, targetPort);
+              const lines = [
+                `Forwarded the viewer's localhost:${viewer.localPort} -> this host's ${targetHost}:${targetPort} over SSH.`,
+                `Give the user this URL: http://localhost:${viewer.localPort}`,
+              ];
+              if (viewer.localPort !== targetPort) {
+                lines.push(`Port ${targetPort} was taken on the viewer's machine, so the forward landed on ${viewer.localPort}. Use the URL above.`);
+              }
+              if (!listening) {
+                lines.push(
+                  `Warning: nothing is listening on ${targetHost}:${targetPort} yet. The forward is up and will start working` +
+                  ' once the service binds — but if you already started it, check that it binds loopback and not some other interface.',
+                );
+              }
+              return { content: [{ type: 'text', text: lines.join('\n') }] };
+            }
+          } catch (err) {
+            // The viewer timed out or its SSH layer refused. Publishing still
+            // reaches a viewer on the same network, so fall through rather
+            // than leave the agent with no URL at all.
+            log(`[mcp] viewer forward failed for :${targetPort}, publishing instead: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
         let forward: SessionPortForward;
         try {
           forward = await openPortForward({
@@ -1242,7 +1289,7 @@ export async function executeLocalMcpTool(
             targetPort,
             targetHost,
             publicPort: args!.public_port as number | undefined,
-            label: (args!.label as string) ?? null,
+            label,
           });
         } catch (err) {
           if (err instanceof PortInUseError) {

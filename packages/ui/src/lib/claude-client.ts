@@ -847,7 +847,7 @@ export class ClaudeClient {
       token: () => _authToken,
       onMessage: (msg, rid) => this.handleMessage(msg, rid),
       onStatus: (rid, status) => { if (rid === null) this.callbacks.onConnectionChange(status); },
-      onOpen: (send) => send({ type: 'client_capabilities', browserCdp: isNative() }),
+      onOpen: (send) => send({ type: 'client_capabilities', browserCdp: isNative(), remoteForward: isNative() }),
     });
 
     // Discover configured remotes and open a direct connection to each.
@@ -975,7 +975,7 @@ export class ClaudeClient {
       token: () => null, // the loopback tunnel is trusted; no bearer needed
       onMessage: (msg, rid) => this.handleMessage(msg, rid),
       onStatus: () => {}, // remote UI status comes from the tunnel-status push
-      onOpen: (send) => send({ type: 'client_capabilities', browserCdp: isNative() }),
+      onOpen: (send) => send({ type: 'client_capabilities', browserCdp: isNative(), remoteForward: isNative() }),
     });
     this.remoteConns.set(remoteId, conn);
     // Bring the tunnel up once and point the connection at the resolved port.
@@ -1223,6 +1223,14 @@ export class ClaudeClient {
       case 'close_browser':
         this.callbacks.onCloseBrowser(sessionId, msg.name as string);
         break;
+      case 'remote_forward_request':
+        void this.serveForwardRequest(
+          sessionId,
+          msg.requestId as string,
+          msg.remotePort as number,
+          (msg.label as string | null) ?? null,
+        );
+        break;
       case 'browser_request':
         this.callbacks.onBrowserRequest?.({
           sessionId,
@@ -1391,6 +1399,41 @@ export class ClaudeClient {
 
   interrupt(sessionId: string) {
     this.send({ type: 'interrupt', sessionId });
+  }
+
+  /**
+   * The bridge asking us to tunnel one of its ports back to this machine, on
+   * behalf of `ui_forward_port`. It runs the exact path the "Add forward"
+   * button runs — Electron main owns the SSH ControlMaster, so the agent's
+   * forward and the user's are the same object, listed and closed together.
+   *
+   * Whether a forward is even possible is ours to answer: the bridge cannot
+   * tell whether we reached it directly or through a tunnel. No remote route
+   * (a local session) or no Electron main (a browser tab, the phone) means no
+   * `-L`, and the bridge publishes the port instead.
+   */
+  private async serveForwardRequest(
+    sessionId: string,
+    requestId: string,
+    remotePort: number,
+    label: string | null,
+  ) {
+    const reply = (payload: { localPort?: number; unsupported?: boolean; error?: string }) =>
+      this.send({ type: 'remote_forward_response', sessionId, requestId, ...payload });
+
+    if (!this.sessionRemote.get(sessionId) || !isNative()) {
+      reply({ unsupported: true });
+      return;
+    }
+    try {
+      const { localPort } = await this.addPortForward(sessionId, {
+        remotePort,
+        label: label ?? undefined,
+      });
+      reply({ localPort });
+    } catch (e: any) {
+      reply({ error: e?.message || 'Failed to open the forward' });
+    }
   }
 
   /** Reply to a `browser_request` from the bridge. */
@@ -2325,13 +2368,19 @@ export class ClaudeClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Published ports — this machine's local ports pushed out to a browser
-  // running somewhere else. The opposite direction to the SSH forwards below,
-  // and always the local bridge's job, so these go over plain HTTP.
+  // Published ports — a bridge's local ports pushed out to a browser running
+  // somewhere else. The opposite direction to the SSH forwards below.
+  //
+  // These route to the bridge that OWNS the session, not to this machine's.
+  // A session on a remote host publishes on that host, and its
+  // `published_ports` broadcast arrives here over the tunnel — so pointing the
+  // writes at the local bridge listed ports it could not close, and the ✕
+  // came back "This session is not publishing port N".
   // ---------------------------------------------------------------------------
 
   async listPublishedPorts(sessionId: string): Promise<PublishedPort[]> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/published-ports`);
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/published-ports`);
     if (!resp.ok) throw new Error(`Failed to load published ports (${resp.status})`);
     return resp.json();
   }
@@ -2340,7 +2389,8 @@ export class ClaudeClient {
     sessionId: string,
     body: { port: number; publicPort?: number | null; host?: string; label?: string },
   ): Promise<PublishedPort> {
-    const resp = await authedFetch(`${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/published-ports`, {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/published-ports`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -2355,8 +2405,9 @@ export class ClaudeClient {
   }
 
   async unpublishPort(sessionId: string, publicPort: number): Promise<void> {
+    const base = await this.sessionBase(sessionId);
     const resp = await authedFetch(
-      `${this.serverUrl}/sessions/${encodeURIComponent(sessionId)}/published-ports/${publicPort}`,
+      `${base}/sessions/${encodeURIComponent(sessionId)}/published-ports/${publicPort}`,
       { method: 'DELETE' },
     );
     if (!resp.ok) {

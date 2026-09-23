@@ -91,6 +91,7 @@ import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
 import { resolvePermissionDecision, clearPendingDecisionsForSession } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
+import { handleViewerForwardResponse } from './network/viewer-forward';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleListSkills, handleGetSkill, handleCreateSkill, handleUpdateSkill, handleDeleteSkill } from './handlers/skills';
 import { handleListResources, handleGetResource, handleGetResourceRaw, createResource, handleUpdateResource, handleDeleteResource, purgeSessionResources, saveResource } from './handlers/resources';
@@ -232,6 +233,10 @@ setPortForwardListener((sessionId) => {
 /** Frontend clients that can forward browser CDP calls to Electron. */
 const browserCdpClients = new Set<any>();
 
+/** Frontend clients that can open an SSH `-L` back to their own machine —
+ *  Electron renderers, which own the ControlMaster. See network/viewer-forward. */
+const remoteForwardClients = new Set<any>();
+
 /** Broadcast a message to all frontend clients subscribed to a given session */
 function broadcastToSession(sessionId: string, msg: object) {
   const data = JSON.stringify(msg);
@@ -240,6 +245,19 @@ function broadcastToSession(sessionId: string, msg: object) {
       try { ws.send(data); } catch {}
     }
   }
+}
+
+/** Asks the viewers watching this session to tunnel a port back to themselves.
+ *  Returns how many got the request so the caller can fall back to publishing
+ *  when nobody can — a web viewer or a phone has no SSH to offer. */
+function sendForwardRequest(sessionId: string, msg: object): number {
+  const data = JSON.stringify(msg);
+  let reached = 0;
+  for (const [ws, subs] of subscriptions) {
+    if (!subs.has(sessionId) || !remoteForwardClients.has(ws)) continue;
+    try { ws.send(data); reached++; } catch {}
+  }
+  return reached;
 }
 
 /** Browser controls must be routed only to Electron renderers. Broadcasting to
@@ -652,6 +670,16 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   if (type === 'client_capabilities') {
     if (msg.browserCdp === true) browserCdpClients.add(ws);
     else browserCdpClients.delete(ws);
+    if (msg.remoteForward === true) remoteForwardClients.add(ws);
+    else remoteForwardClients.delete(ws);
+    return;
+  }
+
+  // ---- remote_forward_response (from desktop frontend) ---------------------
+  // Reply to a `remote_forward_request` issued by `ui_forward_port`. The hop
+  // back from viewer → Electron main → `ssh -L`. See network/viewer-forward.
+  if (type === 'remote_forward_response') {
+    handleViewerForwardResponse(msg as { requestId?: string; localPort?: number; unsupported?: boolean; error?: string });
     return;
   }
 
@@ -2645,6 +2673,7 @@ const server = Bun.serve({
         frontendClients.delete(ws);
         subscriptions.delete(ws);
         browserCdpClients.delete(ws);
+        remoteForwardClients.delete(ws);
         forgetClientOrigin(ws);
         log(`[/ws] Frontend client disconnected (${frontendClients.size} remaining)`);
         return;
@@ -2736,6 +2765,7 @@ setMcpDeps({
   updatePreferences,
   loadPreferences,
   maybeAutoGroupSession,
+  sendForwardRequest,
   async setSessionPermissionMode(sessionId, mode) {
     const session = sessions.get(sessionId);
     if (!session) return false;
