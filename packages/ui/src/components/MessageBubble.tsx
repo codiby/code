@@ -368,6 +368,34 @@ function ToolBubble({ message, isLast, onAnswerAskUser, nested }: { message: Cha
   };
   const allAskAnswered = askQuestions.every((_, i) => (askSelections[String(i)] || '').trim());
 
+  // A written mockup renders as the open-in-preview bar and nothing else. The
+  // generic tool row above it would only restate the call — a wall of MCP
+  // identifier plus the whole html document as its argument preview — and the
+  // one thing the reader wants from this message is the way into the preview.
+  //
+  // Only once it actually landed: a mockup still running, or one that failed,
+  // falls through to the normal card, because then the call IS the news.
+  if (mockupOk) {
+    return (
+      <div className={`py-0.5 select-none ${nested ? '' : 'pl-3 ml-1 border-l-2 border-border'}`}>
+        <button
+          type="button"
+          onClick={openMockup}
+          title={`Open mockup "${mockupName}" in preview`}
+          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-dashed border-violet-500/35 bg-violet-500/[0.04] hover:bg-violet-500/10 transition-colors text-left"
+        >
+          <span className="text-[12px] text-violet-400 shrink-0 leading-none">▣</span>
+          <span className="text-[12px] font-medium text-violet-200 font-mono truncate">{mockupName}</span>
+          {mockupSize && <span className="text-[11px] text-zinc-500 shrink-0">· {mockupSize}</span>}
+          <span className="ml-auto flex items-center gap-0.5 text-[11px] text-violet-300 shrink-0">
+            Open in preview
+            <ChevronRight size={12} />
+          </span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     // The left rail is what marks a loose tool call as belonging to the
     // stream. Inside a run card the card itself already says "these belong
@@ -393,22 +421,6 @@ function ToolBubble({ message, isLast, onAnswerAskUser, nested }: { message: Cha
           </span>
         )}
       </div>
-      {mockupOk && (
-        <button
-          type="button"
-          onClick={openMockup}
-          title={`Open mockup "${mockupName}" in preview`}
-          className="mt-1.5 w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-dashed border-violet-500/35 bg-violet-500/[0.04] hover:bg-violet-500/10 transition-colors text-left"
-        >
-          <span className="text-[12px] text-violet-400 shrink-0 leading-none">▣</span>
-          <span className="text-[12px] font-medium text-violet-200 font-mono truncate">{mockupName}</span>
-          {mockupSize && <span className="text-[11px] text-zinc-500 shrink-0">· {mockupSize}</span>}
-          <span className="ml-auto flex items-center gap-0.5 text-[11px] text-violet-300 shrink-0">
-            Open in preview
-            <ChevronRight size={12} />
-          </span>
-        </button>
-      )}
       {expanded && (
         <div className="mt-1">
           {filePath && (

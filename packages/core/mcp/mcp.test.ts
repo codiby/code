@@ -60,6 +60,23 @@ describe('PR link tools', () => {
     } finally { await client.close(); server.stop(true); }
   });
 
+  test('writing a mockup never raises an approval card', async () => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: handleMcpRequest });
+    const client = new Client({ name: 'mockup-test', version: '1' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', server.url)));
+      const { tools } = await client.listTools();
+      expect(tools.some(t => t.name === 'ui_mockup_write')).toBe(true);
+      // The mockup IS the answer the user asked for; a prompt in front of it
+      // can only delay it. Both servers expose the write, so both are listed.
+      expect(ALWAYS_AUTO_APPROVE_TOOLS.has('mcp__codiby-code__ui_mockup_write')).toBe(true);
+      expect(ALWAYS_AUTO_APPROVE_TOOLS.has('mcp__codiby-code-sdk__mockup_write')).toBe(true);
+      // Running the requirements executes shell commands — it stays behind the
+      // normal flow, and is the nearest neighbour worth guarding against drift.
+      expect(ALWAYS_AUTO_APPROVE_TOOLS.has('mcp__codiby-code-sdk__run_requirements')).toBe(false);
+    } finally { await client.close(); server.stop(true); }
+  });
+
   test('refuse a reference that is not a PR number or PR URL', () => {
     expect(normalizePrRef('42')).toBe('42');
     expect(normalizePrRef('#42')).toBe('42');

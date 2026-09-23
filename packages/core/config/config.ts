@@ -118,6 +118,14 @@ export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   'mcp__codiby-code__ui_link_pr',
   'mcp__codiby-code__ui_unlink_pr',
   'mcp__codiby-code__ui_list_pr_links',
+  // Writing a mockup renders an HTML document into this session's own
+  // sandboxed preview panel (~/.codiby/mockups/<sessionId>/). It reaches
+  // nothing outside that directory, and an approval card in front of it is
+  // pure friction: the mockup IS the answer the user asked for, so the only
+  // thing the prompt can do is delay it. Auto-approved in every mode,
+  // including plan — sketching a UI is exactly what planning looks like.
+  'mcp__codiby-code__ui_mockup_write',
+  'mcp__codiby-code-sdk__mockup_write',
 ]);
 
 /**
