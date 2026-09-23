@@ -1969,10 +1969,25 @@ export class ClaudeClient {
 
   /** A bridge's identity and release. `appVersion` is missing on bridges that
    *  predate it. `null` = this machine's bridge. */
-  async getHostInfo(remoteId: string | null): Promise<{ hostId: string; name: string; appVersion?: string } | null> {
+  async getHostInfo(remoteId: string | null): Promise<{
+    hostId: string; name: string; appVersion?: string;
+    /** The commit the bridge booted from; changes once a self-update restart lands. */
+    commit?: string | null;
+    canSelfUpdate?: boolean;
+    selfUpdateBlocker?: string;
+  } | null> {
     const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/host`, remoteId));
     if (!resp.ok) return null;
     return resp.json();
+  }
+
+  /** Fast-forward a remote bridge's checkout and restart it (drops its sessions). */
+  async selfUpdate(remoteId: string): Promise<
+    | { ok: true; restarting: boolean; commit: string; version: string; branch: string }
+    | { ok: false; error: string }
+  > {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/self-update`, remoteId), { method: 'POST' });
+    return resp.json().catch(() => ({ ok: false as const, error: `HTTP ${resp.status}` }));
   }
 
   /** `remoteId` pins the host (`null` = this machine); omit to follow the
