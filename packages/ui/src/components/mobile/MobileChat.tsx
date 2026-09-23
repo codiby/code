@@ -16,7 +16,7 @@ import { MobileDiffModal } from './MobileDiffModal';
 import { MobileActionSheet, type ActionSheetId } from './MobileActionSheet';
 import { FullscreenPreview } from '../FullscreenPreview';
 import { collectGallery, type Gallery } from '../../lib/preview';
-import { collapseToolRuns, toolRunSummary } from '../MessageBubble';
+import { collapseToolRuns, toolKindColor, toolRunSummary } from '../MessageBubble';
 import type { ToolRunGroup } from '../MessageBubble';
 import { MobileMockupModal } from './MobileMockupModal';
 import type { MockupComment } from '../../lib/mockup-inspector';
@@ -831,8 +831,9 @@ export function MobileChat({
               if (m.isToolResult && m.toolUseId) resultByToolUseId.set(m.toolUseId, m);
             }
             // Skip tool_result rows that pair with a tool_use rendered above —
-            // those get folded into the tool's accordion. Then collapse runs of
-            // consecutive same-tool calls into a single "Read 4 files" card.
+            // those get folded into the tool's accordion. Then collapse each
+            // stretch of tool calls, and the reasoning interleaved with them,
+            // into a single "Bash ×2 · Edit · thought" card.
             // Same rule as the desktop thread (groupMessages): the messages an
             // explain block generated feed the block, they don't get a bubble.
             const explain = collectExplainParts(messages);
@@ -1572,9 +1573,11 @@ function MobileToolRunBubble({
       setExpanded(false);
     }
   }, [hasContentAfter]);
-  const { name, label } = toolRunSummary(group.items);
-  const anyError = group.items.some((m) => resultByToolUseId.get(m.id)?.isError);
-  const anyRunning = group.items.some((m) => !resultByToolUseId.get(m.id));
+  const { label, kinds, elapsed, failures } = toolRunSummary(group.items, (m) =>
+    resultByToolUseId.get(m.id),
+  );
+  // Reasoning has no result to wait on — only a tool without one is still running.
+  const anyRunning = group.items.some((m) => !m.isThinking && !resultByToolUseId.get(m.id));
   return (
     <li className="mx-4">
       <button
@@ -1585,22 +1588,27 @@ function MobileToolRunBubble({
         <span className="text-zinc-500 shrink-0 mt-0.5">
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
-        {name ? (
-          <>
-            <span className="text-[11px] font-mono font-medium text-violet-400 shrink-0">{name}</span>
-            <span className="text-[12px] text-zinc-400 truncate flex-1 min-w-0">{label}</span>
-          </>
-        ) : (
-          <span className="text-[11px] font-mono font-medium text-violet-400 truncate flex-1 min-w-0">{label}</span>
-        )}
+        <span className="flex gap-[3px] shrink-0 mt-[7px]">
+          {kinds.slice(0, 5).map((kind) => (
+            <span
+              key={kind}
+              style={{ backgroundColor: toolKindColor(kind) }}
+              className="w-1.5 h-1.5 rounded-[2px] opacity-80"
+            />
+          ))}
+        </span>
+        <span className="text-[12px] font-mono text-zinc-400 truncate flex-1 min-w-0">{label}</span>
         <span className="ml-auto flex items-center gap-1.5 shrink-0 mt-0.5">
+          {elapsed && !anyRunning && (
+            <span className="text-[10px] tabular-nums text-zinc-600">{elapsed}</span>
+          )}
           {anyRunning && (
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
           )}
-          {anyError && !anyRunning && (
+          {failures > 0 && !anyRunning && (
             <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
           )}
-          {!anyRunning && !anyError && (
+          {!anyRunning && failures === 0 && (
             <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
           )}
         </span>

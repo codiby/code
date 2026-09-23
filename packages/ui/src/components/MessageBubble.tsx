@@ -7,6 +7,14 @@ import { collectExplainParts, EMPTY_EXPLAIN_PARTS } from '../lib/explain';
 import { Markdown } from './Markdown';
 import { FullscreenPreview } from './FullscreenPreview';
 import { collectGallery, type Gallery } from '../lib/preview';
+import {
+  collapseToolRuns,
+  shortToolName,
+  THINKING_LABEL,
+  toolKindColor,
+  toolRunSummary,
+  type ToolRunGroup,
+} from '../lib/tool-runs';
 
 const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
 const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.default })));
@@ -829,76 +837,30 @@ export function AgentBubble({ agent, children, onOpenTerminal }: { agent: ChatMe
   );
 }
 
-export type ToolRunGroup = { toolRun: true; items: ChatMessage[] };
 export type GroupedItem =
   | ChatMessage
   | { agent: ChatMessage; children: ChatMessage[] }
   | ToolRunGroup;
 
-const NEVER_COLLAPSE = new Set([
-  'Agent', 'AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode', 'TodoWrite',
-  'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
-]);
+// Re-exported so the call sites that already pull grouping off this module
+// (ChatApp, MobileChat) keep their single import.
+export { collapseToolRuns, toolRunSummary, toolKindColor, shortToolName, THINKING_LABEL };
+export type { ToolRunGroup };
 
-/** Folds runs of ≥ 2 consecutive tool_use messages (any tool names) into a
- *  single ToolRunGroup card. Agent groups, plain assistant/user messages, and
- *  tools in NEVER_COLLAPSE pass through. */
-export function collapseToolRuns<T extends GroupedItem | ChatMessage>(items: T[]): (T | ToolRunGroup)[] {
-  const out: (T | ToolRunGroup)[] = [];
-  let i = 0;
-  const isCollapsibleTool = (it: T) =>
-    !('agent' in (it as object)) &&
-    !('toolRun' in (it as object)) &&
-    !!(it as ChatMessage).toolName &&
-    !(it as ChatMessage).isToolResult &&
-    !NEVER_COLLAPSE.has((it as ChatMessage).toolName!);
-  while (i < items.length) {
-    const item = items[i]!;
-    if (isCollapsibleTool(item)) {
-      const run: ChatMessage[] = [item as ChatMessage];
-      let j = i + 1;
-      while (j < items.length && isCollapsibleTool(items[j]!)) {
-        run.push(items[j] as ChatMessage);
-        j++;
-      }
-      if (run.length >= 2) {
-        out.push({ toolRun: true, items: run });
-        i = j;
-        continue;
-      }
-    }
-    out.push(item);
-    i++;
-  }
-  return out;
-}
-
-function toolNounPlural(toolName: string, n: number): string {
-  switch (toolName) {
-    case 'Read': return `${n} file${n === 1 ? '' : 's'}`;
-    case 'Edit': return `${n} edit${n === 1 ? '' : 's'}`;
-    case 'Write': return `${n} file${n === 1 ? '' : 's'}`;
-    case 'Bash': return `${n} command${n === 1 ? '' : 's'}`;
-    case 'Grep': return `${n} search${n === 1 ? '' : 'es'}`;
-    case 'Glob': return `${n} pattern${n === 1 ? '' : 's'}`;
-    case 'WebFetch': return `${n} URL${n === 1 ? '' : 's'}`;
-    case 'WebSearch': return `${n} quer${n === 1 ? 'y' : 'ies'}`;
-    case 'ToolSearch': return `${n} lookup${n === 1 ? '' : 's'}`;
-    case 'NotebookEdit': return `${n} edit${n === 1 ? '' : 's'}`;
-    default: return `${n}×`;
-  }
-}
-
-/** Builds the collapsed-card label. Single-type runs render as
- *  "<ToolName> <N noun>" ("Read 3 files"); mixed runs collapse to a generic
- *  "<N> tools" so the bar stays compact. */
-export function toolRunSummary(items: ChatMessage[]): { name: string | null; label: string } {
-  const names = new Set(items.map(m => m.toolName!).filter(Boolean));
-  if (names.size === 1) {
-    const tn = items[0]!.toolName!;
-    return { name: tn, label: toolNounPlural(tn, items.length) };
-  }
-  return { name: null, label: `${items.length} tools` };
+/** The colour dots that stand in for the run's contents while it's collapsed. */
+function KindDots({ kinds }: { kinds: string[] }) {
+  return (
+    <span className="flex gap-[3px] shrink-0">
+      {kinds.slice(0, 5).map(kind => (
+        <span
+          key={kind}
+          title={kind}
+          style={{ backgroundColor: toolKindColor(kind) }}
+          className="w-1.5 h-1.5 rounded-[2px] opacity-80"
+        />
+      ))}
+    </span>
+  );
 }
 
 export function ToolRunBubble({
@@ -930,9 +892,9 @@ export function ToolRunBubble({
     }
   }, [hasContentAfter]);
 
-  const { name, label } = toolRunSummary(group.items);
-  const anyError = group.items.some(m => m.toolResult?.isError);
-  const anyRunning = group.items.some(m => !m.toolResult);
+  const { label, kinds, elapsed, failures } = toolRunSummary(group.items);
+  // Reasoning has no result to wait on — only a tool without one is still running.
+  const anyRunning = group.items.some(m => !m.isThinking && !m.toolResult);
 
   return (
     <div className="py-1">
@@ -944,20 +906,17 @@ export function ToolRunBubble({
           <span className="text-zinc-500 shrink-0">
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </span>
-          {name ? (
-            <>
-              <span className="text-[11px] font-mono font-medium text-violet-400 shrink-0">{name}</span>
-              <span className="text-[11px] text-zinc-400 truncate flex-1">{label}</span>
-            </>
-          ) : (
-            <span className="text-[11px] font-mono font-medium text-violet-400 truncate flex-1">{label}</span>
+          <KindDots kinds={kinds} />
+          <span className="text-[11px] font-mono text-zinc-400 truncate flex-1">{label}</span>
+          {elapsed && !anyRunning && (
+            <span className="text-[10px] tabular-nums text-zinc-600 shrink-0">{elapsed}</span>
           )}
           {anyRunning && (
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
           )}
-          {anyError && (
+          {failures > 0 && (
             <span className="text-[9px] uppercase tracking-wider text-red-400/80 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded font-mono shrink-0">
-              error
+              {failures > 1 ? `${failures} errors` : 'error'}
             </span>
           )}
         </div>
