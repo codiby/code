@@ -21,12 +21,19 @@ const COMMIT_TIMEOUT = 120000;
 type GitResult = { ok: boolean; stdout: string; stderr: string };
 
 async function runGit(args: string[], cwd: string, timeout = GIT_TIMEOUT): Promise<GitResult> {
-  const proc = Bun.spawn(['git', ...args], {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-  });
+  let proc: ReturnType<typeof Bun.spawn<'ignore', 'pipe', 'pipe'>>;
+  try {
+    proc = Bun.spawn(['git', ...args], {
+      cwd,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+  } catch (e: any) {
+    // A cwd that doesn't exist throws synchronously instead of exiting non-zero.
+    return { ok: false, stdout: '', stderr: String(e?.message || e) };
+  }
   const timer = setTimeout(() => { try { proc.kill(); } catch {} }, timeout);
   try {
     const [stdout, stderr] = await Promise.all([

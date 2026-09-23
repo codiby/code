@@ -82,3 +82,10 @@ describe('checkoutBranch', () => {
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('dirty\n');
   });
 });
+
+describe('checkoutBranch outside a repo', () => {
+  it('fails cleanly when the folder does not exist', async () => {
+    const r = await checkoutBranch(join(tmpdir(), 'no-such-dir-for-checkout'), { branch: 'main' });
+    expect(r.ok).toBe(false);
+  });
+});
