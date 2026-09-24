@@ -1380,7 +1380,7 @@ app.post('/sessions', async (c) => {
   let createdId: string | null = null;
   if (resp.ok) {
     try {
-      const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string; group_id?: string };
+      const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string; group_id?: string; ungrouped?: boolean };
       if (created?.id) {
         createdId = created.id;
         if (created.group_id) {
@@ -1393,7 +1393,7 @@ app.post('/sessions', async (c) => {
             map[created.id] = created.group_id;
             updatePreferences({ tabGroupMap: map });
           }
-        } else {
+        } else if (!created.ungrouped) {
           const groupingCwd = created.group_cwd || created.cwd;
           if (groupingCwd) maybeAutoGroupSession(created.id, groupingCwd, created.cwd || groupingCwd);
         }

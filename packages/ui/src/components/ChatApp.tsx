@@ -17,7 +17,6 @@ import { RunningInstancesButton } from './RunningInstancesButton';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
 import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
-import { WorktreeModal } from './WorktreeModal';
 import { BypassWarningModal, shouldWarnBypass } from './BypassWarningModal';
 import { BrowserUrlModal } from './BrowserUrlModal';
 import { useSlashCommands, SlashCommandList } from './SlashCommandPicker';
@@ -513,72 +512,43 @@ export function ChatApp() {
     persistPrefs({ tabGroups: newGroups });
   };
 
-  /** Open the worktree creation modal targeted at a group's repo. On
-   *  success (handleWorktreeCreatedForGroup), spawn a session in the new
-   *  worktree path and bind it to the group. Falls back to the first
-   *  member's cwd for legacy groups, same as handleNewSessionInGroup. */
-  const handleNewSessionInWorktreeForGroup = async (groupId: string) => {
+  /** Start a fresh session in the same folder (repo or worktree), on the same
+   *  host and with the same provider/model as `sourceId`. With `groupId` it is
+   *  filed in that group; without, it stays loose — the bridge is told to skip
+   *  its automatic grouping. */
+  const handleNewSessionFromSession = async (sourceId: string, groupId: string | null) => {
     const c = clientRef.current;
-    if (!c) return;
-    const group = tabGroups[groupId];
-    if (!group) return;
-    const firstMember = sessions.find(s => tabGroupMap[s.id] === groupId);
-    const cwd = group.cwd || firstMember?.cwd || '';
-    if (!cwd) return;
-    let hasEnv: boolean | undefined;
-    let packageManager: string | undefined;
-    let worktrees: { path: string; branch: string }[] | undefined;
+    const source = sessions.find(s => s.id === sourceId);
+    if (!c || !source?.cwd) return;
+    const remoteId = source.remoteId ?? null;
+    // A remote-only folder is recorded by its own bridge under its own id; a
+    // local folder is recorded by the local bridge, or by us for a remote tab.
+    const remoteGroup = groupId && isRemoteGroupKey(groupId);
+    const bridgeGroupId = !groupId ? undefined
+      : remoteGroup ? (remoteOfGroupKey(groupId) === remoteId ? groupIdOfRemoteKey(groupId) ?? undefined : undefined)
+      : remoteId ? undefined : groupId;
     try {
-      // Pinned to the group's host — the repo lives wherever the group does,
-      // not on whichever session is focused when the modal is opened.
-      const info = await c.getGitInfo(cwd, groupRemoteInfo[groupId]?.remoteId ?? null);
-      hasEnv = info.has_env;
-      packageManager = info.package_manager;
-      worktrees = info.worktrees;
-    } catch {
-      // GitInfo is best-effort prefill; keep going with defaults.
-    }
-    setWorktreeForGroup({ groupId, cwd, hasEnv, packageManager, worktrees });
-  };
-
-  const handleWorktreeCreatedForGroup = async (groupId: string, originalCwd: string, worktreePath: string) => {
-    const c = clientRef.current;
-    if (!c) return;
-    const group = tabGroups[groupId];
-    if (!group) return;
-    try {
-      // The worktree was created on the group's host, so the session has to be
-      // spawned there too — a local session pointed at a remote path would boot
-      // in a directory that doesn't exist here.
-      const wtRemoteId = groupRemoteInfo[groupId]?.remoteId ?? null;
-      const session = await c.createSession(worktreePath, {
-        remoteId: wtRemoteId,
-        // Local: the bridge owns the mapping write. Remote: it never reaches
-        // our preferences, so the client persists it below.
-        groupId: wtRemoteId ? undefined : groupId,
+      const session = await c.createSession(source.cwd, {
+        provider: source.provider, model: source.model, effort: source.effort,
+        remoteId, groupId: bridgeGroupId, ungrouped: !groupId,
       });
-      const newMap = { ...tabGroupMap, [session.id]: groupId };
-      setTabGroupMap(newMap);
-      let nextGroups = tabGroups;
-      // Backfill the group's cwd with the original repo path (NOT the
-      // worktree path) for legacy groups, so future opens skip the
-      // first-member fallback.
-      if (!group.cwd) {
-        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd: originalCwd } };
-        setTabGroups(nextGroups);
+      if (groupId) {
+        if (remoteId && !remoteGroup) {
+          const newMap = { ...tabGroupMap, [session.id]: groupId };
+          setTabGroupMap(newMap);
+          persistPrefs({ tabGroupMap: newMap });
+        } else if (!remoteGroup) {
+          setTabGroupMap(prev => ({ ...prev, [session.id]: groupId }));
+        }
+        setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
       }
-      setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
-      setActiveId(session.id);
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
-      persistPrefs({
-        ...(wtRemoteId ? { tabGroupMap: newMap } : {}),
-        ...(group.cwd ? {} : { tabGroups: nextGroups }),
-      });
+      setSelectedGroupId(null);
+      setActiveNavView('sessions');
+      setActiveId(session.id);
     } catch (err) {
-      console.error('[ChatApp] Failed to create session in worktree for group:', err);
-    } finally {
-      setWorktreeForGroup(null);
+      console.error('[ChatApp] Failed to start a session next to another:', err);
     }
   };
 
@@ -772,21 +742,6 @@ export function ChatApp() {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
-      return next;
-    });
-  };
-
-  /** Focus a group without toggling its expansion state. Invoked by the
-   *  hover "+" icon on a group header — swaps GroupComposer into the main
-   *  pane and ensures the group is expanded so the user sees existing
-   *  members underneath the composer. */
-  const handleSelectGroup = (groupId: string) => {
-    setActiveNavView('sessions');
-    setSelectedGroupId(groupId);
-    setExpandedGroupIds(prev => {
-      if (prev.has(groupId)) return prev;
-      const next = new Set(prev);
-      next.add(groupId);
       return next;
     });
   };
@@ -1013,13 +968,6 @@ export function ChatApp() {
   const visibleMessageCount = useAppStore(s => s.visibleMessageCount);
   const setVisibleMessageCount = useAppStore(s => s.setVisibleMessageCount);
   const [showNewSession, setShowNewSession] = useState(false);
-  const [worktreeForGroup, setWorktreeForGroup] = useState<{
-    groupId: string;
-    cwd: string;
-    hasEnv?: boolean;
-    packageManager?: string;
-    worktrees?: { path: string; branch: string }[];
-  } | null>(null);
   const turnCompleteIds = useAppStore(s => s.turnCompleteIds);
   const setTurnCompleteIds = useAppStore(s => s.setTurnCompleteIds);
   const [showPalette, setShowPalette] = useState(false);
@@ -6027,7 +5975,6 @@ export function ChatApp() {
               onCreateSubgroup={handleCreateSubgroup}
               onMoveGroup={handleMoveGroup}
               onAutoGroupSessions={handleAutoGroupSessions}
-              onOpenGroupComposer={handleSelectGroup}
               onRenameGroup={handleRenameGroup}
               onChangeGroupColor={handleChangeGroupColor}
               onChangeGroupIcon={handleChangeGroupIcon}
@@ -6035,7 +5982,7 @@ export function ChatApp() {
               onRequestDelete={handleRequestDeleteSession}
               onRequestDeleteGroup={handleRequestDeleteGroup}
               onNewSessionInGroup={handleNewSessionInGroup}
-              onNewSessionInWorktreeForGroup={handleNewSessionInWorktreeForGroup}
+              onNewSessionFromSession={handleNewSessionFromSession}
               collapsed={tabsCollapsed}
               onToggleCollapsed={toggleTabsCollapsed}
               activeNavView={activeNavView}
@@ -6852,7 +6799,7 @@ export function ChatApp() {
                       // here so the native view hides while it's up.
                       obscured={showPalette || projectSettings.open || switcher.open
                         || browserUrlModalOpen || showNewSession || showShortcuts
-                        || showSkills || pendingBypassSessionId !== null || !!worktreeForGroup}
+                        || showSkills || pendingBypassSessionId !== null}
                       inspect={!!active.browserInspect[name]}
                       comments={commentsForActive}
                       // Mounting means this browser's tab is the active one —
@@ -7667,19 +7614,6 @@ export function ChatApp() {
             }));
           }}
         />
-        {worktreeForGroup && clientRef.current && (
-          <WorktreeModal
-            open
-            onClose={() => setWorktreeForGroup(null)}
-            client={clientRef.current}
-            repoPath={worktreeForGroup.cwd}
-            remoteId={groupRemoteInfo[worktreeForGroup.groupId]?.remoteId ?? null}
-            hasEnv={worktreeForGroup.hasEnv}
-            detectedPackageManager={worktreeForGroup.packageManager}
-            worktrees={worktreeForGroup.worktrees}
-            onCreated={(path) => handleWorktreeCreatedForGroup(worktreeForGroup.groupId, worktreeForGroup.cwd, path)}
-          />
-        )}
         <CommandPalette
           isOpen={showPalette}
           mode={paletteMode}

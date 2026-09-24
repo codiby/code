@@ -77,12 +77,9 @@ interface Props {
   /** Spawn a session immediately in the group's saved cwd and add it to the
    *  group — no composer step. */
   onNewSessionInGroup?: (groupId: string) => void;
-  /** Open the inline GroupComposer for a group (the deliberate, configurable
-   *  path — provider, model, first prompt). Offered from the group menu. */
-  onOpenGroupComposer?: (groupId: string) => void;
-  /** Open the worktree creation flow for the group's repo, then spawn a
-   *  session in the resulting worktree path and add it to the group. */
-  onNewSessionInWorktreeForGroup?: (groupId: string) => void;
+  /** Start a session in the same folder and host as `sessionId`: filed in
+   *  `groupId`, or left loose when it is null. */
+  onNewSessionFromSession?: (sessionId: string, groupId: string | null) => void;
   /** Move a closed session into the archived bucket. The archive icon next
    *  to each row in the "+" dropdown's CLOSED section calls this — the
    *  session disappears from the dropdown, history is kept, and it can be
@@ -785,7 +782,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt,
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onOpenGroupComposer, onNewSessionInWorktreeForGroup, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
+    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
     onCreateSubgroup, onMoveGroup, onAutoGroupSessions,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
@@ -1351,13 +1348,7 @@ export const TabBar = memo(function TabBar(props: Props) {
               {onNewSessionInGroup && (
                 <Button variant="ghost" fullWidth className={item}
                   onPress={() => { onNewSessionInGroup(groupMenu.groupId); setGroupMenu(null); }}>
-                  New session here
-                </Button>
-              )}
-              {onOpenGroupComposer && (
-                <Button variant="ghost" fullWidth className={item}
-                  onPress={() => { onOpenGroupComposer(groupMenu.groupId); setGroupMenu(null); }}>
-                  New session…
+                  New session in group
                 </Button>
               )}
               {onCreateSubgroup && (
@@ -1507,21 +1498,20 @@ export const TabBar = memo(function TabBar(props: Props) {
 
               <div className="h-px bg-border mx-2 my-1" />
 
-              {/* New session in this group — preserves an entry-point for
-                  group-bound session creation now that the group dropdown
-                  no longer offers it. */}
-              {isGrouped && onNewSessionInGroup && tabGroupId && (
+              {/* Both start in this session's own folder (repo or worktree)
+                  and host; they differ only in where the new tab is filed. */}
+              {onNewSessionFromSession && (
                 <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                  onPress={() => { onNewSessionInGroup(tabGroupId); setTabMenu(null); }}>
-                  <span className="text-zinc-500">+</span>
-                  New session in group
+                  onPress={() => { onNewSessionFromSession(tabMenu.tabId, null); setTabMenu(null); }}>
+                  <span className="text-zinc-500">⌥</span>
+                  New session in worktree
                 </Button>
               )}
-              {isGrouped && onNewSessionInWorktreeForGroup && tabGroupId && (
+              {isGrouped && onNewSessionFromSession && tabGroupId && (
                 <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                  onPress={() => { onNewSessionInWorktreeForGroup(tabGroupId); setTabMenu(null); }}>
-                  <span className="text-zinc-500">⌥</span>
-                  New session in worktree…
+                  onPress={() => { onNewSessionFromSession(tabMenu.tabId, tabGroupId); setTabMenu(null); }}>
+                  <span className="text-zinc-500">+</span>
+                  New session in group
                 </Button>
               )}
 

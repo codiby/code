@@ -79,6 +79,8 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   // already picked. It settles the placement outright so the route handler's
   // automatic rules stay out of the way and the two can't disagree.
   let groupId: string | null = null;
+  // The client asked for a loose session: skip the automatic grouping rules.
+  let ungrouped = false;
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
@@ -89,6 +91,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     if (body.provider && typeof body.provider === 'string') provider = body.provider;
     if (body.group_cwd && typeof body.group_cwd === 'string') groupCwd = body.group_cwd;
     if (body.group_id && typeof body.group_id === 'string') groupId = body.group_id;
+    if (body.ungrouped === true) ungrouped = true;
   } catch {}
 
   const now = Date.now();
@@ -136,6 +139,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   // autogrouping; only meaningful for worktree spawns.
   if (groupCwd) (payload as Record<string, unknown>).group_cwd = groupCwd;
   if (groupId) (payload as Record<string, unknown>).group_id = groupId;
+  else if (ungrouped) (payload as Record<string, unknown>).ungrouped = true;
   return Response.json(payload, { headers: corsHeaders });
 }
 

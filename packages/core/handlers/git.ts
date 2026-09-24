@@ -294,7 +294,8 @@ export async function handleGitBranches(cwd: string): Promise<Response> {
     const remote: string[] = [];
     const localSet = new Set<string>();
     for (const raw of output.split('\n')) {
-      const b = raw.replace(/^\*?\s+/, '').trim();
+      // `*` marks the current branch, `+` one checked out in another worktree.
+      const b = raw.replace(/^[*+]?\s+/, '').trim();
       if (!b || b.includes('HEAD')) continue;
       if (b.startsWith('remotes/origin/')) {
         const name = b.replace(/^remotes\/origin\//, '');

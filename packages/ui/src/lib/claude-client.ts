@@ -1590,6 +1590,8 @@ export class ClaudeClient {
        *  which keeps it the only writer of `tabGroupMap` on creation and stops
        *  the automatic grouping rules from racing an explicit choice. */
       groupId?: string;
+      /** Keep the session loose: the bridge skips its automatic grouping. */
+      ungrouped?: boolean;
     } = {},
   ): Promise<SessionInfo> {
     const remoteId = opts.remoteId ?? null;
@@ -1619,6 +1621,7 @@ export class ClaudeClient {
         provider: opts.provider,
         group_cwd: opts.groupCwd,
         group_id: opts.groupId,
+        ungrouped: opts.ungrouped,
       }),
     });
     if (!resp.ok) {
