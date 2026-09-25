@@ -3488,6 +3488,14 @@ export function ChatApp() {
     beginDelivery(sessionId, msgId);
   }, [updateLocalState, beginDelivery]);
 
+  /** Give up on a message that never reached the session. The flush effect
+   *  ships straight from `messages`, so dropping it there is the whole cancel. */
+  const cancelDelivery = useCallback((sessionId: string, msgId: string) => {
+    const timer = deliveryTimersRef.current[msgId];
+    if (timer) { clearTimeout(timer); delete deliveryTimersRef.current[msgId]; }
+    updateLocalState(sessionId, s => ({ ...s, messages: s.messages.filter(m => m.id !== msgId) }));
+  }, [updateLocalState]);
+
   // Clear any armed delivery timers on unmount.
   useEffect(() => () => {
     for (const t of Object.values(deliveryTimersRef.current)) clearTimeout(t);
@@ -5350,6 +5358,7 @@ export function ChatApp() {
                   onToggleInteractiveMinimize={item.isInteractiveTerminal ? toggleShellMinimized : undefined}
                   onCancelPending={(id) => removePendingMessage(sid, id)}
                   onRetry={(id) => retryDelivery(sid, id)}
+                  onCancelDelivery={(id) => cancelDelivery(sid, id)}
                 />
               </div>
             );
@@ -5372,6 +5381,7 @@ export function ChatApp() {
               accent={accent}
               onCancelPending={(id) => removePendingMessage(sid, id)}
               onRetry={(id) => retryDelivery(sid, id)}
+              onCancelDelivery={(id) => cancelDelivery(sid, id)}
             />
           </div>
         ))}

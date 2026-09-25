@@ -7,6 +7,7 @@ import { collectExplainParts, EMPTY_EXPLAIN_PARTS } from '../lib/explain';
 import { Markdown } from './Markdown';
 import { FullscreenPreview } from './FullscreenPreview';
 import { collectGallery, type Gallery } from '../lib/preview';
+import { parseToolResultImages } from '../lib/tool-result-images';
 import {
   collapseToolRuns,
   shortToolName,
@@ -39,6 +40,8 @@ interface Props {
   /** Re-attempts delivery of a message whose offline send timed out.
    *  Wired by ChatApp; only fires for bubbles where `deliveryStatus === 'failed'`. */
   onRetry?: (msgId: string) => void;
+  /** Drop a message that failed to deliver instead of retrying it. */
+  onCancelDelivery?: (msgId: string) => void;
   /** Rendered inside a card that already groups it (a tool-run card), so the
    *  bubble drops its own left rail / indent. */
   nested?: boolean;
@@ -608,11 +611,41 @@ function ToolBubble({ message, isLast, onAnswerAskUser, nested }: { message: Cha
               <div className={`text-[10px] font-mono px-2 py-0.5 ${message.toolResult.isError ? 'text-red-400' : 'text-zinc-500'} border-b ${message.toolResult.isError ? 'border-red-500/20' : 'border-border'}`}>
                 {message.toolResult.isError ? 'error' : 'result'}
               </div>
-              <pre className="text-[11px] font-mono text-zinc-400 whitespace-pre-wrap break-all m-0 px-2 py-1.5 max-h-64 overflow-auto leading-snug">
-                {message.toolResult.content}
-              </pre>
+              <ToolResultBody content={message.toolResult.content} />
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A tool result's body. Image payloads (Read on a picture) render as the
+ *  pictures, with the raw text one click away; everything else stays text. */
+function ToolResultBody({ content }: { content: string }) {
+  const parsed = useMemo(() => parseToolResultImages(content), [content]);
+  const [raw, setRaw] = useState(false);
+  const pre = (text: string) => (
+    <pre className="text-[11px] font-mono text-zinc-400 whitespace-pre-wrap break-all m-0 px-2 py-1.5 max-h-64 overflow-auto leading-snug">
+      {text}
+    </pre>
+  );
+  if (!parsed) return pre(content);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setRaw(r => !r)}
+        className="absolute top-1 right-1 z-10 text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/50 text-zinc-400 hover:text-zinc-200"
+      >
+        {raw ? 'image' : 'raw'}
+      </button>
+      {raw ? pre(content) : (
+        <div className="flex flex-col gap-1.5 p-2">
+          {parsed.images.map((src, i) => (
+            <img key={i} src={src} alt="" className="max-h-80 max-w-full w-auto self-start rounded border border-border object-contain" />
+          ))}
+          {parsed.text && <div className="text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">{parsed.text}</div>}
         </div>
       )}
     </div>
@@ -1117,7 +1150,7 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry, nested }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry, onCancelDelivery, nested }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
@@ -1269,6 +1302,16 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
                     title="Retry sending"
                   >
                     Retry
+                  </button>
+                )}
+                {onCancelDelivery && (
+                  <button
+                    type="button"
+                    onClick={() => onCancelDelivery(message.id)}
+                    className="rounded-full px-2 py-0.5 hover:bg-white/5 text-zinc-400 hover:text-zinc-200 border border-zinc-600/50 transition-colors normal-case tracking-normal"
+                    title="Discard this message"
+                  >
+                    Cancel
                   </button>
                 )}
               </div>
