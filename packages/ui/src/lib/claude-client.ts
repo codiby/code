@@ -475,6 +475,9 @@ export interface SupportedModel {
 
 export interface SessionState {
   messages: ChatMessage[];
+  /** Snapshot sent for a `lite` subscription: no history (`messages` is empty
+   *  and means nothing), just the flags the sidebar needs. */
+  lite?: boolean;
   partialText: string;
   /**
    * Live-streaming thinking text. Updates with each `partial_thinking` WS
@@ -1355,10 +1358,12 @@ export class ClaudeClient {
   // Session management
   // ---------------------------------------------------------------------------
 
-  subscribe(sessionId: string) {
+  /** `lite` skips the message history (see `hydrate`), which is what keeps a
+   *  remote's dozens of open tabs from queueing megabytes down its tunnel. */
+  subscribe(sessionId: string, opts: { lite?: boolean } = {}) {
     const rid = this.sessionRemote.get(sessionId);
-    if (rid) this.ensureRemoteConn(rid).subscribe(sessionId);
-    else this.localConn.subscribe(sessionId);
+    if (rid) this.ensureRemoteConn(rid).subscribe(sessionId, opts.lite);
+    else this.localConn.subscribe(sessionId, opts.lite);
     // Repopulate the dock with whatever terminals are already alive for this
     // session, as soon as we connect. Best-effort — a not-yet-ready bridge
     // just returns an empty list; a later `terminal_created` fills it in.
@@ -1372,6 +1377,14 @@ export class ClaudeClient {
     else this.localConn.unsubscribe(sessionId);
   }
   getSessionState(sessionId: string) { this.send({ type: 'get_session_state', sessionId }); }
+  /** Load the history of a session subscribed `lite`, and keep it loaded
+   *  across reconnects. */
+  hydrate(sessionId: string) {
+    const rid = this.sessionRemote.get(sessionId);
+    const conn = rid ? this.ensureRemoteConn(rid) : this.localConn;
+    conn.markFull(sessionId);
+    this.getSessionState(sessionId);
+  }
   getSessions() {
     this.localConn.send({ type: 'get_sessions' });
     for (const c of this.remoteConns.values()) c.send({ type: 'get_sessions' });

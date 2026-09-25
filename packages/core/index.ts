@@ -703,22 +703,28 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 
   // ---- subscribe -----------------------------------------------------------
   if (type === 'subscribe') {
-    const { sessionId } = msg as { sessionId: string };
+    // `state: false` asks for a lite snapshot: everything but the message
+    // history, which the client fetches with `get_session_state` once the tab
+    // is opened. Histories run to megabytes, and a remote client subscribing to
+    // every open tab at once would otherwise queue all of them down one tunnel.
+    const { sessionId, state: wantState } = msg as { sessionId: string; state?: boolean };
     if (!sessionId) return;
     let subs = subscriptions.get(ws);
     if (!subs) { subs = new Set(); subscriptions.set(ws, subs); }
     subs.add(sessionId);
 
-    // Immediately send full session state
-    const state = getStateForClient(sessionId);
-    ws.send(JSON.stringify({ type: 'session_state', sessionId, state }));
-
-    // Also send current connection status
+    // Status first: it's tiny, and it's what the sidebar dot waits on.
     const session = sessions.get(sessionId);
     if (session) {
       const status = session.ready ? 'connected' : session.runtimeStatus === 'starting' ? 'starting' : 'disconnected';
       ws.send(JSON.stringify({ type: 'status', sessionId, status }));
     }
+
+    const state = getStateForClient(sessionId);
+    ws.send(JSON.stringify({
+      type: 'session_state', sessionId,
+      state: wantState === false ? { ...state, messages: [], partialText: '', partialThinking: '', lite: true } : state,
+    }));
     return;
   }
 

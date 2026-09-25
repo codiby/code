@@ -46,6 +46,8 @@ export class Conn {
   ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   readonly activeSubs = new Set<string>();
+  /** Subscriptions that skip the message history; replayed the same way. */
+  private readonly liteSubs = new Set<string>();
   private closed = false;
   private base: string | null;
   /** Bumped by each connect() attempt; an attempt that resumes from an await
@@ -113,7 +115,7 @@ export class Conn {
         try { ws.send(JSON.stringify(msg)); } catch {}
       });
       for (const sid of this.activeSubs) {
-        try { ws.send(JSON.stringify({ type: 'subscribe', sessionId: sid })); } catch {}
+        try { ws.send(JSON.stringify(this.subscribeMsg(sid))); } catch {}
       }
     };
     ws.onmessage = (event) => {
@@ -149,8 +151,21 @@ export class Conn {
   send(msg: object) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }
-  subscribe(sessionId: string) { this.activeSubs.add(sessionId); this.send({ type: 'subscribe', sessionId }); }
-  unsubscribe(sessionId: string) { this.activeSubs.delete(sessionId); this.send({ type: 'unsubscribe', sessionId }); }
+  private subscribeMsg(sessionId: string) {
+    return this.liteSubs.has(sessionId) ? { type: 'subscribe', sessionId, state: false } : { type: 'subscribe', sessionId };
+  }
+  subscribe(sessionId: string, lite = false) {
+    this.activeSubs.add(sessionId);
+    if (lite) this.liteSubs.add(sessionId); else this.liteSubs.delete(sessionId);
+    this.send(this.subscribeMsg(sessionId));
+  }
+  /** The history has been asked for: later replays carry it again. */
+  markFull(sessionId: string) { this.liteSubs.delete(sessionId); }
+  unsubscribe(sessionId: string) {
+    this.activeSubs.delete(sessionId);
+    this.liteSubs.delete(sessionId);
+    this.send({ type: 'unsubscribe', sessionId });
+  }
 
   /** Close the socket for bfcache/background without forgetting subs. Nulling
    *  `this.ws` before close() means the socket's own `onclose` sees itself as

@@ -116,6 +116,23 @@ describe('Conn socket lifecycle', () => {
     expect(sent[1]).toEqual({ type: 'subscribe', sessionId: 'session-1' });
   });
 
+  test('replays a lite subscription as lite until its history is asked for', async () => {
+    const c = makeConn();
+    c.subscribe('lite-1', true);
+    await settle();
+    const first = openSockets()[0]!;
+    expect(first.sent.map(m => JSON.parse(m))).toContainEqual({ type: 'subscribe', sessionId: 'lite-1', state: false });
+
+    first.serverClose();
+    await sleep(RECONNECT_MS * 2);
+    expect(openSockets()[0]!.sent.map(m => JSON.parse(m))).toContainEqual({ type: 'subscribe', sessionId: 'lite-1', state: false });
+
+    c.markFull('lite-1');
+    openSockets()[0]!.serverClose();
+    await sleep(RECONNECT_MS * 3);
+    expect(openSockets()[0]!.sent.map(m => JSON.parse(m))).toContainEqual({ type: 'subscribe', sessionId: 'lite-1' });
+  });
+
   test('background close does NOT resurrect the socket via the reconnect timer', async () => {
     const c = makeConn();
     await settle();

@@ -987,6 +987,8 @@ export function ChatApp() {
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
   const subscribedRef = useRef(new Set<string>());
+  /** Subscribed without history; the first open loads it (`client.hydrate`). */
+  const liteSubscribedRef = useRef(new Set<string>());
   // pastedImages now lives in LocalSessionState.pastedImages, so each
   // focus-mode pane can buffer its own pending images independently.
   // Pulled once from the bridge on mount via /providers/opencode/info.
@@ -1416,7 +1418,13 @@ export function ChatApp() {
             if (subscribedRef.current.has(s.id)) continue;
             subscribedRef.current.add(s.id);
             toSubscribe.push(s.id);
-            c.subscribe(s.id);
+            // A remote's histories come down one tunnel: fetch each only when
+            // its tab is opened, or dozens of them queue behind each other and
+            // every dot waits in "connecting" until its turn.
+            // The open tab needs it now, and its hydrate effect already ran.
+            const lite = !!s.remoteId && s.id !== useAppStore.getState().activeId;
+            if (lite) liteSubscribedRef.current.add(s.id);
+            c.subscribe(s.id, { lite });
             // No auto-resume here: persisted sessions are shown immediately
             // but their Claude process is only booted when the user focuses
             // the tab (`notifyActiveTab` below) or sends a message. The
@@ -1443,6 +1451,15 @@ export function ChatApp() {
         },
 
         onSessionState: (sid, state) => {
+          if (state.lite) {
+            // No history in it: take the flags, keep whatever messages we have.
+            const { messages: _none, partialText: _t, partialThinking: _th, ...flags } = state;
+            setSessionStates(prev => ({
+              ...prev,
+              [sid]: { ...(prev[sid] ?? emptyLocalState()), ...flags },
+            }));
+            return;
+          }
           setSessionStates(prev => {
             const existing = prev[sid];
             // Merge messages: keep any local messages not in server state.
@@ -2220,6 +2237,8 @@ export function ChatApp() {
   useEffect(() => {
     if (!activeId) return;
     clientRef.current?.notifyActiveTab(activeId);
+    // First open of a tab subscribed without its history: load it now.
+    if (clientRef.current && liteSubscribedRef.current.delete(activeId)) clientRef.current.hydrate(activeId);
   }, [activeId, client]);
 
 
