@@ -77,9 +77,10 @@ interface Props {
   /** Spawn a session immediately in the group's saved cwd and add it to the
    *  group — no composer step. */
   onNewSessionInGroup?: (groupId: string) => void;
-  /** Start a session in the same folder and host as `sessionId`: filed in
-   *  `groupId`, or left loose when it is null. */
-  onNewSessionFromSession?: (sessionId: string, groupId: string | null) => void;
+  /** Start a session in the same folder and host as `sessionId`: `sibling`
+   *  files it beside that one, `pair` groups the two in a new subgroup of
+   *  its folder. */
+  onNewSessionFromSession?: (sessionId: string, mode: 'sibling' | 'pair') => void;
   /** Move a closed session into the archived bucket. The archive icon next
    *  to each row in the "+" dropdown's CLOSED section calls this — the
    *  session disappears from the dropdown, history is kept, and it can be
@@ -1418,7 +1419,6 @@ export const TabBar = memo(function TabBar(props: Props) {
       {/* Tab context menu */}
       {tabMenu && (() => {
         const isGrouped = !!tabGroupMap[tabMenu.tabId];
-        const tabGroupId = tabGroupMap[tabMenu.tabId];
         const otherUngroupedTabs = sessions.filter(s => s.id !== tabMenu.tabId && !tabGroupMap[s.id]);
 
         return (
@@ -1499,17 +1499,18 @@ export const TabBar = memo(function TabBar(props: Props) {
               <div className="h-px bg-border mx-2 my-1" />
 
               {/* Both start in this session's own folder (repo or worktree)
-                  and host; they differ only in where the new tab is filed. */}
+                  and host. "Worktree" files the new one beside this one;
+                  "group" pairs the two in a new subgroup of this folder. */}
               {onNewSessionFromSession && (
                 <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                  onPress={() => { onNewSessionFromSession(tabMenu.tabId, null); setTabMenu(null); }}>
+                  onPress={() => { onNewSessionFromSession(tabMenu.tabId, 'sibling'); setTabMenu(null); }}>
                   <span className="text-zinc-500">⌥</span>
                   New session in worktree
                 </Button>
               )}
-              {isGrouped && onNewSessionFromSession && tabGroupId && (
+              {onNewSessionFromSession && (
                 <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
-                  onPress={() => { onNewSessionFromSession(tabMenu.tabId, tabGroupId); setTabMenu(null); }}>
+                  onPress={() => { onNewSessionFromSession(tabMenu.tabId, 'pair'); setTabMenu(null); }}>
                   <span className="text-zinc-500">+</span>
                   New session in group
                 </Button>

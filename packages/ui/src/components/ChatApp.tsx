@@ -512,15 +512,62 @@ export function ChatApp() {
     persistPrefs({ tabGroups: newGroups });
   };
 
+  /** Put `sessionIds` in a new group nested under `parentKey` (the sidebar's
+   *  id — local, remote-only, or null for the root). A remote-only parent's
+   *  tree belongs to that bridge, so the group is written there; a local
+   *  group can't hang off a remote id, which is what stranded these at the
+   *  top of the sidebar. Resolves to the new group's sidebar id. */
+  const createNestedGroup = async (sessionIds: string[], parentKey: string | null, cwd: string): Promise<string | null> => {
+    const id = crypto.randomUUID();
+    const name = cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
+    const branchIcon = WORKTREE_CWD_LOOSE_RE.test(cwd) ? { icon: 'git-branch' } : {};
+    const remoteId = parentKey ? remoteOfGroupKey(parentKey) : null;
+    if (remoteId) {
+      const c = clientRef.current;
+      const prefs = remoteGroupPrefs[remoteId];
+      const parentId = groupIdOfRemoteKey(parentKey!);
+      if (!c || !prefs || !parentId) return null;
+      const groups = { ...prefs.tabGroups, [id]: { id, name, cwd, parentId, ...branchIcon } };
+      const map = { ...prefs.tabGroupMap };
+      for (const sid of sessionIds) map[sid] = id;
+      setRemoteGroupPrefs(prev => ({ ...prev, [remoteId]: { tabGroups: groups, tabGroupMap: map } }));
+      try {
+        await c.updateRemotePreferences(remoteId, { tabGroups: groups, tabGroupMap: map });
+      } catch (err) {
+        console.error('[ChatApp] Failed to create remote group:', err);
+        setRemoteGroupPrefs(prev => ({ ...prev, [remoteId]: prefs }));
+        return null;
+      }
+      return remoteGroupKey(remoteId, id);
+    }
+    const group: TabGroupInfo = parentKey
+      ? { id, name, cwd, parentId: parentKey, ...branchIcon }
+      : { id, name, cwd, parentId: null, color: GROUP_COLORS[groupColorIdx++ % GROUP_COLORS.length]!, ...branchIcon };
+    const newGroups = { ...tabGroups, [id]: group };
+    const newMap = { ...tabGroupMap };
+    for (const sid of sessionIds) newMap[sid] = id;
+    setTabGroups(newGroups);
+    setTabGroupMap(newMap);
+    persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
+    return id;
+  };
+
   /** Start a fresh session in the same folder (repo or worktree), on the same
-   *  host and with the same provider/model as `sourceId`. With `groupId` it is
-   *  filed in that group; without, it stays loose — the bridge is told to skip
-   *  its automatic grouping. */
-  const handleNewSessionFromSession = async (sourceId: string, groupId: string | null) => {
+   *  host and with the same provider/model as `sourceId`.
+   *  - `sibling`: filed beside the source — its group, or loose if it has none.
+   *  - `pair`: the two share a new group nested in the source's group; when
+   *    that group already is this folder's, the new one just joins it.
+   *  The bridge is told to skip its automatic grouping either way, so it can't
+   *  file the new session somewhere else. */
+  const handleNewSessionFromSession = async (sourceId: string, mode: 'sibling' | 'pair') => {
     const c = clientRef.current;
     const source = sessions.find(s => s.id === sourceId);
     if (!c || !source?.cwd) return;
     const remoteId = source.remoteId ?? null;
+    const current = sidebarGroupMap[sourceId] ?? null;
+    const joinCurrent = mode === 'sibling'
+      || (!!current && sidebarGroups[current]?.cwd === source.cwd);
+    const groupId = joinCurrent ? current : null;
     // A remote-only folder is recorded by its own bridge under its own id; a
     // local folder is recorded by the local bridge, or by us for a remote tab.
     const remoteGroup = groupId && isRemoteGroupKey(groupId);
@@ -530,8 +577,9 @@ export function ChatApp() {
     try {
       const session = await c.createSession(source.cwd, {
         provider: source.provider, model: source.model, effort: source.effort,
-        remoteId, groupId: bridgeGroupId, ungrouped: !groupId,
+        remoteId, groupId: bridgeGroupId, ungrouped: !bridgeGroupId,
       });
+      let expand: string | null = groupId;
       if (groupId) {
         if (remoteId && !remoteGroup) {
           const newMap = { ...tabGroupMap, [session.id]: groupId };
@@ -540,7 +588,13 @@ export function ChatApp() {
         } else if (!remoteGroup) {
           setTabGroupMap(prev => ({ ...prev, [session.id]: groupId }));
         }
-        setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
+      } else if (mode === 'pair') {
+        expand = await createNestedGroup([sourceId, session.id], current, source.cwd);
+      }
+      if (expand) {
+        // The new group isn't in `sidebarGroups` yet; its ancestors are the source's.
+        const open = [expand, ...ancestorChain(sidebarGroups, current)];
+        setExpandedGroupIds(prev => new Set([...prev, ...open]));
       }
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
