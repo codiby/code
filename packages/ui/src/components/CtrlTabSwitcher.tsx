@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import type { ChatMessage, SessionInfo } from '../lib/claude-client';
 import { GROUP_HEX_COLOR, type TabGroupInfo } from '../lib/tab-groups';
+import { resolveGroupColor } from '../lib/group-tree';
 
 interface SwitcherSessionState {
   messages: ChatMessage[];
@@ -160,7 +161,7 @@ export function CtrlTabSwitcher(props: Props) {
   const selectedStatus = deriveStatus(selectedState);
   const selectedBadge = statusBadge(selectedStatus);
   const selectedGroupId = selected ? tabGroupMap[selected.id] : undefined;
-  const selectedGroupColor = selectedGroupId ? tabGroups[selectedGroupId]?.color : undefined;
+  const selectedGroupColor = selectedGroupId ? resolveGroupColor(tabGroups, selectedGroupId, '') || undefined : undefined;
   const selectedMessages = selectedState ? previewMessages(selectedState.messages) : [];
 
   return (

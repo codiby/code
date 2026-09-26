@@ -113,7 +113,7 @@ import { parseGroupOrder, takeLegacyGroupOrder } from '../lib/group-order';
 import { CHAT_WIDTH_CLASS, type ChatWidth } from '../lib/store/slices/preferencesSlice';
 import {
   ancestorChain, descendantGroupIds, groupIdForCwd, isAncestorOf,
-  projectGroupIdForRepo, repoRootOfWorktreeCwd, WORKTREE_CWD_LOOSE_RE,
+  projectGroupIdForRepo, repoRootOfWorktreeCwd, resolveGroupColor, WORKTREE_CWD_LOOSE_RE,
 } from '../lib/group-tree';
 import {
   groupIdOfRemoteKey, isRemoteGroupKey, mergeRemoteGroups, remoteGroupKey,
@@ -5103,9 +5103,10 @@ export function ChatApp() {
     // 1. explicit per-session override
     const override = sessionAccents[sid];
     if (override) return override;
-    // 2. inherit the session's group accent color, if grouped
+    // 2. inherit the session's group accent color, if grouped. Subgroups are
+    //    created without a color, so walk up to the ancestor that sets one.
     const gid = tabGroupMap[sid];
-    const groupColor = gid ? tabGroups[gid]?.color : undefined;
+    const groupColor = gid ? resolveGroupColor(tabGroups, gid, '') : undefined;
     if (groupColor && GROUP_HEX_COLOR[groupColor]) return GROUP_HEX_COLOR[groupColor]!;
     // 3. remote color
     const s = sessions.find(x => x.id === sid);
