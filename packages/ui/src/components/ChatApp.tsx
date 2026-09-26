@@ -15,6 +15,8 @@ import { AutomationsView } from './AutomationsView';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { RunningInstancesButton } from './RunningInstancesButton';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
+import { TurnFold } from './TurnFold';
+import { foldTurns, isTurnWork } from '../lib/turns';
 import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
 import { BypassWarningModal, shouldWarnBypass } from './BypassWarningModal';
@@ -5312,13 +5314,15 @@ export function ChatApp() {
               .slice(-visibleMessageCount)
           ));
           const activeAskId = cs.permRequest?.toolName === 'AskUserQuestion' ? cs.permRequest.requestId : null;
-          return grouped.map((item, i) => {
-            const isLast = i === grouped.length - 1;
+          // `inFold`: rendered inside a finished turn's folded work, where
+          // nothing is ever the live tail of the thread.
+          const renderItem = (item: (typeof grouped)[number], i: number, count: number, inFold = false) => {
+            const isLast = !inFold && i === count - 1;
             if ('agent' in item) {
               return <AgentBubble key={item.agent.id} agent={item.agent} children={item.children} onOpenTerminal={handleOpenTerminal} />;
             }
             if ('toolRun' in item) {
-              const hasContentAfter = i < grouped.length - 1;
+              const hasContentAfter = inFold || i < count - 1;
               return (
                 <ToolRunBubble
                   key={item.items[0]!.id}
@@ -5330,6 +5334,9 @@ export function ChatApp() {
                 />
               );
             }
+            // Inside the fold, finished reasoning adds nothing the steps don't
+            // already say; narration is dimmed below (it's the working-out).
+            if (inFold && item.isThinking) return null;
             const isAskTool = item.toolName === 'AskUserQuestion' && Array.isArray((item.toolInput as any)?.questions);
             const hasResult = !!(item as any).toolResult;
             const answerCb = isLast && isAskTool && !hasResult
@@ -5345,7 +5352,7 @@ export function ChatApp() {
                 }
               : undefined;
             return (
-              <div key={item.uiKey ?? item.id} id={`msg-${item.id}`}>
+              <div key={item.uiKey ?? item.id} id={`msg-${item.id}`} className={inFold && !item.toolName ? 'opacity-70' : undefined}>
                 <MessageBubble
                   message={item}
                   onOpenTerminal={handleOpenTerminal}
@@ -5362,6 +5369,19 @@ export function ChatApp() {
                 />
               </div>
             );
+          };
+          // A finished turn's narration and tools fold into one line above its
+          // answer (lib/turns.ts); the turn still running stays as it streams.
+          const turns = foldTurns(grouped, { live: !!cs.isStreaming, interrupted: !!cs.wasInterrupted });
+          return turns.map((item, i) => {
+            if (isTurnWork(item)) {
+              return (
+                <TurnFold key={item.key} stats={item.stats} stopped={item.stopped}>
+                  {item.items.map((child, j) => renderItem(child, j, item.items.length, true))}
+                </TurnFold>
+              );
+            }
+            return renderItem(item, i, turns.length);
           });
         })()}
         {/* Live thinking/text is no longer a bottom-anchored side channel — it
