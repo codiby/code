@@ -523,6 +523,23 @@ html.light .thinking-sweep {
    is highlighted by the same pipeline but is not wrapped in a <pre>.
    Palette follows the One Dark family against the #0d0d0d block background.
    --------------------------------------------------------------------------- */
+
+/* HeroUI ships a `.tag` chip component (inline-flex, medium weight, no text
+   selection), and Prism marks every JSX/HTML tag as `token tag` — so each tag
+   in highlighted code turned into a flex box and its attributes stacked into
+   columns. Put it back to plain inline text. */
+:is(pre code, .dd-code, .cm-highlight) .token.tag {
+  display: inline;
+  position: static;
+  gap: 0;
+  font-weight: inherit;
+  user-select: text;
+  -webkit-user-select: text;
+  transform: none;
+  transition: none;
+  border-radius: 0;
+  cursor: inherit;
+}
 :is(pre code, .dd-code) .token.comment,
 :is(pre code, .dd-code) .token.prolog,
 :is(pre code, .dd-code) .token.doctype,
