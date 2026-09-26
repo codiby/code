@@ -68,6 +68,40 @@ export function highlightCode(code: string, lang: string): string {
   return escapeHtml(code);
 }
 
+/**
+ * Highlights `code` as a whole and hands it back one line per entry, for views
+ * that lay code out row by row (a diff). Highlighting each line on its own
+ * loses state across lines — the words inside a multi-line comment come out
+ * coloured as keywords — so this tokenizes once and then cuts the HTML at each
+ * newline, closing the spans still open there and reopening them on the next
+ * line so every entry is balanced markup.
+ */
+export function highlightLines(code: string, lang: string): string[] {
+  const html = highlightCode(code, lang);
+  const lines: string[] = [];
+  const open: string[] = [];
+  let cur = '';
+  let last = 0;
+  const re = /<span[^>]*>|<\/span>|\n/g;
+  for (let m = re.exec(html); m; m = re.exec(html)) {
+    cur += html.slice(last, m.index);
+    last = re.lastIndex;
+    const tok = m[0];
+    if (tok === '\n') {
+      lines.push(cur + '</span>'.repeat(open.length));
+      cur = open.join('');
+    } else if (tok === '</span>') {
+      open.pop();
+      cur += tok;
+    } else {
+      open.push(tok);
+      cur += tok;
+    }
+  }
+  lines.push(cur + html.slice(last));
+  return lines;
+}
+
 /** Canonical grammar key for a fence language, or '' if none recognised. */
 export function normalizeLang(lang: string): string {
   const key = ALIASES[lang] || lang;
