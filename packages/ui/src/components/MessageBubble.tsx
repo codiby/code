@@ -10,12 +10,14 @@ import { collectGallery, type Gallery } from '../lib/preview';
 import { parseToolResultImages } from '../lib/tool-result-images';
 import {
   collapseToolRuns,
+  isStepTool,
   shortToolName,
   THINKING_LABEL,
   toolKindColor,
   toolRunSummary,
   type ToolRunGroup,
 } from '../lib/tool-runs';
+import { ToolSteps } from './ToolSteps';
 
 const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
 const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.default })));
@@ -880,27 +882,8 @@ export type GroupedItem =
 export { collapseToolRuns, toolRunSummary, toolKindColor, shortToolName, THINKING_LABEL };
 export type { ToolRunGroup };
 
-/** The colour dots that stand in for the run's contents while it's collapsed. */
-function KindDots({ kinds }: { kinds: string[] }) {
-  return (
-    <span className="flex gap-[3px] shrink-0">
-      {kinds.slice(0, 5).map(kind => (
-        <span
-          key={kind}
-          title={kind}
-          style={{ backgroundColor: toolKindColor(kind) }}
-          className="w-1.5 h-1.5 rounded-[2px] opacity-80"
-        />
-      ))}
-    </span>
-  );
-}
-
 export function ToolRunBubble({
   group,
-  onOpenTerminal,
-  sessionId,
-  client,
   hasContentAfter,
 }: {
   group: ToolRunGroup;
@@ -908,68 +891,12 @@ export function ToolRunBubble({
   sessionId?: string;
   client?: ClaudeClient;
   /** True once an assistant text message (or any later item) follows this
-   *  group — used to auto-collapse once the agent moves past the tool phase.
-   *  The user can still re-expand manually after that. */
+   *  group — used to fold a long run down to its last steps. */
   hasContentAfter?: boolean;
 }) {
-  // Default expanded while this is the latest activity. We auto-collapse the
-  // first time content arrives after the group (assistant text, user reply, a
-  // following Agent card). After that, the user owns the toggle — we don't
-  // auto-toggle again, so re-expanding after the auto-collapse sticks.
-  const [expanded, setExpanded] = useState(!hasContentAfter);
-  const autoCollapsedRef = useRef(false);
-  useEffect(() => {
-    if (hasContentAfter && !autoCollapsedRef.current) {
-      autoCollapsedRef.current = true;
-      setExpanded(false);
-    }
-  }, [hasContentAfter]);
-
-  const { label, kinds, elapsed, failures } = toolRunSummary(group.items);
-  // Reasoning has no result to wait on — only a tool without one is still running.
-  const anyRunning = group.items.some(m => !m.isThinking && !m.toolResult);
-
-  return (
-    <div className="py-1">
-      <div className="rounded-lg border border-violet-500/20 overflow-hidden bg-violet-500/[0.03]">
-        <div
-          className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none"
-          onClick={() => setExpanded(e => !e)}
-        >
-          <span className="text-zinc-500 shrink-0">
-            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </span>
-          <KindDots kinds={kinds} />
-          <span className="text-[11px] font-mono text-zinc-400 truncate flex-1">{label}</span>
-          {elapsed && !anyRunning && (
-            <span className="text-[10px] tabular-nums text-zinc-600 shrink-0">{elapsed}</span>
-          )}
-          {anyRunning && (
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
-          )}
-          {failures > 0 && (
-            <span className="text-[9px] uppercase tracking-wider text-red-400/80 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded font-mono shrink-0">
-              {failures > 1 ? `${failures} errors` : 'error'}
-            </span>
-          )}
-        </div>
-        {expanded && (
-          <div className="border-t border-violet-500/10 px-2 py-1 space-y-0">
-            {group.items.map(m => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                onOpenTerminal={onOpenTerminal}
-                sessionId={sessionId}
-                client={client}
-                nested
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  // A run reads as a few one-line steps — no card, no header to open. Once the
+  // agent has moved on, a long run folds to its last lines (ToolSteps).
+  return <ToolSteps items={group.items} hasContentAfter={hasContentAfter} />;
 }
 
 /** Groups flat messages: Agent tool_use + everything produced by its
@@ -1223,6 +1150,10 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
         <div className="h-px flex-1 bg-surface" />
       </div>
     );
+  }
+
+  if (isToolUse && isStepTool(message)) {
+    return <ToolSteps items={[message]} />;
   }
 
   if (isToolUse) {

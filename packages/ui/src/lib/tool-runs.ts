@@ -39,6 +39,12 @@ function isCollapsibleTool(item: unknown): boolean {
   return !NEVER_COLLAPSE.has(m.toolName) && !MOCKUP_WRITE.test(m.toolName);
 }
 
+/** A tool call that renders as a one-line step (`Edited a.ts +3`) rather than
+ *  its own card — the same set a run folds, whether or not it has company. */
+export function isStepTool(m: ChatMessage): boolean {
+  return isCollapsibleTool(m);
+}
+
 function isReasoning(item: unknown): boolean {
   if (isAgentGroup(item) || isToolRun(item)) return false;
   return !!(item as ChatMessage).isThinking;
