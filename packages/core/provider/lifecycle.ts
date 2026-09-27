@@ -4,7 +4,9 @@
  */
 
 import { getProvider } from './registry';
-import { createBridgeEvents } from './bridge';
+import { clearPendingDecisionsForSession, createBridgeEvents } from './bridge';
+import { randomUUID } from 'crypto';
+import { addMessage, getSessionState, healOrphanedToolUses, updateSessionState } from '../session/state';
 import type { BridgeDeps } from './bridge';
 import { buildSessionSdkMcpServer } from './sdk-tools';
 import { loadExternalMcpServers } from '../mcp/mcp-config';
@@ -87,6 +89,30 @@ export function startProviderSession(session: Session, port: number, resumeSessi
   // mutations — preventing it from clobbering the new providerSession
   // and runtimeStatus. See `createBridgeEvents` in bridge.ts.
   session.providerSessionGen += 1;
+  // close() does not guarantee an onExit before the replacement starts, and
+  // the old generation's late exit is deliberately ignored. Settle its turn
+  // here so an effort change/restart cannot inherit a permanent busy state.
+  const previousState = getSessionState(session.id);
+  if (previousState.isStreaming || previousState.isCompacting || previousState.partialText || previousState.partialThinking || previousState.permRequest) {
+    clearPendingDecisionsForSession(session.id, 'Session restarting');
+    for (const [content, isThinking] of [[previousState.partialThinking, true], [previousState.partialText, false]] as const) {
+      if (!content?.trim()) continue;
+      const message = { id: randomUUID(), role: 'assistant' as const, content, timestamp: Date.now(), isThinking };
+      if (addMessage(session.id, message)) {
+        bridgeDeps.broadcastToSession(session.id, { type: 'message', sessionId: session.id, message });
+      }
+    }
+    updateSessionState(session.id, state => ({
+      ...state, isStreaming: false, isCompacting: false, partialText: '', partialThinking: '',
+      permRequest: null, wasInterrupted: true,
+    }));
+    for (const message of healOrphanedToolUses(session.id, 'Session restarted.')) {
+      bridgeDeps.broadcastToSession(session.id, { type: 'message', sessionId: session.id, message });
+    }
+    bridgeDeps.broadcastToSession(session.id, { type: 'partial_thinking', sessionId: session.id, text: '' });
+    bridgeDeps.broadcastToSession(session.id, { type: 'partial_text', sessionId: session.id, text: '' });
+    bridgeDeps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'interrupted' });
+  }
   session.providerSession = adapter.spawn(opts, createBridgeEvents(session, bridgeDeps));
 
   // The claude CLI (via the SDK's stdin/stdout pipe) doesn't emit its `system
