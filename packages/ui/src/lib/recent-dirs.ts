@@ -86,3 +86,39 @@ export function addRecentDir(remoteId: string | null | undefined, dir: string): 
   }
   try { localStorage.setItem(KEY, JSON.stringify(kept)); } catch {}
 }
+
+/** Drop `host`'s entries that no longer resolve to a directory *on that host*,
+ *  returning what survives.
+ *
+ *  The legacy migration can't tell where a path came from, so everything in the
+ *  old flat list landed under `'local'` — including `/home/jovaz/...` paths
+ *  browsed on a remote. Only the host itself can say what exists there.
+ *
+ *  `listDirs` is the client's `/ls` call: without a trailing slash it lists the
+ *  parent filtered by name, and it answers `[]` both for "missing" and for "host
+ *  unreachable". The root probe tells those apart — an offline remote must not
+ *  wipe its own recents. */
+export async function pruneRecentDirs(
+  remoteId: string | null | undefined,
+  listDirs: (prefix: string, remoteId: string | null) => Promise<string[]>,
+): Promise<string[]> {
+  const host = hostKey(remoteId);
+  const remote = remoteId || null;
+  const dirs = getRecentDirs(remoteId);
+  if (dirs.length === 0) return dirs;
+  const strip = (p: string) => p.replace(/[\\/]+$/, '');
+  try {
+    if ((await listDirs('/', remote)).length === 0) return dirs;
+  } catch { return dirs; }
+  const checks = await Promise.all(dirs.map(async dir => {
+    try {
+      const target = strip(dir);
+      return (await listDirs(target, remote)).some(d => strip(d) === target);
+    } catch { return true; }
+  }));
+  const missing = new Set(dirs.filter((_, i) => !checks[i]));
+  if (missing.size === 0) return dirs;
+  const kept = readAll().filter(e => !(e.host === host && missing.has(e.dir)));
+  try { localStorage.setItem(KEY, JSON.stringify(kept)); } catch {}
+  return dirs.filter(d => !missing.has(d));
+}

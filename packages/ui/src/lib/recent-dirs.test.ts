@@ -11,7 +11,7 @@ const store = new Map<string, string>();
   clear: () => store.clear(),
 };
 
-const { addRecentDir, getRecentDirs, LOCAL_HOST } = await import('./recent-dirs');
+const { addRecentDir, getRecentDirs, pruneRecentDirs, LOCAL_HOST } = await import('./recent-dirs');
 
 const LEGACY_KEY = 'claude-ui-recent-dirs';
 const KEY = 'claude-ui-recent-dirs-by-host';
@@ -78,5 +78,39 @@ describe('recent dirs', () => {
   test('corrupt storage degrades to empty rather than throwing', () => {
     localStorage.setItem(KEY, '{not json');
     expect(getRecentDirs(null)).toEqual([]);
+  });
+});
+
+/** Fake `/ls`: a host is a set of existing directories, or `null` when unreachable. */
+function fakeLs(hosts: Record<string, string[] | null>) {
+  return async (prefix: string, remoteId: string | null) => {
+    const dirs = hosts[remoteId ?? LOCAL_HOST];
+    if (!dirs) return [];
+    if (prefix === '/') return ['/Users/'];
+    return dirs.filter(d => d === prefix).map(d => d + '/');
+  };
+}
+
+describe('pruneRecentDirs', () => {
+  test('drops migrated remote paths that do not exist locally', async () => {
+    localStorage.setItem(LEGACY_KEY, JSON.stringify(['/home/jovaz/vtb', '/Users/jovaz/3d']));
+    const kept = await pruneRecentDirs(null, fakeLs({ [LOCAL_HOST]: ['/Users/jovaz/3d'] }));
+    expect(kept).toEqual(['/Users/jovaz/3d']);
+    expect(getRecentDirs(null)).toEqual(['/Users/jovaz/3d']);
+  });
+
+  test('an unreachable host keeps its recents', async () => {
+    addRecentDir(REMOTE, '/home/jovaz/vtb');
+    const kept = await pruneRecentDirs(REMOTE, fakeLs({ [REMOTE]: null }));
+    expect(kept).toEqual(['/home/jovaz/vtb']);
+    expect(getRecentDirs(REMOTE)).toEqual(['/home/jovaz/vtb']);
+  });
+
+  test('pruning one host leaves the other untouched', async () => {
+    addRecentDir(REMOTE, '/home/jovaz/vtb');
+    addRecentDir(null, '/home/jovaz/vtb');
+    await pruneRecentDirs(null, fakeLs({ [LOCAL_HOST]: [] }));
+    expect(getRecentDirs(null)).toEqual([]);
+    expect(getRecentDirs(REMOTE)).toEqual(['/home/jovaz/vtb']);
   });
 });

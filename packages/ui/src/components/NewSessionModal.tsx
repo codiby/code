@@ -8,7 +8,7 @@ import {
 import { FolderPlus } from 'lucide-react';
 import type { ClaudeClient } from '../lib/claude-client';
 import { resolveServerUrl } from '../lib/claude-client';
-import { addRecentDir, getRecentDirs } from '../lib/recent-dirs';
+import { addRecentDir, getRecentDirs, pruneRecentDirs } from '../lib/recent-dirs';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
 
 interface RemoteInfo {
@@ -189,7 +189,12 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
       loadDir(home, seq);
       checkGit(home, seq);
     })();
-  }, [isOpen, target, remoteTarget, fetchUserHome, loadDir, checkGit]);
+    if (client) {
+      pruneRecentDirs(remoteTarget, (p, r) => client.listDirs(p, r))
+        .then(dirs => { if (isCurrent(seq)) setRecentDirs(dirs); })
+        .catch(() => {});
+    }
+  }, [isOpen, target, remoteTarget, fetchUserHome, loadDir, checkGit, client]);
 
   const navigate = (path: string) => {
     const seq = nextReq();

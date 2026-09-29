@@ -12,7 +12,7 @@ import { NewSessionModal } from './NewSessionModal';
 import { WorktreeCreateForm } from './WorktreeCreateForm';
 import { BranchBlockedPanel, type DirtyFile, type ResolveMode } from './BranchBlockedPanel';
 import { WORKTREE_CWD_LOOSE_RE } from '../lib/group-tree';
-import { getRecentDirs } from '../lib/recent-dirs';
+import { getRecentDirs, pruneRecentDirs } from '../lib/recent-dirs';
 
 const PROVIDER_KEY = 'claude-ui-last-provider';
 
@@ -188,6 +188,12 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   useEffect(() => {
     if (!folderMenuOpen) return;
     setRecentDirs(getRecentDirs(target));
+    let cancelled = false;
+    if (client) {
+      pruneRecentDirs(target, (p, r) => client.listDirs(p, r))
+        .then(dirs => { if (!cancelled) setRecentDirs(dirs); })
+        .catch(() => {});
+    }
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (folderMenuRef.current?.contains(target)) return;
@@ -198,10 +204,11 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     document.addEventListener('mousedown', onDocMouseDown);
     document.addEventListener('keydown', onKey);
     return () => {
+      cancelled = true;
       document.removeEventListener('mousedown', onDocMouseDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [folderMenuOpen, target]);
+  }, [folderMenuOpen, target, client]);
 
   // Build the dropdown list: current cwd first (so it's always reachable as a
   // visual anchor), then de-duped recent dirs.
