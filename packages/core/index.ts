@@ -130,6 +130,7 @@ import {
   getSessionState,
   updateSessionState,
   addMessage,
+  getNewerMessages,
   healOrphanedToolUses,
   updateUIState,
   getStateForClient,
@@ -141,6 +142,7 @@ import { loadPRLinks, addPRLink, setPRLinks, removePRLink, getPRLinks, loadPrefe
 import type { PRLink } from './session/storage';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './config/claude-settings';
 import { createDocsApp } from './api/swagger';
+import { handleMobileHome } from './handlers/mobile-home';
 import { Hono } from 'hono';
 import { transcribeAudioBuffer } from './integrations/deepgram';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './network/tailscale';
@@ -1379,6 +1381,9 @@ app.post('/sessions', async (c) => {
   const url = new URL(req.url);
   // Remote sessions are created by the renderer DIRECTLY on the remote bridge
   // (through its tunnel), so this endpoint is local-only now.
+// One compact, gzipped, ETagged snapshot for the Android Home.
+app.get('/mobile/home', (c) => handleMobileHome(c.req.raw, buildFullSessionList(), loadPreferences()));
+
   const resp = await handleCreateSession(req, server.port);
   // Apply the `autoGroupSessions` preference server-side so every entry
   // point (frontend, mobile, CLI) honors it without each client needing
@@ -1536,6 +1541,12 @@ app.get('/sessions/:id/terminals', (c) => {
 // Create a terminal. Spawns the PTY, then broadcasts `terminal_created` — the
 // UI adds the tab only when that broadcast arrives (never optimistically).
 app.post('/sessions/:id/terminals', async (c) => {
+  // `after_seq`: the phone already has everything up to there and only wants
+  // what came after — opening a chat stops re-downloading the last page.
+  const afterSeq = Number(url.searchParams.get('after_seq'));
+  if (url.searchParams.has('after_seq') && Number.isFinite(afterSeq)) {
+    return Response.json(getNewerMessages(sessionId, afterSeq, beforeSeq, limit), { headers: corsHeaders });
+  }
   const sessionId = c.req.param('id');
   let body: { command?: string; cwd?: string; cols?: number; rows?: number; label?: string; terminalName?: string } = {};
   try { body = await c.req.raw.json() as typeof body; } catch {}

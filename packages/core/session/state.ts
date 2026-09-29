@@ -317,6 +317,24 @@ export function getOlderMessages(sessionId: string, beforeSeq: number, limit: nu
   return { messages, hasMore: older.length > messages.length };
 }
 
+/**
+ * Messages after `afterSeq` (and before `beforeSeq`), for a client that already
+ * holds everything up to `afterSeq` and only needs to catch up. If more than
+ * `limit` arrived, only the newest `limit` come back with `gap: true`: the
+ * client can't stitch that onto what it has and must replace it instead.
+ */
+export function getNewerMessages(sessionId: string, afterSeq: number, beforeSeq: number, limit: number) {
+  const msgs = getSessionState(sessionId).messages;
+  const newer = msgs.filter(
+    m => typeof m.seq === 'number' && m.seq > afterSeq && m.seq < beforeSeq,
+  );
+  const gap = newer.length > limit;
+  const messages = gap ? newer.slice(-limit) : newer;
+  const firstSeq = messages[0]?.seq ?? beforeSeq;
+  const hasMore = msgs.some(m => typeof m.seq === 'number' && m.seq < firstSeq);
+  return { messages, hasMore, gap, afterSeq };
+}
+
 export function getStateForClient(sessionId: string) {
   const state = getSessionState(sessionId);
   const msgs = state.messages;
