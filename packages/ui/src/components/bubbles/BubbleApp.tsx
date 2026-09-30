@@ -50,7 +50,8 @@ type Runtime = {
   isStreaming: boolean;
   permRequest: PermissionRequest | null;
   hydrated: boolean;
-  unread: number;
+  /** One completed turn waiting to be read; intermediate messages don't count. */
+  unread: 0 | 1;
   /** Voice mode on this session: a halo and a mic/bars badge on the head. */
   voice: VoiceActivity;
   /** What the provider published for the composer's `/` picker. */
@@ -103,7 +104,7 @@ function nearestSide(x: number, y: number, w: number, h: number): Anchor {
   return { side, at: (side === 'left' || side === 'right' ? y : x) - HS / 2 };
 }
 
-/** Assistant text worth a badge and a peek — not tools, thinking or echoes. */
+/** Assistant text worth a peek — not tools, thinking or echoes. */
 function isReply(m: ChatMessage): boolean {
   return m.role === 'assistant' && !m.toolName && !m.isToolResult && !m.isThinking && !!m.content?.trim();
 }
@@ -231,6 +232,7 @@ export function BubbleApp() {
             messages: state.lite ? cur.messages : state.messages || [],
             partialText: state.partialText || '',
             isStreaming: !!state.isStreaming,
+            unread: state.isStreaming ? 0 : cur.unread,
             permRequest: state.permRequest,
             hydrated: !state.lite || cur.hydrated,
             slashCommands: state.initInfo?.slashCommands ?? cur.slashCommands,
@@ -241,15 +243,14 @@ export function BubbleApp() {
           patch(sid, cur => {
             if (cur.messages.some(m => m.id === msg.id)) return cur;
             fresh = true;
-            const unseen = isReply(msg) && expandedRef.current !== sid;
-            return { ...cur, messages: [...cur.messages, msg], partialText: '', unread: cur.unread + (unseen ? 1 : 0) };
+            return { ...cur, messages: [...cur.messages, msg], partialText: '', unread: msg.role === 'user' ? 0 : cur.unread };
           });
           if (fresh && isReply(msg) && expandedRef.current !== sid && idsRef.current.includes(sid)) {
             bringToFront(sid);
             showPeek(sid, msg.content.trim());
           }
         },
-        onPartialText: (sid, text) => patch(sid, cur => ({ ...cur, partialText: text, isStreaming: true })),
+        onPartialText: (sid, text) => patch(sid, cur => ({ ...cur, partialText: text, isStreaming: true, unread: 0 })),
         onPartialThinking: noop,
         onPermissionRequest: (sid, req) => {
           patch(sid, cur => ({ ...cur, permRequest: req }));
@@ -261,11 +262,12 @@ export function BubbleApp() {
         onPermissionCancelled: (sid, requestId) => patch(sid, cur =>
           cur.permRequest?.requestId === requestId ? { ...cur, permRequest: null } : cur),
         onStatus: (sid, status) => {
-          if (status === 'streaming') patch(sid, cur => ({ ...cur, isStreaming: true }));
+          if (status === 'streaming') patch(sid, cur => ({ ...cur, isStreaming: true, unread: 0 }));
           else if (['turn_complete', 'interrupted', 'disconnected', 'error'].includes(status)) {
             patch(sid, cur => ({
               ...cur,
               isStreaming: false,
+              unread: status === 'turn_complete' && expandedRef.current !== sid ? 1 : 0,
               partialText: '',
               permRequest: status === 'turn_complete' ? null : cur.permRequest,
             }));
