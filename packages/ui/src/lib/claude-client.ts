@@ -18,6 +18,9 @@ import type {
   RequirementsSnapshot,
 } from './requirements';
 
+/** What voice mode is doing for a session (see core/integrations/voice.ts). */
+export type VoiceActivity = 'off' | 'listening' | 'speaking';
+
 export async function resolveServerUrl(): Promise<string> {
   const native = (typeof window !== 'undefined') ? window.codiby : null;
   if (native) {
@@ -616,6 +619,8 @@ type ClientCallbacks = {
   onPermissionRequest: (sessionId: string, req: PermissionRequest) => void;
   onPermissionCancelled: (sessionId: string, requestId: string) => void;
   onStatus: (sessionId: string, status: string) => void;
+  /** Voice mode is listening, speaking or off for a session (floating bubble). */
+  onVoiceState?: (sessionId: string, state: VoiceActivity) => void;
   onTerminalData: (sessionId: string, procId: string, text: string) => void;
   onTerminalExit: (sessionId: string, procId: string, code: number) => void;
   /** A terminal was created (by the user or an MCP tool). The dock adds the
@@ -1092,6 +1097,13 @@ export class ClaudeClient {
     return base;
   }
 
+  /** Voice-mode socket on the bridge that owns the session. A remote session
+   *  talks to Deepgram with the remote's key, like its Telegram bot does. */
+  async voiceSocketUrl(sessionId: string): Promise<string> {
+    const base = await this.sessionBase(sessionId);
+    return withToken(`${base.replace(/^http/, 'ws')}/voice/ws/${encodeURIComponent(sessionId)}`);
+  }
+
   /** Merge each connection's last session list into one and emit it. Rows are
    *  deduplicated by id (`mergeSessionsByOwner`) — the same session reaches us
    *  over more than one connection, and concatenating painted it once per
@@ -1173,6 +1185,9 @@ export class ClaudeClient {
         break;
       case 'status':
         this.callbacks.onStatus(sessionId, msg.status as string);
+        break;
+      case 'voice_state':
+        this.callbacks.onVoiceState?.(sessionId, msg.state as VoiceActivity);
         break;
       case 'terminal_data': {
         const procId = msg.procId as string;

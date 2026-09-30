@@ -35,6 +35,7 @@ import { getCaret } from '../lib/contenteditable';
 import { RichInput } from './RichInput';
 import { useFileIndex, type FileEntry } from '../lib/fuzzy-file-search';
 import type { ConnectionStatus, ClaudeClient } from '../lib/claude-client';
+import { VoiceModeButton } from './VoiceModeButton';
 import { FILE_REFERENCE_MIME } from '../lib/file-reference-dnd';
 import { getNative } from '../lib/native';
 import { defaultModelLabel } from '../lib/default-models';
@@ -859,6 +860,8 @@ export function ChatComposer(props: Props) {
               </Select>
 
               <div className="flex-1" />
+
+              {!isTerminalMode && <VoiceModeButton client={client} sessionId={props.sessionId} />}
 
               {streaming && (
                 <button

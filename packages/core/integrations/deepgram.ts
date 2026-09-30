@@ -162,6 +162,51 @@ export async function transcribeAudioFromUrl(
   return transcribeAudioBuffer(buf, opts);
 }
 
+export interface AuraVoice {
+  /** Model id passed to `/v1/speak`, e.g. `aura-2-diana-es`. */
+  id: string;
+  name: string;
+  /** Primary language code (`es`, `en`, …). */
+  language: string;
+  accent: string;
+  /** Deepgram's descriptive tags — "feminine", "warm", "professional", … */
+  tags: string[];
+  /** Deepgram-hosted WAV sample, playable directly by the settings UI. */
+  sample: string | null;
+}
+
+let voiceCache: { at: number; voices: AuraVoice[] } | null = null;
+const VOICE_CACHE_MS = 60 * 60 * 1000;
+
+/**
+ * Aura-2 voices as Deepgram lists them, so the picker never drifts from what
+ * `/v1/speak` actually accepts. Cached for an hour: the catalogue changes on
+ * Deepgram's release cadence, not per request.
+ */
+export async function listAuraVoices(): Promise<AuraVoice[]> {
+  if (voiceCache && Date.now() - voiceCache.at < VOICE_CACHE_MS) return voiceCache.voices;
+  const { apiKey } = loadDeepgramSettings();
+  if (!apiKey) throw new Error('Deepgram API key not configured');
+  const res = await fetch('https://api.deepgram.com/v1/models', {
+    headers: { Authorization: `Token ${apiKey}` },
+  });
+  if (!res.ok) throw new Error(`Deepgram models: ${res.status} ${res.statusText}`);
+  const data = await res.json() as { tts?: any[] };
+  const voices: AuraVoice[] = (data.tts ?? [])
+    .filter((m) => m.architecture === 'aura-2' && typeof m.canonical_name === 'string')
+    .map((m) => ({
+      id: m.canonical_name,
+      name: m.name ? m.name[0].toUpperCase() + m.name.slice(1) : m.canonical_name,
+      language: m.languages?.[0] ?? '',
+      accent: m.metadata?.accent ?? '',
+      tags: m.metadata?.tags ?? [],
+      sample: m.metadata?.sample ?? null,
+    }))
+    .sort((a, b) => a.language.localeCompare(b.language) || a.name.localeCompare(b.name));
+  voiceCache = { at: Date.now(), voices };
+  return voices;
+}
+
 /** Whether the user has configured an API key (used to gate UI badges). */
 export function isDeepgramConfigured(): boolean {
   return Boolean(loadDeepgramSettings().apiKey);

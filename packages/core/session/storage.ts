@@ -296,6 +296,74 @@ export function saveDeepgramSettings(settings: DeepgramSettings) {
 }
 
 // ---------------------------------------------------------------------------
+// Voice mode settings (spoken replies)
+// ---------------------------------------------------------------------------
+
+const VOICE_FILE = join(CODIBY_DIR, 'ui-voice.json');
+
+export type TtsProvider = 'deepgram' | 'elevenlabs';
+
+export type VoiceSettings = {
+  ttsProvider: TtsProvider;
+  /** Playback rate, 1 = normal. Each provider clamps to what it accepts. */
+  ttsSpeed: number;
+  /** Aura voice (uses the Deepgram key). Diana switches between Spanish and
+   *  English mid-sentence, which matches the STT's `language: multi`. */
+  deepgramVoice: string;
+  /** Silence that ends an utterance and sends it to Claude. Short cuts people
+   *  off mid-thought; long makes every reply feel late. */
+  sendAfterMs: number;
+  /** Haiku answers out loud right away, narrates long turns and condenses the
+   *  session's final answer (integrations/voice-agent.ts). */
+  fastAgent: boolean;
+  elevenlabs: {
+    apiKey: string;
+    voiceId: string;
+    /** Flash is the low-latency model; multilingual_v2 trades speed for quality. */
+    modelId: string;
+  };
+};
+
+const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+  ttsProvider: 'deepgram',
+  ttsSpeed: 1,
+  deepgramVoice: 'aura-2-diana-es',
+  // Short on purpose: the voice agent waits out a sentence cut in half and
+  // joins the pieces, so this only has to catch the end of speech.
+  sendAfterMs: 800,
+  fastAgent: true,
+  elevenlabs: { apiKey: '', voiceId: '', modelId: 'eleven_flash_v2_5' },
+};
+
+export function loadVoiceSettings(): VoiceSettings {
+  try {
+    const parsed = JSON.parse(readFileSync(VOICE_FILE, 'utf-8'));
+    const speed = Number(parsed.ttsSpeed);
+    return {
+      ttsProvider: parsed.ttsProvider === 'elevenlabs' ? 'elevenlabs' : 'deepgram',
+      ttsSpeed: Number.isFinite(speed) && speed > 0 ? speed : DEFAULT_VOICE_SETTINGS.ttsSpeed,
+      deepgramVoice: parsed.deepgramVoice || DEFAULT_VOICE_SETTINGS.deepgramVoice,
+      sendAfterMs: Number.isFinite(Number(parsed.sendAfterMs)) && Number(parsed.sendAfterMs) >= 0
+        ? Number(parsed.sendAfterMs)
+        : DEFAULT_VOICE_SETTINGS.sendAfterMs,
+      fastAgent: parsed.fastAgent !== false,
+      elevenlabs: {
+        apiKey: parsed.elevenlabs?.apiKey ?? '',
+        voiceId: parsed.elevenlabs?.voiceId ?? '',
+        modelId: parsed.elevenlabs?.modelId || DEFAULT_VOICE_SETTINGS.elevenlabs.modelId,
+      },
+    };
+  } catch {
+    return structuredClone(DEFAULT_VOICE_SETTINGS);
+  }
+}
+
+export function saveVoiceSettings(settings: VoiceSettings) {
+  mkdirSync(CODIBY_DIR, { recursive: true });
+  writeFileSync(VOICE_FILE, JSON.stringify(settings, null, 2));
+}
+
+// ---------------------------------------------------------------------------
 // Tailscale settings
 // ---------------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, type ReactNode } from 'react';
 import {
-  X, Settings as SettingsIcon, Folder, Send, Mic, Smartphone, Plug,
+  X, Settings as SettingsIcon, Folder, Send, Mic, AudioLines, Smartphone, Plug,
   ArrowRight, Pin, ExternalLink, Plus, Trash2, Check, Terminal,
   ShieldCheck, Globe, Server, Zap, Variable,
   ChevronRight, Copy, RefreshCw, Webhook, Play, Square, ScanLine,
@@ -19,6 +19,7 @@ import {
 import { PairPhoneModal } from './PairPhoneModal';
 import { PluginSettingsSections } from './PluginExtensionPoints';
 import { RemotesSection } from './RemotesSection';
+import { VoicePicker, byCategory, byLanguage } from './VoicePicker';
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 import { resolveGroupColor } from '../lib/group-tree';
 import {
@@ -81,6 +82,7 @@ type GlobalSection =
   | 'general'
   | 'telegram'
   | 'deepgram'
+  | 'voice'
   | 'tailscale'
   | 'portless'
   | 'mobile'
@@ -382,7 +384,7 @@ function DeepgramSection({ serverUrl }: { serverUrl: string | null }) {
         ) : null}
       />
       <p className="text-[12px] text-zinc-500 max-w-[60ch] -mt-2 mb-4">
-        Transcribe Telegram voice notes with Deepgram and forward the text to Claude. Get an API key at{' '}
+        Transcribe Telegram voice notes and voice mode's mic with Deepgram, and forward the text to Claude. Get an API key at{' '}
         <a href="https://console.deepgram.com/signup" target="_blank" rel="noreferrer" className="text-zinc-300 underline">console.deepgram.com</a>.
       </p>
 
@@ -413,6 +415,218 @@ function DeepgramSection({ serverUrl }: { serverUrl: string | null }) {
               <Input placeholder="multi" className="font-mono text-[12px]" />
             </TextField>
           </Field>
+
+          <div className="flex items-center gap-3 pt-2 border-t border-border">
+            <Button onPress={onSave} isDisabled={saving} className="text-[12px] px-3 py-1.5 h-auto rounded-md font-medium text-white bg-violet-600 hover:bg-violet-500 border border-violet-600">
+              {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
+            </Button>
+            {error && <div className="text-[11px] text-red-400">{error}</div>}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+type TtsProvider = 'deepgram' | 'elevenlabs';
+type SpeedRange = Record<TtsProvider, { min: number; max: number }>;
+
+const ELEVENLABS_MODELS = [
+  { id: 'eleven_flash_v2_5', label: 'Flash v2.5 — fastest, lowest latency' },
+  { id: 'eleven_turbo_v2_5', label: 'Turbo v2.5 — balanced' },
+  { id: 'eleven_multilingual_v2', label: 'Multilingual v2 — best quality, slower' },
+];
+
+const nativeSelectCls = 'w-full bg-surface-light border border-border rounded-md text-zinc-100 text-[12.5px] px-3 py-2 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20';
+
+function VoiceModeSection({ serverUrl }: { serverUrl: string | null }) {
+  const [provider, setProvider] = useState<TtsProvider>('deepgram');
+  const [speed, setSpeed] = useState(1);
+  const [speedRange, setSpeedRange] = useState<SpeedRange | null>(null);
+  const [deepgramVoice, setDeepgramVoice] = useState('aura-2-diana-es');
+  const [sendAfterMs, setSendAfterMs] = useState(800);
+  const [fastAgent, setFastAgent] = useState(true);
+  const [elKey, setElKey] = useState('');
+  const [elVoice, setElVoice] = useState('');
+  const [elModel, setElModel] = useState('eleven_flash_v2_5');
+  const [showKey, setShowKey] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** Bumped after a save so the ElevenLabs list refetches with the new key. */
+  const [voicesReload, setVoicesReload] = useState(0);
+
+  useEffect(() => {
+    if (!serverUrl) return;
+    (async () => {
+      try {
+        const res = await fetch(`${serverUrl}/voice/settings`);
+        if (res.ok) {
+          const data = await res.json();
+          setProvider(data.ttsProvider === 'elevenlabs' ? 'elevenlabs' : 'deepgram');
+          setSpeed(Number(data.ttsSpeed) || 1);
+          setSpeedRange(data.speedRange ?? null);
+          setDeepgramVoice(data.deepgramVoice || 'aura-2-diana-es');
+          setSendAfterMs(Number.isFinite(Number(data.sendAfterMs)) ? Number(data.sendAfterMs) : 800);
+          setFastAgent(data.fastAgent !== false);
+          setElKey(data.elevenlabs?.apiKey || '');
+          setElVoice(data.elevenlabs?.voiceId || '');
+          setElModel(data.elevenlabs?.modelId || 'eleven_flash_v2_5');
+        }
+      } catch {}
+      setLoaded(true);
+    })();
+  }, [serverUrl]);
+
+  const range = speedRange?.[provider] ?? { min: 0.7, max: provider === 'elevenlabs' ? 1.2 : 1.5 };
+  const clamped = Math.min(range.max, Math.max(range.min, speed));
+
+  const onSave = async () => {
+    if (!serverUrl) return;
+    setSaving(true); setError(null); setSaved(false);
+    try {
+      const res = await fetch(`${serverUrl}/voice/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ttsProvider: provider,
+          ttsSpeed: speed,
+          deepgramVoice,
+          sendAfterMs,
+          fastAgent,
+          elevenlabs: { apiKey: elKey.trim(), voiceId: elVoice, modelId: elModel },
+        }),
+      });
+      if (!res.ok) throw new Error(`Save failed (${res.status})`);
+      setVoicesReload((n) => n + 1);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) { setError(String(e)); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <>
+      <SectionHeader title="Voice mode" />
+      <p className="text-[12px] text-zinc-500 max-w-[60ch] -mt-2 mb-4">
+        Talk to a session from the composer's mic button. Your speech is transcribed with Deepgram (see Deepgram (Voice)); Claude's replies are read back with the voice below. Changes apply to the next reply — no need to restart voice mode.
+      </p>
+
+      {!loaded ? (
+        <div className="text-[12px] text-zinc-600">Loading…</div>
+      ) : (
+        <div className="space-y-4">
+          <Field
+            label="Voice agent (Haiku)"
+            hint="You talk to Haiku. It answers small talk itself, asks when it isn't sure what you mean, waits out a sentence cut in half, and writes the session a clear request (your exact words quoted below it). While the session works it tells you what's happening, can stop it when you change your mind, and reads you short summaries — the full answers stay in the chat."
+          >
+            <Switch
+              isSelected={fastAgent}
+              onChange={setFastAgent}
+              className="inline-flex items-center gap-3 px-3 py-2 rounded-md bg-surface-light border border-border cursor-pointer"
+            >
+              <span className="text-[12.5px] text-zinc-200">{fastAgent ? 'On' : 'Off — your words go straight to the session, answers read in full'}</span>
+              <SwitchControl><SwitchThumb /></SwitchControl>
+            </Switch>
+          </Field>
+
+          <Field label="Pause before sending" hint="How long you have to be quiet before what you said goes to Claude. Raise it if you get cut off mid-thought.">
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={500}
+                max={4000}
+                step={250}
+                value={sendAfterMs}
+                onChange={(e) => setSendAfterMs(Number(e.target.value))}
+                aria-label="Pause before sending"
+                className="flex-1 accent-violet-500"
+              />
+              <span className="w-12 text-right font-mono text-[12px] text-zinc-300">{(sendAfterMs / 1000).toFixed(2)}s</span>
+            </div>
+          </Field>
+
+          <Field label="Reply voice provider" hint="Aura uses your Deepgram key. ElevenLabs needs its own.">
+            <select value={provider} onChange={(e) => setProvider(e.target.value as TtsProvider)} className={nativeSelectCls}>
+              <option value="deepgram">Deepgram Aura</option>
+              <option value="elevenlabs">ElevenLabs</option>
+            </select>
+          </Field>
+
+          <Field
+            label="Speed"
+            hint={`1× is normal. ${provider === 'elevenlabs' ? 'ElevenLabs' : 'Aura'} accepts ${range.min}× to ${range.max}×.`}
+          >
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={0.7}
+                max={1.5}
+                step={0.05}
+                value={speed}
+                onChange={(e) => setSpeed(Number(e.target.value))}
+                aria-label="Voice speed"
+                className="flex-1 accent-violet-500"
+              />
+              <span className="w-12 text-right font-mono text-[12px] text-zinc-300">{speed.toFixed(2)}×</span>
+              {speed !== 1 && (
+                <button type="button" onClick={() => setSpeed(1)} className="text-[11px] text-zinc-500 hover:text-zinc-300">Reset</button>
+              )}
+            </div>
+            {clamped !== speed && (
+              <div className="mt-1 text-[11px] text-amber-400/90">
+                {provider === 'elevenlabs' ? 'ElevenLabs' : 'Aura'} tops out at {range.max}× — replies will play at {clamped}×.
+              </div>
+            )}
+          </Field>
+
+          {provider === 'deepgram' ? (
+            <Field label="Voice" hint="Diana, Aquila, Carina, Javier and Selena switch between Spanish and English.">
+              <VoicePicker
+                serverUrl={serverUrl}
+                endpoint="/deepgram/voices"
+                grouping={byLanguage}
+                value={deepgramVoice}
+                placeholder="aura-2-diana-es"
+                onChange={setDeepgramVoice}
+              />
+            </Field>
+          ) : (
+            <>
+              <Field label="ElevenLabs API key">
+                <div className="relative">
+                  <TextField type={showKey ? 'text' : 'password'} value={elKey} onChange={setElKey} aria-label="ElevenLabs API Key">
+                    <Input placeholder="Your ElevenLabs API key" className="font-mono text-[12px] pr-14" />
+                  </TextField>
+                  <button
+                    onClick={() => setShowKey(v => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                  >
+                    {showKey ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+                <div className="mt-1 text-[11px] text-zinc-500">
+                  Get one at <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer" className="text-zinc-300 underline">elevenlabs.io</a>. Save it to load your voices.
+                </div>
+              </Field>
+              <Field label="Model">
+                <select value={elModel} onChange={(e) => setElModel(e.target.value)} className={nativeSelectCls}>
+                  {ELEVENLABS_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Voice">
+                <VoicePicker
+                  serverUrl={serverUrl}
+                  endpoint="/elevenlabs/voices"
+                  reloadKey={voicesReload}
+                  grouping={byCategory}
+                  value={elVoice}
+                  placeholder="ElevenLabs voice id"
+                  onChange={setElVoice}
+                />
+              </Field>
+            </>
+          )}
 
           <div className="flex items-center gap-3 pt-2 border-t border-border">
             <Button onPress={onSave} isDisabled={saving} className="text-[12px] px-3 py-1.5 h-auto rounded-md font-medium text-white bg-violet-600 hover:bg-violet-500 border border-violet-600">
@@ -2365,6 +2579,7 @@ export function ProjectSettingsModal({
             <NavItem icon={<SettingsIcon className="w-3.5 h-3.5" strokeWidth={1.75} />} label="General" active={selected.kind === 'global' && selected.id === 'general'} onClick={() => setSelected({ kind: 'global', id: 'general' })} />
             <NavItem icon={<Send className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Telegram Bot" active={selected.kind === 'global' && selected.id === 'telegram'} onClick={() => setSelected({ kind: 'global', id: 'telegram' })} />
             <NavItem icon={<Mic className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Deepgram (Voice)" active={selected.kind === 'global' && selected.id === 'deepgram'} onClick={() => setSelected({ kind: 'global', id: 'deepgram' })} />
+            <NavItem icon={<AudioLines className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Voice mode" active={selected.kind === 'global' && selected.id === 'voice'} onClick={() => setSelected({ kind: 'global', id: 'voice' })} />
             <NavItem icon={<Globe className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Tailscale Funnel" active={selected.kind === 'global' && selected.id === 'tailscale'} onClick={() => setSelected({ kind: 'global', id: 'tailscale' })} />
             <NavItem icon={<Globe className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Portless Proxy" active={selected.kind === 'global' && selected.id === 'portless'} onClick={() => setSelected({ kind: 'global', id: 'portless' })} />
             <NavItem icon={<Smartphone className="w-3.5 h-3.5" strokeWidth={1.75} />} label="Mobile Pairing" active={selected.kind === 'global' && selected.id === 'mobile'} onClick={() => setSelected({ kind: 'global', id: 'mobile' })} />
@@ -2497,6 +2712,7 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
       {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} groupSessionsByWorktree={groupSessionsByWorktree} onToggleGroupByWorktree={onToggleGroupByWorktree} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} colorChatBySession={colorChatBySession} onToggleColorChatBySession={onToggleColorChatBySession} tintChatBackground={tintChatBackground} onToggleTintChatBackground={onToggleTintChatBackground} />}
       {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
       {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
+      {section === 'voice'       && <VoiceModeSection serverUrl={serverUrl} />}
       {section === 'tailscale'   && <TailscaleSection serverUrl={serverUrl} />}
       {section === 'portless'    && <PortlessProxySection client={client} tld={portlessTld} onChangeTld={onChangePortlessTld} />}
       {section === 'mobile'      && <MobileSection />}

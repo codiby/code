@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.30.21",
+  "version": "0.30.22",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "electron-dist/main.js",
@@ -89,8 +89,12 @@
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "identity": "-",
       "entitlements": "packages/desktop/build/entitlements.mac.plist",
       "entitlementsInherit": "packages/desktop/build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Codiby Code uses the microphone for voice mode, so you can talk to a session."
+      },
       "icon": "packages/desktop/build/icon.icns",
       "target": [
         {
