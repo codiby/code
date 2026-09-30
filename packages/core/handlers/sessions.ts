@@ -11,6 +11,7 @@ import { killSessionLsp } from './lsp';
 import { DEFAULT_PROVIDER } from '../provider/registry';
 import { clearPendingDecisionsForSession } from '../provider/bridge';
 import { deleteSessionData, clearMessages } from '../session/storage';
+import { getDefaultPermissionMode } from '../session/default-permission-mode';
 import { stopSessionWatcher } from '../session/watcher';
 import { closeSessionPortForwards } from '../network/port-forward';
 import { forgetViewerBriefing } from '../network/remote-viewer';
@@ -68,7 +69,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   let cwd = CWD;
   let name = '';
   let model: string | null = null;
-  let permissionMode = 'default';
+  let permissionMode = getDefaultPermissionMode();
   let effort: string | null = null;
   let provider = DEFAULT_PROVIDER;
   // Hint forwarded by the client when a session is being spawned in a

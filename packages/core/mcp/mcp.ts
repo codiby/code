@@ -536,7 +536,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           name: { type: 'string', description: 'Optional session name shown in the tab bar.' },
           model: { type: 'string', description: 'Optional model override (e.g. "opus", "sonnet", "haiku", or a full model id). Leave unset for the default.' },
-          permissionMode: { type: 'string', enum: ['default', 'acceptEdits', 'plan', 'bypassPermissions'], description: 'Optional permission mode. Defaults to "default".' },
+          permissionMode: { type: 'string', enum: ['default', 'acceptEdits', 'plan', 'bypassPermissions'], description: 'Optional permission mode. Defaults to the user\'s default mode for new sessions ("default" unless they changed it).' },
           provider: { type: 'string', description: 'Optional provider name. Defaults to the configured default (claude).' },
           initial_message: { type: 'string', description: 'Optional first user message to send after creating the session.' },
           group_id: { type: 'string', description: 'Optional tab-group id to add the new session to (from ui_list_tab_groups or ui_create_tab_group).' },

@@ -43,6 +43,13 @@ interface Props {
   client: ClaudeClient | null;
   opencodeInfo?: OpencodeInfoLike | null;
   claudeModels?: { id: string; label: string }[];
+  /** `/default` picks per host ('' = local) then provider, for the model
+   *  selector's `Default (…)` label. */
+  defaultModelsByHost?: Record<string, Record<string, string>>;
+  /** Mode new sessions start in, per host ('' = local). The composer starts
+   *  on it until the user picks another mode. */
+  defaultPermissionModeByHost?: Record<string, string>;
+  onSetDefaultPermissionMode?: (remoteId: string | null, mode: string) => void;
   /** Where the composer starts pointed: set when the group sits on a remote
    *  (all members share the same remoteId), null for local groups, and null
    *  for a *mixed* group — which is precisely the case the host selector below
@@ -83,7 +90,7 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBranchChanged }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], defaultModelsByHost, defaultPermissionModeByHost, onSetDefaultPermissionMode, remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBranchChanged }: Props) {
   const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const submittingRef = useRef(false);
@@ -97,7 +104,8 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     return 'claude';
   });
   const [model, setModel] = useState<string>('');
-  const [permissionMode, setPermissionMode] = useState<string>('default');
+  // null follows the target host's default, so switching hosts re-reads it.
+  const [pickedPermissionMode, setPermissionMode] = useState<string | null>(null);
   const [effort, setEffort] = useState<string>('');
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
   const [showWorktreeForm, setShowWorktreeForm] = useState(false);
@@ -113,6 +121,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   // host to inherit — before this it silently meant "local", which spawned on
   // this Mac from a composer that was showing a remote's folder.
   const [target, setTarget] = useState<string | null>(remoteId ?? null);
+  const permissionMode = pickedPermissionMode ?? defaultPermissionModeByHost?.[target || ''] ?? 'default';
   const [hostMenuOpen, setHostMenuOpen] = useState(false);
   const hostBtnRef = useRef<HTMLButtonElement>(null);
   const hostMenuRef = useRef<HTMLDivElement>(null);
@@ -379,7 +388,9 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
         provider,
         prompt.trim(),
         model || undefined,
-        permissionMode && permissionMode !== 'default' ? permissionMode : undefined,
+        // Always explicit: an unset mode would fall back to the host default,
+        // overriding a deliberate pick of "Default".
+        permissionMode,
         worktreeOrigin || undefined,
         target,
         images,
@@ -562,6 +573,9 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
           connectionStatus="connected"
           opencodeInfo={opencodeInfo ?? null}
           claudeModels={claudeModels}
+          defaultModel={defaultModelsByHost?.[target || '']?.[provider]}
+          defaultPermissionMode={defaultPermissionModeByHost?.[target || '']}
+          onSetDefaultPermissionMode={onSetDefaultPermissionMode ? (mode) => onSetDefaultPermissionMode(target, mode) : undefined}
           slashCommands={[]}
           client={client}
           cwd={cwd}

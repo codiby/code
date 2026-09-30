@@ -11,6 +11,7 @@ import type { BridgeDeps } from './bridge';
 import { buildSessionSdkMcpServer } from './sdk-tools';
 import { loadExternalMcpServers } from '../mcp/mcp-config';
 import { loadPreferences } from '../session/storage';
+import { effectiveModel } from './default-model';
 import { startSessionWatcher } from '../session/watcher';
 import { remoteViewerSystemPrompt } from '../network/remote-viewer';
 import type { Session } from '../types';
@@ -67,7 +68,7 @@ export function startProviderSession(session: Session, port: number, resumeSessi
   const opts: SpawnOptions = {
     sessionId: session.id,
     cwd: session.cwd,
-    model: session.model,
+    model: effectiveModel(session),
     permissionMode,
     effort: (session.effort as EffortLevel | null) ?? null,
     resumeSessionId: resumeSessionId ?? null,

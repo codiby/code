@@ -120,6 +120,8 @@ import {
   remoteOfGroupKey, type RemoteGroupPrefs,
 } from '../lib/remote-groups';
 import type { LocalSessionState } from '../lib/session-state';
+import { defaultModelLabel, readDefaultModels, resolveModelArg, type ModelChoice } from '../lib/default-models';
+import { readDefaultPermissionMode } from '../lib/default-permission-mode';
 
 /** Module-scoped empty-array sentinel for the BrowserPanel `comments` prop.
  *  Using `… || []` at the JSX site allocates a fresh array on every render
@@ -381,6 +383,11 @@ export function ChatApp() {
    *  only thing ever persisted) and folded in for rendering by
    *  `mergeRemoteGroups`. */
   const [remoteGroupPrefs, setRemoteGroupPrefs] = useState<Record<string, RemoteGroupPrefs>>({});
+  // `/default <model>` picks, per host ('' = this machine) then per provider.
+  // Each bridge applies its own to sessions that have no model of their own.
+  const [defaultModelsByHost, setDefaultModelsByHost] = useState<Record<string, Record<string, string>>>({});
+  /** Mode new sessions start in, per host ('' = this machine). */
+  const [defaultPermissionModeByHost, setDefaultPermissionModeByHost] = useState<Record<string, string>>({});
 
   /** Configured remotes, straight from the client's `/remotes` load and its
    *  broadcasts. Feeds the composer's "where does this run" selector. */
@@ -1929,6 +1936,8 @@ export function ChatApp() {
         // or when another window links one.
         onPrLinks: (links) => setPrLinks((links || {}) as Record<string, PrLink[]>),
         onPreferences: (prefs) => {
+          setDefaultModelsByHost(prev => ({ ...prev, '': readDefaultModels(prefs) }));
+          setDefaultPermissionModeByHost(prev => ({ ...prev, '': readDefaultPermissionMode(prefs) }));
           if (Array.isArray(prefs.tabOrder)) {
             setTabOrder(prefs.tabOrder as string[]);
           }
@@ -1972,6 +1981,8 @@ export function ChatApp() {
          *  reach `tabGroups`, which is what gets persisted locally. An empty
          *  blob means the remote was removed. */
         onRemotePreferences: (remoteId, prefs) => {
+          setDefaultModelsByHost(prev => ({ ...prev, [remoteId]: readDefaultModels(prefs) }));
+          setDefaultPermissionModeByHost(prev => ({ ...prev, [remoteId]: readDefaultPermissionMode(prefs) }));
           const tabGroups = (prefs.tabGroups as Record<string, TabGroupInfo> | undefined) ?? {};
           const tabGroupMap = (prefs.tabGroupMap as Record<string, string> | undefined) ?? {};
           setRemoteGroupPrefs(prev => {
@@ -3283,6 +3294,56 @@ export function ChatApp() {
       return;
     }
 
+    // `/default [model|clear]`: the default model for this session's provider,
+    // stored on the bridge that runs the session. Sessions left on "Default"
+    // switch to it right away; ones with an explicit pick keep theirs.
+    const defaultMatch = text.match(/^\/default(?:\s+([\s\S]+))?$/);
+    if (defaultMatch && session) {
+      setInputForSession(sid, '');
+      const report = (content: string) => updateLocalState(sid, s => ({
+        ...s,
+        messages: [...s.messages, { id: crypto.randomUUID(), role: 'system', content, timestamp: Date.now() }],
+      }));
+      const provider = session.provider || 'claude';
+      const hostKey = session.remoteId || '';
+      const current = defaultModelsByHost[hostKey] ?? {};
+      const arg = defaultMatch[1]?.trim() || '';
+      void (async () => {
+        const choices: ModelChoice[] = provider === 'opencode'
+          ? (opencodeInfo?.models ?? [])
+          : provider === 'codex'
+            ? (await clientRef.current?.getCodexInfo(session.remoteId).catch(() => null))?.models ?? []
+            : (state.supportedModels?.length ? state.supportedModels : claudeModels);
+        if (!arg) {
+          const label = defaultModelLabel(current[provider], choices);
+          report(current[provider]
+            ? `Default model for ${provider}: ${label}\nUsage: /default <model> · /default clear`
+            : `No default model set for ${provider}${label ? ` (provider default: ${label})` : ''}.\nUsage: /default <model>`);
+          return;
+        }
+        const clear = /^(clear|reset|none|default)$/i.test(arg);
+        const model = clear ? null : resolveModelArg(arg, choices);
+        const next = { ...current };
+        if (model) next[provider] = model; else delete next[provider];
+        setDefaultModelsByHost(prev => ({ ...prev, [hostKey]: next }));
+        try {
+          const ok = session.remoteId
+            ? await clientRef.current!.updateRemotePreferences(session.remoteId, { defaultModels: next })
+            : await clientRef.current!.updatePreferences({ defaultModels: next });
+          if (!ok) throw new Error('the bridge rejected the change');
+        } catch (error) {
+          setDefaultModelsByHost(prev => ({ ...prev, [hostKey]: current }));
+          report(`Could not save default model: ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
+        const label = model ? defaultModelLabel(model, choices) : null;
+        report(model
+          ? `Default model for ${provider} set to ${label}.${session.model ? ` This session stays on ${session.model}; pick "Default" to follow it.` : ''}`
+          : `Default model for ${provider} cleared; the provider picks again.`);
+      })();
+      return;
+    }
+
     // Client-side `/clear`: archive the current chat under "Cleared: …" and
     // replace the active tab with a fresh session in the same slot. Never
     // sent to Claude. Lives above /terminal so a future SDK-side `/clear`
@@ -4251,6 +4312,21 @@ export function ChatApp() {
     c.updateSession(sessionId, { permissionMode: mode }).catch(() => {});
   }, []);
 
+  /** Saved on the bridge that hosts the session, like the default model, so
+   *  it applies to whatever spawns there (composer, MCP, other windows). */
+  const setDefaultPermissionMode = useCallback(async (remoteId: string | null | undefined, mode: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    const hostKey = remoteId || '';
+    let previous: string | undefined;
+    setDefaultPermissionModeByHost(prev => { previous = prev[hostKey]; return { ...prev, [hostKey]: mode }; });
+    const ok = await (remoteId
+      ? c.updateRemotePreferences(remoteId, { defaultPermissionMode: mode })
+      : c.updatePreferences({ defaultPermissionMode: mode })
+    ).catch(() => false);
+    if (!ok) setDefaultPermissionModeByHost(prev => ({ ...prev, [hostKey]: previous ?? 'default' }));
+  }, []);
+
   const requestPermissionMode = useCallback((sessionId: string, mode: string) => {
     if (mode === 'bypassPermissions' && shouldWarnBypass()) {
       setPendingBypassSessionId(sessionId);
@@ -4621,7 +4697,7 @@ export function ChatApp() {
   }, [activeId, refreshGitModified]);
 
   // Client-side builtin slash commands (intercepted in handleSend, never sent to Claude).
-  const BUILTIN_SLASH_COMMANDS = ['restart', 'terminal', 't'];
+  const BUILTIN_SLASH_COMMANDS = ['restart', 'default', 'terminal', 't'];
   const sdkSlashCommands = active.initInfo?.slashCommands || [];
   const slashCommands = [...BUILTIN_SLASH_COMMANDS, ...sdkSlashCommands.filter((c: string) => !BUILTIN_SLASH_COMMANDS.includes(c))];
   const slash = useSlashCommands(input, slashCommands);
@@ -5131,7 +5207,7 @@ export function ChatApp() {
     if (!s) return null;
     const sess = sessions.find(x => x.id === sid);
     const status: ConnectionStatus = statuses[sid] || 'disconnected';
-    const BUILTINS = ['restart', 'terminal', 't'];
+    const BUILTINS = ['restart', 'default', 'terminal', 't'];
     const sdkCommands = s.initInfo?.slashCommands || [];
     const sessionSlashCommands = [
       ...BUILTINS,
@@ -5166,6 +5242,9 @@ export function ChatApp() {
         connectionStatus={status}
         opencodeInfo={opencodeInfo}
         claudeModels={claudeModels}
+        defaultModel={defaultModelsByHost[sess?.remoteId || '']?.[sess?.provider || 'claude']}
+        defaultPermissionMode={defaultPermissionModeByHost[sess?.remoteId || '']}
+        onSetDefaultPermissionMode={(mode) => { void setDefaultPermissionMode(sess?.remoteId, mode); }}
         slashCommands={sessionSlashCommands}
         client={client}
         cwd={s.initInfo?.cwd || sess?.cwd || null}
@@ -6125,6 +6204,9 @@ export function ChatApp() {
               />
             ) : !activeId ? (
               <GroupComposer
+                defaultModelsByHost={defaultModelsByHost}
+                defaultPermissionModeByHost={defaultPermissionModeByHost}
+                onSetDefaultPermissionMode={(remoteId, mode) => { void setDefaultPermissionMode(remoteId, mode); }}
                 key={selectedGroupId || "new-chat"}
                 groupName={selectedGroupId ? sidebarGroups[selectedGroupId]?.name || "" : ""}
                 groupCwd={
@@ -6226,6 +6308,9 @@ export function ChatApp() {
                       active session's chat (same path used by focus mode). */}
                   {selectedGroupId && tabGroups[selectedGroupId] ? (
                     <GroupComposer
+                      defaultModelsByHost={defaultModelsByHost}
+                      defaultPermissionModeByHost={defaultPermissionModeByHost}
+                      onSetDefaultPermissionMode={(remoteId, mode) => { void setDefaultPermissionMode(remoteId, mode); }}
                       groupName={sidebarGroups[selectedGroupId]!.name}
                       groupCwd={
                         sidebarGroups[selectedGroupId]!.cwd
@@ -6702,6 +6787,9 @@ export function ChatApp() {
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-y-auto">
                     <GroupComposer
+                      defaultModelsByHost={defaultModelsByHost}
+                      defaultPermissionModeByHost={defaultPermissionModeByHost}
+                      onSetDefaultPermissionMode={(remoteId, mode) => { void setDefaultPermissionMode(remoteId, mode); }}
                       groupName={sidebarGroups[selectedGroupId]!.name}
                       groupCwd={
                         sidebarGroups[selectedGroupId]!.cwd

@@ -89,6 +89,7 @@ import { CodexAdapter } from './provider/adapters/codex';
 import { OpenCodeAdapter } from './provider/adapters/opencode';
 import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
+import { effectiveModel, getDefaultModels } from './provider/default-model';
 import { resolvePermissionDecision, clearPendingDecisionsForSession } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleViewerForwardResponse } from './network/viewer-forward';
@@ -418,6 +419,17 @@ function broadcastFocusSession(sessionId: string) {
  * Merge-update preferences on disk and broadcast the new state to every
  * connected frontend. Used by MCP tools that mutate tab groups etc.
  */
+/** Live sessions that follow the default (no model of their own) switch to the
+ *  new default as soon as it changes, instead of on their next restart. */
+async function applyDefaultModels(before: Record<string, string>) {
+  const after = getDefaultModels();
+  for (const session of sessions.values()) {
+    const provider = session.provider || 'claude';
+    if (session.model || !session.providerSession || before[provider] === after[provider]) continue;
+    try { await session.providerSession.setModel(effectiveModel(session)); } catch {}
+  }
+}
+
 function updatePreferences(partial: Record<string, unknown>): Record<string, unknown> {
   const prefs = loadPreferences();
   // A group that lives on another machine is recognisable by its id prefix, and
@@ -823,8 +835,8 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 
       let confirmText = `Model preference saved: ${newModel ?? 'default'}`;
       try {
-        await session.providerSession!.setModel(newModel);
-        confirmText = `Model set to: ${newModel ?? 'default'}`;
+        await session.providerSession!.setModel(effectiveModel(session));
+        confirmText = `Model set to: ${newModel ?? `default (${effectiveModel(session) ?? 'provider default'})`}`;
       } catch (err) {
         confirmText = `Failed to switch model: ${err}`;
       }
@@ -1076,12 +1088,13 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     session.model = model || null;
     saveSessions();
     if (session.providerSession) {
-      try { await session.providerSession.setModel(session.model); } catch {}
+      try { await session.providerSession.setModel(effectiveModel(session)); } catch {}
     }
+    const fallback = effectiveModel(session);
     const modelChangedMessage: ChatMessage = {
       id: randomUUID(),
       role: 'system',
-      content: `Modelo cambiado a ${session.model ?? 'default'}`,
+      content: `Modelo cambiado a ${session.model ?? (fallback ? `default (${fallback})` : 'default')}`,
       timestamp: Date.now(),
     };
     if (addMessage(sessionId, modelChangedMessage)) {
@@ -2293,7 +2306,9 @@ app.post('/portless/trust', async () => {
 app.get('/preferences', () => Response.json(loadPreferences(), { headers: corsHeaders }));
 app.put('/preferences', async (c) => {
   const body = await c.req.raw.json() as Record<string, unknown>;
+  const before = 'defaultModels' in body ? getDefaultModels() : null;
   updatePreferences(body);
+  if (before) void applyDefaultModels(before);
   return Response.json({ ok: true }, { headers: corsHeaders });
 });
 

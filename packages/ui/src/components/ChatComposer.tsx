@@ -71,7 +71,7 @@ interface ActiveLike {
   isCompacting?: boolean;
   permRequest: unknown;
   inputHistory: string[];
-  supportedModels?: { id: string; label: string }[];
+  supportedModels?: { id: string; label: string; description?: string }[];
 }
 
 interface ActiveSessionLike {
@@ -91,6 +91,21 @@ const EFFORT_OPTIONS = [
   { id: 'xhigh', label: 'X-High' },
   { id: 'max', label: 'Max' },
 ] as const;
+
+const PERMISSION_MODE_ITEMS = [
+  { id: 'default', label: 'Default' },
+  { id: 'acceptEdits', label: 'Accept Edits' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'bypassPermissions', label: 'Bypass All' },
+] as const;
+
+/** Selector entry that saves the current mode as the one new sessions start
+ *  in, instead of switching this session's mode. */
+const SET_DEFAULT_MODE_KEY = '__set-default-mode__';
+
+function permissionModeLabel(mode: string): string {
+  return PERMISSION_MODE_ITEMS.find(m => m.id === mode)?.label ?? mode;
+}
 
 interface OpencodeInfoLike {
   models?: { id: string; providerName: string; label: string }[];
@@ -122,7 +137,16 @@ interface Props {
    *  list (e.g. just spawned). The SDK is the single source of truth: there
    *  is no hardcoded backup. Empty until the bridge has seen at least one
    *  Claude session boot since the cache was created. */
-  claudeModels: { id: string; label: string }[];
+  claudeModels: { id: string; label: string; description?: string }[];
+  /** The user's `/default` model for this session's provider and host, if
+   *  any. Only feeds the `Default (…)` label; the bridge applies it. */
+  defaultModel?: string;
+  /** Mode new sessions on this session's host start in. Marks that entry in
+   *  the permission selector; the bridge applies it. */
+  defaultPermissionMode?: string;
+  /** Make `mode` the one new sessions start in. Hides the selector's
+   *  "Use for new sessions" entry when absent. */
+  onSetDefaultPermissionMode?: (mode: string) => void;
 
   /** Slash commands available for this session (builtins + SDK-published).
    *  Computed in the host because it depends on `initInfo` shape. */
@@ -154,7 +178,9 @@ interface Props {
 export function ChatComposer(props: Props) {
   const {
     input, onChangeInput, pastedImages, onChangePastedImages,
-    active, activeSession, connectionStatus, opencodeInfo, claudeModels,
+    attachedFiles = [], onChangeAttachedFiles,
+    active, activeSession, connectionStatus, opencodeInfo, claudeModels, defaultModel,
+    defaultPermissionMode = 'default', onSetDefaultPermissionMode,
     slashCommands, client, cwd,
     onSend, submitting = false, onInterrupt, onSelectModel, onSelectPermissionMode, onSelectEffort, onFocus,
     onRegisterSnippet, autoFocus, widthClass = 'max-w-4xl',
@@ -482,6 +508,9 @@ export function ChatComposer(props: Props) {
   const modelChoices = isClaude
     ? (active.supportedModels?.length ? active.supportedModels : claudeModels)
     : (isCodex && codex.info?.models.length ? codex.info.models : active.supportedModels ?? (activeSession?.model ? [{ id: activeSession.model, label: activeSession.model }] : []));
+  // "Default (Opus 5.5)": what a session left on Default actually runs.
+  const resolvedDefault = defaultModelLabel(defaultModel, isOpenCode ? (ocModels ?? []) : modelChoices);
+  const defaultLabel = resolvedDefault ? `Default (${resolvedDefault})` : 'Default';
   // Terminal commands can't be queued offline (they run on the live pane), so
   // they still require a live connection. Chat messages, however, can be
   // composed while the session is closed — they're staged with a "sending"
@@ -652,7 +681,7 @@ export function ChatComposer(props: Props) {
                   const modelId = key === 'default' ? '' : String(key);
                   onSelectModel(modelId);
                 }}
-                className={isOpenCode ? 'w-56' : 'w-32'}
+                className={isOpenCode ? 'w-56' : 'w-40'}
                 isDisabled={ocLoading || codex.loading}
               >
                 <SelectTrigger className={triggerCls}>
@@ -661,7 +690,7 @@ export function ChatComposer(props: Props) {
                 </SelectTrigger>
                 <SelectPopover>
                   <ListBox>
-                    <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
+                    <ListBoxItem key="default" id="default" textValue={defaultLabel}><span className="text-xs">{defaultLabel}</span></ListBoxItem>
                     {isOpenCode
                       ? (ocModels ?? []).map(m => (
                           <ListBoxItem key={m.id} id={m.id} textValue={`${m.providerName} ${m.label}`}>
@@ -671,7 +700,7 @@ export function ChatComposer(props: Props) {
                             </span>
                           </ListBoxItem>
                         ))
-                      : modelChoices.map(m => (
+                      : modelChoices.filter(m => m.id !== 'default').map(m => (
                           <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
                             <span className="text-xs">{m.label}</span>
                           </ListBoxItem>
@@ -708,8 +737,16 @@ export function ChatComposer(props: Props) {
 
               <Select
                 aria-label="Permission mode"
-                selectedKey={activeSession?.permission_mode || 'default'}
-                onSelectionChange={(key) => onSelectPermissionMode(String(key))}
+                selectedKey={currentPermissionMode}
+                onSelectionChange={(key) => {
+                  // Not a mode: saves the current one as the default and
+                  // leaves the selection where it was.
+                  if (key === SET_DEFAULT_MODE_KEY) {
+                    if (currentPermissionMode !== 'loop') onSetDefaultPermissionMode?.(currentPermissionMode);
+                    return;
+                  }
+                  onSelectPermissionMode(String(key));
+                }}
                 className="w-36"
               >
                 <SelectTrigger className={triggerCls}>
@@ -718,13 +755,23 @@ export function ChatComposer(props: Props) {
                 </SelectTrigger>
                 <SelectPopover>
                   <ListBox>
-                    <ListBoxItem key="default" id="default" textValue="Default"><span className="text-xs">Default</span></ListBoxItem>
-                    <ListBoxItem key="acceptEdits" id="acceptEdits" textValue="Accept Edits"><span className="text-xs">Accept Edits</span></ListBoxItem>
-                    <ListBoxItem key="plan" id="plan" textValue="Plan"><span className="text-xs">Plan</span></ListBoxItem>
-                    <ListBoxItem key="bypassPermissions" id="bypassPermissions" textValue="Bypass"><span className="text-xs">Bypass All</span></ListBoxItem>
+                    {PERMISSION_MODE_ITEMS.map(m => (
+                      <ListBoxItem key={m.id} id={m.id} textValue={m.label}>
+                        <span className="text-xs">{m.label}</span>
+                      </ListBoxItem>
+                    ))}
                     {/* Loop isn't a plain mode: picking it arms the loop driver
                         (POST /loop/start) rather than just flipping a flag. */}
                     <ListBoxItem key="loop" id="loop" textValue="Loop"><span className="text-xs text-cyan-300">🔁 Loop</span></ListBoxItem>
+                    {onSetDefaultPermissionMode && (
+                      <ListBoxItem key={SET_DEFAULT_MODE_KEY} id={SET_DEFAULT_MODE_KEY} textValue="New sessions" className="border-t border-white/5 mt-1 pt-1.5">
+                        <span className="text-xs text-zinc-400">
+                          {currentPermissionMode === defaultPermissionMode || currentPermissionMode === 'loop'
+                            ? `New sessions: ${permissionModeLabel(defaultPermissionMode)}`
+                            : `Use ${permissionModeLabel(currentPermissionMode)} for new sessions`}
+                        </span>
+                      </ListBoxItem>
+                    )}
                   </ListBox>
                 </SelectPopover>
               </Select>

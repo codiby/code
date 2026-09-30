@@ -11,6 +11,7 @@ import { loadTelegramSettings } from '../session/storage';
 import { loadPersonalAgentConfig } from './personal-agent';
 import { transcribeAudioFromUrl } from './deepgram';
 import type { Session } from '../types';
+import { effectiveModel } from '../provider/default-model';
 
 let bot: Telegraf | null = null;
 let currentChatIdSetting: string = '';
@@ -357,7 +358,7 @@ export function startTelegramBot(port: number) {
       // Hot-swap via provider session — no restart needed.
       if (session.providerSession) {
         try {
-          await session.providerSession.setModel(newModel);
+          await session.providerSession.setModel(effectiveModel(session));
           ctx.reply(`Model set to: ${newModel ?? 'default'}`);
         } catch (err) {
           ctx.reply(`Failed to switch model: ${err}`);
