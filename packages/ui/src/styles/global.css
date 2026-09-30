@@ -1040,3 +1040,7 @@ html.light .ex-over { background: var(--color-surface); box-shadow: 0 0 0 1px va
 .cm-highlight .token.class-name { color: #61afef; }
 .cm-highlight .token.regex,
 .cm-highlight .token.important { color: #e5c07b; }
+
+/* Archive suggestion pill above the composer (ArchiveSuggestionPill.tsx). */
+.archive-pill { animation: archive-pill-in .3s ease-out; }
+@keyframes archive-pill-in { from { opacity: 0; transform: translateY(6px); } }

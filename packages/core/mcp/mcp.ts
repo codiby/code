@@ -15,6 +15,7 @@ import { corsHeaders, MAIN_SESSION_ID } from '../config/config';
 import { log } from '../lib/logger';
 import { sessions, sessionToJSON, saveSessions } from '../session/sessions';
 import { sessionNotesTool } from '../handlers/session-notes';
+import { SUGGEST_ARCHIVE_DESCRIPTION, SUGGEST_ARCHIVE_REASON } from '../session/archive-suggestion';
 import {
   handleCreateSession,
   handleRestartSession,
@@ -847,6 +848,17 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           content: { type: 'string', description: 'Short note text (<= 500 chars).' },
         },
         required: ['content'],
+      },
+    },
+    {
+      name: 'ui_suggest_archive',
+      description: SUGGEST_ARCHIVE_DESCRIPTION,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          reason: { type: 'string', minLength: 1, maxLength: 120, description: SUGGEST_ARCHIVE_REASON },
+        },
+        required: ['reason'],
       },
     },
     {
@@ -1866,6 +1878,11 @@ export async function executeLocalMcpTool(
           _deps.broadcastToSession(uiSessionId, { type: 'message', sessionId: uiSessionId, message: msg });
         }
         return { content: [{ type: 'text', text: `Posted note: ${content}` }] };
+      }
+      case 'ui_suggest_archive': {
+        const reason = typeof args?.reason === 'string' ? args.reason.trim() : '';
+        if (!reason) return { content: [{ type: 'text', text: 'reason is required' }], isError: true };
+        return { content: [{ type: 'text', text: `Suggested archiving the session: ${reason}` }] };
       }
       case 'ui_post_image_to_session': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

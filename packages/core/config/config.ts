@@ -126,6 +126,10 @@ export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   // including plan — sketching a UI is exactly what planning looks like.
   'mcp__codiby-code__ui_mockup_write',
   'mcp__codiby-code-sdk__mockup_write',
+  // Suggesting an archive only puts a dismissible pill above the composer;
+  // archiving itself still takes the user's click or shortcut.
+  'mcp__codiby-code__ui_suggest_archive',
+  'mcp__codiby-code-sdk__suggest_archive',
 ]);
 
 /**

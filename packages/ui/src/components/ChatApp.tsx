@@ -30,6 +30,7 @@ import { SkillsModal } from './SkillsModal';
 import { ResourcesPanel } from './ResourcesPanel';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
+import { ArchiveSuggestionPill } from './ArchiveSuggestionPill';
 import { PortlessActionToast } from './PortlessActionToast';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
@@ -4096,6 +4097,7 @@ export function ChatApp() {
     'close-tab': () => closePanelRef.current(),
     'new-session': () => setShowNewSession(true),
     'clear-chat': () => { if (activeId) clearSession(activeId); },
+    'archive-session': () => { if (activeId) handleCloseTab(activeId); },
     'sidebar-files': () => requestSidebarTab('files'),
     'sidebar-changes': () => requestSidebarTab('changes'),
     'sidebar-toolsmcp': () => requestSidebarTab('toolsmcp'),
@@ -5249,6 +5251,16 @@ export function ChatApp() {
           onPause={() => { void controlLoop(sid, 'pause'); }}
           onResume={() => { void controlLoop(sid, 'resume'); }}
           onStop={() => { void controlLoop(sid, 'stop'); }}
+        />
+      )}
+      {!s.loop && (
+        <ArchiveSuggestionPill
+          messages={s.messages}
+          streaming={s.isStreaming}
+          typing={!!s.input.trim()}
+          chord={kbBindings['archive-session'] ?? null}
+          onArchive={() => handleCloseTab(sid)}
+          className="-mb-1"
         />
       )}
       <ChatComposer

@@ -20,6 +20,7 @@ import { addMessage } from '../session/state';
 import type { ChatMessage } from '../session/state';
 import { saveResource } from '../handlers/resources';
 import { sessions, saveSessions } from '../session/sessions';
+import { SUGGEST_ARCHIVE_DESCRIPTION, SUGGEST_ARCHIVE_REASON } from '../session/archive-suggestion';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host/index';
 import { cdpRequest } from './browser-cdp';
 import { trackedProcesses } from '../handlers/processes';
@@ -366,6 +367,16 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           }
           return { content: [{ type: 'text', text: `Posted note: ${args.content}` }] };
         },
+      ),
+      tool(
+        'suggest_archive',
+        SUGGEST_ARCHIVE_DESCRIPTION,
+        {
+          reason: z.string().min(1).max(120).describe(SUGGEST_ARCHIVE_REASON),
+        },
+        async (args) => ({
+          content: [{ type: 'text', text: `Suggested archiving the session: ${args.reason.trim()}` }],
+        }),
       ),
       tool(
         'post_image_to_session',
