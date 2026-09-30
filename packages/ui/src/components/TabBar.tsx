@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap, Timer,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -45,6 +45,8 @@ interface Props {
   pinnedSessionIds?: Set<string>;
   /** Toggle pin state for a session. Persisted globally in preferences. */
   onTogglePin?: (sessionId: string) => void;
+  /** Turn a disposable into a regular session (stops it expiring). */
+  onKeepSession?: (sessionId: string) => void;
   onSelect: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
@@ -155,6 +157,24 @@ function formatTabAge(ts: number | undefined, now: number): string {
   const mo = Math.floor(day / 30);
   return `${mo}mo`;
 }
+
+/** Time until an idle disposable is archived — "23h", "42m", "<1m". The live
+ *  last-message time runs ahead of `updated_at`, which only refreshes when the
+ *  session list is rebroadcast. */
+function formatTimeLeft(s: SessionInfo, lastMessageAt: number | undefined, now: number): string {
+  if (!s.disposable_ttl_ms) return '';
+  const idleSince = Math.max(s.updated_at, lastMessageAt ?? 0);
+  const min = Math.floor((idleSince + s.disposable_ttl_ms - now) / 60_000);
+  if (min < 1) return '<1m';
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  return hr < 24 ? `${hr}h` : `${Math.floor(hr / 24)}d`;
+}
+
+/** Fixed folder id the bridge files disposables under (core's
+ *  `DISPOSABLES_GROUP_ID`). The sidebar lifts it out of the group tree and
+ *  shows it as a footer item instead. */
+const DISPOSABLES_GROUP_ID = 'disposables';
 
 // Soft teal used for live (running) sessions — distinct from the status colors.
 const RUN_COLOR = '#5eead4';
@@ -330,6 +350,8 @@ function SessionActivityBadges({ activity }: { activity?: SessionActivity }) {
 type RowProps = {
   id: string; session: SessionInfo; isActive: boolean; connStatus: string; isStreaming: boolean; wasInterrupted: boolean; turnComplete?: boolean; hasPermission: boolean; activity?: SessionActivity; groupColor?: string; compact?: boolean;
   ageLabel?: string;
+  /** Set on disposables: shown instead of the age, as time left before archive. */
+  disposableLeft?: string;
   isPinned?: boolean;
   editingId: string | null; editName: string; editRef: React.RefObject<HTMLInputElement | null>;
   setEditName: (v: string) => void; startRename: (s: SessionInfo) => void; commitRename: () => void; setEditingId: (id: string | null) => void;
@@ -395,7 +417,15 @@ function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupt
           hover-gated) so activity is legible at a glance. */}
       {editingId !== session.id && <SessionActivityBadges activity={activity} />}
       {/* Age chip — only shown on inactive tabs, replaced by close button on hover. */}
-      {ageLabel && editingId !== session.id && !isActive && (
+      {disposableLeft && editingId !== session.id && (
+        <span
+          className="shrink-0 text-[10px] tabular-nums text-teal-400/70 group-hover:hidden"
+          title={`Disposable — archived after ${disposableLeft} more without activity`}
+        >
+          {disposableLeft}
+        </span>
+      )}
+      {!disposableLeft && ageLabel && editingId !== session.id && !isActive && (
         <span
           className="shrink-0 text-[10px] tabular-nums text-zinc-600 group-hover:hidden"
           title={`Last activity ${ageLabel} ago`}
@@ -812,7 +842,7 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
 
 export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt,
-    pinnedSessionIds, onTogglePin,
+    pinnedSessionIds, onTogglePin, onKeepSession,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
     onCreateSubgroup, onMoveGroup, onAutoGroupSessions,
@@ -984,23 +1014,35 @@ export const TabBar = memo(function TabBar(props: Props) {
   // recency, with the incoming order as a stable tiebreaker.
   const sessionIndex = useMemo(() => new Map(sessions.map((s, i) => [s.id, i])), [sessions]);
   const pinRank = useMemo(() => pinOrder(pinnedSessionIds), [pinnedSessionIds]);
+  const sortSessions = (a: SessionInfo, b: SessionInfo) => {
+    const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
+    const pb = pinnedSessionIds?.has(b.id) ? 1 : 0;
+    if (pa !== pb) return pb - pa;
+    // A pin stays where pinning put it; only another pin displaces it.
+    if (pa) return (pinRank.get(b.id) ?? -1) - (pinRank.get(a.id) ?? -1);
+    const ta = sessionLastMessageAt?.[a.id] || 0;
+    const tb = sessionLastMessageAt?.[b.id] || 0;
+    if (tb !== ta) return tb - ta;
+    return (sessionIndex.get(a.id) ?? 0) - (sessionIndex.get(b.id) ?? 0);
+  };
+  // Disposables live in the footer, not the tree: split them off by folder
+  // membership, so "Keep session" (which unfiles them) moves them back.
+  const disposableSessions = visibleSessions
+    .filter(s => tabGroupMap[s.id] === DISPOSABLES_GROUP_ID)
+    .sort(sortSessions);
+  const treeGroups = useMemo(() => {
+    if (!tabGroups[DISPOSABLES_GROUP_ID]) return tabGroups;
+    const { [DISPOSABLES_GROUP_ID]: _, ...rest } = tabGroups;
+    return rest;
+  }, [tabGroups]);
   const tree = useMemo(() => buildGroupTree({
-    sessions: visibleSessions,
-    groups: tabGroups,
+    sessions: visibleSessions.filter(s => tabGroupMap[s.id] !== DISPOSABLES_GROUP_ID),
+    groups: treeGroups,
     map: tabGroupMap,
     childOrder: groupOrder,
-    sortSessions: (a, b) => {
-      const pa = pinnedSessionIds?.has(a.id) ? 1 : 0;
-      const pb = pinnedSessionIds?.has(b.id) ? 1 : 0;
-      if (pa !== pb) return pb - pa;
-      // A pin stays where pinning put it; only another pin displaces it.
-      if (pa) return (pinRank.get(b.id) ?? -1) - (pinRank.get(a.id) ?? -1);
-      const ta = sessionLastMessageAt?.[a.id] || 0;
-      const tb = sessionLastMessageAt?.[b.id] || 0;
-      if (tb !== ta) return tb - ta;
-      return (sessionIndex.get(a.id) ?? 0) - (sessionIndex.get(b.id) ?? 0);
-    },
-  }), [visibleSessions, tabGroups, tabGroupMap, groupOrder, pinnedSessionIds, pinRank, sessionLastMessageAt, sessionIndex]);
+    sortSessions,
+  }),[visibleSessions, treeGroups, tabGroupMap, groupOrder, pinnedSessionIds, pinRank, sessionLastMessageAt, sessionIndex]);
+  const disposablesExpanded = !!normalizedSessionSearch || expandedGroupIds.has(DISPOSABLES_GROUP_ID);
 
   // react-aria drop handler for a tab dropped onto another tab. Mirrors the old
   // dnd-kit logic: Shift groups the two (or adds to the target's group), plain
@@ -1027,6 +1069,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     activity: sessionActivity?.[s.id],
     groupColor, compact,
     ageLabel: formatTabAge(sessionLastMessageAt?.[s.id], nowMs),
+    disposableLeft: formatTimeLeft(s, sessionLastMessageAt?.[s.id], nowMs),
     isPinned: pinnedSessionIds?.has(s.id) || false,
     editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose,
     onQuickDelete: s.id === 'main-session' ? undefined : onQuickDelete,
@@ -1283,7 +1326,7 @@ export const TabBar = memo(function TabBar(props: Props) {
            </div>
          )}
          <div className="flex flex-col gap-0.5">
-           {tree.length === 0 ? (
+           {tree.length === 0 && disposableSessions.length === 0 ? (
              <div className="px-3 py-5 text-center text-[11px] text-zinc-600">No matching sessions</div>
            ) : tree.map(node => renderTreeNode(node))}
         </div>
@@ -1291,6 +1334,40 @@ export const TabBar = memo(function TabBar(props: Props) {
 
       {/* Footer — fixed actions pinned to the bottom of the sidebar. */}
       <div className="flex flex-col gap-0.5 px-2 py-2 border-t border-border shrink-0">
+        {/* Disposables — the bridge's fixed folder, shown as a footer item that
+            unfolds its sessions in place. Expanded state rides on the same
+            persisted set as the groups. */}
+        {disposableSessions.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => onToggleGroup(DISPOSABLES_GROUP_ID)}
+              aria-expanded={disposablesExpanded}
+              className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
+            >
+              <Timer size={15} className="text-zinc-500 group-hover:text-teal-300 transition-colors" />
+              <span className="flex-1 text-left">Disposables</span>
+              {!disposablesExpanded && disposableSessions.some(s => sessionHasPermission[s.id]) && (
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+              )}
+              <span className="text-[10px] tabular-nums text-zinc-600">{disposableSessions.length}</span>
+              {disposablesExpanded
+                ? <ChevronDown size={12} className="text-zinc-600" />
+                : <ChevronRight size={12} className="text-zinc-600" />}
+            </button>
+            {disposablesExpanded && (
+              <div className="flex flex-col gap-0.5 max-h-[40vh] overflow-y-auto ml-3 pl-2 border-l-2 border-teal-500/30">
+                {disposableSessions.map(s => (
+                  <ReorderTab
+                    key={s.id}
+                    {...tp(s, undefined, true)}
+                    onDropTab={(from) => handleDropTab(from, s.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
         {/* Automatizaciones swaps the main pane rather than opening a modal, so
             unlike Skills/Settings it carries an active state. */}
         <button
@@ -1485,6 +1562,14 @@ export const TabBar = memo(function TabBar(props: Props) {
                   onPress={() => { onTogglePin(tabMenu.tabId); setTabMenu(null); }}>
                   <Pin size={11} strokeWidth={2.25} className={pinnedSessionIds?.has(tabMenu.tabId) ? 'fill-current text-zinc-300' : ''} />
                   {pinnedSessionIds?.has(tabMenu.tabId) ? 'Unpin from top' : 'Pin to top'}
+                </Button>
+              )}
+
+              {onKeepSession && sessions.find(s => s.id === tabMenu.tabId)?.disposable_ttl_ms && (
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                  onPress={() => { onKeepSession(tabMenu.tabId); setTabMenu(null); }}>
+                  <Pin size={11} strokeWidth={2.25} />
+                  Keep session
                 </Button>
               )}
 

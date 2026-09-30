@@ -6301,6 +6301,7 @@ export function ChatApp() {
               sessionLastMessageAt={sessionLastMessageAt}
               pinnedSessionIds={pinnedSessionIds}
               onTogglePin={handleTogglePin}
+              onKeepSession={id => { void clientRef.current?.keepSession(id); }}
               onSelect={handleSelectSession}
               onNew={handleNewSessionComposer}
               onClose={handleCloseTab}

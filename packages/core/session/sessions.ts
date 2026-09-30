@@ -19,6 +19,7 @@ export function saveSessions() {
     portForwards: s.portForwards,
     status: s.status,
     loopState: s.loopState,
+    disposableTtlMs: s.disposableTtlMs ?? null,
   }));
   try {
     mkdirSync(CODIBY_DIR, { recursive: true });
@@ -95,6 +96,7 @@ export function loadSessions() {
         loopState: p.loopState
           ? { ...p.loopState, phase: p.loopState.phase === 'looping' ? 'paused' : p.loopState.phase }
           : null,
+        disposableTtlMs: p.disposableTtlMs ?? null,
       });
     }
     log(`[persist] Loaded ${data.length} sessions`);
@@ -200,5 +202,6 @@ export function sessionToJSON(s: Session, port: number) {
     effort: s.effort || null,
     provider: s.provider || 'claude',
     loop_state: s.loopState ?? null,
+    disposable_ttl_ms: s.disposableTtlMs ?? null,
   };
 }

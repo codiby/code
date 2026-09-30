@@ -105,6 +105,7 @@ export type PersistedSession = {
   remoteId?: string | null;
   portForwards?: PortForward[];
   loopState?: LoopState | null;
+  disposableTtlMs?: number | null;
 };
 
 export interface TrackedProcess {

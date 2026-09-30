@@ -117,6 +117,7 @@ import { handlePrComment, handlePrDetail, handlePrDiff, handlePrMerge, handlePrR
 import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
 import { planAutoGroup, planAutoGroupExisting, type AutoGroup } from './config/auto-group';
+import { DISPOSABLES_GROUP_ID, expiredDisposables, placeInDisposables, refileDisposables } from './session/disposables';
 import { dedupePreferenceGroups } from './config/group-dedupe';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
@@ -458,6 +459,14 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
   // Android, other windows) renders the same folders from the broadcast below
   // instead of each resolving duplicates its own way.
   const next = dedupePreferenceGroups(Object.assign(prefs, clean));
+  // A window writing its groups from a stale copy would otherwise make the
+  // Disposables folder vanish for good.
+  const refiled = refileDisposables(
+    sessions.values(),
+    (next.tabGroups as Record<string, AutoGroup>) || {},
+    (next.tabGroupMap as Record<string, string>) || {},
+  );
+  if (refiled) Object.assign(next, { tabGroups: refiled.groups, tabGroupMap: refiled.map });
   savePreferences(next);
   broadcastPreferences(next);
   return next;
@@ -550,6 +559,37 @@ function autoGroupLooseSessions(apply: boolean) {
     moved: result.moved,
   };
 }
+
+/** Archive every disposable that has gone its lifetime without activity. They
+ *  stay in the Disposables folder, so unarchiving one brings it back there. */
+function sweepDisposables() {
+  // Also the startup repair for disposables whose folder was lost while no
+  // preference write came along to put it back.
+  const prefs = loadPreferences();
+  if (refileDisposables(sessions.values(), (prefs.tabGroups as Record<string, AutoGroup>) || {}, (prefs.tabGroupMap as Record<string, string>) || {})) {
+    updatePreferences({});
+  }
+  const expired = expiredDisposables(
+    [...sessions.values()].map(s => ({
+      ...s,
+      // Only a live provider can be mid-turn, and checking it first avoids
+      // loading an idle session's transcript just to read one flag.
+      busy: !!s.providerSession && getSessionState(s.id).isStreaming,
+    })),
+    Date.now(),
+  );
+  if (!expired.length) return;
+  for (const id of expired) {
+    const s = sessions.get(id)!;
+    s.status = 'archived';
+    s.updatedAt = Date.now();
+  }
+  saveSessions();
+  broadcastSessionList();
+  log(`[disposables] Archived ${expired.length} expired disposable session(s)`);
+}
+setInterval(sweepDisposables, 5 * 60_000);
+setTimeout(sweepDisposables, 10_000);
 
 const IMG_MIME_EXT: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
@@ -1430,10 +1470,17 @@ app.post('/sessions', async (c) => {
   let createdId: string | null = null;
   if (resp.ok) {
     try {
-      const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string; group_id?: string; ungrouped?: boolean };
+      const created = await resp.clone().json() as { id?: string; cwd?: string; group_cwd?: string; group_id?: string; ungrouped?: boolean; disposable_ttl_ms?: number | null };
       if (created?.id) {
         createdId = created.id;
-        if (created.group_id) {
+        if (created.disposable_ttl_ms) {
+          const prefs = loadPreferences();
+          updatePreferences(placeInDisposables(
+            created.id,
+            (prefs.tabGroups as Record<string, AutoGroup>) || {},
+            (prefs.tabGroupMap as Record<string, string>) || {},
+          ));
+        } else if (created.group_id) {
           // The client already chose. Record it here rather than letting the
           // client write the map itself, so this stays the only writer and an
           // automatic rule can never race with an explicit choice.
@@ -1513,7 +1560,18 @@ app.post('/sessions/:id/clear', async (c) => {
 app.patch('/sessions/:id', async (c) => {
   const req = c.req.raw;
   const sid = c.req.param('id');
+  const wasDisposable = !!sessions.get(sid)?.disposableTtlMs;
   const resp = await handleRenameSession(sid, req);
+  // A kept disposable leaves the Disposables folder and sits loose, like any
+  // session started outside a project.
+  if (wasDisposable && !sessions.get(sid)?.disposableTtlMs) {
+    const prefs = loadPreferences();
+    const map = { ...((prefs.tabGroupMap as Record<string, string>) || {}) };
+    if (map[sid] === DISPOSABLES_GROUP_ID) {
+      delete map[sid];
+      updatePreferences({ tabGroupMap: map });
+    }
+  }
   broadcastSessionList();
   return resp;
 });

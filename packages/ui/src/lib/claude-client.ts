@@ -454,6 +454,8 @@ export interface SessionInfo {
   remoteColor?: string | null;
   /** Display name of the remote (shown in tooltips / labels). */
   remoteName?: string | null;
+  /** Throwaway session: archived after this many ms without activity. */
+  disposable_ttl_ms?: number | null;
 }
 
 export interface SessionInitInfo {
@@ -1645,6 +1647,9 @@ export class ClaudeClient {
       groupId?: string;
       /** Keep the session loose: the bridge skips its automatic grouping. */
       ungrouped?: boolean;
+      /** Start a disposable: the bridge runs it in $HOME, files it under
+       *  Disposables and archives it after this long idle. */
+      disposableTtlMs?: number;
     } = {},
   ): Promise<SessionInfo> {
     const remoteId = opts.remoteId ?? null;
@@ -1675,6 +1680,7 @@ export class ClaudeClient {
         group_cwd: opts.groupCwd,
         group_id: opts.groupId,
         ungrouped: opts.ungrouped,
+        disposable_ttl_ms: opts.disposableTtlMs,
       }),
     });
     if (!resp.ok) {
@@ -1796,7 +1802,7 @@ export class ClaudeClient {
 
   async updateSession(
     sessionId: string,
-    updates: { permissionMode?: string; name?: string; status?: 'open' | 'archived' },
+    updates: { permissionMode?: string; name?: string; status?: 'open' | 'archived'; disposable?: false },
   ): Promise<SessionInfo> {
     const base = await this.sessionBase(sessionId);
     const resp = await authedFetch(`${base}/sessions/${sessionId}`, {
@@ -1813,6 +1819,12 @@ export class ClaudeClient {
    *  kill the Claude process. */
   archiveSession(sessionId: string) {
     return this.updateSession(sessionId, { status: 'archived' });
+  }
+
+  /** Turn a disposable into a regular session: it stops expiring and leaves
+   *  the Disposables folder. */
+  keepSession(sessionId: string) {
+    return this.updateSession(sessionId, { disposable: false });
   }
 
   /** Archive before stopping so the stop broadcast cannot briefly resurface

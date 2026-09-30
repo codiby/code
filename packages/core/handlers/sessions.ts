@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
 import { existsSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
+import { homedir } from 'os';
 import { sessions, saveSessions, sessionToJSON } from '../session/sessions';
 import { startProviderSession } from '../provider/lifecycle';
 import { corsHeaders, CWD, PORT, MAIN_SESSION_ID } from '../config/config';
@@ -17,6 +18,7 @@ import { closeSessionPortForwards } from '../network/port-forward';
 import { forgetViewerBriefing } from '../network/remote-viewer';
 import { rootRepoOf } from './worktree';
 import { deleteSessionNotes } from './session-notes';
+import { parseDisposableTtl } from '../session/disposables';
 import type { Session } from '../types';
 
 /** True when `cwd` matches the worktree convention `<repo>/.worktrees/<branch>`
@@ -82,6 +84,9 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   let groupId: string | null = null;
   // The client asked for a loose session: skip the automatic grouping rules.
   let ungrouped = false;
+  // Throwaway session from the launcher: runs in $HOME, lands in the
+  // Disposables folder, and archives itself after this long idle.
+  let disposableTtlMs: number | null = null;
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
@@ -93,7 +98,9 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     if (body.group_cwd && typeof body.group_cwd === 'string') groupCwd = body.group_cwd;
     if (body.group_id && typeof body.group_id === 'string') groupId = body.group_id;
     if (body.ungrouped === true) ungrouped = true;
+    disposableTtlMs = parseDisposableTtl(body.disposable_ttl_ms);
   } catch {}
+  if (disposableTtlMs) cwd = homedir();
 
   const now = Date.now();
   const session: Session = {
@@ -118,6 +125,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     remoteId: null,
     portForwards: [],
     loopState: null,
+    disposableTtlMs,
   };
   sessions.set(session.id, session);
 
@@ -183,6 +191,12 @@ export async function handleRenameSession(sessionId: string, req: Request): Prom
     }
     if (body.status === 'open' || body.status === 'archived') {
       session.status = body.status;
+      touched = true;
+    }
+    // "Keep": a disposable becomes a regular session. Only ever cleared —
+    // turning a session disposable after the fact isn't offered.
+    if (body.disposable === false && session.disposableTtlMs) {
+      session.disposableTtlMs = null;
       touched = true;
     }
     if (touched) session.updatedAt = Date.now();
