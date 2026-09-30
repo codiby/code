@@ -16,6 +16,7 @@ import {
 } from '../lib/group-tree';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
+import { UsagePopover } from './UsagePopover';
 
 type TabGroup = TabGroupInfo;
 
@@ -1285,6 +1286,8 @@ export const TabBar = memo(function TabBar(props: Props) {
           <Sparkles size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
           <span>Skills</span>
         </button>
+        {/* Owns its own data and panel; the sidebar only gives it a slot. */}
+        <UsagePopover />
         <button
           type="button"
           onClick={onOpenSettings}

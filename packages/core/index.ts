@@ -85,6 +85,7 @@ import { getCodexInfo } from './handlers/codex-info';
 import { handleSessionNotes } from './handlers/session-notes';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
+import { getUsageSnapshot } from './handlers/usage';
 import { ClaudeAdapter } from './provider/adapters/claude';
 import { CodexAdapter } from './provider/adapters/codex';
 import { OpenCodeAdapter } from './provider/adapters/opencode';
@@ -1451,6 +1452,13 @@ app.get('/providers/opencode/info', async () => {
 
 app.get('/providers/claude/info', () => {
   return Response.json(getClaudeInfo(), { headers: corsHeaders });
+});
+
+// Plan usage for every signed-in provider. `?refresh=1` skips the TTL cache
+// so the popover's manual refresh button reports live numbers.
+app.get('/providers/usage', async (c) => {
+  const refresh = new URL(c.req.url).searchParams.get('refresh') === '1';
+  return Response.json(await getUsageSnapshot(refresh), { headers: corsHeaders });
 });
 
 app.post('/sessions/:id/stop', async (c) => {

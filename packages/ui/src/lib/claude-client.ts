@@ -522,6 +522,31 @@ export interface SessionState {
 export type SessionNotes = { sessionId: string; content: string; revision: number; updatedAt: number };
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+/** Plan-usage snapshot — mirrors `packages/core/handlers/usage.ts`. */
+export type UsageSeverity = 'normal' | 'warning' | 'critical';
+export type UsageWindow = {
+  id: string;
+  kind: 'session' | 'weekly' | 'other';
+  label?: string;
+  scope?: string | null;
+  percent: number;
+  severity: UsageSeverity;
+  resetsAt?: string | null;
+  isActive?: boolean;
+  windowMinutes?: number;
+};
+export type UsageCredits = { enabled: boolean; label: string; usedMinor?: number | null; limitMinor?: number | null; currency?: string };
+export type ProviderUsage = {
+  provider: 'claude' | 'codex';
+  status: 'ok' | 'logged_out' | 'error';
+  account?: { email?: string | null; plan?: string | null };
+  windows: UsageWindow[];
+  credits?: UsageCredits | null;
+  breakdown?: { key: string; label: string; percent: number }[] | null;
+  error?: string;
+};
+export type UsageSnapshot = { fetchedAt: string; providers: ProviderUsage[] };
+
 /** How the bridge server was launched. Informational only — session spawn is
  *  always lazy now (the server boots a provider when the user focuses a tab
  *  via `notifyActiveTab` or a message arrives for it). Kept on the welcome
@@ -1741,6 +1766,16 @@ export class ClaudeClient {
   async getClaudeInfo(): Promise<{ models: SupportedModel[] }> {
     const resp = await authedFetch(`${this.serverUrl}/providers/claude/info`);
     if (!resp.ok) return { models: [] };
+    return resp.json();
+  }
+
+  /**
+   * Plan usage for every signed-in provider. The bridge caches for a minute;
+   * `refresh` bypasses that for the popover's manual refresh.
+   */
+  async getUsage(refresh = false): Promise<UsageSnapshot> {
+    const resp = await authedFetch(`${this.serverUrl}/providers/usage${refresh ? '?refresh=1' : ''}`);
+    if (!resp.ok) throw new Error(`Unable to load usage (${resp.status})`);
     return resp.json();
   }
 
