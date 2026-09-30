@@ -41,6 +41,8 @@ export interface CodibyNative {
   onRemoteTunnelStatus(cb: (msg: RemoteTunnelStatusEvent) => void): Unlisten;
   /** Host webContents zoom factor (1.0 = no zoom). Sync, no IPC. */
   getZoomFactor(): number;
+  /** On-disk path of a dropped File ('' when not disk-backed). Sync, no IPC. */
+  getPathForFile(file: File): string;
 }
 
 declare global {

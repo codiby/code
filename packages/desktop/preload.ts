@@ -7,7 +7,7 @@
  * `onBrowserPreviewEvent(...)` and `onCdpRequest(...)` — the React code
  * mounts those callbacks in `BrowserPanel.tsx` and the CDP bridge.
  */
-import { contextBridge, ipcRenderer, webFrame } from 'electron';
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 
 type RelayPayload = { label: string; payload: string | null };
 
@@ -92,5 +92,14 @@ contextBridge.exposeInMainWorld('codiby', {
    */
   getZoomFactor(): number {
     return webFrame.getZoomFactor();
+  },
+
+  /**
+   * Absolute on-disk path of a File from a drop or file input (`File.path`
+   * was removed in Electron 32). Empty string for files not backed by disk.
+   * Sync, local-process call (no IPC).
+   */
+  getPathForFile(file: File): string {
+    return webUtils.getPathForFile(file);
   },
 });

@@ -15,6 +15,7 @@ import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } 
 import { notifyPermissionResolved } from './integrations/notify';
 import { log, registerGlobalErrorHandlers } from './lib/logger';
 import { sessions, loadSessions, saveSessions, sessionToJSON, setStatusBroadcaster } from './session/sessions';
+import { grantAttachedPaths } from './session/granted-paths';
 import { loadRemotes, getRemote } from './network/remotes';
 import { migrateToCodiby } from './lib/migrate-to-codiby';
 import {
@@ -582,6 +583,7 @@ async function sendMessageToSession(
 ): Promise<{ ok: boolean; error?: string }> {
   const session = sessions.get(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
+  grantAttachedPaths(session, text);
 
   if (!session.providerSession) {
     log(`[${session.id.slice(0, 8)}] Auto-starting provider on sendMessage (session was stopped/idle)`);
@@ -779,6 +781,8 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 
     const session = sessions.get(sessionId);
     if (!session) return;
+    // Files the user attached are readable the moment the message lands.
+    grantAttachedPaths(session, msgText);
     // Auto-start the provider if the session is idle (e.g. after a stop, SDK
     // exit, or pre-resume race). Messages would otherwise be silently dropped.
     if (!session.providerSession) {

@@ -50,6 +50,9 @@ export type LocalSessionState = SessionState & {
   /** Images pasted into the composer, awaiting the next send. Per-session so
    *  the focus-mode layout can show separate paste buffers in each pane. */
   pastedImages: { media_type: string; data: string; preview: string }[];
+  /** Non-image files dropped into the composer, awaiting the next send. Sent
+   *  as `codiby-file:` badges; the server grants the agent read access. */
+  attachedFiles: { name: string; path: string; badge: string }[];
   // ExitPlanMode plan rendered in the side panel. UI-only — same merge
   // caveat as `openMockup`. `planRequestId` tracks the most recent perm
   // request id we auto-opened for so we don't reopen the panel after the

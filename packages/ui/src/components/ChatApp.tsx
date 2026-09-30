@@ -1244,6 +1244,7 @@ export function ChatApp() {
     openPlan: null, lastPlan: null, planComments: [], planRequestId: null,
     openPR: null,
     pastedImages: [],
+    attachedFiles: [],
     requirements: null, requirementsOpen: false, requirementsRunning: [],
     loop: null, loopProgress: null,
   });
@@ -1283,6 +1284,21 @@ export function ChatApp() {
       const next = typeof val === 'function' ? val(s.pastedImages) : val;
       return { ...prev, [sid]: { ...s, pastedImages: next } };
     });
+  };
+
+  // Per-session dropped-file buffer — same shape of setter as the paste buffer.
+  type AttachedFiles = LocalSessionState['attachedFiles'];
+  const setAttachedFilesForSession = (sid: string, val: AttachedFiles | ((prev: AttachedFiles) => AttachedFiles)) => {
+    setSessionStates(prev => {
+      const s = prev[sid] || emptyLocalState();
+      const next = typeof val === 'function' ? val(s.attachedFiles ?? []) : val;
+      return { ...prev, [sid]: { ...s, attachedFiles: next } };
+    });
+  };
+
+  const clearDraftAttachments = (sid: string) => {
+    setPastedImagesForSession(sid, []);
+    setAttachedFilesForSession(sid, []);
   };
 
   const updateLocalState = useCallback((id: string, fn: (prev: LocalSessionState) => LocalSessionState) => {
@@ -1515,6 +1531,7 @@ export function ChatApp() {
                 // and send — which is exactly what happens on a fresh session's
                 // first message as the provider boots.
                 pastedImages: existing?.pastedImages ?? [],
+                attachedFiles: existing?.attachedFiles ?? [],
                 pendingMessages: existing?.pendingMessages ?? [],
                 editorTabs: existing?.editorTabs ?? [],
                 activeEditorPath: existing?.activeEditorPath ?? null,
@@ -3257,6 +3274,12 @@ export function ChatApp() {
       for (const m of snippetMaps) text = text.split(m.block).join(m.badge);
       snippetMapRef.current[sid] = [];
     }
+    // Dropped files travel as path badges; the server grants the agent read
+    // access to every linked path when the message arrives.
+    const attachedFiles = state.attachedFiles ?? [];
+    if (attachedFiles.length && !text.startsWith('>')) {
+      text = [text, attachedFiles.map(f => f.badge).join('\n')].filter(Boolean).join('\n\n');
+    }
     const sessionPastedImages = state.pastedImages;
     if (!text && sessionPastedImages.length === 0) return;
 
@@ -3406,7 +3429,7 @@ export function ChatApp() {
       };
       updateLocalState(sid, s => ({ ...s, messages: [...s.messages, stagedMsg] }));
       setInputForSession(sid, '');
-      setPastedImagesForSession(sid, []);
+      clearDraftAttachments(sid);
       beginDelivery(sid, msgId);
       // Kick a resume/reconnect so the staged message ships on its own — a
       // stopped session would otherwise sit at "sending" until refocused.
@@ -3454,7 +3477,7 @@ export function ChatApp() {
         }));
       }
       setInputForSession(sid, '');
-      setPastedImagesForSession(sid, []);
+      clearDraftAttachments(sid);
       return;
     }
 
@@ -3481,7 +3504,7 @@ export function ChatApp() {
       partialThinking: '',
     }));
     setInputForSession(sid, '');
-    setPastedImagesForSession(sid, []);
+    clearDraftAttachments(sid);
     clientRef.current.sendMessage(sid, effectiveText, images);
   };
 
@@ -5237,6 +5260,8 @@ export function ChatApp() {
         onChangeInput={(val) => setInputForSession(sid, val)}
         pastedImages={s.pastedImages}
         onChangePastedImages={(val) => setPastedImagesForSession(sid, val)}
+        attachedFiles={s.attachedFiles ?? []}
+        onChangeAttachedFiles={(val) => setAttachedFilesForSession(sid, val)}
         active={s}
         activeSession={sess ?? undefined}
         connectionStatus={status}

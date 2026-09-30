@@ -77,6 +77,14 @@ export type Session = {
    *  permission mode at least once. Persisted so a bridge restart doesn't
    *  silently drop an in-flight loop's iteration/cost budget. */
   loopState: LoopState | null;
+  /** Files/folders the user attached to a message; read-only tools on them are
+   *  auto-approved (see session/granted-paths.ts). In-memory only — the badge
+   *  stays in the transcript, and re-sending it re-grants. */
+  grantedReadPaths?: Set<string>;
+  /** Set on throwaway sessions started from the launcher: after this long
+   *  without activity (`updatedAt`) the session is archived on its own. Null
+   *  for regular sessions. See session/disposables.ts. */
+  disposableTtlMs?: number | null;
 };
 
 export type PersistedSession = {

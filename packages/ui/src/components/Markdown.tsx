@@ -124,8 +124,14 @@ function escapeHtml(text: string): string {
 
 function renderInline(text: string): string {
   return text
-    // Saved-snippet reference badge: [name · sub](codiby-snippet:/abs/path)
-    .replace(/\[([^\]]+)\]\(codiby-snippet:([^)]+)\)/g, (_m, label, path) => snippetBadgeHtml(label, path))
+    // Saved-snippet / attached-file badge: [name · sub](codiby-snippet:/abs/path)
+    // or (codiby-file:</abs/path>). escapeHtml has usually turned the angle
+    // brackets into entities by now, unless the first path segment looks like
+    // a safe tag (`/p/…`), so accept both.
+    .replace(
+      /\[([^\]]+)\]\(codiby-(?:snippet|file):(?:(?:&lt;|<)(.+?)(?:&gt;|>)|([^)]+))\)/g,
+      (_m, label, bracketed, bare) => snippetBadgeHtml(label, bracketed ?? bare),
+    )
     // Session deep-link chip: [Session Name](codiby-session:<id>)
     .replace(/\[([^\]]+)\]\(codiby-session:([^)]+)\)/g, (_m, label, id) => sessionLinkHtml(label, id.trim()))
     // Images: ![alt](url)

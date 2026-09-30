@@ -2270,6 +2270,19 @@ export class ClaudeClient {
   // Session resources — pasted images, generated mockups, uploaded files.
   // -------------------------------------------------------------------------
 
+  /** Upload a dropped file into the session's resources on whichever host owns
+   *  the session. Resolves to the stored copy's absolute path, or null. */
+  async uploadSessionFile(sessionId: string, file: File): Promise<{ path: string } | null> {
+    let base: string;
+    try { base = await this.sessionBase(sessionId); } catch { return null; }
+    const form = new FormData();
+    form.append('file', file);
+    form.append('kind', 'file');
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/resources`, { method: 'POST', body: form });
+    if (!resp.ok) return null;
+    return resp.json().catch(() => null);
+  }
+
   /** List a session's resources, newest first. Optionally filter by kind. */
   // ---------------------------------------------------------------------------
   // Requirements + Loop.

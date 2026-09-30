@@ -17,7 +17,7 @@
  */
 import { useRef, useState } from 'react';
 import { useCodexModels, codexEfforts } from '../lib/codex-models';
-import { Send as SendIcon } from 'lucide-react';
+import { File as FileIcon, Folder as FolderIcon, Send as SendIcon } from 'lucide-react';
 import { CompactionIndicator } from './CompactionIndicator';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import { SlashCommandList, useSlashCommands } from './SlashCommandPicker';
@@ -36,11 +36,18 @@ import { RichInput } from './RichInput';
 import { useFileIndex, type FileEntry } from '../lib/fuzzy-file-search';
 import type { ConnectionStatus, ClaudeClient } from '../lib/claude-client';
 import { FILE_REFERENCE_MIME } from '../lib/file-reference-dnd';
+import { getNative } from '../lib/native';
+import { defaultModelLabel } from '../lib/default-models';
 
 export type PastedImage = { media_type: string; data: string; preview: string };
+/** A dropped non-image file (or folder): referenced by path, never inlined. */
+export type AttachedFile = { name: string; path: string; badge: string };
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+// Uploads only happen when a file has no usable local path (web UI, remote
+// session); the bridge buffers the multipart body whole.
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function imageType(file: File): string {
   if (file.type) return file.type;
@@ -64,6 +71,32 @@ function readImage(file: File, media_type: string): Promise<PastedImage> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// The path sits inside `<…>` so spaces and parentheses ("report (1).pdf")
+// survive link parsing — both in Markdown.tsx and in the server's read grant.
+function fileBadge(name: string, sub: string, path: string): string {
+  return `[${name.replace(/[[\]]/g, '')} · ${sub}](codiby-file:<${path}>)`;
+}
+
+type DroppedFile = { file: File; isDir: boolean };
+
+// Must run synchronously inside the drop handler: the DataTransfer is emptied
+// as soon as the event returns.
+function droppedFiles(dt: DataTransfer): DroppedFile[] {
+  const out: DroppedFile[] = [];
+  for (const item of Array.from(dt.items)) {
+    if (item.kind !== 'file') continue;
+    const file = item.getAsFile();
+    if (file) out.push({ file, isDir: !!item.webkitGetAsEntry()?.isDirectory });
+  }
+  return out;
 }
 
 interface ActiveLike {
@@ -126,6 +159,12 @@ interface Props {
   pastedImages: PastedImage[];
   onChangePastedImages: (
     val: PastedImage[] | ((prev: PastedImage[]) => PastedImage[]),
+  ) => void;
+  /** Non-image files dropped into the composer. Without a setter the composer
+   *  accepts images only (e.g. the group composer, before a session exists). */
+  attachedFiles?: AttachedFile[];
+  onChangeAttachedFiles?: (
+    val: AttachedFile[] | ((prev: AttachedFile[]) => AttachedFile[]),
   ) => void;
 
   active: ActiveLike;
@@ -193,8 +232,8 @@ export function ChatComposer(props: Props) {
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
   const dropDepthRef = useRef(0);
-  const [dragKind, setDragKind] = useState<'file-reference' | 'image' | null>(null);
-  const [imageError, setImageError] = useState<string | null>(null);
+  const [dragKind, setDragKind] = useState<'file-reference' | 'files' | null>(null);
+  const [attachError, setAttachError] = useState<string | null>(null);
 
   // Double-ESC to interrupt. First ESC arms; second within the window calls
   // onInterrupt. The armed state drives the visual hint below the composer.
@@ -402,34 +441,52 @@ export function ChatComposer(props: Props) {
     else document.execCommand('insertText', false, pasted);
   };
 
-  const addDroppedImages = async (files: FileList) => {
-    setImageError(null);
+  // Images the model can see go inline; everything else (binaries, PDFs,
+  // oversized images, folders) is attached by path. The badge in the sent
+  // message is what grants the agent read access on the bridge.
+  const addDroppedFiles = async (dropped: DroppedFile[]) => {
+    setAttachError(null);
     const images: PastedImage[] = [];
+    const attached: AttachedFile[] = [];
     const rejected: string[] = [];
-    for (const file of Array.from(files)) {
-      const media_type = imageType(file);
-      if (!ALLOWED_IMAGE_TYPES.has(media_type)) {
-        rejected.push(`${file.name} is not a supported image`);
+    // A path on this machine only helps a bridge on this machine; remote
+    // sessions and the plain web UI upload the bytes instead.
+    const native = activeSession?.remoteId ? null : getNative();
+    for (const { file, isDir } of dropped) {
+      const media_type = isDir ? '' : imageType(file);
+      if (ALLOWED_IMAGE_TYPES.has(media_type) && file.size <= MAX_IMAGE_BYTES) {
+        try {
+          images.push(await readImage(file, media_type));
+          continue;
+        } catch {
+          // Unreadable as an image — fall through and attach it by path.
+        }
+      }
+      if (!onChangeAttachedFiles) {
+        rejected.push(ALLOWED_IMAGE_TYPES.has(media_type) ? `${file.name} exceeds 10 MB` : `${file.name} is not a supported image`);
         continue;
       }
-      if (file.size > MAX_IMAGE_BYTES) {
-        rejected.push(`${file.name} exceeds 10 MB`);
-        continue;
+      let path = native?.getPathForFile?.(file) ?? '';
+      if (!path) {
+        if (isDir) { rejected.push(`${file.name}: folders can only be attached from the desktop app`); continue; }
+        if (file.size > MAX_UPLOAD_BYTES) { rejected.push(`${file.name} exceeds 100 MB`); continue; }
+        path = (await client?.uploadSessionFile(props.sessionId, file))?.path ?? '';
+        if (!path) { rejected.push(`Could not upload ${file.name}`); continue; }
       }
-      try {
-        images.push(await readImage(file, media_type));
-      } catch {
-        rejected.push(`Could not read ${file.name}`);
-      }
+      if (isDir) path = path.replace(/\/*$/, '/');
+      attached.push({ name: file.name, path, badge: fileBadge(file.name, isDir ? 'folder' : formatBytes(file.size), path) });
     }
     if (images.length) onChangePastedImages(prev => [...prev, ...images]);
-    if (rejected.length) setImageError(rejected[0]!);
+    if (attached.length) {
+      onChangeAttachedFiles?.(prev => [...prev.filter(f => !attached.some(a => a.path === f.path)), ...attached]);
+    }
+    if (rejected.length) setAttachError(rejected[0]!);
   };
 
-  const dragKindFor = (e: React.DragEvent): 'file-reference' | 'image' | null => {
+  const dragKindFor = (e: React.DragEvent): 'file-reference' | 'files' | null => {
     const types = Array.from(e.dataTransfer.types);
     if (types.includes(FILE_REFERENCE_MIME)) return 'file-reference';
-    return types.includes('Files') ? 'image' : null;
+    return types.includes('Files') ? 'files' : null;
   };
   const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
     const kind = dragKindFor(e);
@@ -461,7 +518,7 @@ export function ChatComposer(props: Props) {
       applyEdit(insertText(input, selection.start, selection.end, `@${referencePath} `));
       return;
     }
-    void addDroppedImages(e.dataTransfer.files);
+    void addDroppedFiles(droppedFiles(e.dataTransfer));
   };
 
   const handleTerminalKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -517,7 +574,8 @@ export function ChatComposer(props: Props) {
   // loader and delivered when the remote session reconnects.
   const sendDisabled = submitting || (isTerminalMode
     ? !cmdText.trim() || connectionStatus !== 'connected'
-    : !input.trim() && pastedImages.length === 0);
+    : !input.trim() && pastedImages.length === 0 && attachedFiles.length === 0);
+  const currentPermissionMode = activeSession?.permission_mode || 'default';
   const triggerCls =
     'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
 
@@ -585,7 +643,7 @@ export function ChatComposer(props: Props) {
             >
             {dragKind && (
               <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[18px] border-2 border-dashed border-violet-400/70 bg-violet-500/10 text-sm font-medium text-violet-200 pointer-events-none">
-                {dragKind === 'file-reference' ? 'Drop to mention file' : 'Drop images to attach'}
+                {dragKind === 'file-reference' ? 'Drop to mention file' : 'Drop files to attach'}
               </div>
             )}
             {refs && refs.length > 0 && (
@@ -623,8 +681,32 @@ export function ChatComposer(props: Props) {
               </div>
             )}
 
-            {imageError && (
-              <div role="alert" className="px-3 pt-2.5 text-xs text-amber-300">{imageError}</div>
+            {attachedFiles.length > 0 && (
+              <div className="flex gap-1.5 px-3 pt-2.5 flex-wrap">
+                {attachedFiles.map(f => (
+                  <span
+                    key={f.path}
+                    title={f.path}
+                    className="inline-flex items-center gap-1.5 max-w-[16rem] px-2 py-0.5 rounded bg-surface-light text-[11px] text-zinc-300 border border-border-light"
+                  >
+                    {f.path.endsWith('/')
+                      ? <FolderIcon className="w-3 h-3 shrink-0 text-indigo-300" />
+                      : <FileIcon className="w-3 h-3 shrink-0 text-indigo-300" />}
+                    <span className="truncate font-mono">{f.name}</span>
+                    <button
+                      aria-label={`Remove ${f.name}`}
+                      className="text-zinc-500 hover:text-zinc-300 ml-0.5"
+                      onClick={() => onChangeAttachedFiles?.(prev => prev.filter(x => x.path !== f.path))}
+                    >
+                      &times;
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {attachError && (
+              <div role="alert" className="px-3 pt-2.5 text-xs text-amber-300">{attachError}</div>
             )}
 
             <div className="flex items-start px-4 pt-3.5 pb-1">
