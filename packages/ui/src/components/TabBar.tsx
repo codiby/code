@@ -91,6 +91,11 @@ interface Props {
    *  is responsible for showing the confirm modal (with worktree checkbox
    *  and uncommitted-changes warning) and calling the purge API. */
   onRequestDelete?: (sessionId: string) => void;
+  /** Ctrl/⌘-click on a row's ✕ — delete with no confirmation. The host is
+   *  expected to defer the purge behind an undo toast, which is what makes
+   *  skipping the modal acceptable. Without this prop the modifier does
+   *  nothing and ✕ keeps its plain close behaviour. */
+  onQuickDelete?: (sessionId: string) => void;
   /** Open the destructive-delete confirmation flow for an entire group —
    *  the group itself plus every session that belongs to it. Host shows the
    *  confirm modal and purges members. */
@@ -325,12 +330,13 @@ type RowProps = {
   editingId: string | null; editName: string; editRef: React.RefObject<HTMLInputElement | null>;
   setEditName: (v: string) => void; startRename: (s: SessionInfo) => void; commitRename: () => void; setEditingId: (id: string | null) => void;
   onSelect: (id: string) => void; onClose: (id: string) => void;
+  onQuickDelete?: (id: string) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
 };
 
 // Presentational session row. The root element is parameterized (ref + spread
 // props + style + dragging flag) so either DnD library can own it.
-function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, activity, compact, ageLabel, isPinned, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onContextMenu, rootRef, rootProps, style, dragging }: RowProps & {
+function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, activity, compact, ageLabel, disposableLeft, isPinned, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onQuickDelete, onContextMenu, rootRef, rootProps, style, dragging }: RowProps & {
   rootRef?: (el: HTMLElement | null) => void; rootProps?: React.HTMLAttributes<HTMLElement>; style?: React.CSSProperties; dragging?: boolean;
 }) {
   // Vertical sidebar: flat active background regardless of group color.
@@ -393,15 +399,35 @@ function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupt
           {ageLabel}
         </span>
       )}
-      <span onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} className={`shrink-0 ${
-        isActive ? 'flex' : 'hidden group-hover:flex'
-      }`}>
+      {/* ✕ — plain click closes (history kept), ctrl/⌘-click deletes outright.
+          The modifier is handled on pointerup rather than through `onPress`
+          because macOS turns ctrl+click into a context-menu gesture: Chromium
+          fires `contextmenu` and react-aria treats the press as cancelled, so
+          the row's menu would pop instead. Swallowing `contextmenu` here also
+          stops it bubbling to the row's own right-click handler. */}
+      <span
+        onClick={e => e.stopPropagation()}
+        onPointerDown={e => e.stopPropagation()}
+        onContextMenu={e => { e.preventDefault(); e.stopPropagation(); }}
+        onPointerUp={e => {
+          if (!onQuickDelete || !(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onQuickDelete(session.id);
+        }}
+        className={`shrink-0 ${
+          isActive ? 'flex' : 'hidden group-hover:flex'
+        }`}
+      >
         <Button
           isIconOnly
           size="sm"
           variant="ghost"
-          onPress={() => onClose(session.id)}
-          aria-label="Close (keeps history)"
+          // Guard for the platforms where the press does survive the modifier —
+          // pointerup already handled it, so closing here would be a second,
+          // contradictory action on one click.
+          onPress={e => { if (!(e.ctrlKey || e.metaKey) || !onQuickDelete) onClose(session.id); }}
+          aria-label={onQuickDelete ? 'Close (keeps history). Ctrl-click to delete' : 'Close (keeps history)'}
           className={`w-4 h-4 min-w-0 p-0 items-center justify-center rounded-sm leading-none transition-colors ${
             isActive ? 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light' : 'text-zinc-600 hover:text-zinc-300 hover:bg-surface-light'
           }`}
@@ -784,7 +810,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt,
     pinnedSessionIds, onTogglePin,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onRequestDeleteGroup,
+    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
     onCreateSubgroup, onMoveGroup, onAutoGroupSessions,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
@@ -999,6 +1025,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     ageLabel: formatTabAge(sessionLastMessageAt?.[s.id], nowMs),
     isPinned: pinnedSessionIds?.has(s.id) || false,
     editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose,
+    onQuickDelete: s.id === 'main-session' ? undefined : onQuickDelete,
     onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); setTabMenu({ tabId: s.id, x: e.clientX, y: e.clientY }); },
   });
 

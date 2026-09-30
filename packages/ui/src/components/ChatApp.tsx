@@ -32,6 +32,7 @@ import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { ArchiveSuggestionPill } from './ArchiveSuggestionPill';
 import { PortlessActionToast } from './PortlessActionToast';
+import { SessionDeleteToast, type PendingSessionDelete } from './SessionDeleteToast';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
@@ -164,6 +165,11 @@ const CHAT_WIDTH_OPTIONS: { value: ChatWidth; label: string; hint: string; Icon:
   { value: 'standard', label: 'Estándar', hint: '1152px', Icon: RectangleHorizontal },
   { value: 'full', label: 'Ancho completo', hint: 'sin límite', Icon: UnfoldHorizontal },
 ];
+
+/** How long a ctrl/⌘-click delete stays undoable. Long enough to read the
+ *  toast and catch a mis-click, short enough that the tab list isn't lying for
+ *  any meaningful time — nothing is sent to the server until it elapses. */
+const UNDO_DELETE_WINDOW_MS = 7000;
 
 /** Ids of optimistic sidebar rows carry this prefix. No server resource exists
  *  behind them, so every handler that would hit the bridge bails on one. */
@@ -2869,7 +2875,7 @@ export function ChatApp() {
    *  history, and (when `opts.worktree`) removes the underlying git
    *  worktree. Also tidies up local prefs (groups, ordering, archived/closed
    *  buckets) so the on-disk prefs file doesn't keep dangling ids. */
-  const handlePurgeSession = async (id: string, opts: { worktree?: boolean } = {}) => {
+  const handlePurgeSession = async (id: string, opts: { worktree?: boolean; keepFocus?: boolean } = {}) => {
     const c = clientRef.current;
     if (!c) return;
     try {
@@ -2880,7 +2886,10 @@ export function ChatApp() {
     }
     // Local cleanup so the active tab moves elsewhere if the deleted session
     // was the focused one. Mirrors closeTab() but for the destructive path.
-    if (activeId === id) {
+    // `keepFocus` is for the deferred ctrl-click path, which already moved
+    // focus when the row disappeared — re-running it here from a closure that
+    // is seconds stale would yank the user off whatever tab they picked since.
+    if (activeId === id && !opts.keepFocus) {
       const remaining = sessions.filter(s => s.id !== id && s.status === 'open');
       setActiveId(remaining.length > 0 ? remaining[0]!.id : null);
     }
@@ -3046,6 +3055,80 @@ export function ChatApp() {
     await handlePurgeSession(prompt.id, { worktree: prompt.isWorktree && prompt.deleteWorktree });
     setDeleteSessionPrompt(null);
   };
+
+  /** Ctrl/⌘-click on a tab's ✕ — delete with no confirmation modal. The purge
+   *  is deferred for `UNDO_DELETE_WINDOW_MS` instead: the row disappears at
+   *  once (filtered out of `orderedOpenSessions`) while the toast offers Undo,
+   *  and only when the window drains does anything reach the server. That's
+   *  what makes an un-confirmed delete of a worktree safe — the working tree is
+   *  still on disk for the whole undo window. */
+  const [pendingDeletes, setPendingDeletes] = useState<PendingSessionDelete[]>([]);
+  const pendingDeleteIds = useMemo(() => new Set(pendingDeletes.map(p => p.id)), [pendingDeletes]);
+  /** Live timers, keyed by session id, so Undo can cancel and "delete now" can
+   *  pre-empt. A ref — these must survive re-renders without restarting. */
+  const pendingDeleteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+  const handleQuickDeleteSession = (id: string) => {
+    // `main-session` is the Telegram pseudo-tab; it has no registry row to purge.
+    if (id === 'main-session' || pendingDeleteTimers.current.has(id)) return;
+    const session = sessions.find(s => s.id === id);
+    if (!session) return;
+    // Same rule as the confirm modal: a session living in a worktree takes the
+    // worktree with it, so ctrl-click and the dialog's default agree.
+    const worktree = WORKTREE_CWD_LOOSE_RE.test(session.cwd);
+
+    // Move focus off the row now — it vanishes on this frame, so waiting for
+    // handlePurgeSession would leave the chat pane pointed at a hidden tab.
+    if (activeId === id) {
+      const next = sessions.find(s =>
+        s.id !== id && s.status === 'open' && !pendingDeleteIds.has(s.id) && s.id !== 'main-session');
+      setActiveId(next ? next.id : null);
+    }
+
+    setPendingDeletes(prev => [...prev, {
+      id, name: session.name, worktree, windowMs: UNDO_DELETE_WINDOW_MS,
+    }]);
+    pendingDeleteTimers.current.set(id, setTimeout(() => {
+      pendingDeleteTimers.current.delete(id);
+      setPendingDeletes(prev => prev.filter(p => p.id !== id));
+      void handlePurgeSession(id, { worktree, keepFocus: true });
+    }, UNDO_DELETE_WINDOW_MS));
+
+    // Back-fill the uncommitted-change count the modal would have shown. It
+    // only sharpens the toast's wording, so a failed scan just stays quiet.
+    if (worktree) {
+      void clientRef.current?.getGitModified(session.cwd)
+        .then(modified => setPendingDeletes(prev => prev.map(p =>
+          p.id === id ? { ...p, modifiedCount: modified?.length ?? 0 } : p)))
+        .catch(() => {});
+    }
+  };
+
+  const undoQuickDelete = (id: string) => {
+    const timer = pendingDeleteTimers.current.get(id);
+    if (timer) clearTimeout(timer);
+    pendingDeleteTimers.current.delete(id);
+    setPendingDeletes(prev => prev.filter(p => p.id !== id));
+  };
+
+  /** Dismissing the toast means "stop waiting", not "cancel" — fire the purge
+   *  immediately and drop the row. */
+  const flushQuickDelete = (id: string) => {
+    const pending = pendingDeletes.find(p => p.id === id);
+    if (!pending) return;
+    const timer = pendingDeleteTimers.current.get(id);
+    if (timer) clearTimeout(timer);
+    pendingDeleteTimers.current.delete(id);
+    setPendingDeletes(prev => prev.filter(p => p.id !== id));
+    void handlePurgeSession(id, { worktree: pending.worktree, keepFocus: true });
+  };
+
+  // A pending delete that never fired (window closed, hot reload) leaves the
+  // session intact on the server — the safe direction for a destructive op.
+  useEffect(() => () => {
+    for (const timer of pendingDeleteTimers.current.values()) clearTimeout(timer);
+    pendingDeleteTimers.current.clear();
+  }, []);
 
   /** State for the group context-menu → "Delete group…" confirmation modal.
    *  Bulk-deletes every session in the group; worktrees are aggregated so the
@@ -4389,15 +4472,18 @@ export function ChatApp() {
   // Telegram bot's "main-session" pseudo-tab is pinned to the front when
   // visible, and hidden entirely when toggled off in Settings → Telegram
   // (it can't be closed from the regular UI, this is the only escape hatch).
+  // Sessions inside their ctrl-click undo window are filtered out here rather
+  // than in the sidebar alone, so the tab strip, ⌃Tab switcher and every other
+  // consumer agree the tab is gone while the purge is still deferred.
   const orderedOpenSessions = useMemo(() => sessions
-    .filter(s => s.status === 'open' && (showTelegramSession || s.id !== 'main-session'))
+    .filter(s => s.status === 'open' && (showTelegramSession || s.id !== 'main-session') && !pendingDeleteIds.has(s.id))
     .sort((a, b) => {
       if (a.id === 'main-session') return -1;
       if (b.id === 'main-session') return 1;
       const ai = tabOrder.indexOf(a.id);
       const bi = tabOrder.indexOf(b.id);
       return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
-    }), [sessions, tabOrder, showTelegramSession]);
+    }), [sessions, tabOrder, showTelegramSession, pendingDeleteIds]);
 
   /** What the sidebar renders: the real sessions plus any optimistic rows for
    *  creates still in flight, so pressing "+" on a group paints a tab on the
@@ -5917,6 +6003,7 @@ export function ChatApp() {
               expandedGroupIds={expandedGroupIds}
               onSelect={handleSelectSession}
               onClose={handleCloseTab}
+              onQuickDelete={handleQuickDeleteSession}
               onNew={handleNewSession}
               onToggleGroup={handleToggleGroup}
               onCloseGroup={handleRequestDeleteGroup}
@@ -6200,6 +6287,7 @@ export function ChatApp() {
               onChangeGroupIcon={handleChangeGroupIcon}
               onArchiveSession={handleArchiveSession}
               onRequestDelete={handleRequestDeleteSession}
+              onQuickDelete={handleQuickDeleteSession}
               onRequestDeleteGroup={handleRequestDeleteGroup}
               onNewSessionInGroup={handleNewSessionInGroup}
               onNewSessionFromSession={handleNewSessionFromSession}
@@ -7741,6 +7829,11 @@ export function ChatApp() {
         />
         <RemoteVersionBanner client={client} remotes={remotes} remoteStatuses={remoteStatuses} />
         <PortlessActionToast />
+        <SessionDeleteToast
+          items={pendingDeletes}
+          onUndo={undoQuickDelete}
+          onDeleteNow={flushQuickDelete}
+        />
         {tabContextMenu && (() => {
           const menu = tabContextMenu;
           const closeMenu = () => setTabContextMenu(null);

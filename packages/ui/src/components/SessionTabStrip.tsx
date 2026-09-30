@@ -38,6 +38,9 @@ interface Props {
   expandedGroupIds: Set<string>;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  /** Ctrl/⌘-click on a pill's ✕ — delete outright instead of closing. The host
+   *  defers the purge behind an undo toast; see TabBar's prop of the same name. */
+  onQuickDelete?: (id: string) => void;
   onNew: () => void;
   onToggleGroup: (id: string) => void;
   onCloseGroup?: (id: string) => void;
@@ -112,6 +115,7 @@ export function SessionTabStrip({
   expandedGroupIds,
   onSelect,
   onClose,
+  onQuickDelete,
   onNew,
   onToggleGroup,
   onCloseGroup,
@@ -224,6 +228,7 @@ export function SessionTabStrip({
               overlapPrev={idx > 0 && items[idx - 1]!.kind === 'tab'}
               onSelect={() => onSelect(item.session.id)}
               onClose={() => onClose(item.session.id)}
+              onQuickDelete={onQuickDelete ? () => onQuickDelete(item.session.id) : undefined}
             />
           );
         }
@@ -248,6 +253,7 @@ export function SessionTabStrip({
             onToggle={() => onToggleGroup(item.group.id)}
             onSelectSession={onSelect}
             onCloseSession={onClose}
+            onQuickDeleteSession={onQuickDelete}
             onCloseGroup={onCloseGroup ? () => onCloseGroup(item.group.id) : undefined}
             leadingGap={idx > 0}
           />
@@ -294,6 +300,7 @@ function TabPill({
   insideGroup,
   onSelect,
   onClose,
+  onQuickDelete,
 }: {
   session: SessionInfo;
   active: boolean;
@@ -302,6 +309,7 @@ function TabPill({
   insideGroup?: boolean;
   onSelect: () => void;
   onClose: () => void;
+  onQuickDelete?: () => void;
 }) {
   const isAttention = state === 'attention';
   const isStreaming = state === 'streaming';
@@ -349,8 +357,25 @@ function TabPill({
       </span>
       <button
         type="button"
-        onClick={(e) => { e.stopPropagation(); onClose(); }}
-        title="Close tab"
+        // Ctrl/⌘-click deletes the session instead of closing it; the host holds
+        // the purge behind an undo toast, so there's no confirmation here. It
+        // runs on pointerup because macOS turns ctrl+click into a secondary
+        // click, and Chromium may then never dispatch `click` at all.
+        onPointerUp={(e) => {
+          if (!onQuickDelete || !(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onQuickDelete();
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (onQuickDelete && (e.ctrlKey || e.metaKey)) return; // handled on pointerup
+          onClose();
+        }}
+        // macOS raises a context menu on ctrl+click; swallow it so the delete
+        // gesture doesn't come with a stray menu.
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        title={onQuickDelete ? 'Close tab — ctrl-click to delete the session' : 'Close tab'}
         aria-label="Close tab"
         className="opacity-0 group-hover/tab:opacity-100 transition-opacity shrink-0 flex items-center justify-center rounded"
         style={{
@@ -384,6 +409,7 @@ function GroupContainer({
   onToggle,
   onSelectSession,
   onCloseSession,
+  onQuickDeleteSession,
   onCloseGroup,
   leadingGap,
 }: {
@@ -402,6 +428,7 @@ function GroupContainer({
   onToggle: () => void;
   onSelectSession: (id: string) => void;
   onCloseSession: (id: string) => void;
+  onQuickDeleteSession?: (id: string) => void;
   onCloseGroup?: () => void;
   leadingGap?: boolean;
 }) {
@@ -472,6 +499,7 @@ function GroupContainer({
             overlapPrev={i > 0}
             onSelect={() => onSelectSession(s.id)}
             onClose={() => onCloseSession(s.id)}
+            onQuickDelete={onQuickDeleteSession ? () => onQuickDeleteSession(s.id) : undefined}
           />
         );
       })}

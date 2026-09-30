@@ -227,6 +227,18 @@ html.light .bg-white\/20 { background-color: rgba(17, 18, 20, 0.12); }
   50%      { opacity: 0.35; }
 }
 
+/* Undo toast (ctrl-click delete) ------------------------------------------ */
+/* The bar drains over the undo window, so the remaining time is legible
+ * without a ticking countdown re-rendering React every 100ms. */
+@keyframes undoToastDrain {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+@keyframes undoToastIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* Session dot states (sidebar) ------------------------------------------- */
 /* "Working": three little bars that rise and fall, like a typing indicator. */
 @keyframes sessionTyping {
