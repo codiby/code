@@ -100,6 +100,10 @@ interface Props {
    *  the group itself plus every session that belongs to it. Host shows the
    *  confirm modal and purges members. */
   onRequestDeleteGroup?: (groupId: string) => void;
+  /** Archive every open session in the group and its subgroups. History is
+   *  kept; the emptied group drops out of the sidebar until a member is
+   *  reopened. */
+  onArchiveGroup?: (groupId: string) => void;
   /** Accent-color controls. `accentPalette` is the swatch set; `getSessionAccent`
    *  resolves a session's current accent; `onPickSessionAccent` sets/clears an
    *  override (null = reset to auto). Only wired when chat-coloring is enabled. */
@@ -1433,6 +1437,13 @@ export const TabBar = memo(function TabBar(props: Props) {
                     }}>
                     Ungroup all
                   </Button>
+                  {onArchiveGroup && subtreeCount > 0 && (
+                    <Button variant="ghost" fullWidth className={`${item} flex items-center gap-2`}
+                      onPress={() => { onArchiveGroup(groupMenu.groupId); setGroupMenu(null); }}>
+                      <Archive size={12} className="text-zinc-500" />
+                      Archive group and {subtreeCount} {subtreeCount === 1 ? 'session' : 'sessions'}
+                    </Button>
+                  )}
                   {onRequestDeleteGroup && (
                     <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
                       onPress={() => { onRequestDeleteGroup(groupMenu.groupId); setGroupMenu(null); }}>

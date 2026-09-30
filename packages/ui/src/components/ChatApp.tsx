@@ -2821,6 +2821,35 @@ export function ChatApp() {
     }
   };
 
+  /** Archive every session in a group's subtree in one go. The group itself
+   *  is left alone: with no open members the sidebar hides it, and reopening
+   *  any archived member brings it back in its old place. */
+  const handleArchiveGroup = (groupId: string) => {
+    const scope = new Set([groupId, ...descendantGroupIds(sidebarGroups, groupId)]);
+    const ids = orderedOpenSessions
+      .filter(s => scope.has(sidebarGroupMap[s.id] ?? ''))
+      .map(s => s.id);
+    if (ids.length === 0) return;
+    const c = clientRef.current;
+    const archived = new Set(ids);
+    for (const id of ids) {
+      c?.unsubscribe(id);
+      subscribedRef.current.delete(id);
+      c?.archiveAndStopSession(id).catch(() => {});
+    }
+    const now = Date.now();
+    setSessionStates(prev => {
+      const next = { ...prev };
+      for (const id of ids) delete next[id];
+      return next;
+    });
+    setSessions(prev => prev.map(s => archived.has(s.id) ? { ...s, status: 'archived', updated_at: now } : s));
+    if (activeId && archived.has(activeId)) {
+      const next = sessions.find(s => s.status === 'open' && !archived.has(s.id));
+      setActiveId(next?.id ?? null);
+    }
+  };
+
   const handleCloseTab = (id: string) => {
     if (isPendingSessionId(id)) return;
     const state = getState(id);
@@ -6289,6 +6318,7 @@ export function ChatApp() {
               onRequestDelete={handleRequestDeleteSession}
               onQuickDelete={handleQuickDeleteSession}
               onRequestDeleteGroup={handleRequestDeleteGroup}
+              onArchiveGroup={handleArchiveGroup}
               onNewSessionInGroup={handleNewSessionInGroup}
               onNewSessionFromSession={handleNewSessionFromSession}
               collapsed={tabsCollapsed}
