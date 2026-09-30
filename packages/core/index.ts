@@ -129,9 +129,9 @@ import { peerReceipts } from './network/peers';
 import { handleMcpRequest, setMcpDeps, executeLocalMcpTool } from './mcp/mcp';
 import {
   getSessionState,
+  getNewerMessages,
   updateSessionState,
   addMessage,
-  getNewerMessages,
   healOrphanedToolUses,
   updateUIState,
   getStateForClient,
@@ -141,9 +141,9 @@ import {
 import type { ChatMessage } from './session/state';
 import { loadPRLinks, addPRLink, setPRLinks, removePRLink, getPRLinks, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './session/storage';
 import type { PRLink } from './session/storage';
+import { handleMobileHome } from './handlers/mobile-home';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './config/claude-settings';
 import { createDocsApp } from './api/swagger';
-import { handleMobileHome } from './handlers/mobile-home';
 import { Hono } from 'hono';
 import { transcribeAudioBuffer } from './integrations/deepgram';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './network/tailscale';
@@ -1389,14 +1389,14 @@ app.get('/sessions', () => {
   return Response.json(buildFullSessionList(), { headers: corsHeaders });
 });
 
+// One compact, gzipped, ETagged snapshot for the Android Home.
+app.get('/mobile/home', (c) => handleMobileHome(c.req.raw, buildFullSessionList(), loadPreferences()));
+
 app.post('/sessions', async (c) => {
   const req = c.req.raw;
   const url = new URL(req.url);
   // Remote sessions are created by the renderer DIRECTLY on the remote bridge
   // (through its tunnel), so this endpoint is local-only now.
-// One compact, gzipped, ETagged snapshot for the Android Home.
-app.get('/mobile/home', (c) => handleMobileHome(c.req.raw, buildFullSessionList(), loadPreferences()));
-
   const resp = await handleCreateSession(req, server.port);
   // Apply the `autoGroupSessions` preference server-side so every entry
   // point (frontend, mobile, CLI) honors it without each client needing
@@ -1542,6 +1542,12 @@ app.get('/sessions/:id/messages', (c) => {
     return Response.json({ error: 'before_seq required' }, { status: 400, headers: corsHeaders });
   }
   const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+  // `after_seq`: the phone already has everything up to there and only wants
+  // what came after — opening a chat stops re-downloading the last page.
+  const afterSeq = Number(url.searchParams.get('after_seq'));
+  if (url.searchParams.has('after_seq') && Number.isFinite(afterSeq)) {
+    return Response.json(getNewerMessages(sessionId, afterSeq, beforeSeq, limit), { headers: corsHeaders });
+  }
   return Response.json(getOlderMessages(sessionId, beforeSeq, limit), { headers: corsHeaders });
 });
 
@@ -1554,12 +1560,6 @@ app.get('/sessions/:id/terminals', (c) => {
 // Create a terminal. Spawns the PTY, then broadcasts `terminal_created` — the
 // UI adds the tab only when that broadcast arrives (never optimistically).
 app.post('/sessions/:id/terminals', async (c) => {
-  // `after_seq`: the phone already has everything up to there and only wants
-  // what came after — opening a chat stops re-downloading the last page.
-  const afterSeq = Number(url.searchParams.get('after_seq'));
-  if (url.searchParams.has('after_seq') && Number.isFinite(afterSeq)) {
-    return Response.json(getNewerMessages(sessionId, afterSeq, beforeSeq, limit), { headers: corsHeaders });
-  }
   const sessionId = c.req.param('id');
   let body: { command?: string; cwd?: string; cols?: number; rows?: number; label?: string; terminalName?: string } = {};
   try { body = await c.req.raw.json() as typeof body; } catch {}
