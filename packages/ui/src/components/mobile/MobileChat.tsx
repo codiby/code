@@ -1401,7 +1401,7 @@ export function MobileChat({
 // fields that matter on a phone. No Monaco / xterm / complex tool UIs.
 // ---------------------------------------------------------------------------
 
-function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested, explainParts }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (e: React.MouseEvent<HTMLImageElement>) => void; nested?: boolean; explainParts?: ExplainParts }) {
+export function MobileMessage({ msg, result, onCancelPending, onOpenImage, nested, explainParts }: { msg: ChatMessage; result?: ChatMessage; onCancelPending?: () => void; onOpenImage?: (e: React.MouseEvent<HTMLImageElement>) => void; nested?: boolean; explainParts?: ExplainParts }) {
   if (msg.role === 'user') {
     const hasImages = !!msg.images && msg.images.length > 0;
     const pending = !!msg.isPending;
@@ -1556,7 +1556,7 @@ function MobileThoughtBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
-function MobileToolRunBubble({
+export function MobileToolRunBubble({
   group,
   resultByToolUseId,
   hasContentAfter,

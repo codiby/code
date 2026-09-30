@@ -22,6 +22,7 @@ import { RemotesSection } from './RemotesSection';
 import { VoicePicker, byCategory, byLanguage } from './VoicePicker';
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 import { resolveGroupColor } from '../lib/group-tree';
+import { useAppStore } from '../lib/store';
 import {
   GROUP_COLORS, GROUP_HEX_COLOR, GROUP_DOT_COLOR,
   type TabGroupInfo,
@@ -880,6 +881,8 @@ function GeneralSection({
   tintChatBackground: boolean;
   onToggleTintChatBackground: (v: boolean) => void;
 }) {
+  const disposableOpenOnFirstReply = useAppStore(s => s.disposableOpenOnFirstReply);
+  const setPreference = useAppStore(s => s.setPreference);
   return (
     <>
       <SectionHeader title="General" subtitle="App-wide behavior. Per-project overrides live under each project in the sidebar to the left." />
@@ -931,6 +934,19 @@ function GeneralSection({
           <div className="flex-1 min-w-0 text-left">
             <div className="text-[12.5px] text-zinc-100">Interrupt the agent when sending a new message</div>
             <div className="text-[11px] text-zinc-500 mt-0.5">If the agent is still working when you hit Enter, cancel the current turn and send your message right away. Off: the message waits in a queue and ships once the current turn finishes.</div>
+          </div>
+          <SwitchControl>
+            <SwitchThumb />
+          </SwitchControl>
+        </Switch>
+        <Switch
+          isSelected={disposableOpenOnFirstReply}
+          onChange={v => setPreference('disposableOpenOnFirstReply', v)}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md bg-surface-light border border-border hover:border-border-light transition-colors cursor-pointer"
+        >
+          <div className="flex-1 min-w-0 text-left">
+            <div className="text-[12.5px] text-zinc-100">Open disposable bubbles on their first reply</div>
+            <div className="text-[11px] text-zinc-500 mt-0.5">A disposable started from the bubbles launcher lands as a closed bubble and opens by itself once its first turn completes, so you can keep working meanwhile. Off: its chat opens right away.</div>
           </div>
           <SwitchControl>
             <SwitchThumb />

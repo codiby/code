@@ -43,7 +43,7 @@ import { PRDetail, type PRInfo } from './PRDetail';
 import { repoFromPrUrl, type PrLink } from '../lib/store/slices/prSlice';
 import { useFileIndex } from '../lib/fuzzy-file-search';
 import { buildBrowserRequestHandler as handleBrowserCdpRequest, browserLabelFor } from '../lib/browser-cdp-bridge';
-import { tryInvokeNative } from '../lib/native';
+import { getNative, tryInvokeNative } from '../lib/native';
 import { registerDotenv, isDotenvPath } from '../lib/monaco-dotenv';
 import { PanelsWorkspace } from '../panels/PanelsWorkspace';
 import type { Tab as PanelTab } from '../panels/types';
@@ -100,7 +100,7 @@ import {
   sameLayout,
   type Workspace,
 } from './ChatFocusLayout';
-import { BookmarkPlus, MessageSquarePlus } from 'lucide-react';
+import { BookmarkPlus, MessageCircle, MessageSquarePlus } from 'lucide-react';
 import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
@@ -777,6 +777,22 @@ export function ChatApp() {
     });
   }, [activeId, tabGroupMap]);
 
+  // Sessions floating as desktop bubbles (Electron only), and "back to tab"
+  // from a bubble's panel, which lands here as a `dock` event.
+  const [floatingIds, setFloatingIds] = useState<string[]>([]);
+  useEffect(() => {
+    const native = getNative();
+    if (!native) return;
+    void tryInvokeNative<string[]>('bubble_list').then(ids => { if (ids) setFloatingIds(ids); });
+    return native.onBubbleEvent(msg => {
+      if (msg.type === 'list') setFloatingIds(msg.ids);
+      else if (msg.type === 'dock') setActiveId(msg.sessionId);
+    });
+  }, [setActiveId]);
+  const toggleBubble = useCallback((sid: string) => {
+    void tryInvokeNative(floatingIds.includes(sid) ? 'bubble_unfloat' : 'bubble_float', { sessionId: sid });
+  }, [floatingIds]);
+
   // Invariant: a group with nothing in it should not exist. With nesting,
   // "nothing" means no sessions anywhere in its subtree *and* no child groups —
   // a project group whose sessions all live in subgroups has to survive. Groups
@@ -816,6 +832,7 @@ export function ChatApp() {
       return next;
     });
   };
+
 
   const handleRenameGroup = (groupId: string, name: string) => {
     // Remote-only folders are read-only here: the definition lives on the other
@@ -5904,6 +5921,21 @@ export function ChatApp() {
                 <span className="text-xs text-zinc-600">
                   v{active.initInfo.version} · {active.initInfo.tools.length} tools
                 </span>
+              )}
+
+              {getNative() && (
+                <button
+                  className={`w-7 h-6 flex items-center justify-center rounded-md transition-colors ${
+                    floatingIds.includes(activeId)
+                      ? 'text-[#c8956b] bg-[#c8956b]/15'
+                      : 'text-zinc-500 hover:text-[#c8956b] hover:bg-surface-light'
+                  }`}
+                  onClick={() => toggleBubble(activeId)}
+                  title={floatingIds.includes(activeId) ? 'Stop floating this chat' : 'Float this chat as a bubble'}
+                  aria-label={floatingIds.includes(activeId) ? 'Stop floating this chat' : 'Float this chat as a bubble'}
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                </button>
               )}
 
               {/* Plugin-contributed linked-item pickers (e.g. ticket linker) */}

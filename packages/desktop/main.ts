@@ -47,6 +47,7 @@ import {
 } from './cdp';
 import { pluginOauthLogin, type OAuthSpec } from './plugin_oauth';
 import { registerUpdaterIpc, startUpdateChecks } from './updater';
+import { registerBubbles, disposeBubbles } from './bubbles';
 import {
   acquireTunnel,
   releaseTunnel,
@@ -184,6 +185,9 @@ function createMainWindow(): BrowserWindow {
   // that point the window can flip from hidden → visible in one frame.
   win.once('ready-to-show', () => win.show());
 
+  // Off macOS, closing the main window quits — bubbles must not keep it alive.
+  if (process.platform !== 'darwin') win.on('closed', () => disposeBubbles());
+
   // Capture renderer crashes / hangs / load failures (the "black screen")
   // into a persistent log, and make the DevTools chord work even while the
   // page is wedged. See electron/diagnostics.ts.
@@ -258,17 +262,26 @@ function createMainWindow(): BrowserWindow {
   return win;
 }
 
-async function loadInitialUrl(win: BrowserWindow): Promise<void> {
-  if (DEV) {
-    // Dev: the bridge serves the frontend dist over :3111. `run.sh`
-    // (started independently) keeps the bundler and bridge alive.
-    await win.loadURL(DEV_URL);
-    return;
-  }
+async function appBaseUrl(): Promise<string> {
+  // Dev: the bridge serves the frontend dist over :3111. `run.sh`
+  // (started independently) keeps the bundler and bridge alive.
+  if (DEV) return DEV_URL.replace(/\/$/, '');
   // Prod: bring the bridge up, then point the window at it. Using the bridge's
   // origin (vs file://) keeps cookie/CSP behavior identical to dev.
-  const port = await getBridgePort();
-  await win.loadURL(`http://localhost:${port}/`);
+  return `http://localhost:${await getBridgePort()}`;
+}
+
+async function loadInitialUrl(win: BrowserWindow): Promise<void> {
+  await win.loadURL(`${await appBaseUrl()}/`);
+}
+
+/** The main window, re-created when macOS closed it but the app kept running. */
+async function showMainWindow(): Promise<BrowserWindow> {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  mainWindow = createMainWindow();
+  initBrowserPreview({ mainWindow, onRelay: relayBrowserPreviewEvent });
+  await loadInitialUrl(mainWindow);
+  return mainWindow;
 }
 
 function relayBrowserPreviewEvent(label: string, event: string, payload: string | null): void {
@@ -441,6 +454,11 @@ app.whenReady().then(async () => {
     onRelay: relayBrowserPreviewEvent,
   });
   registerIpcHandlers();
+  registerBubbles({
+    getMainWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+    showMainWindow,
+    getBaseUrl: appBaseUrl,
+  });
 
   // Remove stale ssh control sockets from a previous run, and forward tunnel
   // status changes to the renderer (replaces bun's `remote.status` WS frames).
@@ -459,12 +477,10 @@ app.whenReady().then(async () => {
   // Begin polling GitHub releases (packaged macOS builds only).
   startUpdateChecks(() => mainWindow);
 
+  // The bubble overlay is a window too, so "no windows left" can't be the test
+  // for re-opening the main one.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createMainWindow();
-      initBrowserPreview({ mainWindow, onRelay: relayBrowserPreviewEvent });
-      loadInitialUrl(mainWindow).catch(() => {});
-    }
+    if (!mainWindow || mainWindow.isDestroyed()) showMainWindow().catch(() => {});
   });
 });
 
@@ -473,6 +489,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  try { disposeBubbles(); } catch {}
   try { disposeAll(); } catch {}
   try { closeAllTunnels(); } catch {}
   killSidecar();

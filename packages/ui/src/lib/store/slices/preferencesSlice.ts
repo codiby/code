@@ -54,6 +54,10 @@ export interface PreferencesData {
   colorChatBySession: boolean;
   /** Also wash the whole chat background with the session accent. */
   tintChatBackground: boolean;
+  /** A disposable launched from the bubbles launcher lands as a closed bubble
+   *  and pops open by itself when its first turn completes. Off: it opens
+   *  right away, like any other bubble. */
+  disposableOpenOnFirstReply: boolean;
   /** Max width of the chat column — compact / standard / full-bleed. */
   chatWidth: ChatWidth;
   /** Per-session accent overrides (sessionId → hex). Absence = auto-derived. */
@@ -70,7 +74,8 @@ type TogglePrefKey =
   | 'showTelegramSession'
   | 'interruptOnSend'
   | 'colorChatBySession'
-  | 'tintChatBackground';
+  | 'tintChatBackground'
+  | 'disposableOpenOnFirstReply';
 
 export interface PreferencesSlice extends PreferencesData {
   /** Switch appearance, mirror it to localStorage, and persist to the server. */
@@ -97,6 +102,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
   interruptOnSend: true,
   colorChatBySession: true,
   tintChatBackground: false,
+  disposableOpenOnFirstReply: true,
   chatWidth: 'standard',
   sessionAccents: {},
   globalEnvVars: [],
@@ -139,6 +145,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
     if (typeof prefs.interruptOnSend === 'boolean') patch.interruptOnSend = prefs.interruptOnSend;
     if (typeof prefs.colorChatBySession === 'boolean') patch.colorChatBySession = prefs.colorChatBySession;
     if (typeof prefs.tintChatBackground === 'boolean') patch.tintChatBackground = prefs.tintChatBackground;
+    if (typeof prefs.disposableOpenOnFirstReply === 'boolean') patch.disposableOpenOnFirstReply = prefs.disposableOpenOnFirstReply;
     if (prefs.chatWidth === 'compact' || prefs.chatWidth === 'standard' || prefs.chatWidth === 'full') patch.chatWidth = prefs.chatWidth;
     if (prefs.sessionAccents && typeof prefs.sessionAccents === 'object') patch.sessionAccents = prefs.sessionAccents as Record<string, string>;
     if (Array.isArray(prefs.globalEnvVars)) patch.globalEnvVars = prefs.globalEnvVars as ProjectEnvVar[];

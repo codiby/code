@@ -84,6 +84,20 @@ contextBridge.exposeInMainWorld('codiby', {
   },
 
   /**
+   * Floating-bubble events from `bubbles.ts`: `list` (the floating session
+   * ids changed) reaches both windows; `dock` asks the main window to show a
+   * session that just left its bubble; `spotlight` opens/closes the quick
+   * launcher in the overlay (global shortcut). Returns an unlisten fn.
+   */
+  onBubbleEvent(
+    cb: (msg: { type: 'list'; ids: string[] } | { type: 'dock'; sessionId: string } | { type: 'spotlight'; open: boolean }) => void,
+  ): () => void {
+    const handler = (_e: unknown, msg: { type: 'list'; ids: string[] } | { type: 'dock'; sessionId: string } | { type: 'spotlight'; open: boolean }) => cb(msg);
+    ipcRenderer.on('bubble-event', handler);
+    return () => ipcRenderer.removeListener('bubble-event', handler);
+  },
+
+  /**
    * Current zoom factor of the host webContents. `BrowserView.setBounds()`
    * takes window-content DIPs while `getBoundingClientRect()` in the renderer
    * returns CSS pixels — these diverge when the user hits Cmd+=/Cmd+-. The

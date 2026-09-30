@@ -32,6 +32,13 @@ export type RemoteTunnelStatusEvent = {
   port: number | null;
 };
 
+export type BubbleEvent =
+  | { type: 'list'; ids: string[] }
+  | { type: 'dock'; sessionId: string }
+  | { type: 'spotlight'; open: boolean }
+  /** ⌥Esc: open the bubbles, or fold them back if they're already open. */
+  | { type: 'toggle' };
+
 export interface CodibyNative {
   invoke<T = unknown>(cmd: string, args?: unknown): Promise<T>;
   onBrowserPreviewEvent(name: BrowserPreviewEventName, cb: (p: RelayPayload) => void): Unlisten;
@@ -39,6 +46,8 @@ export interface CodibyNative {
   onUpdateEvent(cb: (msg: UpdateEvent) => void): Unlisten;
   /** SSH-tunnel status changes for remotes (replaces bun's `remote.status`). */
   onRemoteTunnelStatus(cb: (msg: RemoteTunnelStatusEvent) => void): Unlisten;
+  /** Floating chat bubbles: floating-id list changes, and "back to tab". */
+  onBubbleEvent(cb: (msg: BubbleEvent) => void): Unlisten;
   /** Host webContents zoom factor (1.0 = no zoom). Sync, no IPC. */
   getZoomFactor(): number;
   /** On-disk path of a dropped File ('' when not disk-backed). Sync, no IPC. */
