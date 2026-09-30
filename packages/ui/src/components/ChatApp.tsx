@@ -16,7 +16,8 @@ import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { RunningInstancesButton } from './RunningInstancesButton';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
 import { TurnFold } from './TurnFold';
-import { foldTurns, isTurnWork } from '../lib/turns';
+import { TurnMediaStrip } from './TurnMediaStrip';
+import { foldTurns, isTurnMedia, isTurnWork } from '../lib/turns';
 import { Markdown } from './Markdown';
 import { NewSessionModal } from './NewSessionModal';
 import { BypassWarningModal, shouldWarnBypass } from './BypassWarningModal';
@@ -1332,10 +1333,14 @@ export function ChatApp() {
       const idx = tabs.findIndex(t => t.path === path);
       let nextTabs: typeof tabs;
       if (idx >= 0) {
+        // A picture previously opened as text must switch renderers when
+        // reopened through the image route, rather than keep the binary text.
+        if (image && !tabs[idx].image) delete liveBuffersRef.current[liveBufKey(sid, path)];
         // Already open — keep its dirty/preview/read-only state, just update
-        // the target line/column (and pin if requested).
+        // the target line/column (and pin if requested), except for images.
         nextTabs = tabs.map((t, i) => i === idx
-          ? { ...t, line, column, preview: pin ? false : t.preview }
+          ? { ...t, line, column, preview: pin ? false : t.preview,
+              ...(image ? { content, image: true, readOnly: true, dirty: false } : {}) }
           : t);
       } else {
         const newTab = { path, content, line, column, dirty: false, preview: !pin, readOnly, image };
@@ -2170,6 +2175,11 @@ export function ChatApp() {
       const ev = e as CustomEvent<{ path: string; line?: number }>;
       const path = ev.detail?.path;
       if (!activeId || !path || !clientRef.current) return;
+      if (IMAGE_EXTS.has((path.split('.').pop() || '').toLowerCase())) {
+        const dataUrl = await clientRef.current.readFileDataUrl(path);
+        if (dataUrl) openFileInEditor(activeId, path, dataUrl, undefined, { image: true, readOnly: true, pin: true });
+        return;
+      }
       const file = await clientRef.current.readFile(path);
       if (file) openFileInEditor(activeId, path, file.content, ev.detail?.line, { readOnly: true, pin: true });
     };
@@ -5613,6 +5623,7 @@ export function ChatApp() {
                 </TurnFold>
               );
             }
+            if (isTurnMedia(item)) return <TurnMediaStrip key={item.key} items={item.items} />;
             return renderItem(item, i, turns.length);
           });
         })()}

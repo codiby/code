@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ChatMessage } from './claude-client';
-import { foldTurns, isTurnWork, type TurnWork } from './turns';
+import { foldTurns, isTurnMedia, isTurnWork, type TurnWork } from './turns';
 
 let seq = 0;
 const id = () => `m${++seq}`;
@@ -98,5 +98,58 @@ describe('foldTurns', () => {
     const items: Item[] = [user(), tool('Bash', { command: 'sleep 9' })];
     const fold = foldTurns(items, { live: false, interrupted: true }).find(isTurnWork)!;
     expect(fold.stopped).toBe(true);
+  });
+});
+
+describe('turn media', () => {
+  const posted = (): ChatMessage =>
+    ({ id: id(), role: 'system', content: '', timestamp: 0, images: [{ media_type: 'image/png', data: 'AAA' }] });
+  const html = '<!doctype html><p>hi</p>';
+
+  test('images and mockups folded into the work repeat under the answer', () => {
+    const shot = JSON.stringify([{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'BBB' } }]);
+    const items: Item[] = [
+      user(),
+      run(
+        tool('mcp__codiby-code-sdk__post_image_to_session', { path: '/a.png' }),
+        posted(),
+        tool('Read', { file_path: '/b.jpg' }, result(shot)),
+      ),
+      // A mockup written by a sub-agent run stays inside the fold.
+      { agent: tool('Agent', {}), children: [tool('mcp__codiby-code-sdk__mockup_write', { name: 'sidebar', html })] } as unknown as Item,
+      tool('Bash', { command: 'true' }),
+      text('done'),
+    ];
+    const out = foldTurns(items, { live: false });
+    const media = out.find(isTurnMedia)!;
+    expect(out.indexOf(media)).toBe(out.length - 1);
+    expect(media.items).toEqual([
+      { kind: 'image', src: 'data:image/png;base64,AAA' },
+      { kind: 'image', src: 'data:image/jpeg;base64,BBB' },
+      { kind: 'mockup', name: 'sidebar', html },
+    ]);
+  });
+
+  test('an image posted after the last tool call folds too, instead of reading as the answer', () => {
+    const post = 'mcp__codiby-code-sdk__post_image_to_session';
+    const items: Item[] = [
+      user(),
+      tool(post, { path: '/a.png' }), posted(),
+      tool(post, { path: '/b.png' }), { ...posted(), content: 'the list' },
+      text('Here are both.'),
+    ];
+    const out = foldTurns(items, { live: false });
+    expect(shape(out.filter(i => !isTurnMedia(i)))).toEqual(['user', 'fold(4)', 'text:Here are both.']);
+    expect(out.find(isTurnMedia)!.items.map(i => (i.kind === 'image' ? i.caption : null))).toEqual([undefined, 'the list']);
+  });
+
+  test('no strip when the work showed nothing, or the mockup failed', () => {
+    const items: Item[] = [
+      user(),
+      tool('mcp__codiby-code-sdk__mockup_write', { name: 'x', html }, result('boom', { isError: true })),
+      tool('Bash', { command: 'true' }),
+      text('done'),
+    ];
+    expect(foldTurns(items, { live: false }).some(isTurnMedia)).toBe(false);
   });
 });

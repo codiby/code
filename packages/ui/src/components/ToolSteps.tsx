@@ -14,6 +14,8 @@ import {
 import { detectOutputLanguage, languageFromPath } from '../lib/output-language';
 import { highlightCode, highlightLines } from '../lib/highlight';
 import { AnsiText } from './MessageBubble';
+import { FullscreenPreview } from './FullscreenPreview';
+import type { Gallery } from '../lib/preview';
 
 /** Past the fold, a finished run shows only its last few lines. */
 const FOLD_AFTER = 5;
@@ -250,16 +252,7 @@ function StepLine({
 
   switch (step.kind) {
     case 'read': {
-      const shown = step.files.slice(0, MAX_READ_CHIPS);
-      return (
-        <Line icon={<Eye size={13} />} tone={p.read} running={step.running} why={why}>
-          <span>{step.running ? 'Reading' : 'Read'}</span>
-          {shown.map(f => (
-            <Quiet key={f} title={f} onClick={() => openFile(f)}>{basename(f)}</Quiet>
-          ))}
-          {step.files.length > shown.length && <Dim>+{step.files.length - shown.length}</Dim>}
-        </Line>
-      );
+      return <ReadStep step={step} why={why} />;
     }
 
     case 'search':
@@ -337,6 +330,45 @@ function StepLine({
         </Line>
       );
   }
+}
+
+function ReadStep({ step, why }: { step: Extract<ToolStep, { kind: 'read' }>; why?: string }) {
+  const p = usePalette();
+  const [gallery, setGallery] = useState<Gallery | null>(null);
+  const shown = step.files.slice(0, MAX_READ_CHIPS);
+  const images = step.files.flatMap(path => (step.images[path] ?? []).map(src => ({
+    src, kind: 'image' as const, name: basename(path), path,
+  })));
+  const open = (path: string) => {
+    const index = images.findIndex(image => image.path === path);
+    if (index >= 0) setGallery({ items: images, index });
+    else openFile(path);
+  };
+  return (
+    <>
+      <Line icon={<Eye size={13} />} tone={p.read} running={step.running} why={why}>
+        <span>{step.running ? 'Reading' : 'Read'}</span>
+        {shown.map(path => (
+          <Quiet key={path} title={path} onClick={() => open(path)}>{basename(path)}</Quiet>
+        ))}
+        {step.files.length > shown.length && <Dim>+{step.files.length - shown.length}</Dim>}
+      </Line>
+      {images.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pl-6 py-1">
+          {images.map((image, index) => (
+            <button key={`${image.path}-${index}`} type="button" title={image.path}
+              onClick={() => setGallery({ items: images, index })}
+              className="w-20 h-20 rounded-md overflow-hidden border border-border hover:border-zinc-500 cursor-zoom-in">
+              <img src={image.src} alt={image.name} className="w-full h-full object-contain" />
+            </button>
+          ))}
+        </div>
+      )}
+      <FullscreenPreview gallery={gallery}
+        onIndexChange={index => setGallery(g => g ? { ...g, index } : g)}
+        onClose={() => setGallery(null)} />
+    </>
+  );
 }
 
 // ---------------------------------------------------------------------------

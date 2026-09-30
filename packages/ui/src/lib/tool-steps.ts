@@ -1,5 +1,6 @@
 import type { ChatMessage } from './claude-client';
 import { shortToolName } from './tool-runs';
+import { parseToolResultImages } from './tool-result-images';
 
 /**
  * Turns a run of tool calls into the handful of one-line "steps" the thread
@@ -41,7 +42,7 @@ interface StepBase {
 }
 
 export type ToolStep =
-  | (StepBase & { kind: 'read'; files: string[] })
+  | (StepBase & { kind: 'read'; files: string[]; images: Record<string, string[]> })
   | (StepBase & { kind: 'search'; queries: { pattern: string; matches: number | null }[] })
   | (StepBase & { kind: 'change'; files: FileChange[] })
   | (StepBase & {
@@ -361,11 +362,13 @@ export function buildToolSteps(items: ChatMessage[]): ToolStep[] {
 
     if (cat === 'read') {
       const path = str(inputOf(m), 'file_path', 'filePath', 'path')!;
+      const images = !failed ? parseToolResultImages(m.toolResult?.content)?.images : undefined;
       if (prev?.kind === 'read') {
         if (!prev.files.includes(path)) prev.files.push(path);
+        if (images) prev.images[path] = images;
         prev.running ||= running;
       } else {
-        steps.push({ kind: 'read', id: m.id, running, files: [path] });
+        steps.push({ kind: 'read', id: m.id, running, files: [path], images: images ? { [path]: images } : {} });
       }
       continue;
     }

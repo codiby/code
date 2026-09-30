@@ -93,6 +93,27 @@ describe('searchMatches', () => {
 });
 
 describe('buildToolSteps', () => {
+  test('keeps image previews associated with each file when reads are grouped', () => {
+    const picture = (data: string) => result(JSON.stringify([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
+    ]));
+    const steps = buildToolSteps([
+      tool('Read', { file_path: '/r/1-datos.png' }, picture('AAAA')),
+      tool('Read', { file_path: '/r/readme.txt' }, result('text')),
+      tool('Read', { file_path: '/r/2-pago.png' }, picture('BBBB')),
+      tool('Read', { file_path: '/r/3-panel.png' }, picture('CCCC')),
+    ]);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({
+      kind: 'read',
+      images: {
+        '/r/1-datos.png': ['data:image/png;base64,AAAA'],
+        '/r/2-pago.png': ['data:image/png;base64,BBBB'],
+        '/r/3-panel.png': ['data:image/png;base64,CCCC'],
+      },
+    });
+  });
+
   test('consecutive reads fold into one step', () => {
     const steps = buildToolSteps([
       tool('Read', { file_path: '/r/a.ts' }, result('x')),

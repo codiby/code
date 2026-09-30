@@ -1,6 +1,7 @@
 import type { ChatMessage } from './claude-client';
 import type { ToolRunGroup } from './tool-runs';
 import { buildToolSteps } from './tool-steps';
+import { parseToolResultImages } from './tool-result-images';
 
 /**
  * Folds the *work* of each finished turn into one line.
@@ -46,6 +47,22 @@ export interface TurnWork<T> {
   stopped: boolean;
 }
 
+/** Something the agent showed during the turn that the fold would hide. */
+export type TurnMediaItem =
+  | { kind: 'image'; src: string; caption?: string }
+  | { kind: 'mockup'; name: string; html: string };
+
+/**
+ * The images and mockups folded away with a turn's work, repeated as a strip
+ * of thumbnails under its answer — closing the fold shouldn't make a
+ * screenshot the agent posted disappear.
+ */
+export interface TurnMedia {
+  turnMedia: true;
+  key: string;
+  items: TurnMediaItem[];
+}
+
 /**
  * Tools the reader interacts with or comes back to — a plan to approve, a
  * question to answer, a mockup to reopen. They are lifted out of the fold and
@@ -76,6 +93,15 @@ function isKeepVisible(item: unknown): boolean {
 
 function isThinking(item: unknown): boolean {
   return !isGroup(item) && !!(item as ChatMessage).isThinking;
+}
+
+/** An image the agent posted into the chat. It lands after the tool call
+ *  that posted it, so the last one would otherwise read as part of the answer
+ *  and render full size; it belongs with the work, shown in the media strip. */
+function isPostedImage(item: unknown): boolean {
+  if (isGroup(item)) return false;
+  const m = item as ChatMessage;
+  return m.role === 'system' && !!m.images?.length;
 }
 
 function keyOf(item: unknown): string {
@@ -126,6 +152,33 @@ export function turnStats(items: unknown[], start: number | null): TurnStats {
   return { durationMs, files: [...files.values()], commands, failedCommands };
 }
 
+const MOCKUP_WRITE = /mockup_write$/;
+
+/** Posted images, image tool results and written mockups, in thread order. */
+export function turnMedia(items: unknown[]): TurnMediaItem[] {
+  const out: TurnMediaItem[] = [];
+  for (const m of items.flatMap(messagesOf)) {
+    for (const img of m.images ?? []) {
+      out.push({ kind: 'image', src: `data:${img.media_type};base64,${img.data}`, ...(m.content ? { caption: m.content } : {}) });
+    }
+    if (!m.toolName || m.isToolResult) continue;
+    const result = m.toolResult;
+    if (!result || result.isError) continue;
+    const input = m.toolInput as Record<string, unknown> | undefined;
+    if (MOCKUP_WRITE.test(m.toolName)) {
+      if (typeof input?.name === 'string' && typeof input.html === 'string') {
+        out.push({ kind: 'mockup', name: input.name, html: input.html });
+      }
+      continue;
+    }
+    // Cheap check before parsing: most results are plain text.
+    if (typeof result.content === 'string' && result.content.includes('"image"')) {
+      for (const src of parseToolResultImages(result.content)?.images ?? []) out.push({ kind: 'image', src });
+    }
+  }
+  return out;
+}
+
 /**
  * Replaces the work of every finished turn with a `TurnWork` entry. The turn
  * still running (the last one, while `live`) is left exactly as it is — its
@@ -134,13 +187,13 @@ export function turnStats(items: unknown[], start: number | null): TurnStats {
 export function foldTurns<T>(
   items: T[],
   opts: { live: boolean; interrupted?: boolean },
-): (T | TurnWork<T>)[] {
+): (T | TurnWork<T> | TurnMedia)[] {
   // Split into turns at each user message; the leading chunk before the first
   // user message is a turn of its own (e.g. a resumed session's tail).
   const bounds: number[] = [];
   items.forEach((item, i) => { if (isUserMessage(item)) bounds.push(i); });
 
-  const out: (T | TurnWork<T>)[] = [];
+  const out: (T | TurnWork<T> | TurnMedia)[] = [];
   let cursor = 0;
   // Segments alternate: a user message on its own, then the agent's side of
   // the turn it opened.
@@ -167,7 +220,7 @@ export function foldTurns<T>(
     const answer: T[] = [];
     slice.forEach((item, i) => {
       if (isKeepVisible(item)) lifted.push(item);
-      else if (i <= lastTool || isThinking(item)) work.push(item);
+      else if (i <= lastTool || isThinking(item) || isPostedImage(item)) work.push(item);
       else answer.push(item);
     });
 
@@ -181,11 +234,17 @@ export function foldTurns<T>(
       stopped: isLastSegment && !!opts.interrupted,
     });
     out.push(...lifted, ...answer);
+    const media = turnMedia(work);
+    if (media.length) out.push({ turnMedia: true, key: `media-${keyOf(work[0])}`, items: media });
   });
 
   return out;
 }
 
-export function isTurnWork<T>(item: T | TurnWork<T>): item is TurnWork<T> {
+export function isTurnWork<T>(item: T | TurnWork<T> | TurnMedia): item is TurnWork<T> {
   return typeof item === 'object' && item !== null && 'turnWork' in item;
+}
+
+export function isTurnMedia(item: unknown): item is TurnMedia {
+  return typeof item === 'object' && item !== null && 'turnMedia' in item;
 }
