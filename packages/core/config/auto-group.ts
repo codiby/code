@@ -85,9 +85,8 @@ export function planAutoGroup(input: AutoGroupInput): AutoGroupResult | null {
 
   let projectGroupId: string | null = null;
   if (input.autoGroupSessions) {
-    const folder = projectCwd.split('/').filter(Boolean).pop()
-      || projectCwd.split('\\').filter(Boolean).pop()
-      || '/';
+    // Either separator: a Windows cwd (`C:\Users\me\app`) has no `/` at all.
+    const folder = projectCwd.split(/[\\/]/).filter(Boolean).pop() || '/';
     // Match on top-level groups only: with nesting, a subgroup could legitimately
     // share a name with a project (two repos each with a "Backend" subgroup), and
     // autogrouping into one of those would be wrong.

@@ -366,7 +366,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
 
   const opencodeAvailable = opencodeInfo?.available ?? false;
   const availableProviders = PROVIDER_OPTIONS.filter(o => o.key !== 'opencode' || opencodeAvailable);
-  const folderName = cwd.split('/').filter(Boolean).pop() || groupName || cwd || 'Choose a folder';
+  const folderName = cwd.split(/[\\/]/).filter(Boolean).pop() || groupName || cwd || 'Choose a folder';
   // The picked host's own metadata, falling back to what the group reported —
   // a remote can be selected before `/remotes` has been answered.
   const targetMeta = target ? remotes.find(r => r.id === target) : null;
@@ -496,7 +496,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
                 {folderOptions.length === 0 ? (
                   <div className="px-3 py-2 text-xs text-zinc-600">No recent projects</div>
                 ) : folderOptions.map(dir => {
-                  const name = dir.split('/').filter(Boolean).pop() || dir;
+                  const name = dir.split(/[\\/]/).filter(Boolean).pop() || dir;
                   const parent = dir.replace(/\/[^/]+\/?$/, '') || (dir.startsWith('/') ? '/' : '');
                   const isCurrent = dir === cwd;
                   return (

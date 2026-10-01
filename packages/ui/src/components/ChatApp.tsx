@@ -413,7 +413,7 @@ export function ChatApp() {
     const firstMember = sessions.find(s => tabIds.includes(s.id));
     const groupCwd = firstMember?.cwd || sessions.find(s => s.id === activeId)?.cwd || '/';
     const groupName = firstMember?.cwd
-      ? (firstMember.cwd.split('/').filter(Boolean).pop() || `Group ${Object.keys(tabGroups).length + 1}`)
+      ? (firstMember.cwd.split(/[\\/]/).filter(Boolean).pop() || `Group ${Object.keys(tabGroups).length + 1}`)
       : `Group ${Object.keys(tabGroups).length + 1}`;
     // A folder for this directory may already exist — "Create group" on a
     // second session in `~/jovaz` was minting a twin of the `jovaz` folder
@@ -4908,7 +4908,7 @@ export function ChatApp() {
       const folderMap: Record<string, string[]> = {};
       for (const s of openSessions) {
         const cwd = getState(s.id).initInfo?.cwd || s.cwd || '/';
-        const folder = cwdToFolder[cwd] || cwd.split('/').filter(Boolean).pop() || '/';
+        const folder = cwdToFolder[cwd] || cwd.split(/[\\/]/).filter(Boolean).pop() || '/';
         (folderMap[folder] ||= []).push(s.id);
       }
       const newGroups = { ...tabGroups };

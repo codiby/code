@@ -39,6 +39,12 @@ describe('planAutoGroup — project grouping', () => {
     expect(out.groups['new-1']!.color).toBe('blue');
   });
 
+  test('names the group after the folder on a Windows path too', () => {
+    const cwd = 'C:\\Users\\me\\src\\code';
+    const out = plan({ sessionCwd: cwd, projectCwd: cwd })!;
+    expect(out.groups['new-1']).toMatchObject({ name: 'code', cwd });
+  });
+
   test('reuses an existing top-level group with the same name', () => {
     const out = plan({ groups: { p: group('p', { name: 'code', cwd: REPO }) } })!;
     expect(out.map.new).toBe('p');
