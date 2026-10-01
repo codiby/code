@@ -27,6 +27,7 @@ interface Remote {
   pairingId?: string;
   serverAlias?: string;
   coordination?: 'off' | 'read' | 'write';
+  wsl?: { distro: string };
   status?: TunnelStatus;
   lastError?: string | null;
 }
@@ -40,11 +41,18 @@ export function RemotesSection({ serverUrl }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState<Remote | 'new' | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  // `null` = not asked yet; the bridge answers `supported: true` only on Windows.
+  const [wslSupported, setWslSupported] = useState<boolean | null>(null);
+  const [installingWsl, setInstallingWsl] = useState<Remote | 'new' | null>(null);
 
   // Initial load.
   useEffect(() => {
     if (!serverUrl) return;
     refresh();
+    fetch(`${serverUrl}/remotes/wsl/distros`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => setWslSupported(!!data?.supported))
+      .catch(() => setWslSupported(false));
   }, [serverUrl]);
 
   // Keep the remotes LIST in sync via the bun WS (`remotes` broadcast on CRUD).
@@ -109,11 +117,20 @@ export function RemotesSection({ serverUrl }: Props) {
           <path d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
           <path d="M7 8h.01M7 16h.01" strokeLinecap="round" strokeWidth="2.5" />
         </svg>
-        <span className="text-[12px] font-medium text-zinc-300">Remotes (SSH)</span>
+        <span className="text-[12px] font-medium text-zinc-300">Remotes</span>
+        {wslSupported && (
+          <Button
+            size="sm"
+            onPress={() => setInstallingWsl('new')}
+            className="ml-auto h-auto px-2 py-0.5 min-w-0 text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light rounded-md"
+          >
+            + Install WSL
+          </Button>
+        )}
         <Button
           size="sm"
           onPress={() => setEditing('new')}
-          className="ml-auto h-auto px-2 py-0.5 min-w-0 text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light rounded-md"
+          className={`${wslSupported ? '' : 'ml-auto '}h-auto px-2 py-0.5 min-w-0 text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light rounded-md`}
         >
           + Add Remote
         </Button>
@@ -121,6 +138,7 @@ export function RemotesSection({ serverUrl }: Props) {
 
       <p className="text-[12px] text-zinc-500 px-1 mb-3">
         Connect to a workstation where the bun bridge is already running. Each remote points at a <code className="text-zinc-400">Host</code> entry in your <code className="text-zinc-400">~/.ssh/config</code>; sessions you create there live on that machine and survive disconnects.
+        {wslSupported && <> A WSL distro on this PC needs no SSH: Install WSL sets up its bridge and adds it here.</>}
       </p>
 
       {!loaded ? (
@@ -139,6 +157,7 @@ export function RemotesSection({ serverUrl }: Props) {
               onAskDelete={() => setConfirmingDelete(r.id)}
               onCancelDelete={() => setConfirmingDelete(null)}
               onConfirmDelete={() => handleDelete(r.id)}
+              onReinstall={() => setInstallingWsl(r)}
               serverUrl={serverUrl}
             />
           ))}
@@ -151,6 +170,15 @@ export function RemotesSection({ serverUrl }: Props) {
           initial={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); refresh(); }}
+        />
+      )}
+
+      {installingWsl && serverUrl && (
+        <WslInstallDialog
+          serverUrl={serverUrl}
+          existing={installingWsl === 'new' ? null : installingWsl}
+          onClose={() => setInstallingWsl(null)}
+          onInstalled={refresh}
         />
       )}
     </div>
@@ -173,9 +201,10 @@ function statusLabel(s: TunnelStatus | undefined): { label: string; tone: string
 }
 
 function RemoteRow({
-  remote, isConfirmingDelete, onEdit, onAskDelete, onCancelDelete, onConfirmDelete, serverUrl, onChanged,
+  remote, isConfirmingDelete, onEdit, onAskDelete, onCancelDelete, onConfirmDelete, onReinstall, serverUrl, onChanged,
 }: {
   remote: Remote;
+  onReinstall: () => void;
   onChanged: () => void;
   isConfirmingDelete: boolean;
   onEdit: () => void;
@@ -225,7 +254,12 @@ function RemoteRow({
       <div className="flex items-center gap-2">
         <div className={`w-2 h-2 rounded-full ${dot}`} />
         <span className="text-[12px] text-zinc-200 truncate">{remote.name}</span>
-        <span className="text-[11px] text-zinc-500 font-mono truncate">{remote.alias}:{remote.bunPort}</span>
+        {remote.wsl && (
+          <span className="text-[9px] uppercase tracking-wider px-1.5 rounded border border-violet-400/30 bg-violet-400/15 text-violet-300">WSL</span>
+        )}
+        <span className="text-[11px] text-zinc-500 font-mono truncate">
+          {remote.wsl ? `${remote.wsl.distro} · :${remote.bunPort}` : `${remote.alias}:${remote.bunPort}`}
+        </span>
         <span className={`ml-auto text-[10px] uppercase tracking-wider ${tone}`}>{label}</span>
       </div>
       <div className="text-[11px] text-zinc-500 px-1">Agent coordination: {remote.coordination || 'off'}{remote.hostId ? ` · ${remote.hostId}` : ''}</div>
@@ -256,10 +290,18 @@ function RemoteRow({
           className="h-auto px-2 py-0.5 min-w-0 text-[10px] text-zinc-400 bg-transparent hover:bg-zinc-800">
           Test server
         </Button>
-        <Button size="sm" onPress={() => setPairing(true)} isDisabled={testing}
-          className="h-auto px-2 py-0.5 min-w-0 text-[10px] text-blue-300 bg-transparent hover:bg-zinc-800">
-          {remote.pairingId ? 'Pairing…' : 'Pair both hosts'}
-        </Button>
+        {remote.wsl ? (
+          // Pairing needs an SSH route back to this PC, which a local distro doesn't have.
+          <Button size="sm" onPress={onReinstall} isDisabled={testing}
+            className="h-auto px-2 py-0.5 min-w-0 text-[10px] uppercase tracking-wider text-violet-300 bg-transparent hover:bg-zinc-800">
+            Reinstall
+          </Button>
+        ) : (
+          <Button size="sm" onPress={() => setPairing(true)} isDisabled={testing}
+            className="h-auto px-2 py-0.5 min-w-0 text-[10px] text-blue-300 bg-transparent hover:bg-zinc-800">
+            {remote.pairingId ? 'Pairing…' : 'Pair both hosts'}
+          </Button>
+        )}
         {!isConfirmingDelete ? (
           <Button
             size="sm"
@@ -369,6 +411,7 @@ function RemoteEditDialog({
             </TextField>
           </div>
 
+          {!initial?.wsl && <>
           <div>
             <label className="block text-[11px] text-zinc-500 mb-1 px-1">SSH alias (~/.ssh/config Host)</label>
             <TextField value={alias} onChange={setAlias} aria-label="SSH alias">
@@ -392,6 +435,12 @@ function RemoteEditDialog({
               <Input placeholder="Use the desktop alias" className="font-mono text-[12px]" />
             </TextField>
           </div>
+          </>}
+          {initial?.wsl && (
+            <p className="text-[11px] text-zinc-500 px-1">
+              WSL distro <code className="text-zinc-400">{initial.wsl.distro}</code> on port <code className="text-zinc-400">{initial.bunPort}</code>. Reinstall to change them.
+            </p>
+          )}
           <div>
             <label className="block text-[11px] text-zinc-500 mb-1 px-1" htmlFor="remote-coordination">Agent coordination from this server</label>
             <select id="remote-coordination" value={coordination} onChange={e => setCoordination(e.target.value as 'off' | 'read' | 'write')}
@@ -451,8 +500,153 @@ function RemoteEditDialog({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Install / reinstall a WSL distro as a remote (Windows only)
+// ---------------------------------------------------------------------------
 
-type PairSummary = { id: string; remoteId?: string; status: string; role: string; permission: 'read' | 'write' };
+type WslInstallResult = {
+  remote: Remote;
+  steps: string[];
+  health: { ok: true } | { ok: false; reason: string };
+};
+
+function WslInstallDialog({ serverUrl, existing, onClose, onInstalled }: {
+  serverUrl: string;
+  /** Set when reinstalling: the distro and port are fixed. */
+  existing: Remote | null;
+  onClose: () => void;
+  onInstalled: () => void;
+}) {
+  const [distros, setDistros] = useState<string[] | null>(existing?.wsl ? [existing.wsl.distro] : null);
+  const [distro, setDistro] = useState(existing?.wsl?.distro ?? '');
+  const [name, setName] = useState(existing?.name ?? '');
+  const [bunPort, setBunPort] = useState(String(existing?.bunPort ?? 3112));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<WslInstallResult | null>(null);
+
+  useEffect(() => {
+    if (existing) return;
+    let cancelled = false;
+    fetch(`${serverUrl}/remotes/wsl/distros`).then(res => res.json()).then(data => {
+      if (cancelled) return;
+      setDistros(data.distros ?? []);
+      if (data.error) setError(data.error);
+      if (data.distros?.[0]) setDistro(data.distros[0]);
+    }).catch(e => { if (!cancelled) { setDistros([]); setError(e?.message || String(e)); } });
+    return () => { cancelled = true; };
+  }, [serverUrl, existing]);
+
+  async function install() {
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch(`${serverUrl}/remotes/wsl/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ distro, name: name.trim() || undefined, bunPort: Number(bunPort) || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Install failed (HTTP ${res.status})`);
+      // The install restarted the bridge; the desktop keepalive must run start.sh again.
+      await getNative()?.invoke('remote_tunnel_disconnect', { remoteId: data.remote.id }).catch(() => {});
+      setResult(data);
+      onInstalled();
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const target = existing?.wsl?.distro ?? distro;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div role="dialog" aria-modal="true" aria-label="Install a WSL remote" className="w-[440px] max-w-[92vw] p-4 rounded-lg bg-zinc-900 border border-border shadow-2xl space-y-2.5">
+        <div className="text-[13px] font-medium text-zinc-200">
+          {result ? `Installed on ${target}` : busy ? `Installing on ${target}…` : existing ? `Reinstall ${existing.name}` : 'Install a WSL remote'}
+        </div>
+
+        {result ? (
+          <>
+            <ul className="space-y-1">
+              {result.steps.map(step => (
+                <li key={step} className="flex items-center gap-2 text-[12px] text-zinc-400">
+                  <span className="text-green-400">✓</span>{step}
+                </li>
+              ))}
+            </ul>
+            {result.health.ok ? (
+              <div className="text-[12px] text-green-400">✓ Bridge up on localhost:{result.remote.bunPort}</div>
+            ) : (
+              <div className="text-[11px] text-red-400 break-words">Installed, but the bridge didn't answer: {result.health.reason}</div>
+            )}
+            <div className="text-[11px] text-amber-300 bg-amber-500/5 border border-amber-500/25 rounded px-2 py-1.5">
+              Run <code>claude</code> once inside {target} to sign in — sessions there use that distro's own login.
+            </div>
+          </>
+        ) : busy ? (
+          <div className="flex items-center gap-2 text-[12px] text-zinc-300">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-200" />
+            Installing Bun, Claude Code and the bridge. The first install can take a few minutes.
+          </div>
+        ) : (
+          <>
+            {existing ? (
+              <p className="text-[12px] text-zinc-400">
+                Copies this app's bridge into <code className="text-zinc-300">{target}</code> and restarts it. Sessions running there are cut.
+              </p>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-[11px] text-zinc-500 mb-1 px-1" htmlFor="wsl-distro">Distro</label>
+                  <select id="wsl-distro" value={distro} onChange={e => setDistro(e.target.value)} disabled={!distros?.length}
+                    className="w-full bg-zinc-800 text-zinc-200 text-[12px] rounded-md p-2">
+                    {distros == null ? <option>Loading…</option>
+                      : distros.length === 0 ? <option>No WSL distros found</option>
+                      : distros.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <p className="mt-1 text-[10px] text-zinc-600 px-1">From <code className="text-zinc-400">wsl.exe --list</code>. Docker Desktop's distros are hidden.</p>
+                </div>
+                <div>
+                  <label className="block text-[11px] text-zinc-500 mb-1 px-1">Display name</label>
+                  <TextField value={name} onChange={setName} aria-label="Display name">
+                    <Input placeholder={distro ? `${distro} (WSL)` : ''} className="text-[12px]" />
+                  </TextField>
+                </div>
+                <div>
+                  <label className="block text-[11px] text-zinc-500 mb-1 px-1">Bridge port inside WSL</label>
+                  <TextField value={bunPort} onChange={setBunPort} aria-label="Bridge port inside WSL">
+                    <Input placeholder="3112" className="font-mono text-[12px]" />
+                  </TextField>
+                  <p className="mt-1 text-[10px] text-zinc-600 px-1">Not 3111 — that one belongs to this PC's own bridge.</p>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {error && (
+          <div role="alert" className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5 break-words">{error}</div>
+        )}
+
+        <div className="flex items-center gap-2 pt-1">
+          <Button onPress={onClose} isDisabled={busy}
+            className="text-[12px] px-3 py-1.5 h-auto rounded-md text-zinc-400 bg-transparent hover:bg-zinc-800">
+            {result ? 'Close' : 'Cancel'}
+          </Button>
+          {!result && (
+            <Button onPress={install} isDisabled={busy || !target}
+              className="ml-auto text-[12px] px-3 py-1.5 h-auto rounded-md font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-border hover:border-border-light">
+              {busy ? 'Installing…' : existing ? 'Reinstall' : 'Install'}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type PairSummary ={ id: string; remoteId?: string; status: string; role: string; permission: 'read' | 'write' };
 function PairingDialog({ serverUrl, remote, onClose, onChanged }: {
   serverUrl: string; remote: Remote; onClose: () => void; onChanged: () => void;
 }) {

@@ -609,6 +609,8 @@ export interface RemoteTarget {
   id: string;
   name?: string | null;
   color?: string | null;
+  /** Set for a WSL distro on this PC; it updates by reinstalling, not `/self-update`. */
+  wsl?: { distro: string } | null;
 }
 
 type ClientCallbacks = {
@@ -2057,6 +2059,18 @@ export class ClaudeClient {
     const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/host`, remoteId));
     if (!resp.ok) return null;
     return resp.json();
+  }
+
+  /** Reinstall this app's bridge into a WSL distro (how a WSL remote updates). Runs on the local bridge. */
+  async reinstallWslRemote(distro: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const resp = await authedFetch(`${this.serverUrl}/remotes/wsl/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ distro }),
+    });
+    if (resp.ok) return { ok: true };
+    const data = await resp.json().catch(() => ({}));
+    return { ok: false, error: data?.error || `HTTP ${resp.status}` };
   }
 
   /** Fast-forward a remote bridge's checkout and restart it (drops its sessions). */

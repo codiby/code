@@ -24,6 +24,8 @@ import {
   handleUpdateRemote,
   handleRemoveRemote,
   handleTestRemote,
+  handleListWslDistros,
+  handleInstallWsl,
 } from './handlers/remotes';
 // Remote traffic is no longer proxied by bun — the renderer connects directly
 // to each remote's tunnelled bridge (Electron main owns the SSH tunnels), so
@@ -1768,6 +1770,12 @@ app.delete('/remotes/:id', async (c) => {
   return resp;
 });
 app.post('/remotes/:id/test', (c) => handleTestRemote(c.req.param('id')));
+app.get('/remotes/wsl/distros', () => handleListWslDistros());
+app.post('/remotes/wsl/install', async (c) => {
+  const resp = await handleInstallWsl(c.req.raw);
+  broadcastRemoteList();
+  return resp;
+});
 
 // ── Skills ─────────────────────────────────────────────────────────────────
 // CRUD over skills from every agent convention (claude / opencode / .agent),

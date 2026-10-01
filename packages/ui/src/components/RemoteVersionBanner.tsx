@@ -15,9 +15,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 import type { ClaudeClient, RemoteTarget } from '../lib/claude-client';
+import { getNative } from '../lib/native';
 
 type RemoteStatus = { status: 'connecting' | 'online' | 'reconnecting' | 'offline'; lastError: string | null };
-type Stale = { remoteId: string; name: string; remoteVersion: string | null; appVersion: string; canSelfUpdate: boolean };
+/** `wslDistro`: a WSL remote, which updates by reinstalling this app's bridge into it. */
+type Stale = { remoteId: string; name: string; remoteVersion: string | null; appVersion: string; canSelfUpdate: boolean; wslDistro: string | null };
 type Phase =
   | { kind: 'idle' }
   | { kind: 'confirm' }
@@ -75,11 +77,13 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
         if (!remote) return;
         const remoteVersion = remote.appVersion ?? null;
         const hidden = dismissed()[remoteId] === `${remoteVersion}<${appVersion}`;
-        const name = remotes.find(r => r.id === remoteId)?.name || remote.name;
+        const target = remotes.find(r => r.id === remoteId);
+        const name = target?.name || remote.name;
+        const wslDistro = target?.wsl?.distro ?? null;
         setStale(prev => {
           const rest = prev.filter(s => s.remoteId !== remoteId);
           return isOutdated(remoteVersion, appVersion) && !hidden
-            ? [...rest, { remoteId, name, remoteVersion, appVersion, canSelfUpdate: !!remote.canSelfUpdate }]
+            ? [...rest, { remoteId, name, remoteVersion, appVersion, canSelfUpdate: !!remote.canSelfUpdate || !!wslDistro, wslDistro }]
             : rest;
         });
       });
@@ -106,8 +110,34 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
     });
   };
 
+  /** Copy this app's bridge into the distro, then wait for it to answer with this version. */
+  const runWslReinstall = async (distro: string) => {
+    if (!client) return;
+    updating.current = true;
+    setPhase({ kind: 'updating', step: `Reinstalando en ${distro}…` });
+    try {
+      const result = await client.reinstallWslRemote(distro);
+      if (!result.ok) { setPhase({ kind: 'error', message: result.error }); return; }
+      // The bridge restarted; the desktop keepalive has to run start.sh again.
+      await getNative()?.invoke('remote_tunnel_disconnect', { remoteId: s.remoteId }).catch(() => {});
+      setPhase({ kind: 'updating', step: 'Esperando al servidor…' });
+      const deadline = Date.now() + RESTART_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        const host = await client.getHostInfo(s.remoteId).catch(() => null);
+        if (host && !isOutdated(host.appVersion ?? null, s.appVersion)) { drop(s.remoteId); return; }
+        await sleep(POLL_MS);
+      }
+      setPhase({ kind: 'error', message: `${s.name} no respondió con v${s.appVersion}. Revisa ~/.codiby/wsl-bridge/bridge.log dentro de ${distro}.` });
+    } catch (err) {
+      setPhase({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      updating.current = false;
+    }
+  };
+
   const runUpdate = async () => {
     if (!client) return;
+    if (s.wslDistro) return runWslReinstall(s.wslDistro);
     updating.current = true;
     setPhase({ kind: 'updating', step: 'Descargando cambios…' });
     try {
@@ -160,7 +190,7 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
               Se reinicia el servidor de {s.name} y se cortan las sesiones que estén corriendo ahí.
               <div className="mt-2 flex gap-2">
                 <button type="button" onClick={runUpdate} className="rounded-md bg-zinc-100 px-2.5 py-1 font-medium text-zinc-900 hover:bg-white">
-                  Actualizar y reiniciar
+                  {s.wslDistro ? 'Reinstalar y reiniciar' : 'Actualizar y reiniciar'}
                 </button>
                 <button type="button" onClick={() => setPhase({ kind: 'idle' })} className="rounded-md px-2.5 py-1 text-zinc-400 hover:text-zinc-200">
                   Cancelar

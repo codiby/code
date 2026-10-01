@@ -31,6 +31,7 @@ import { mkdirSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { log } from '../lib/logger';
 import { getRemote } from './remotes';
+import { classifyWslError, wslKeepaliveCommand } from './wsl';
 import { CODIBY_DIR } from '../config/config';
 
 export type TunnelStatus = 'idle' | 'connecting' | 'online' | 'reconnecting' | 'offline';
@@ -190,14 +191,18 @@ async function spawnMaster(state: TunnelState): Promise<void> {
   const remote = getRemote(state.remoteId);
   if (!remote) throw new Error(`Remote ${state.remoteId} not found`);
 
+  // A WSL distro needs no forward: its bridge is already on Windows' localhost.
+  // The `wsl.exe` keepalive stands in for the master.
+  const keepalive = remote.wsl ? wslKeepaliveCommand(remote.wsl.distro) : null;
+
   ensureControlDir();
   // Clean stale socket from a previous run / crash.
   try { if (existsSync(state.controlSocket)) unlinkSync(state.controlSocket); } catch {}
 
-  const localPort = await pickFreePort();
+  const localPort = keepalive ? remote.bunPort : await pickFreePort();
   state.localTunnelPort = localPort;
 
-  const args = [
+  const args = keepalive ? keepalive.args : [
     '-N',                                              // no remote command
     '-M', '-S', state.controlSocket,                   // control master + socket
     '-o', 'ServerAliveInterval=30',
@@ -213,9 +218,11 @@ async function spawnMaster(state: TunnelState): Promise<void> {
     remote.serverAlias || remote.alias,
   ];
 
-  log(`[ssh-tunnel:${remote.name}] spawn ssh ${args.join(' ')}`);
-  const proc = spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  const command = keepalive ? keepalive.command : 'ssh';
+  log(`[ssh-tunnel:${remote.name}] spawn ${command} ${args.join(' ')}`);
+  const proc = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   state.master = proc;
+  const classifyError = (stderr: string) => remote.wsl ? classifyWslError(stderr, remote.wsl.distro) : classifySshError(stderr);
 
   let stderrBuf = '';
   proc.stderr?.on('data', chunk => {
@@ -233,7 +240,7 @@ async function spawnMaster(state: TunnelState): Promise<void> {
     state.master = null;
     state.activeForwards.clear();
     state.localTunnelPort = null;
-    const err = code === 0 || signal === 'SIGTERM' ? null : classifySshError(stderrBuf);
+    const err = code === 0 || signal === 'SIGTERM' ? null : classifyError(stderrBuf);
     log(`[ssh-tunnel:${remote.name}] master exited code=${code} signal=${signal}`);
     // Reject any pending ready waiters.
     while (state.pendingReady.length) {
@@ -250,7 +257,15 @@ async function spawnMaster(state: TunnelState): Promise<void> {
   });
 
   // Wait for the local end of the forward to start accepting connections.
-  await waitForPort(localPort, 15_000);
+  // A WSL bridge may be cold-starting the distro and bun first.
+  // Stop waiting as soon as the process dies, and report why instead of a timeout.
+  const died = new Promise<never>((_, reject) => {
+    proc.once('error', error => reject(error));
+    // `close`, not `exit`: stderr may still be draining when the process exits.
+    proc.once('close', () => reject(new Error(classifyError(stderrBuf))));
+  });
+  died.catch(() => {});
+  await Promise.race([waitForPort(localPort, keepalive ? 30_000 : 15_000), died]);
   if (state.master !== proc || state.paneRefcount === 0) {
     try { proc.kill('SIGTERM'); } catch {}
     throw new Error('SSH connection was closed during setup');
@@ -455,6 +470,7 @@ export async function addPortForward(
   if (!state || state.status !== 'online') {
     throw new Error('Cannot add port forward — tunnel is not online');
   }
+  if (getRemote(remoteId)?.wsl) return addWslForward(state, remotePort, localPortHint, label);
   // Auto mode (no explicit hint): try to mirror the remote port locally so
   // e.g. remote 3001 → local 3001 when possible; fall back to a random free
   // port only if that one is already taken.
@@ -468,6 +484,15 @@ export async function addPortForward(
   return { localPort };
 }
 
+/** WSL already exposes the distro's ports on Windows' localhost under the same number. */
+function addWslForward(state: TunnelState, remotePort: number, localPortHint: number | null, label?: string): { localPort: number } {
+  if (localPortHint != null && localPortHint !== remotePort) {
+    throw new Error(`WSL exposes port ${remotePort} on localhost:${remotePort}; it can't be mapped to another local port`);
+  }
+  state.activeForwards.set(`${remotePort}:${remotePort}`, { localPort: remotePort, remotePort, label });
+  return { localPort: remotePort };
+}
+
 export async function removePortForward(
   remoteId: string,
   localPort: number,
@@ -477,7 +502,7 @@ export async function removePortForward(
   if (!state) return;
   const key = `${localPort}:${remotePort}`;
   if (!state.activeForwards.has(key)) return;
-  await runSshControlCommand(state, 'cancel', localPort, remotePort);
+  if (!getRemote(remoteId)?.wsl) await runSshControlCommand(state, 'cancel', localPort, remotePort);
   state.activeForwards.delete(key);
   log(`[ssh-tunnel:${remoteId}] forward -L ${localPort}:localhost:${remotePort}`);
 }

@@ -11,6 +11,8 @@ export interface Remote {
   color: string;
   createdAt: number;
   ssh?: { identityFile: string; knownHostsFile: string; hostKeyAlias: string; port: number };
+  /** A WSL distro on this PC; see packages/core/network/wsl.ts. */
+  wsl?: { distro: string };
 }
 
 let registryUrl: (() => Promise<string>) | undefined;

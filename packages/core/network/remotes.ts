@@ -42,6 +42,7 @@ export function loadRemotes() {
         coordination: r.coordination ?? 'off',
         pairingId: r.pairingId,
         ssh: r.ssh,
+        wsl: r.wsl,
       });
     }
     log(`[remotes] Loaded ${data.length} remotes`);
@@ -146,6 +147,8 @@ export function addRemote(input: AddRemoteInput): Remote {
 export function updateRemote(id: string, patch: Partial<AddRemoteInput>): Remote {
   const cur = remotes.get(id);
   if (!cur) throw new Error(`Remote ${id} not found`);
+  // A WSL remote's route is baked into its installed start script; reinstall to change it.
+  if (cur.wsl) patch = { ...patch, alias: undefined, bunPort: undefined, serverAlias: undefined };
   const merged: AddRemoteInput = {
     name: patch.name ?? cur.name,
     alias: patch.alias ?? cur.alias,
@@ -201,6 +204,33 @@ export function pinRemoteHost(id: string, hostId: string) {
   if (remote.hostId === hostId) return;
   remote.hostId = hostId;
   try { saveRemotes(); } catch (error) { delete remote.hostId; throw error; }
+}
+
+/** Create or refresh the remote for a WSL distro after installing its bridge. One remote per distro. */
+export function putWslRemote(input: { distro: string; name: string; bunPort: number; color?: string | 'auto' }): Remote {
+  const existing = [...remotes.values()].find(r => r.wsl?.distro === input.distro);
+  const draft = { name: input.name, alias: input.distro, bunPort: input.bunPort };
+  const err = validateRemoteInput(draft, existing?.id);
+  if (err) throw new Error(err.message);
+  const remote: Remote = {
+    id: existing?.id ?? `rmt_${randomUUID()}`,
+    name: input.name.trim(),
+    alias: input.distro,
+    bunPort: input.bunPort,
+    color: !input.color || input.color === 'auto' ? existing?.color ?? pickAutoColor() : input.color,
+    createdAt: existing?.createdAt ?? Date.now(),
+    // A new port can mean a different bridge; let the next connection pin it again.
+    hostId: existing?.bunPort === input.bunPort ? existing.hostId : undefined,
+    coordination: existing?.coordination ?? 'off',
+    wsl: { distro: input.distro },
+  };
+  remotes.set(remote.id, remote);
+  try { saveRemotes(); } catch (error) {
+    if (existing) remotes.set(existing.id, existing); else remotes.delete(remote.id);
+    throw error;
+  }
+  log(`[remotes] ${existing ? 'Updated' : 'Added'} WSL remote ${remote.name} (${input.distro})`);
+  return remote;
 }
 
 /** Internal pairing transaction; transport paths are generated locally, never accepted from CRUD input. */

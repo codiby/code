@@ -16,6 +16,8 @@ export type Remote = {
   coordination?: 'off' | 'read' | 'write'; // outbound MCP access
   pairingId?: string;
   ssh?: { identityFile: string; knownHostsFile: string; hostKeyAlias: string; port: number };
+  /** A WSL distro on this Windows PC: reached over localhost, kept alive by `wsl.exe` instead of SSH. */
+  wsl?: { distro: string };
 };
 
 /** Per-session port forward declaration. localPort=null → pick a free one at open time. */
