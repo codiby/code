@@ -6,8 +6,7 @@
  * fires once the window drains. Until then "Undo" puts the row back and nothing
  * ever reached the server.
  *
- * Sits bottom-left, near the sidebar row that just vanished — the Portless
- * action toasts own the bottom-right corner.
+ * Sits bottom-left, near the sidebar row that just vanished.
  */
 
 import { Trash2, Undo2, X } from 'lucide-react';

@@ -139,21 +139,13 @@ export interface TrackedProcess {
   // model look the process up by name in `read_terminal_output`.
   label?: string;
   // Display name surfaced in the terminals dock tab + status strip. Set by
-  // named spawners (actions_run → the action name). Distinct from `label`,
+  // named spawners (spawn_terminal → its name). Distinct from `label`,
   // which is the MCP lookup key; `terminalName` is purely cosmetic.
   terminalName?: string;
-  // Best-effort URL the terminal serves at (e.g. a portless hostname).
-  // Rendered as a clickable link in the terminals dock status strip.
-  terminalUrl?: string;
   // Command the terminal auto-runs on its first byte. Kept so a re-attach /
   // list can show what's running; the raw `command` may be "(interactive
   // shell)" for a bare shell.
   autoRunCommand?: string;
-  // Env vars taskr injected into this child at spawn time — purely for
-  // UI display in the terminals panel ("env · N" badge). The actual env
-  // was already merged into the OS-level process; this is just a snapshot
-  // so the user can see what was bound without diffing manually.
-  injectedEnv?: Record<string, string>;
 }
 
 /**
@@ -178,6 +170,4 @@ export interface TerminalInfo {
   kind: 'oneshot' | 'pty';
   label?: string;
   terminalName?: string;
-  terminalUrl?: string;
-  injectedEnv?: Record<string, string>;
 }

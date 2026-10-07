@@ -3,7 +3,6 @@ import { closeAllTunnels } from '../network/ssh-tunnel';
 import { log } from './logger';
 import { sessions } from '../session/sessions';
 import { stopTelegramBot } from '../integrations/telegram';
-import { stopAll as stopAllPortless } from '../integrations/portless';
 import { stopAutomationScheduler } from '../automation/scheduler';
 import { closeDatabase } from '../database';
 
@@ -29,7 +28,6 @@ export function registerShutdownHandlers() {
     stopPairingMaintenance();
     closeAllTunnels();
     stopTelegramBot();
-    stopAllPortless();
     closeDatabase();
   };
   process.on('SIGINT', () => { cleanup(); process.exit(0); });

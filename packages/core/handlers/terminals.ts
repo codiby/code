@@ -3,7 +3,7 @@
  *
  * This is the SINGLE spawn/list/attach/kill path shared by:
  *   - the REST CRUD endpoints (`/sessions/:id/terminals`) the UI drives, and
- *   - the in-process MCP tools (`spawn_terminal`, `actions_run`).
+ *   - the in-process MCP tool `spawn_terminal`.
  *
  * Both used to build PTYs by hand in three different places; now everything
  * funnels through `createTerminal`, so a terminal spawned by the model and one
@@ -62,8 +62,6 @@ export function toTerminalInfo(tp: TrackedProcess): TerminalInfo {
     kind: tp.kind || 'pty',
     label: tp.label,
     terminalName: tp.terminalName,
-    terminalUrl: tp.terminalUrl,
-    injectedEnv: tp.injectedEnv,
   };
 }
 
@@ -79,14 +77,6 @@ export interface CreateTerminalOptions {
   label?: string;
   /** Cosmetic display name for the dock tab. */
   terminalName?: string;
-  /** URL the terminal serves at (portless hostname). */
-  terminalUrl?: string;
-  /** Env snapshot already merged into the OS-level process — for the "env · N"
-   *  badge. Callers compute this (they own preferences/action config). */
-  injectedEnv?: Record<string, string>;
-  /** Extra per-chunk hook (e.g. actions_run scraping the portless URL). Runs
-   *  after buffering + broadcast. */
-  onData?: (text: string) => void;
 }
 
 export type CreateTerminalResult =
@@ -104,9 +94,8 @@ export function createTerminal(opts: CreateTerminalOptions): CreateTerminalResul
   const cwd = opts.cwd || process.env.HOME || '/';
   const cols = clampCols(opts.cols);
   const rows = clampRows(opts.rows);
-  const extraEnv = opts.injectedEnv || {};
 
-  const pty = spawnPty({ cwd, cols, rows, sessionId, extraEnv });
+  const pty = spawnPty({ cwd, cols, rows, sessionId });
   if (!pty) {
     return { ok: false, error: 'Failed to spawn PTY (Bun.Terminal requires Bun >= 1.3.5).' };
   }
@@ -131,9 +120,7 @@ export function createTerminal(opts: CreateTerminalOptions): CreateTerminalResul
     pty,
     label: opts.label,
     terminalName: opts.terminalName,
-    terminalUrl: opts.terminalUrl,
     autoRunCommand: autoRun,
-    injectedEnv: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
   };
   trackedProcesses.set(procId, tp);
   saveProcessRegistry();
@@ -145,7 +132,6 @@ export function createTerminal(opts: CreateTerminalOptions): CreateTerminalResul
     if (tp.outputBuffer.length > 1000) tp.outputBuffer.splice(0, tp.outputBuffer.length - 500);
     appendProcessOutput(procId, text);
     _broadcast(sessionId, { type: 'terminal_data', sessionId, procId, text });
-    try { opts.onData?.(text); } catch {}
     if (autoRun && !didType) {
       didType = true;
       try { pty.write(autoRun + '\r'); } catch {}

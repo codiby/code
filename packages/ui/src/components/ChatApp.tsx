@@ -32,7 +32,6 @@ import { ResourcesPanel } from './ResourcesPanel';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { ArchiveSuggestionPill } from './ArchiveSuggestionPill';
-import { PortlessActionToast } from './PortlessActionToast';
 import { SessionDeleteToast, type PendingSessionDelete } from './SessionDeleteToast';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
@@ -1000,18 +999,10 @@ export function ChatApp() {
    *  message's `terminalName` then to a derived value. */
   const shellRenames = useAppStore(s => s.shellRenames);
   const setShellRenames = useAppStore(s => s.setShellRenames);
-  /** Global Portless TLD — applies to every project (portless's proxy
-   *  serves one TLD at a time, so this can't be per-project). */
-  const portlessTld = useAppStore(s => s.portlessTld);
-  const setPortlessTld = useAppStore(s => s.setPortlessTld);
   /** When non-null, the tab with this shellId renders an inline rename
    *  input instead of its display name. */
   const renamingShellId = useAppStore(s => s.renamingShellId);
   const setRenamingShellId = useAppStore(s => s.setRenamingShellId);
-  /** Cross-action env vars taskr injected into each PTY at spawn time.
-   *  Keyed by procId. Populated by the `terminal_env_injected` WS event. */
-  const injectedEnvByProc = useAppStore(s => s.injectedEnvByProc);
-  const setInjectedEnvByProc = useAppStore(s => s.setInjectedEnvByProc);
   /** Right-click context menu state for the tab strip. */
   const tabContextMenu = useAppStore(s => s.tabContextMenu);
   const setTabContextMenu = useAppStore(s => s.setTabContextMenu);
@@ -2013,9 +2004,6 @@ export function ChatApp() {
           if (prefs.shellRenames && typeof prefs.shellRenames === 'object') {
             setShellRenames(prefs.shellRenames as Record<string, Record<string, string>>);
           }
-          if (typeof prefs.portlessTld === 'string' && prefs.portlessTld.trim()) {
-            setPortlessTld(prefs.portlessTld.trim());
-          }
           if (typeof prefs.terminalsPanelHeight === 'number') {
             const h = prefs.terminalsPanelHeight;
             if (h > 80 && h < 4000) setTerminalsPanelHeight(h);
@@ -2082,25 +2070,10 @@ export function ChatApp() {
           setPublishedPorts(prev => ({ ...prev, [sid]: ports }));
         },
 
-        onPortlessStatus: (status) => {
-          // Re-emit on a window event so any open Project Settings pane and
-          // the action toast component can react without ChatApp owning a
-          // dedicated piece of state. Lightweight pub/sub.
-          window.dispatchEvent(new CustomEvent('portless_status', { detail: status }));
-        },
-        onPortlessFired: (info) => {
-          window.dispatchEvent(new CustomEvent('portless_fired', { detail: info }));
-        },
-        onPortlessUrlResolved: (info) => {
-          window.dispatchEvent(new CustomEvent('portless_url_resolved', { detail: info }));
-        },
-        onTerminalEnvInjected: ({ procId, env }) => {
-          setInjectedEnvByProc(prev => ({ ...prev, [procId]: env }));
-        },
         onFileChanges: (sid, changes) => {
           // Re-emit on a window event so any interested pane (file tree,
           // activity indicator, …) can react without ChatApp owning a
-          // dedicated piece of state. Mirrors the portless_status pattern.
+          // dedicated piece of state. Lightweight pub/sub.
           window.dispatchEvent(new CustomEvent('file_changes', { detail: { sessionId: sid, changes } }));
         },
         onBranchChanged: (sid, branch) => {
@@ -7871,16 +7844,8 @@ export function ChatApp() {
           onToggleShowTelegramSession={(next) => setPreference('showTelegramSession', next)}
           globalEnvVars={globalEnvVars}
           onChangeGlobalEnvVars={(next) => setGlobalEnvVars(next)}
-          portlessTld={portlessTld}
-          onChangePortlessTld={(next) => {
-            const v = next.trim() || 'localhost';
-            setPortlessTld(v);
-            persistPrefs({ portlessTld: v });
-          }}
           client={client}
           claudeModels={claudeModels}
-          activeSessionCwd={sessions.find(s => s.id === activeId)?.cwd}
-          activeSessionGroupId={activeId ? tabGroupMap[activeId] : undefined}
           onDeleteGroup={handleDeleteGroup}
           onPatchGroup={(groupId, patch) => {
             const current = tabGroups[groupId];

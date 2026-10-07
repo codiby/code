@@ -26,7 +26,6 @@ import { cdpRequest } from './browser-cdp';
 import { trackedProcesses } from '../handlers/processes';
 import { createTerminal, removeTerminal } from '../handlers/terminals';
 import type { TrackedProcess } from '../types';
-import { emitPortlessActionFired, emitPortlessUrlResolved, extractPortlessUrl, getPortlessCliStatus } from '../integrations/portless';
 import {
   addRequirements,
   createProposal,
@@ -36,8 +35,6 @@ import {
 } from '../requirements/repository';
 import { broadcastRequirements, formatRunSummary, runRequirements, storeRequirementImage } from '../requirements/runner';
 import type { RequirementInput, RequirementPatch } from '../requirements/types';
-import { buildInjectedActionEnv, configuredActionUrl, getGlobalTld, worktreePrefix } from '../process/action-env';
-import type { PortlessConfig, TabGroupInfo } from '../../ui/src/lib/tab-groups';
 
 /** Resolve a tracked process for the current session by procId OR name. */
 function resolveTrackedProcess(
@@ -246,21 +243,6 @@ export type SdkToolDeps = {
    *  override on the session's tab group). */
   loadPreferences: () => Record<string, unknown>;
 };
-
-/** Resolve the tab group the session belongs to (so portless tools can
- *  look up the project's configured actions). Returns null when the
- *  session isn't in any group. */
-function resolveSessionGroup(sessionId: string, deps: SdkToolDeps): { groupId: string; group: any } | null {
-  const prefs = deps.loadPreferences();
-  const map = (prefs.tabGroupMap as Record<string, string> | undefined) || {};
-  const groups = (prefs.tabGroups as Record<string, any> | undefined) || {};
-  // Nested groups inherit: use the nearest ancestor that configures portless,
-  // falling back to the session's own group.
-  const chain = sessionGroupChain(groups, map, sessionId);
-  const group = chain.find((g: any) => g.portless) ?? chain[0];
-  if (!group) return null;
-  return { groupId: group.id, group };
-}
 
 /** Resolve whether action-style browser_* tools should bring the targeted
  *  preview to the front for this session. Per-project override (on the
@@ -998,11 +980,6 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           // makes the terminal appear in the user's dock. No chat message: a
           // terminal is a first-class resource, discovered from the terminals
           // list, not inferred from message history.
-          //
-          // No cross-action env injection: `spawn_terminal` is an ordinary
-          // terminal, not an Action. Portless exports are reserved for
-          // `actions_run` and the Project Settings run path, so a command
-          // typed here behaves exactly like one typed in the dock.
           const spawnResult = createTerminal({
             sessionId,
             cwd: args.cwd,
@@ -1133,235 +1110,6 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           }
           const preview = args.input.length > 80 ? args.input.slice(0, 77) + '…' : args.input;
           return { content: [{ type: 'text', text: `Wrote ${payload.length} byte${payload.length === 1 ? '' : 's'} to stdin of "${tp.label || '(no name)'}" (procId=${tp.id}). Input: ${JSON.stringify(preview)}` }] };
-        },
-      ),
-      tool(
-        'actions_list',
-        [
-          'List every named server action configured for the current project — what the user defined in Project Settings → Actions. Returns ALL configured actions (not only the ones currently running), with their command, whether they\'re wrapped through Portless, the resolved URL when Portless is on, and live state (running/idle) in this session.',
-          '',
-          'Call this whenever you need to know what dev servers / scripts the user has set up. It\'s the discovery tool for `actions_run`.',
-        ].join('\n'),
-        {},
-        async () => {
-          const ctx = resolveSessionGroup(sessionId, deps);
-          if (!ctx) {
-            return { content: [{ type: 'text', text: 'This session is not associated with a project. Open Project Settings → Actions and add this session to a project to configure actions.' }] };
-          }
-          const cfg: PortlessConfig = ctx.group.portless || {};
-          const actions = cfg.actions || [];
-          if (actions.length === 0) {
-            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no actions configured yet. Add some in Project Settings → Actions.` }] };
-          }
-          const labelToProc = new Map<string, TrackedProcess>();
-          for (const tp of trackedProcesses.values()) {
-            if (tp.sessionId === sessionId && tp.label && tp.exitCode === null) {
-              labelToProc.set(tp.label.toLowerCase(), tp);
-            }
-          }
-          const globalTld = getGlobalTld(deps.loadPreferences());
-          const branchPrefix = cfg.worktreeSubdomains ? worktreePrefix(ctx.group.cwd) : null;
-          const lines = actions.map(a => {
-            const tp = labelToProc.get(`action · ${a.name}`.toLowerCase());
-            const status = tp ? `running (pid ${tp.pid})` : 'idle';
-            const usePortless = a.portless !== false;
-            if (usePortless) {
-              const url = configuredActionUrl(a, cfg, globalTld, branchPrefix);
-              return `- ${a.name} · ${a.command} · portless → ${url} [${status}]`;
-            }
-            return `- ${a.name} · ${a.command} · raw command [${status}]`;
-          });
-          return { content: [{ type: 'text', text: `Actions for "${ctx.group.name}":\n${lines.join('\n')}` }] };
-        },
-      ),
-      tool(
-        'actions_run',
-        [
-          'Start a named server action in the current project. Spawns the action\'s command inside a live terminal bubble in the chat — the full command line is visible so the user can see exactly what was launched, and the process also shows up in the Processes panel.',
-          '',
-          'Per-action wrapping: if the action has Portless enabled, the command is prefixed with `portless <slug> --` and the resulting dev server is reachable at a stable hostname (e.g. `https://api.localhost`) instead of a random port — a toast also pops with the URL. If Portless is off for that action, the raw command is run as-is.',
-          '',
-          'Use this when the user asks to "start the api", "boot the web server", "run dev", etc. — and an action with that name is configured in Project Settings → Actions. Call `actions_list` first if you\'re unsure of the available names.',
-          '',
-          'Idempotent: starting an already-running action returns the existing terminal\'s procId without spawning a duplicate.',
-        ].join('\n'),
-        {
-          name: z.string().min(1).describe('The action name as configured in Project Settings → Actions. Matched case-insensitively. Use `actions_list` to discover available names.'),
-        },
-        async (args) => {
-          const session = sessions.get(sessionId);
-          if (!session) {
-            return { content: [{ type: 'text', text: `Session ${sessionId} not found.` }], isError: true };
-          }
-          const ctx = resolveSessionGroup(sessionId, deps);
-          if (!ctx) {
-            return { content: [{ type: 'text', text: 'This session is not associated with a project — cannot resolve which actions to run.' }], isError: true };
-          }
-          // Spawn from the session's cwd when set — that's the worktree
-          // the user is actually working in — falling back to the project
-          // root. portless reads the cwd's git checkout to pick its
-          // subdomain, so this is what makes worktree-prefixed URLs work
-          // end to end.
-          const spawnCwd = session.cwd || ctx.group.cwd;
-          if (!spawnCwd) {
-            return { content: [{ type: 'text', text: `Project "${ctx.group.name}" has no working directory set; cannot spawn the action.` }], isError: true };
-          }
-          const cfg: PortlessConfig = ctx.group.portless || {};
-          const actions = cfg.actions || [];
-          const match = actions.find(a => a.name === args.name) || actions.find(a => a.name.toLowerCase() === args.name.toLowerCase());
-          if (!match) {
-            const known = actions.map(a => a.name).join(', ') || '(none configured)';
-            return { content: [{ type: 'text', text: `No action named "${args.name}" in project "${ctx.group.name}". Known: ${known}.` }], isError: true };
-          }
-
-          const usePortless = match.portless !== false;
-          const prefs = deps.loadPreferences();
-          const globalTld = getGlobalTld(prefs);
-          // Worktree prefix derived from the SPAWN cwd (the session's cwd
-          // when it's a worktree of the project) — not group.cwd — so an
-          // action started from worktree `feat-x` advertises
-          // `feat-x.<slug>.<tld>`.
-          const branchPrefix = cfg.worktreeSubdomains ? worktreePrefix(spawnCwd) : null;
-          const slug = match.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
-          const portlessSlug = branchPrefix ? `${branchPrefix}-${slug}` : slug;
-          const url = configuredActionUrl(match, cfg, globalTld, branchPrefix) || `https://${slug}.${globalTld}`;
-          const hostname = url.replace(/^https?:\/\//, '');
-          const label = `Action · ${match.name}`;
-
-          if (usePortless) {
-            const cli = getPortlessCliStatus();
-            if (!cli.available) {
-              return { content: [{ type: 'text', text: `Action "${match.name}" is configured to use Portless, but the portless CLI is not installed. Ask the user to run \`npm install -g portless\` and restart taskr, or disable Portless for this action.` }], isError: true };
-            }
-          }
-
-          // Don't double-spawn — if a tracked terminal with this label is
-          // already live in the session, reuse it.
-          for (const tp of trackedProcesses.values()) {
-            if (tp.sessionId === sessionId && tp.label === label && tp.exitCode === null) {
-              const where = usePortless ? ` URL: ${url}` : '';
-              return { content: [{ type: 'text', text: `"${match.name}" is already running (procId=${tp.id}, pid=${tp.pid}).${where}` }] };
-            }
-          }
-
-          // Build the command the user sees in the chat. With Portless on,
-          // wrap the raw command so it serves at the stable hostname.
-          const visibleCommand = usePortless
-            ? `portless ${portlessSlug} -- sh -c '${match.command.replace(/'/g, `'\\''`)}'`
-            : match.command;
-
-          // Inject env from sibling actions — never from this one itself
-          // (an api action receiving its own API_URL would be useless).
-          // Pass spawnCwd so the injected URLs honor the active worktree.
-          const actionEnv = buildInjectedActionEnv(ctx.group as TabGroupInfo, globalTld, match.id, spawnCwd);
-
-          // Spawn through the shared terminal resource path (same as the UI).
-          // The onData hook scrapes the portless URL out of the first lines of
-          // output. `terminalName` promotes the action name to the dock tab so
-          // the user sees "api" rather than the full portless wrapper.
-          let resolvedUrl: string | null = null;
-          const actionResult = createTerminal({
-            sessionId,
-            cwd: spawnCwd,
-            command: visibleCommand,
-            label,
-            terminalName: match.name,
-            terminalUrl: usePortless ? url : undefined,
-            injectedEnv: actionEnv,
-            onData: (text) => {
-              if (!usePortless || resolvedUrl) return;
-              const found = extractPortlessUrl(text);
-              if (found) {
-                resolvedUrl = found;
-                emitPortlessUrlResolved({
-                  key: `${ctx.groupId}:${match.id}`,
-                  groupId: ctx.groupId,
-                  actionId: match.id,
-                  url: found,
-                });
-              }
-            },
-          });
-          if (!actionResult.ok) {
-            return { content: [{ type: 'text', text: actionResult.error }], isError: true };
-          }
-          const { info: actionInfo, tp: actionTp } = actionResult;
-
-          // Toast when there's a stable URL to surface.
-          if (usePortless) {
-            emitPortlessActionFired(
-              {
-                key: `${ctx.groupId}:${match.id}`,
-                groupId: ctx.groupId,
-                actionId: match.id,
-                name: match.name,
-                command: visibleCommand,
-                hostname,
-                url,
-                cwd: spawnCwd,
-                pid: actionTp.pid,
-                state: 'starting',
-                startedAt: Date.now(),
-                exitedAt: null,
-                exitCode: null,
-                lastError: null,
-                logTail: [],
-              },
-              'agent',
-              sessionId,
-            );
-          }
-
-          log(`[actions_run] "${label}" procId=${actionInfo.procId.slice(0, 8)} pid=${actionTp.pid} session=${sessionId.slice(0, 8)} portless=${usePortless} cmd=${visibleCommand.slice(0, 80)}`);
-
-          const summary = usePortless
-            ? [
-                `Started "${match.name}" → ${url}`,
-                `command: ${visibleCommand}`,
-                `cwd: ${ctx.group.cwd}`,
-                'A live terminal is mounted in the chat and the process appears in the Processes panel. Read output with read_terminal_output, send keystrokes with send_terminal_input, stop it with actions_stop or kill_terminal.',
-              ].join('\n')
-            : [
-                `Started "${match.name}" (raw command, no Portless wrapper).`,
-                `command: ${visibleCommand}`,
-                `cwd: ${ctx.group.cwd}`,
-                'A live terminal is mounted in the chat and the process appears in the Processes panel.',
-              ].join('\n');
-          return { content: [{ type: 'text', text: summary }] };
-        },
-      ),
-      tool(
-        'actions_stop',
-        [
-          'Stop a project action previously started in this session. Looks up the action\'s tracked terminal by label and signals the entire process group (SIGTERM → SIGKILL after 500ms).',
-          '',
-          'With no `name`, every action started in this session is stopped.',
-        ].join('\n'),
-        {
-          name: z.string().optional().describe('Action name to stop (matched case-insensitively). Omit to stop every running action started in this session.'),
-        },
-        async (args) => {
-          const targets: TrackedProcess[] = [];
-          const wanted = args.name?.trim().toLowerCase();
-          for (const tp of trackedProcesses.values()) {
-            if (tp.sessionId !== sessionId) continue;
-            if (!tp.label || !tp.label.startsWith('Action · ')) continue;
-            if (tp.exitCode !== null) continue;
-            if (wanted) {
-              const actionName = tp.label.slice('Action · '.length).toLowerCase();
-              if (actionName !== wanted) continue;
-            }
-            targets.push(tp);
-          }
-          if (targets.length === 0) {
-            return { content: [{ type: 'text', text: wanted ? `No action named "${args.name}" is running in this session.` : 'No actions running in this session.' }] };
-          }
-          let stopped = 0;
-          for (const tp of targets) {
-            if (removeTerminal(sessionId, tp.id)) stopped++;
-          }
-          const names = targets.map(t => t.label!.slice('Action · '.length)).join(', ');
-          return { content: [{ type: 'text', text: `Stopped ${stopped} action${stopped === 1 ? '' : 's'}: ${names}.` }] };
         },
       ),
       tool(

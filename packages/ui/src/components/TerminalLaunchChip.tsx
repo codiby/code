@@ -4,7 +4,7 @@
  * conversation — the bubble (with the live PTY) now lives in the bottom
  * Terminals panel; the chat only shows this small announcement card.
  *
- * Layout: status dot · name · URL · mini command · [Show logs] [Stop] [×]
+ * Layout: status dot · name · mini command · [Show logs] [Stop] [×]
  *
  * Click "Show logs" → the parent makes the matching panel tab active and
  * expands the panel if it's collapsed. Click "×" persists a dismiss via
@@ -34,10 +34,6 @@ export function TerminalLaunchChip({ message, sessionId, client, onShowLogs, onD
   const [exitCode, setExitCode] = useState<number | undefined>(
     message.terminalExitCode ?? message.exitCode,
   );
-  // The action's optimistic URL ships in the message; `portless_url_resolved`
-  // events later refine it to the actual proxy port (e.g. :1355). Listen
-  // here so the chip's link is the one that actually works.
-  const [url, setUrl] = useState<string | undefined>(message.terminalUrl);
 
   useEffect(() => {
     if (!client) return;
@@ -47,22 +43,6 @@ export function TerminalLaunchChip({ message, sessionId, client, onShowLogs, onD
     });
     return () => { try { unsubExit(); } catch {} };
   }, [client, procId]);
-
-  useEffect(() => {
-    const onResolved = (e: Event) => {
-      const detail = (e as CustomEvent<{ key: string; groupId: string; actionId: string; url: string }>).detail;
-      if (!detail || !message.terminalUrl) return;
-      // Match by hostname — the action's URL ships before portless picks
-      // the actual proxy port, so the host portion is stable.
-      try {
-        const targetHost = new URL(detail.url).hostname;
-        const ownHost = new URL(message.terminalUrl).hostname;
-        if (targetHost === ownHost) setUrl(detail.url);
-      } catch {}
-    };
-    window.addEventListener('portless_url_resolved', onResolved);
-    return () => window.removeEventListener('portless_url_resolved', onResolved);
-  }, [message.terminalUrl]);
 
   const name = message.terminalName || 'terminal';
   const command = message.terminalCommand || '';
@@ -112,23 +92,12 @@ export function TerminalLaunchChip({ message, sessionId, client, onShowLogs, onD
           </span>
         </div>
         <div className="mt-0.5 flex items-center gap-2 min-w-0">
-          {url && (
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-[11.5px] font-mono text-violet-200/90 hover:text-violet-100 underline-offset-2 hover:underline truncate"
-              title={url}
-            >
-              {url.replace(/^https?:\/\//, '')}
-            </a>
-          )}
           {command && (
             <span
               className="text-[10.5px] text-zinc-500 font-mono truncate"
               title={command}
             >
-              {url ? '· ' : ''}{command}
+              {command}
             </span>
           )}
         </div>

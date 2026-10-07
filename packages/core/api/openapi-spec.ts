@@ -81,7 +81,6 @@ export const openApiSpec: OpenApiSpec = {
     { name: 'Search', description: 'ripgrep-backed content search' },
     { name: 'Worktree', description: 'git worktree creation' },
     { name: 'Integrations', description: 'Telegram, Deepgram, Tailscale' },
-    { name: 'Portless', description: 'Named local dev servers with stable hostnames' },
     { name: 'PR Links', description: 'Persisted PR association per session' },
     { name: 'Preferences', description: 'UI preferences & Claude hooks' },
     { name: 'LSP', description: 'Language server support' },
@@ -999,84 +998,6 @@ export const openApiSpec: OpenApiSpec = {
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { funnelEnabled: { type: 'boolean' } } } } } },
         responses: { 200: corsResponse, 400: errorResponse('funnel toggle failed') },
       },
-    },
-
-    // ───────────────────────── Portless ─────────────────────────
-    '/portless/cli-status': {
-      get: { tags: ['Portless'], summary: 'portless CLI availability', responses: { 200: corsResponse } },
-    },
-    '/portless/status': {
-      get: { tags: ['Portless'], summary: 'Snapshot of all portless actions', responses: { 200: corsResponse } },
-    },
-    '/portless/run': {
-      post: {
-        tags: ['Portless'],
-        summary: 'Start a named dev server',
-        requestBody: {
-          required: true,
-          content: { 'application/json': { schema: { type: 'object', properties: {
-            groupId: { type: 'string' }, actionId: { type: 'string' }, name: { type: 'string' }, command: { type: 'string' },
-            hostname: { type: 'string' }, cwd: { type: 'string' }, noTls: { type: 'boolean' },
-            source: { type: 'string', enum: ['user', 'agent'] }, sessionId: { type: 'string' },
-          }, required: ['groupId', 'actionId', 'name', 'command', 'hostname', 'cwd'] } } },
-        },
-        responses: { 200: corsResponse, 400: errorResponse('missing required fields') },
-      },
-    },
-    '/portless/stop': {
-      post: {
-        tags: ['Portless'],
-        summary: 'Stop a named dev server',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { groupId: { type: 'string' }, actionId: { type: 'string' } }, required: ['groupId', 'actionId'] } } } },
-        responses: { 200: corsResponse, 400: errorResponse('groupId and actionId required') },
-      },
-    },
-    '/portless/stop-all': {
-      post: { tags: ['Portless'], summary: 'Stop all named dev servers', responses: { 200: okResponse } },
-    },
-    '/portless/forget': {
-      post: {
-        tags: ['Portless'],
-        summary: 'Forget a stopped action',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { groupId: { type: 'string' }, actionId: { type: 'string' } }, required: ['groupId', 'actionId'] } } } },
-        responses: { 200: okResponse, 400: errorResponse('groupId and actionId required') },
-      },
-    },
-    '/portless/detect': {
-      get: {
-        tags: ['Portless'],
-        summary: 'Suggest dev-server scripts from package.json',
-        parameters: [{ name: 'cwd', in: 'query', required: true, schema: { type: 'string' } }],
-        responses: { 200: corsResponse, 400: errorResponse('cwd required') },
-      },
-    },
-    '/portless/scan-env': {
-      get: {
-        tags: ['Portless'],
-        summary: 'Scan .env files for URL-ish vars to map to actions',
-        parameters: [
-          { name: 'cwd', in: 'query', required: true, schema: { type: 'string' } },
-          { name: 'actionNames', in: 'query', required: false, schema: { type: 'string' }, description: 'Comma-separated action names' },
-        ],
-        responses: { 200: corsResponse, 400: errorResponse('cwd required'), 500: errorResponse('scan failed') },
-      },
-    },
-    '/portless/proxy/status': {
-      get: { tags: ['Portless'], summary: 'Reverse-proxy status', responses: { 200: corsResponse } },
-    },
-    '/portless/proxy/start': {
-      post: {
-        tags: ['Portless'],
-        summary: 'Start the reverse proxy',
-        requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', properties: { mode: { type: 'string', enum: ['default', 'http80', 'https443'] } } } } } },
-        responses: { 200: corsResponse, 400: errorResponse('start failed') },
-      },
-    },
-    '/portless/proxy/stop': {
-      post: { tags: ['Portless'], summary: 'Stop the reverse proxy', responses: { 200: corsResponse, 400: errorResponse('stop failed') } },
-    },
-    '/portless/trust': {
-      post: { tags: ['Portless'], summary: 'Trust the portless CA certificate', responses: { 200: corsResponse, 400: errorResponse('trust failed') } },
     },
 
     // ───────────────────────── Preferences / Hooks / LSP ─────────────────────────

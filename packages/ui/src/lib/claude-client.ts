@@ -366,15 +366,9 @@ export interface ChatMessage {
   terminalCwd?: string;
   /** Display name for the terminal — shown as the chat launch chip's
    *  title and as the tab label in the terminals panel. Set by tools
-   *  that spawn named terminals (e.g. `actions_run` sets this to the
-   *  action's name) so the chat shows "api" instead of the full
-   *  portless wrapper command. */
+   *  that spawn named terminals so the chat shows "api" instead of the
+   *  full command. */
   terminalName?: string;
-  /** Best-effort URL the terminal serves at. Set by `actions_run` to
-   *  the portless hostname (e.g. `https://api.localhost`). May be
-   *  refined to the actual proxy port via `portless_url_resolved`
-   *  events kept in component state. */
-  terminalUrl?: string;
   costUsd?: number;
   durationMs?: number;
   usage?: { input_tokens: number; output_tokens: number };
@@ -414,8 +408,6 @@ export interface TerminalInfo {
   kind: 'oneshot' | 'pty';
   label?: string;
   terminalName?: string;
-  terminalUrl?: string;
-  injectedEnv?: Record<string, string>;
 }
 
 export interface PermissionRequest {
@@ -702,25 +694,10 @@ type ClientCallbacks = {
    *  through `ui_forward_port`, so the popover learns about them here rather
    *  than by polling. Optional — viewers without the chip can omit it. */
   onPublishedPorts?: (sessionId: string, ports: PublishedPort[]) => void;
-  /** A Portless action's runtime status changed. Optional — viewers that
-   *  don't surface Portless UI can omit it. */
-  onPortlessStatus?: (status: PortlessActionStatus) => void;
-  /** A Portless action was just started. Drives the action-fired toast,
-   *  separate from status transitions. */
-  onPortlessFired?: (info: { action: PortlessActionStatus; source: 'user' | 'agent'; sessionId?: string }) => void;
-  /** Resolved Portless URL — fires after the proxy boots and we know the
-   *  actual port it's listening on (typically a high one like :1355 when
-   *  portless can't bind :443). Components should replace the optimistic
-   *  `https://<host>` they were showing with this URL. */
-  onPortlessUrlResolved?: (info: { key: string; groupId: string; actionId: string; url: string }) => void;
   /** A terminal bubble was dismissed (× clicked anywhere or on another
    *  viewer). The bridge owns the dismissed set — receiving this event
    *  means the FE should drop the matching bubble from its rendered list. */
   onShellDismissed?: (info: { sessionId: string; procId: string }) => void;
-  /** A terminal was spawned and taskr injected cross-action env vars into
-   *  it (e.g., `API_URL` for a web-renter shell). The frontend stores
-   *  these to power the `env · N` badge in the terminals panel. */
-  onTerminalEnvInjected?: (info: { sessionId: string; procId: string; env: Record<string, string> }) => void;
   /** The server-side workspace watcher reported a batch of file/folder changes
    *  for a session. Optional — viewers that don't surface file activity can
    *  omit it. */
@@ -1335,24 +1312,6 @@ export class ClaudeClient {
       case 'published_ports':
         this.callbacks.onPublishedPorts?.(msg.sessionId as string, (msg.ports as PublishedPort[]) || []);
         break;
-      case 'portless_status':
-        this.callbacks.onPortlessStatus?.(msg.status as PortlessActionStatus);
-        break;
-      case 'portless_fired':
-        this.callbacks.onPortlessFired?.({
-          action: msg.action as PortlessActionStatus,
-          source: (msg.source as 'user' | 'agent') || 'user',
-          sessionId: msg.sessionId as string | undefined,
-        });
-        break;
-      case 'portless_url_resolved':
-        this.callbacks.onPortlessUrlResolved?.({
-          key: msg.key as string,
-          groupId: msg.groupId as string,
-          actionId: msg.actionId as string,
-          url: msg.url as string,
-        });
-        break;
       case 'shell_dismissed':
         this.callbacks.onShellDismissed?.({
           sessionId: msg.sessionId as string,
@@ -1368,13 +1327,6 @@ export class ClaudeClient {
       case 'session_activity':
         this.callbacks.onSessionActivity?.(sessionId, (msg.activity as SessionActivity) || {
           childProcessCount: 0, processes: [], listeningPorts: [],
-        });
-        break;
-      case 'terminal_env_injected':
-        this.callbacks.onTerminalEnvInjected?.({
-          sessionId: msg.sessionId as string,
-          procId: msg.procId as string,
-          env: (msg.env as Record<string, string>) || {},
         });
         break;
       case 'terminal_created':
@@ -2586,118 +2538,6 @@ export class ClaudeClient {
     const remoteId = this.sessionRemote.get(sessionId);
     if (!remoteId) return;
     await getNative()?.invoke('remote_forward_remove', { remoteId, localPort, remotePort });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Portless — named dev-server actions per project. The bridge spawns
-  // `portless <name> -- <command>` in the project's cwd and tracks lifetime.
-  // ---------------------------------------------------------------------------
-
-  async getPortlessCliStatus(): Promise<PortlessCliStatus> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/cli-status`);
-    if (!resp.ok) return { available: false, bin: null, version: null };
-    return resp.json();
-  }
-
-  async listPortlessRunning(): Promise<PortlessActionStatus[]> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/status`);
-    if (!resp.ok) return [];
-    const data = await resp.json() as { actions?: PortlessActionStatus[] };
-    return data.actions || [];
-  }
-
-  async runPortlessAction(body: {
-    groupId: string; actionId: string; name: string; command: string;
-    hostname: string; cwd: string; noTls?: boolean;
-    source?: 'user' | 'agent'; sessionId?: string;
-  }): Promise<PortlessActionStatus> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/run`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json().catch(() => ({})) as { status?: PortlessActionStatus; error?: string };
-    if (!resp.ok || !data.status) throw new Error(data.error || `HTTP ${resp.status}`);
-    return data.status;
-  }
-
-  async stopPortlessAction(groupId: string, actionId: string): Promise<void> {
-    await authedFetch(`${this.serverUrl}/portless/stop`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ groupId, actionId }),
-    });
-  }
-
-  async stopAllPortlessActions(): Promise<void> {
-    await authedFetch(`${this.serverUrl}/portless/stop-all`, { method: 'POST' });
-  }
-
-  async forgetPortlessAction(groupId: string, actionId: string): Promise<void> {
-    await authedFetch(`${this.serverUrl}/portless/forget`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ groupId, actionId }),
-    });
-  }
-
-  async detectPortlessScripts(cwd: string): Promise<{ projectName: string | null; suggested: { name: string; command: string }[] }> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/detect?cwd=${encodeURIComponent(cwd)}`);
-    if (!resp.ok) return { projectName: null, suggested: [] };
-    return resp.json();
-  }
-
-  async scanEnvForActions(cwd: string, actionNames: string[]): Promise<{
-    candidates: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean }[];
-    scanned: string[];
-  }> {
-    const params = new URLSearchParams({ cwd, actionNames: actionNames.join(',') });
-    const resp = await authedFetch(`${this.serverUrl}/portless/scan-env?${params}`);
-    if (!resp.ok) return { candidates: [], scanned: [] };
-    return resp.json();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Portless proxy admin — start/stop the system proxy, trust the local CA.
-  // The privileged modes (HTTP :80, HTTPS :443) bring up a system password
-  // prompt via osascript on macOS.
-  // ---------------------------------------------------------------------------
-
-  async getPortlessProxyStatus(): Promise<PortlessProxyStatus> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/proxy/status`);
-    if (!resp.ok) return { running: false, port: null, mode: null };
-    return resp.json();
-  }
-
-  async startPortlessProxy(mode: PortlessProxyMode): Promise<PortlessProxyActionResult> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/proxy/start`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mode }),
-    });
-    return resp.json().catch(() => ({ ok: false, output: '', error: `HTTP ${resp.status}` }));
-  }
-
-  async stopPortlessProxy(): Promise<PortlessProxyActionResult> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/proxy/stop`, { method: 'POST' });
-    return resp.json().catch(() => ({ ok: false, output: '', error: `HTTP ${resp.status}` }));
-  }
-
-  async trustPortlessCA(): Promise<PortlessProxyActionResult> {
-    const resp = await authedFetch(`${this.serverUrl}/portless/trust`, { method: 'POST' });
-    return resp.json().catch(() => ({ ok: false, output: '', error: `HTTP ${resp.status}` }));
-  }
-
-  /** Toggle Tailscale Funnel. Used by the Portless proxy pane to clear a
-   *  Funnel-on-:443 conflict before retrying an HTTPS start. */
-  async setTailscaleFunnel(enabled: boolean): Promise<{ ok: boolean; error?: string }> {
-    const resp = await authedFetch(`${this.serverUrl}/tailscale/settings`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ funnelEnabled: enabled }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    return { ok: resp.ok && !data.error, error: data.error };
   }
 
   // ---------------------------------------------------------------------------

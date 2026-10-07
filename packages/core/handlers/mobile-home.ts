@@ -2,7 +2,7 @@
  * Everything the Android Home needs, in one compact response.
  *
  * The phone used to call `/sessions` (~390 KB: every field of every session,
- * archived included) and `/preferences` (~90 KB: group cwd/env/portless the
+ * archived included) and `/preferences` (~90 KB: group cwd/env/settings the
  * phone never reads) on every refresh, uncompressed, over the Funnel. This
  * trims both to the fields the phone parses, gzips the result, and tags it
  * with an ETag so a refresh where nothing changed is an empty 304.

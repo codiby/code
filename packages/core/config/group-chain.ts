@@ -1,7 +1,7 @@
 /** Ancestor-chain resolution for nested tab groups.
  *
  *  Groups form a tree via `parentId` (null/absent = root). Every per-project
- *  setting — env vars, portless actions, requirements overrides — is looked up
+ *  setting — env vars, requirements overrides — is looked up
  *  by walking from the session's own group up to the root and taking the first
  *  ancestor that defines the field. That way a session inside
  *  `utilityprofit › Backend › Migraciones` still picks up the repo-level env

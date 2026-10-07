@@ -155,26 +155,6 @@ import { openVoice, voiceMessage, closeVoice, speakTurnResult, setVoiceDeps, voi
 import { listElevenLabsVoices, SPEED_RANGE } from './integrations/tts';
 import { loadVoiceSettings, saveVoiceSettings, type VoiceSettings } from './session/storage';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './network/tailscale';
-import {
-  getPortlessCliStatus,
-  runAction as portlessRunAction,
-  stopAction as portlessStopAction,
-  stopAll as portlessStopAll,
-  forgetAction as portlessForgetAction,
-  snapshotAll as portlessSnapshotAll,
-  onPortlessStatus,
-  onPortlessActionFired,
-  onPortlessUrlResolved,
-  type PortlessActionStatus,
-  type PortlessUrlResolvedDetail,
-  getProxyStatus as getPortlessProxyStatus,
-  startProxy as startPortlessProxy,
-  stopProxy as stopPortlessProxy,
-  trustCA as trustPortlessCA,
-  type ProxyMode,
-} from './integrations/portless';
-import { buildInjectedActionEnv, getGlobalTld } from './process/action-env';
-import type { TabGroupInfo } from '../ui/src/lib/tab-groups';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -340,41 +320,6 @@ setStatusBroadcaster(broadcastSessionList);
 // to all clients (not subscription-scoped) so badges stay live for every
 // session in the sidebar, not just the one the user is viewing.
 startProcessMonitor((_sessionId, msg) => broadcastToAllClients(msg));
-
-/** Broadcast a Portless action status update to every frontend client.
- *  This is a global stream (not per-session) so the Project Settings pane
- *  can update across windows and the running-actions toast can pop. */
-function broadcastPortlessStatus(status: PortlessActionStatus) {
-  const data = JSON.stringify({ type: 'portless_status', status });
-  for (const ws of frontendClients) {
-    try { ws.send(data); } catch {}
-  }
-}
-
-/** Broadcast a "this action just fired" event — distinct from status so
- *  the UI can decide to pop a toast only for new launches (not for status
- *  transitions like running → exited). */
-function broadcastPortlessFired(info: { action: PortlessActionStatus; source: 'user' | 'agent'; sessionId?: string }) {
-  const data = JSON.stringify({ type: 'portless_fired', ...info });
-  for (const ws of frontendClients) {
-    try { ws.send(data); } catch {}
-  }
-}
-
-/** Broadcast the resolved Portless URL after the proxy boots — usually a
- *  high port like :1355 because portless can't bind :443 without root.
- *  Components show the optimistic `https://<host>` first and swap it
- *  once this event arrives. */
-function broadcastPortlessUrlResolved(detail: PortlessUrlResolvedDetail) {
-  const data = JSON.stringify({ type: 'portless_url_resolved', ...detail });
-  for (const ws of frontendClients) {
-    try { ws.send(data); } catch {}
-  }
-}
-
-onPortlessStatus(broadcastPortlessStatus);
-onPortlessActionFired(broadcastPortlessFired);
-onPortlessUrlResolved(broadcastPortlessUrlResolved);
 
 /** Broadcast the full preferences object so clients stay in sync after a
  *  server-side mutation (e.g. an MCP tool updating tab groups).
@@ -1660,11 +1605,6 @@ app.post('/sessions/:id/terminals', async (c) => {
   const session = sessions.get(sessionId);
   const cwd = body.cwd || session?.cwd || process.env.HOME || '/';
 
-  // NO cross-action env injection here. This route serves every ordinary
-  // terminal — the dock's "+", mobile, `/terminal`, `/t`, `>` commands and
-  // terminals restored on reconnect. Portless exports (API_URL, WEB_URL, …)
-  // belong to Actions only; leaking them into a plain shell silently
-  // overrides whatever the user's own dotenv/rc files set up.
   const result = createTerminal({
     sessionId,
     cwd,
@@ -2268,177 +2208,6 @@ app.put('/tailscale/settings', async (c) => {
     funnelPorts: status.ports,
     funnelUrl: enabled && !error && hostname ? `https://${hostname}` : null,
   }, { status: error ? 400 : 200, headers: corsHeaders });
-});
-
-// ── Portless ────────────────────────────────────────────────────────────────────
-app.get('/portless/cli-status', () => Response.json(getPortlessCliStatus(), { headers: corsHeaders }));
-app.get('/portless/status', () => Response.json({ actions: portlessSnapshotAll() }, { headers: corsHeaders }));
-app.post('/portless/run', async (c) => {
-  const body = await c.req.raw.json().catch(() => ({})) as {
-    groupId?: string; actionId?: string;
-    name?: string; command?: string; hostname?: string; cwd?: string;
-    noTls?: boolean; source?: 'user' | 'agent'; sessionId?: string;
-  };
-  if (!body.groupId || !body.actionId || !body.name || !body.command || !body.hostname || !body.cwd) {
-    return Response.json({ error: 'groupId, actionId, name, command, hostname and cwd are required.' }, { status: 400, headers: corsHeaders });
-  }
-  // Actions — and only Actions — carry their siblings' exports, so an action
-  // launched from Project Settings sees the same API_URL / WEB_URL one
-  // launched through `actions_run` does. Its own exports are excluded (an api
-  // action receiving its own API_URL is useless).
-  const runPrefs = loadPreferences();
-  const runGroup = (runPrefs.tabGroups as Record<string, TabGroupInfo> | undefined)?.[body.groupId];
-  const runEnv = buildInjectedActionEnv(runGroup, getGlobalTld(runPrefs), body.actionId, body.cwd);
-  const res = portlessRunAction({
-    groupId: body.groupId,
-    actionId: body.actionId,
-    name: body.name,
-    command: body.command,
-    hostname: body.hostname,
-    cwd: body.cwd,
-    noTls: body.noTls === true,
-    source: body.source === 'agent' ? 'agent' : 'user',
-    sessionId: body.sessionId,
-    env: runEnv,
-  });
-  if (!res.ok) {
-    return Response.json({ error: res.error }, { status: 400, headers: corsHeaders });
-  }
-  return Response.json({ status: res.status }, { headers: corsHeaders });
-});
-app.post('/portless/stop', async (c) => {
-  const body = await c.req.raw.json().catch(() => ({})) as { groupId?: string; actionId?: string };
-  if (!body.groupId || !body.actionId) {
-    return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
-  }
-  const stopped = portlessStopAction(body.groupId, body.actionId);
-  return Response.json({ stopped }, { headers: corsHeaders });
-});
-app.post('/portless/stop-all', () => {
-  portlessStopAll();
-  return Response.json({ ok: true }, { headers: corsHeaders });
-});
-app.post('/portless/forget', async (c) => {
-  const body = await c.req.raw.json().catch(() => ({})) as { groupId?: string; actionId?: string };
-  if (!body.groupId || !body.actionId) {
-    return Response.json({ error: 'groupId and actionId are required.' }, { status: 400, headers: corsHeaders });
-  }
-  portlessForgetAction(body.groupId, body.actionId);
-  return Response.json({ ok: true }, { headers: corsHeaders });
-});
-app.get('/portless/detect', (c) => {
-  const cwd = new URL(c.req.url).searchParams.get('cwd');
-  if (!cwd) return Response.json({ error: 'cwd is required.' }, { status: 400, headers: corsHeaders });
-  try {
-    const pkgPath = join(cwd, 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string>; name?: string };
-    const scripts = pkg.scripts || {};
-    const suggested: { name: string; command: string }[] = [];
-    for (const [scriptName] of Object.entries(scripts)) {
-      // Surface scripts that look like dev servers: keys starting with
-      // `start`, `dev`, `serve`, or `nx run <app>:serve` style scripts.
-      if (/^(start|dev|serve)([:-].+)?$/.test(scriptName)) {
-        suggested.push({ name: scriptName, command: `npm run ${scriptName}` });
-      }
-    }
-    return Response.json({ projectName: pkg.name || null, suggested }, { headers: corsHeaders });
-  } catch (e: any) {
-    return Response.json({ error: e?.message || 'could not read package.json' }, { status: 400, headers: corsHeaders });
-  }
-});
-app.get('/portless/scan-env', (c) => {
-  const url = new URL(c.req.url);
-  const cwd = url.searchParams.get('cwd');
-  const actionNamesRaw = url.searchParams.get('actionNames') || '';
-  if (!cwd) return Response.json({ error: 'cwd required' }, { status: 400, headers: corsHeaders });
-  const actionNames = actionNamesRaw.split(',').map(s => s.trim()).filter(Boolean);
-  try {
-    const { readFileSync: rf, readdirSync: rd, statSync: st } = require('fs') as typeof import('fs');
-    const { join: jp } = require('path') as typeof import('path');
-    const found: { var: string; value: string; file: string; line: number; suggestedAction: string | null; ambiguous: boolean }[] = [];
-    // Walk top-level + apps/*/ for .env* files. Two levels is plenty for
-    // nx/turborepo layouts without going wild on huge monorepos.
-    const candidates: string[] = [];
-    try {
-      for (const f of rd(cwd)) {
-        if (f.startsWith('.env')) candidates.push(jp(cwd, f));
-      }
-    } catch {}
-    try {
-      const appsDir = jp(cwd, 'apps');
-      if (st(appsDir).isDirectory()) {
-        for (const sub of rd(appsDir)) {
-          const dir = jp(appsDir, sub);
-          try {
-            if (!st(dir).isDirectory()) continue;
-            for (const f of rd(dir)) {
-              if (f.startsWith('.env')) candidates.push(jp(dir, f));
-            }
-          } catch {}
-        }
-      }
-    } catch {}
-    const urlish = /^(?:https?:\/\/|localhost|127\.0\.0\.1|0\.0\.0\.0)/i;
-    for (const file of candidates) {
-      let content = '';
-      try { content = rf(file, 'utf-8'); } catch { continue; }
-      const lines = content.split('\n');
-      lines.forEach((raw, idx) => {
-        const line = raw.replace(/^export\s+/, '').trim();
-        if (!line || line.startsWith('#')) return;
-        const m = line.match(/^([A-Z][A-Z0-9_]*)\s*=\s*(.+)$/);
-        if (!m) return;
-        const key = m[1]!;
-        let val = m[2]!.trim();
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        if (!urlish.test(val)) return;
-        // Heuristic: pull all action names whose slug is a substring of the
-        // env key. e.g. `API_URL` matches action `api`; `WEB_URL` matches
-        // `web` AND `web-renter`.
-        const keyLow = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
-        const matches = actionNames.filter(n => {
-          const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, '');
-          return slug && keyLow.includes(slug);
-        });
-        // Prefer the longest matching action name when ambiguous.
-        matches.sort((a, b) => b.length - a.length);
-        found.push({
-          var: key,
-          value: val,
-          file: file.startsWith(cwd) ? file.slice(cwd.length + 1) : file,
-          line: idx + 1,
-          suggestedAction: matches[0] || null,
-          ambiguous: matches.length > 1,
-        });
-      });
-    }
-    return Response.json({ candidates: found, scanned: candidates }, { headers: corsHeaders });
-  } catch (e: any) {
-    return Response.json({ error: e?.message || 'scan failed' }, { status: 500, headers: corsHeaders });
-  }
-});
-// Reverse-proxy controls. NOTE: these four routes were previously unreachable —
-// they had been nested inside the `/pr-detail` handler block (dead code that
-// TypeScript flagged). The Hono migration restores them as real routes.
-app.get('/portless/proxy/status', async () => {
-  const status = await getPortlessProxyStatus();
-  return Response.json(status, { headers: corsHeaders });
-});
-app.post('/portless/proxy/start', async (c) => {
-  const body = await c.req.raw.json().catch(() => ({})) as { mode?: ProxyMode };
-  const mode: ProxyMode = body.mode === 'http80' || body.mode === 'https443' ? body.mode : 'default';
-  const result = await startPortlessProxy(mode);
-  return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
-});
-app.post('/portless/proxy/stop', async () => {
-  const result = await stopPortlessProxy();
-  return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
-});
-app.post('/portless/trust', async () => {
-  const result = await trustPortlessCA();
-  return Response.json(result, { status: result.ok ? 200 : 400, headers: corsHeaders });
 });
 
 // ── Preferences ───────────────────────────────────────────────────────────────
