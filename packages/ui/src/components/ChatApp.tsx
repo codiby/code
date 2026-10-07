@@ -1052,6 +1052,23 @@ export function ChatApp() {
   const [showNewSession, setShowNewSession] = useState(false);
   const turnCompleteIds = useAppStore(s => s.turnCompleteIds);
   const setTurnCompleteIds = useAppStore(s => s.setTurnCompleteIds);
+  // Sessions whose turn finished while you were looking elsewhere — the
+  // sidebar's "Waiting response". Unlike turnCompleteIds (a 3 s flash), this
+  // holds until you've opened the session and moved on, or a new turn starts.
+  const [awaitingReplyIds, setAwaitingReplyIds] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('awaitingReplyIds') || '[]')); } catch { return new Set(); }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('awaitingReplyIds', JSON.stringify([...awaitingReplyIds])); } catch {}
+  }, [awaitingReplyIds]);
+  const markAwaitingReply = useCallback((sid: string, on: boolean) => {
+    setAwaitingReplyIds(prev => {
+      if (prev.has(sid) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(sid); else next.delete(sid);
+      return next;
+    });
+  }, []);
   const [showPalette, setShowPalette] = useState(false);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>('commands');
   // ⌘F in-chat find widget (VSCode-style). Searches the active session's
@@ -1124,6 +1141,14 @@ export function ChatApp() {
   // (which capture the value at construction time otherwise).
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
+  // A session counts as read once you leave it, not when you open it — so it
+  // doesn't jump out of "Waiting response" while you're still reading it.
+  const lastViewedIdRef = useRef(activeId);
+  useEffect(() => {
+    const prev = lastViewedIdRef.current;
+    lastViewedIdRef.current = activeId;
+    if (prev && prev !== activeId) markAwaitingReply(prev, false);
+  }, [activeId, markAwaitingReply]);
   // Keep the Resources chip badge in sync with the active session's resource
   // count. Cheap (reads a manifest); refetched on ws-driven `resourcesRefresh`.
   useEffect(() => {
@@ -1724,9 +1749,12 @@ export function ChatApp() {
               return { ...prev, [sid]: { ...s, isStreaming: false, wasInterrupted: false, messages: freezeStreaming(s.messages) } };
             });
             if (wasStreaming) playChime();
+            // `wasStreaming` keeps reconnect replays from refilling the list.
+            if (wasStreaming && sid !== activeIdRef.current) markAwaitingReply(sid, true);
             setTurnCompleteIds(prev => new Set(prev).add(sid));
             setTimeout(() => setTurnCompleteIds(prev => { const next = new Set(prev); next.delete(sid); return next; }), 3000);
           } else if (status === 'streaming') {
+            markAwaitingReply(sid, false);
             setSessionStates(prev => {
               const s = prev[sid] || emptyLocalState();
               return { ...prev, [sid]: { ...s, isStreaming: true, wasInterrupted: false } };
@@ -6303,6 +6331,7 @@ export function ChatApp() {
               sessionStreaming={sessionStreaming}
               sessionInterrupted={sessionInterrupted}
               sessionTurnComplete={turnCompleteIds}
+              sessionAwaitingReply={awaitingReplyIds}
               sessionHasPermission={sessionHasPermission}
               sessionActivity={sessionActivity}
               sessionLastMessageAt={sessionLastMessageAt}

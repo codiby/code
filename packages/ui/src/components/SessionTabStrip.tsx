@@ -46,7 +46,7 @@ interface Props {
   onCloseGroup?: (id: string) => void;
 }
 
-type State = 'idle' | 'streaming' | 'complete' | 'attention';
+type State = 'idle' | 'streaming' | 'complete' | 'waiting' | 'attention';
 
 /** A nested subgroup carries no colour of its own — walk up to the nearest
  *  ancestor that sets one so a whole project branch reads as one family. */
@@ -84,7 +84,8 @@ function deriveState(args: {
   turnComplete: Set<string>;
   hasPermission: Record<string, boolean>;
 }): State {
-  if (args.hasPermission[args.sessionId]) return 'attention';
+  // Amber "needs you" outranks the rest; red is kept for actual failures.
+  if (args.hasPermission[args.sessionId]) return 'waiting';
   if (args.interrupted[args.sessionId]) return 'attention';
   if (args.statuses[args.sessionId] === 'error') return 'attention';
   if (args.streaming[args.sessionId]) return 'streaming';
@@ -96,6 +97,7 @@ function dotColor(state: State): string {
   switch (state) {
     case 'streaming': return '#7c5cff';
     case 'complete':  return '#3ecf8e';
+    case 'waiting':   return '#fbbf24';
     case 'attention': return '#ef5b6b';
     default:          return 'transparent';
   }
@@ -346,7 +348,8 @@ function TabPill({
           background: dotColor(state),
           marginRight: 8,
           animation: pulses ? 'tabDotPulse 1.4s ease-in-out infinite' : undefined,
-          boxShadow: isAttention ? '0 0 4px rgba(239,91,107,0.6)' : undefined,
+          boxShadow: isAttention ? '0 0 4px rgba(239,91,107,0.6)'
+            : state === 'waiting' ? '0 0 4px rgba(251,191,36,0.6)' : undefined,
         }}
       />
       <span

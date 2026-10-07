@@ -34,6 +34,9 @@ interface Props {
   sessionInterrupted: Record<string, boolean>;
   sessionHasPermission: Record<string, boolean>;
   sessionTurnComplete: Set<string>;
+  /** Sessions whose finished turn you haven't looked at yet. Unlike
+   *  `sessionTurnComplete` it persists, so it drives "Waiting response". */
+  sessionAwaitingReply?: Set<string>;
   /** Per-session running child processes + listening ports. Drives the two
    *  sidebar badges. A session absent from the map has no active processes. */
   sessionActivity?: Record<string, SessionActivity>;
@@ -180,18 +183,44 @@ const DISPOSABLES_GROUP_ID = 'disposables';
 // Soft teal used for live (running) sessions — distinct from the status colors.
 const RUN_COLOR = '#5eead4';
 
-type DotState = 'off' | 'idle' | 'working' | 'done' | 'starting' | 'error';
+// Amber marks a session blocked on the user (pending permission). Red stays
+// reserved for errors, so "needs you" never reads as "something broke".
+const WAITING_COLOR = '#fbbf24';
+
+type DotState = 'off' | 'idle' | 'working' | 'done' | 'starting' | 'error' | 'waiting';
 function dotStateOf(rt: string | undefined, connStatus: string, isStreaming: boolean, turnComplete: boolean, wasInterrupted: boolean, hasPermission: boolean): DotState {
   if (connStatus === 'error' || wasInterrupted) return 'error';
   // A pending permission request blocks the run — the session isn't actually
-  // working, so don't keep the typing bars spinning (mirrors the composer's
+  // working, so it wins over the typing bars (mirrors the composer's
   // `isStreaming && !permRequest` gate).
-  if (isStreaming && !hasPermission) return 'working';
+  if (hasPermission) return 'waiting';
+  if (isStreaming) return 'working';
   if (rt === 'starting' || connStatus === 'connecting') return 'starting';
   if (turnComplete) return 'done';
   // A live Claude process (or an active WS) → "running, idle".
   if (rt === 'running' || connStatus === 'connected') return 'idle';
   return 'off'; // no Claude instance for this session
+}
+
+type SidebarGroupBy = 'folder' | 'status';
+type StatusSection = 'waiting' | 'working' | 'active' | 'idle';
+const STATUS_SECTIONS: { key: StatusSection; label: string }[] = [
+  { key: 'waiting', label: 'Awaiting response' },
+  { key: 'working', label: 'Working' },
+  { key: 'active', label: 'Active' },
+  { key: 'idle', label: 'Idle' },
+];
+/** Status-view bucket for a session. "Awaiting" is everything whose next move
+ *  is the user's: a pending permission, a failed turn, or a finished one you
+ *  haven't looked at (`awaitingReply` — the `done` dot is only a 3 s flash).
+ *  "Active" is a live process with nothing pending; "Idle" has none. A dot in
+ *  `starting` only lands in Active when the process really runs — the state
+ *  also covers a socket still connecting, which can sit there for days. */
+function sectionOf(st: DotState, rt: string | undefined, awaitingReply: boolean): StatusSection {
+  if (st === 'working') return 'working';
+  if (st === 'waiting' || st === 'error' || awaitingReply) return 'waiting';
+  if (st === 'idle' || st === 'done' || rt === 'running') return 'active';
+  return 'idle';
 }
 
 /** The status dot at the start of a session row. Reflects the runtime state:
@@ -218,6 +247,13 @@ function SessionDot({ rt, connStatus, isStreaming, turnComplete, wasInterrupted,
     return (
       <span className={box} style={boxStyle} aria-label={st === 'done' ? 'Turn complete' : 'Starting'}>
         <span className="w-2 h-2 rounded-full" style={{ background: c, boxShadow: `0 0 7px ${c}`, animation: 'sessionBreathe 1.15s ease-in-out infinite' }} />
+      </span>
+    );
+  }
+  if (st === 'waiting') {
+    return (
+      <span className={box} style={boxStyle} aria-label="Waiting for permission" title="Waiting for permission">
+        <span className="w-2 h-2 rounded-full" style={{ background: WAITING_COLOR, boxShadow: `0 0 6px ${WAITING_COLOR}` }} />
       </span>
     );
   }
@@ -354,6 +390,9 @@ type RowProps = {
   /** Set on disposables: shown instead of the age, as time left before archive. */
   disposableLeft?: string;
   isPinned?: boolean;
+  /** The session's group, printed as muted text after the name. Only set in
+   *  the status view, where rows are no longer nested under their group. */
+  groupLabel?: string;
   editingId: string | null; editName: string; editRef: React.RefObject<HTMLInputElement | null>;
   setEditName: (v: string) => void; startRename: (s: SessionInfo) => void; commitRename: () => void; setEditingId: (id: string | null) => void;
   onSelect: (id: string) => void; onClose: (id: string) => void;
@@ -363,7 +402,7 @@ type RowProps = {
 
 // Presentational session row. The root element is parameterized (ref + spread
 // props + style + dragging flag) so either DnD library can own it.
-function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, activity, compact, ageLabel, disposableLeft, isPinned, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onQuickDelete, onContextMenu, rootRef, rootProps, style, dragging }: RowProps & {
+function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, activity, compact, ageLabel, disposableLeft, isPinned, groupLabel, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onQuickDelete, onContextMenu, rootRef, rootProps, style, dragging }: RowProps & {
   rootRef?: (el: HTMLElement | null) => void; rootProps?: React.HTMLAttributes<HTMLElement>; style?: React.CSSProperties; dragging?: boolean;
 }) {
   // Vertical sidebar: flat active background regardless of group color.
@@ -392,7 +431,15 @@ function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupt
           />
         </TextField>
       ) : (
-        <span className="truncate flex-1" onDoubleClick={e => { e.stopPropagation(); startRename(session); }}>{session.name}</span>
+        <span className={`truncate ${groupLabel ? 'flex-auto min-w-0' : 'flex-1'}`} onDoubleClick={e => { e.stopPropagation(); startRename(session); }}>{session.name}</span>
+      )}
+      {/* Gives way before the name does: capped, and its outsized shrink factor
+          makes it absorb most of the squeeze when the row runs out of room —
+          down to a floor that still reads as a word, not a lone letter. */}
+      {groupLabel && editingId !== session.id && (
+        <span className={`${groupLabel.length <= 6 ? 'shrink-0' : 'min-w-12 shrink-[12]'} max-w-[40%] truncate text-[11px] text-zinc-600 group-hover:text-zinc-500`}>
+          {groupLabel}
+        </span>
       )}
       {/* Remote badge — small colored pill with the remote's name, shown
           instead of tinting the whole row. */}
@@ -470,12 +517,6 @@ function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupt
           <X size={12} strokeWidth={2} />
         </Button>
       </span>
-      {hasPermission && !isActive && (
-        <span className="absolute -top-0.5 -right-0.5 flex h-3 w-3">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border border-[#131418]" />
-        </span>
-      )}
     </div>
   );
 }
@@ -845,7 +886,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt,
     pinnedSessionIds, onTogglePin, onKeepSession,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
+    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
     onCreateSubgroup, onMoveGroup, onAutoGroupSessions,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
@@ -1045,6 +1086,37 @@ export const TabBar = memo(function TabBar(props: Props) {
   }),[visibleSessions, treeGroups, tabGroupMap, groupOrder, pinnedSessionIds, pinRank, sessionLastMessageAt, sessionIndex]);
   const disposablesExpanded = !!normalizedSessionSearch || expandedGroupIds.has(DISPOSABLES_GROUP_ID);
 
+  // Sidebar layout: the folder tree, or flat sections by what each session is
+  // doing. A per-window layout choice like the width, so it lives in localStorage.
+  const [groupBy, setGroupBy] = useState<SidebarGroupBy>(() => {
+    try { return localStorage.getItem('tabBarGroupBy') === 'status' ? 'status' : 'folder'; } catch { return 'folder'; }
+  });
+  const changeGroupBy = (next: SidebarGroupBy) => {
+    setGroupBy(next);
+    try { localStorage.setItem('tabBarGroupBy', next); } catch {}
+  };
+  const [collapsedSections, setCollapsedSections] = useState<Set<StatusSection>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('tabBarCollapsedStatus') || '[]')); } catch { return new Set(); }
+  });
+  const toggleSection = (key: StatusSection) => {
+    setCollapsedSections(prev => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      try { localStorage.setItem('tabBarCollapsedStatus', JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+  const statusSections = useMemo(() => {
+    const buckets: Record<StatusSection, SessionInfo[]> = { waiting: [], working: [], active: [], idle: [] };
+    for (const s of visibleSessions) {
+      if (tabGroupMap[s.id] === DISPOSABLES_GROUP_ID) continue;
+      const st = dotStateOf(s.runtime_status, sessionStatuses[s.id] || 'disconnected', !!sessionStreaming[s.id],
+        sessionTurnComplete.has(s.id), !!sessionInterrupted[s.id], !!sessionHasPermission[s.id]);
+      buckets[sectionOf(st, s.runtime_status, !!sessionAwaitingReply?.has(s.id))].push(s);
+    }
+    return STATUS_SECTIONS.map(({ key, label }) => ({ key, label, sessions: buckets[key].sort(sortSessions) }));
+  }, [visibleSessions, tabGroupMap, sessionStatuses, sessionStreaming, sessionTurnComplete, sessionAwaitingReply, sessionInterrupted, sessionHasPermission, pinnedSessionIds, pinRank, sessionLastMessageAt, sessionIndex]);
+
   // react-aria drop handler for a tab dropped onto another tab. Mirrors the old
   // dnd-kit logic: Shift groups the two (or adds to the target's group), plain
   // drop reorders. Dropping onto a group header is handled by SortableGroupTab.
@@ -1171,6 +1243,41 @@ export const TabBar = memo(function TabBar(props: Props) {
       </div>
     );
   };
+
+  /** Status view: flat sections in the group header's anatomy (chevron, label,
+   *  count). Rows carry their group as text, since they're no longer nested. */
+  const renderStatusSections = () => statusSections.map(({ key, label, sessions: rows }) => {
+    if (rows.length === 0) return null;
+    // A search should surface its hits, not leave them folded away.
+    const open = !!normalizedSessionSearch || !collapsedSections.has(key);
+    return (
+      <div key={`status-${key}`} className="flex flex-col gap-0.5 mt-1.5 first:mt-0">
+        <button
+          type="button"
+          onClick={() => toggleSection(key)}
+          aria-expanded={open}
+          className="flex items-center gap-1.5 px-2 h-[28px] text-[12px] rounded-md text-zinc-400 hover:bg-surface/60 transition-colors"
+        >
+          {open
+            ? <ChevronDown size={12} className="shrink-0 text-zinc-500" />
+            : <ChevronRight size={12} className="shrink-0 text-zinc-500" />}
+          <span className="flex-1 text-left truncate">{label}</span>
+          <span className="text-[11px] tabular-nums text-zinc-600">{rows.length}</span>
+        </button>
+        {open && rows.map(s => {
+          const gid = tabGroupMap[s.id];
+          return (
+            <ReorderTab
+              key={s.id}
+              {...tp(s)}
+              groupLabel={gid ? tabGroups[gid]?.name : undefined}
+              onDropTab={(from) => handleDropTab(from, s.id)}
+            />
+          );
+        })}
+      </div>
+    );
+  });
 
   // Shared body of the restore-closed-sessions popover. Used in both the
   // collapsed and expanded toolbar branches so the search-on-top + filtered
@@ -1329,7 +1436,7 @@ export const TabBar = memo(function TabBar(props: Props) {
          <div className="flex flex-col gap-0.5">
            {tree.length === 0 && disposableSessions.length === 0 ? (
              <div className="px-3 py-5 text-center text-[11px] text-zinc-600">No matching sessions</div>
-           ) : tree.map(node => renderTreeNode(node))}
+           ) : groupBy === 'status' ? renderStatusSections() : tree.map(node => renderTreeNode(node))}
         </div>
       </div>
 
@@ -1428,6 +1535,13 @@ export const TabBar = memo(function TabBar(props: Props) {
               onPress={() => { setSidebarMenu(null); onAutoGroupSessions?.(); }}>
               <FolderPlus size={12} className="text-zinc-500" />
               Auto-group loose sessions
+            </Button>
+            <Button variant="ghost" fullWidth
+              className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+              onPress={() => { setSidebarMenu(null); changeGroupBy(groupBy === 'status' ? 'folder' : 'status'); }}>
+              {groupBy === 'status'
+                ? <><FolderTree size={12} className="text-zinc-500" />Group by folder</>
+                : <><Layers size={12} className="text-zinc-500" />Group by status</>}
             </Button>
           </div>
         </>
