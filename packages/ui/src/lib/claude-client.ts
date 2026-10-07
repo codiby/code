@@ -590,6 +590,15 @@ export type ProviderUsage = {
 };
 export type UsageSnapshot = { fetchedAt: string; providers: ProviderUsage[] };
 
+export type ClaudeVersionStatus = {
+  installed: string | null;
+  latest: string | null;
+  channel: string;
+  updateAvailable: boolean;
+};
+
+export type ClaudeUpdateResult = { ok: boolean; output: string; status: ClaudeVersionStatus };
+
 /** How the bridge server was launched. Informational only — session spawn is
  *  always lazy now (the server boots a provider when the user focuses a tab
  *  via `notifyActiveTab` or a message arrives for it). Kept on the welcome
@@ -1742,6 +1751,23 @@ export class ClaudeClient {
   async getClaudeInfo(): Promise<{ models: SupportedModel[] }> {
     const resp = await authedFetch(`${this.serverUrl}/providers/claude/info`);
     if (!resp.ok) return { models: [] };
+    return resp.json();
+  }
+
+  /**
+   * Installed `claude` CLI version vs. the npm dist-tag for the user's update
+   * channel. `null` when the bridge couldn't answer.
+   */
+  async getClaudeVersion(): Promise<ClaudeVersionStatus | null> {
+    const resp = await authedFetch(`${this.serverUrl}/providers/claude/version`);
+    if (!resp.ok) return null;
+    return resp.json();
+  }
+
+  /** Runs `claude update` on the bridge host and returns the post-update status. */
+  async updateClaude(): Promise<ClaudeUpdateResult> {
+    const resp = await authedFetch(`${this.serverUrl}/providers/claude/update`, { method: 'POST' });
+    if (!resp.ok) throw new Error(`Update failed (${resp.status})`);
     return resp.json();
   }
 

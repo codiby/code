@@ -87,6 +87,7 @@ import { getCodexInfo } from './handlers/codex-info';
 import { handleSessionNotes } from './handlers/session-notes';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
+import { getClaudeVersionStatus, runClaudeUpdate } from './handlers/claude-update';
 import { getUsageSnapshot } from './handlers/usage';
 import { ClaudeAdapter } from './provider/adapters/claude';
 import { CodexAdapter } from './provider/adapters/codex';
@@ -1469,6 +1470,14 @@ app.get('/providers/opencode/info', async () => {
 
 app.get('/providers/claude/info', () => {
   return Response.json(getClaudeInfo(), { headers: corsHeaders });
+});
+
+app.get('/providers/claude/version', async () => {
+  return Response.json(await getClaudeVersionStatus(), { headers: corsHeaders });
+});
+
+app.post('/providers/claude/update', async () => {
+  return Response.json(await runClaudeUpdate(), { headers: corsHeaders });
 });
 
 // Plan usage for every signed-in provider. `?refresh=1` skips the TTL cache

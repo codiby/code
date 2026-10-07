@@ -92,6 +92,7 @@ import { PlanPanel } from './PlanPanel';
 import { RequirementsPanel } from './RequirementsPanel';
 import { LoopBanner } from './LoopBanner';
 import { RemoteVersionBanner } from './RemoteVersionBanner';
+import { ClaudeUpdateDialog } from './ClaudeUpdateDialog';
 import type { RequirementsSnapshot } from '../lib/requirements';
 import {
   ChatFocusLayout,
@@ -7906,7 +7907,7 @@ export function ChatApp() {
           remoteStatuses={remoteStatuses}
         />
         <RemoteVersionBanner client={client} remotes={remotes} remoteStatuses={remoteStatuses} />
-        <PortlessActionToast />
+        <ClaudeUpdateDialog client={client} />
         <SessionDeleteToast
           items={pendingDeletes}
           onUndo={undoQuickDelete}
