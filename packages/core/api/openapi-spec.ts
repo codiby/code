@@ -1010,6 +1010,9 @@ export const openApiSpec: OpenApiSpec = {
         responses: { 200: okResponse },
       },
     },
+    '/terminal-shells': {
+      get: { tags: ['Preferences'], summary: 'Host platform and the Windows terminal shells installed (empty off Windows)', responses: { 200: corsResponse } },
+    },
     '/claude-hooks': {
       get: {
         tags: ['Preferences'],

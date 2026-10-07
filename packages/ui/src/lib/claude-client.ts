@@ -711,57 +711,12 @@ type ClientCallbacks = {
   onConnectionChange: (status: ConnectionStatus) => void;
 };
 
-// ---------------------------------------------------------------------------
-// Portless types — kept in lock-step with server/portless.ts.
-// ---------------------------------------------------------------------------
-
-export type PortlessActionState =
-  | 'starting'
-  | 'running'
-  | 'stopping'
-  | 'exited'
-  | 'failed';
-
-export interface PortlessActionStatus {
-  key: string;
-  groupId: string;
-  actionId: string;
-  name: string;
-  command: string;
-  hostname: string;
-  url: string;
-  cwd: string;
-  pid: number | null;
-  state: PortlessActionState;
-  startedAt: number | null;
-  exitedAt: number | null;
-  exitCode: number | null;
-  lastError: string | null;
-  logTail: string[];
-}
-
-export interface PortlessCliStatus {
-  available: boolean;
-  bin: string | null;
-  version: string | null;
-}
-
-export type PortlessProxyMode = 'default' | 'http80' | 'https443';
-
-export interface PortlessProxyStatus {
-  running: boolean;
-  port: number | null;
-  mode: PortlessProxyMode | null;
-}
-
-export interface PortlessProxyActionResult {
-  ok: boolean;
-  output: string;
-  error?: string;
-  /** Present when a privileged start was blocked by a foreign listener on the
-   *  target port. `funnelConflict` flags the Tailscale-Funnel-on-:443 case so
-   *  the UI can offer a one-click "Disable Funnel & retry". */
-  conflict?: { port: number; funnelConflict: boolean };
+/** A terminal shell the Windows host offers — kept in lock-step with
+ *  core/process/shells.ts. `path` is null when it isn't installed. */
+export interface WindowsShellOption {
+  id: 'auto' | 'pwsh' | 'powershell' | 'cmd' | 'git-bash' | 'wsl';
+  label: string;
+  path: string | null;
 }
 
 /** A browsable per-session resource — pasted image, generated mockup, file. */
@@ -2549,6 +2504,14 @@ export class ClaudeClient {
   async getPreferences(): Promise<Record<string, unknown>> {
     const resp = await authedFetch(`${this.serverUrl}/preferences`);
     if (!resp.ok) return {};
+    return resp.json();
+  }
+
+  /** Host platform plus the Windows terminal shells it has installed. `shells`
+   *  is empty off Windows, where terminals use `$SHELL`. */
+  async getTerminalShells(): Promise<{ platform: string; shells: WindowsShellOption[] }> {
+    const resp = await authedFetch(`${this.serverUrl}/terminal-shells`);
+    if (!resp.ok) return { platform: '', shells: [] };
     return resp.json();
   }
 

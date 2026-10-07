@@ -13,8 +13,7 @@ import {
   type HookEvent,
   type HookEntry,
   type ClaudeHooks,
-  type PortlessActionStatus,
-  type PortlessCliStatus,
+  type WindowsShellOption,
 } from '../lib/claude-client';
 import { PairPhoneModal } from './PairPhoneModal';
 import { PluginSettingsSections } from './PluginExtensionPoints';
@@ -970,6 +969,39 @@ function GeneralSection({
         </div>
       </div>
     </>
+  );
+}
+
+/** Shell picker for new terminals. Only renders when the bridge runs on
+ *  Windows — macOS/Linux terminals follow `$SHELL`. Shells the host doesn't
+ *  have are listed but disabled. */
+function WindowsShellField({ client }: { client: ClaudeClient | null }) {
+  const windowsShell = useAppStore(s => s.windowsShell);
+  const setWindowsShell = useAppStore(s => s.setWindowsShell);
+  const [shells, setShells] = useState<WindowsShellOption[] | null>(null);
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    void client.getTerminalShells().then(res => {
+      if (!cancelled) setShells(res.platform === 'win32' ? res.shells : null);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [client]);
+  if (!shells?.length) return null;
+  const selected = shells.find(s => s.id === windowsShell);
+  return (
+    <div className="mt-3 px-3 py-2.5 rounded-md bg-surface-light border border-border">
+      <div className="text-[12.5px] text-zinc-100">Terminal shell</div>
+      <div className="text-[11px] text-zinc-500 mt-0.5 mb-2">Shell new terminals open with. Terminals already open keep theirs.</div>
+      <select value={windowsShell} onChange={e => setWindowsShell(e.target.value)} className={nativeSelectCls}>
+        {shells.map(s => (
+          <option key={s.id} value={s.id} disabled={!s.path}>
+            {s.label}{s.path ? '' : ' (not installed)'}
+          </option>
+        ))}
+      </select>
+      {selected?.path && <div className="text-[11px] text-zinc-500 mt-1.5 font-mono truncate">{selected.path}</div>}
+    </div>
   );
 }
 
@@ -1999,7 +2031,7 @@ function GlobalContent({ section, serverUrl, tabGroups, tabGroupMap, autoGroupSe
 }) {
   return (
     <div className="px-8 pt-6 pb-8">
-      {section === 'general'     && <GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} groupSessionsByWorktree={groupSessionsByWorktree} onToggleGroupByWorktree={onToggleGroupByWorktree} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} colorChatBySession={colorChatBySession} onToggleColorChatBySession={onToggleColorChatBySession} tintChatBackground={tintChatBackground} onToggleTintChatBackground={onToggleTintChatBackground} />}
+      {section === 'general'     && <><GeneralSection autoGroupSessions={autoGroupSessions} onToggleAutoGroup={onToggleAutoGroup} groupSessionsByWorktree={groupSessionsByWorktree} onToggleGroupByWorktree={onToggleGroupByWorktree} autoFocusBrowserOnAction={autoFocusBrowserOnAction} onToggleAutoFocusBrowserOnAction={onToggleAutoFocusBrowserOnAction} interruptOnSend={interruptOnSend} onToggleInterruptOnSend={onToggleInterruptOnSend} colorChatBySession={colorChatBySession} onToggleColorChatBySession={onToggleColorChatBySession} tintChatBackground={tintChatBackground} onToggleTintChatBackground={onToggleTintChatBackground} /><WindowsShellField client={client} /></>}
       {section === 'telegram'    && <TelegramSection serverUrl={serverUrl} showTelegramSession={showTelegramSession} onToggleShowTelegramSession={onToggleShowTelegramSession} />}
       {section === 'deepgram'    && <DeepgramSection serverUrl={serverUrl} />}
       {section === 'voice'       && <VoiceModeSection serverUrl={serverUrl} />}

@@ -64,6 +64,9 @@ export interface PreferencesData {
   sessionAccents: Record<string, string>;
   /** Global env vars layered onto every Bash tool call / user terminal. */
   globalEnvVars: ProjectEnvVar[];
+  /** Shell new terminals open with when the host is Windows (a
+   *  `WindowsShellOption.id`). Ignored on macOS/Linux, which use `$SHELL`. */
+  windowsShell: string;
 }
 
 /** The boolean toggles settable through the generic `setPreference` action. */
@@ -88,6 +91,8 @@ export interface PreferencesSlice extends PreferencesData {
   setSessionAccent: (sessionId: string, color: string | null) => void;
   /** Replace the global env-var list and persist. */
   setGlobalEnvVars: (vars: ProjectEnvVar[]) => void;
+  /** Pick the Windows terminal shell and persist. */
+  setWindowsShell: (id: string) => void;
   /** Merge a server-sent `preferences` payload into local state without
    *  re-persisting (this is the server telling us its current values). */
   hydratePreferences: (prefs: Record<string, unknown>) => void;
@@ -106,6 +111,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
   chatWidth: 'standard',
   sessionAccents: {},
   globalEnvVars: [],
+  windowsShell: 'auto',
 
   setTheme: (theme) => {
     set({ theme });
@@ -135,6 +141,11 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
     persistPrefs({ globalEnvVars: vars });
   },
 
+  setWindowsShell: (id) => {
+    set({ windowsShell: id });
+    persistPrefs({ windowsShell: id });
+  },
+
   hydratePreferences: (prefs) => {
     const patch: Partial<PreferencesData> = {};
     if (prefs.theme === 'light' || prefs.theme === 'dark') patch.theme = prefs.theme;
@@ -149,6 +160,7 @@ export const createPreferencesSlice: SliceCreator<PreferencesSlice> = (set, get)
     if (prefs.chatWidth === 'compact' || prefs.chatWidth === 'standard' || prefs.chatWidth === 'full') patch.chatWidth = prefs.chatWidth;
     if (prefs.sessionAccents && typeof prefs.sessionAccents === 'object') patch.sessionAccents = prefs.sessionAccents as Record<string, string>;
     if (Array.isArray(prefs.globalEnvVars)) patch.globalEnvVars = prefs.globalEnvVars as ProjectEnvVar[];
+    if (typeof prefs.windowsShell === 'string') patch.windowsShell = prefs.windowsShell;
     if (Object.keys(patch).length) set(patch);
   },
 });

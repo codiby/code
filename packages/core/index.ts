@@ -101,6 +101,7 @@ import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, han
 import { handleListSkills, handleGetSkill, handleCreateSkill, handleUpdateSkill, handleDeleteSkill } from './handlers/skills';
 import { handleListResources, handleGetResource, handleGetResourceRaw, createResource, handleUpdateResource, handleDeleteResource, purgeSessionResources, saveResource } from './handlers/resources';
 import { startProcessMonitor, pokeProcessMonitor } from './process/process-monitor';
+import { listWindowsShells } from './process/shells';
 import { trackedProcesses, restoreProcessRegistry } from './handlers/processes';
 import {
   setTerminalBroadcaster,
@@ -2219,6 +2220,12 @@ app.put('/preferences', async (c) => {
   if (before) void applyDefaultModels(before);
   return Response.json({ ok: true }, { headers: corsHeaders });
 });
+
+// ── Terminal shell (Windows only; macOS/Linux use $SHELL) ─────────────────────
+app.get('/terminal-shells', () => Response.json({
+  platform: process.platform,
+  shells: process.platform === 'win32' ? listWindowsShells() : [],
+}, { headers: corsHeaders }));
 
 // ── Keyboard shortcuts (user overrides; defaults live in the frontend) ──────────
 app.get('/keybindings', () => Response.json(loadKeybindings(), { headers: corsHeaders }));

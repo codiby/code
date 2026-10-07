@@ -11,6 +11,7 @@
 //   pty.kill();
 
 import { log } from '../lib/logger';
+import { windowsShellCommand } from './shells';
 
 export interface PtyHandle {
   pid: number;
@@ -119,7 +120,7 @@ export function spawnPty(opts: SpawnPtyOptions): PtyHandle | null {
   // util-linux — handle both.
   let cmd: string[];
   if (isWin) {
-    cmd = shellArgs;
+    cmd = opts.shell ? shellArgs : windowsShellCommand();
   } else {
     const quote = (arg: string) => `'${arg.replaceAll("'", `'\\''`)}'`;
     // `script` copies the raw outer PTY settings to its controlling PTY.
