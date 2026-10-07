@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap, Timer,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -124,6 +124,7 @@ interface Props {
   onSelectNavView?: (view: NavView) => void;
   /** Footer actions pinned to the bottom of the sidebar. */
   onOpenSkills?: () => void;
+  onOpenMemory?: () => void;
   onOpenSettings?: () => void;
 }
 
@@ -849,7 +850,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
     activeNavView = 'sessions', onSelectNavView,
-    onOpenSkills, onOpenSettings } = props;
+    onOpenSkills, onOpenMemory, onOpenSettings } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
   // every other parent re-render (memoized parent + memoized TabBar).
@@ -1368,6 +1369,14 @@ export const TabBar = memo(function TabBar(props: Props) {
             )}
           </>
         )}
+        <button
+          type="button"
+          onClick={onOpenMemory}
+          className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
+        >
+          <Brain size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
+          <span>Memory</span>
+        </button>
         {/* Automatizaciones swaps the main pane rather than opening a modal, so
             unlike Skills/Settings it carries an active state. */}
         <button

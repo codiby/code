@@ -14,6 +14,7 @@ import { loadPreferences } from '../session/storage';
 import { effectiveModel } from './default-model';
 import { startSessionWatcher } from '../session/watcher';
 import { remoteViewerSystemPrompt } from '../network/remote-viewer';
+import { sharedMemoryPrompt } from './shared-memory';
 import type { Session } from '../types';
 import type { EffortLevel, McpServerSpec, PermissionMode, SpawnOptions } from './types';
 
@@ -77,7 +78,12 @@ export function startProviderSession(session: Session, port: number, resumeSessi
     // agent has to be told that the dev servers it starts here are unreachable
     // from there without `ui_forward_port`. Also records what the provider was
     // told, so a viewer that moves mid-session gets a turn-level reminder.
-    extraSystemPrompt: remoteViewerSystemPrompt(session.id),
+    // The shared-memory block carries the other agents' memory files, which
+    // this provider would never load on its own.
+    extraSystemPrompt: [
+      remoteViewerSystemPrompt(session.id),
+      sharedMemoryPrompt(session.provider, session.cwd),
+    ].filter(Boolean).join('\n\n') || null,
   };
 
   session.runtimeStatus = 'starting';

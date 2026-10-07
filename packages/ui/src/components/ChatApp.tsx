@@ -28,6 +28,7 @@ import { CommandPalette, type PaletteAction, type PaletteMode } from './CommandP
 import { ChatFindWidget } from './ChatFindWidget';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { SkillsModal } from './SkillsModal';
+import { MemoryModal } from './MemoryModal';
 import { ResourcesPanel } from './ResourcesPanel';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
@@ -1076,6 +1077,7 @@ export function ChatApp() {
   }, []);
   const [projectSettings, setProjectSettings] = useState<{ open: boolean; sectionId?: string }>({ open: false });
   const [showSkills, setShowSkills] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   // Keyboard-shortcut overrides (command id → chord, or null to force-unbind);
   // defaults live in the keybinding registry. Hydrated from the bridge and kept
   // live across windows via the `onKeybindings` websocket broadcast.
@@ -6343,6 +6345,7 @@ export function ChatApp() {
               activeNavView={activeNavView}
               onSelectNavView={setActiveNavView}
               onOpenSkills={() => setShowSkills(true)}
+              onOpenMemory={() => setShowMemory(true)}
               onOpenSettings={() => setProjectSettings({ open: true })}
             />
           )}
@@ -7163,7 +7166,7 @@ export function ChatApp() {
                       // here so the native view hides while it's up.
                       obscured={showPalette || projectSettings.open || switcher.open
                         || browserUrlModalOpen || showNewSession || showShortcuts
-                        || showSkills || pendingBypassSessionId !== null}
+                        || showSkills || showMemory || pendingBypassSessionId !== null}
                       inspect={!!active.browserInspect[name]}
                       comments={commentsForActive}
                       // Mounting means this browser's tab is the active one —
@@ -7865,6 +7868,13 @@ export function ChatApp() {
           onClose={() => setShowSkills(false)}
           client={client}
           projectRoot={sessions.find(s => s.id === activeId)?.cwd ?? null}
+        />
+        <MemoryModal
+          open={showMemory}
+          onClose={() => setShowMemory(false)}
+          client={client}
+          remotes={remotes}
+          remoteStatuses={remoteStatuses}
         />
         <RemoteVersionBanner client={client} remotes={remotes} remoteStatuses={remoteStatuses} />
         <PortlessActionToast />

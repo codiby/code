@@ -99,6 +99,7 @@ import { handleBrowserResponse } from './provider/browser-cdp';
 import { handleViewerForwardResponse } from './network/viewer-forward';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleListSkills, handleGetSkill, handleCreateSkill, handleUpdateSkill, handleDeleteSkill } from './handlers/skills';
+import { handleListMemory, handleReadMemory, handleWriteMemory, handleDeleteMemory, handleMemorySettings } from './handlers/memory';
 import { handleListResources, handleGetResource, handleGetResourceRaw, createResource, handleUpdateResource, handleDeleteResource, purgeSessionResources, saveResource } from './handlers/resources';
 import { startProcessMonitor, pokeProcessMonitor } from './process/process-monitor';
 import { listWindowsShells } from './process/shells';
@@ -1739,6 +1740,24 @@ app.put('/skills/:id', async (c) => {
   return handleUpdateSkill(c.req.param('id'), body);
 });
 app.delete('/skills/:id', (c) => handleDeleteSkill(c.req.param('id')));
+
+// ── Agent memory ───────────────────────────────────────────────────────────
+// This host's memory files: each agent's global instructions plus Claude's
+// per-project auto-memory. The UI calls every host directly and syncs between
+// them itself, so there is no cross-host logic here.
+app.get('/memory', () => handleListMemory());
+app.get('/memory/file', (c) => handleReadMemory(new URL(c.req.url).searchParams));
+app.put('/memory/file', async (c) => {
+  let body: any = {};
+  try { body = await c.req.raw.json(); } catch {}
+  return handleWriteMemory(new URL(c.req.url).searchParams, body);
+});
+app.delete('/memory/file', (c) => handleDeleteMemory(new URL(c.req.url).searchParams));
+app.put('/memory/settings', async (c) => {
+  let body: any = {};
+  try { body = await c.req.raw.json(); } catch {}
+  return handleMemorySettings(body);
+});
 
 // ── Session resources ────────────────────────────────────────────────────────
 // Everything a session accumulates that isn't chat — photos, mockups, snippets,

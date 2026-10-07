@@ -232,6 +232,52 @@ export interface SkillUpdateInput {
 }
 
 // ---------------------------------------------------------------------------
+// Agent memory (global instruction files + Claude's per-project auto-memory)
+// ---------------------------------------------------------------------------
+
+export type MemoryProvider = 'claude' | 'codex' | 'opencode';
+
+export interface UserMemoryInfo {
+  provider: MemoryProvider;
+  path: string;
+  exists: boolean;
+  hash: string | null;
+  size: number;
+  mtime: number | null;
+}
+
+export interface MemoryFileInfo {
+  name: string;
+  path: string;
+  hash: string;
+  size: number;
+  mtime: number;
+  type: string | null;
+  description: string | null;
+}
+
+export interface ProjectMemoryInfo {
+  slug: string;
+  /** Pairs the same repo across hosts — the normalized git remote, else the folder name. */
+  key: string;
+  name: string;
+  path: string | null;
+  dir: string;
+  files: MemoryFileInfo[];
+}
+
+export interface HostMemory {
+  hostname: string;
+  shareAcrossProviders: boolean;
+  user: UserMemoryInfo[];
+  projects: ProjectMemoryInfo[];
+}
+
+export type MemoryTarget =
+  | { scope: 'user'; provider: MemoryProvider }
+  | { scope: 'project'; slug: string; name: string };
+
+// ---------------------------------------------------------------------------
 // Mobile auth token (bearer token used by phones on the LAN)
 // ---------------------------------------------------------------------------
 
@@ -2166,6 +2212,57 @@ export class ClaudeClient {
   async deleteSkill(id: string): Promise<{ ok: boolean; error?: string }> {
     const resp = await authedFetch(`${this.serverUrl}/skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
     return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Agent memory
+  //
+  // Every host serves its own disk, so each call is pinned to a host: `null`
+  // is the local bridge, an id goes through that remote's tunnel. Syncing is
+  // a read on one host followed by a write on the other.
+  // -------------------------------------------------------------------------
+
+  private async memoryUrl(hostId: string | null, path: string, target?: MemoryTarget): Promise<string> {
+    const params = new URLSearchParams();
+    if (target) for (const [k, v] of Object.entries(target)) params.set(k, v);
+    const qs = params.toString();
+    return this.remoteUrl(`${this.serverUrl}${path}${qs ? `?${qs}` : ''}`, hostId);
+  }
+
+  private async memoryCall<T>(url: string, init?: RequestInit): Promise<T> {
+    const resp = await authedFetch(url, init);
+    const body = await resp.json().catch(() => null);
+    // A 404 with no JSON means the host's bridge predates the memory API.
+    if (!resp.ok) throw new Error(body?.error || (resp.status === 404 ? 'This host needs a newer Codiby Code to show memory' : `HTTP ${resp.status}`));
+    return body as T;
+  }
+
+  async listMemory(hostId: string | null): Promise<HostMemory> {
+    return this.memoryCall(await this.memoryUrl(hostId, '/memory'));
+  }
+
+  async readMemory(hostId: string | null, target: MemoryTarget): Promise<{ path: string; content: string; hash: string }> {
+    return this.memoryCall(await this.memoryUrl(hostId, '/memory/file', target));
+  }
+
+  async writeMemory(hostId: string | null, target: MemoryTarget, content: string): Promise<{ path: string; hash: string }> {
+    return this.memoryCall(await this.memoryUrl(hostId, '/memory/file', target), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  async deleteMemory(hostId: string | null, target: MemoryTarget): Promise<void> {
+    await this.memoryCall(await this.memoryUrl(hostId, '/memory/file', target), { method: 'DELETE' });
+  }
+
+  async setMemorySharing(hostId: string | null, shareAcrossProviders: boolean): Promise<void> {
+    await this.memoryCall(await this.memoryUrl(hostId, '/memory/settings'), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareAcrossProviders }),
+    });
   }
 
   // -------------------------------------------------------------------------
