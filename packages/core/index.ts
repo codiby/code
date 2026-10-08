@@ -88,6 +88,15 @@ import { handleSessionNotes } from './handlers/session-notes';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
 import { getClaudeVersionStatus, runClaudeUpdate } from './handlers/claude-update';
+import {
+  getClaudeAuthStatus,
+  getClaudeLoginFlow,
+  startClaudeLogin,
+  submitClaudeLoginCode,
+  cancelClaudeLogin,
+  claudeLogout,
+  type ClaudeLoginMethod,
+} from './handlers/claude-auth';
 import { getUsageSnapshot } from './handlers/usage';
 import { ClaudeAdapter } from './provider/adapters/claude';
 import { CodexAdapter } from './provider/adapters/codex';
@@ -1478,6 +1487,42 @@ app.get('/providers/claude/version', async () => {
 
 app.post('/providers/claude/update', async () => {
   return Response.json(await runClaudeUpdate(), { headers: corsHeaders });
+});
+
+// In-app `/login` for the Claude Code CLI on this host. See handlers/claude-auth.ts.
+app.get('/providers/claude/auth', async () => {
+  return Response.json(await getClaudeAuthStatus(), { headers: corsHeaders });
+});
+
+app.get('/providers/claude/login', () => {
+  return Response.json(getClaudeLoginFlow(), { headers: corsHeaders });
+});
+
+app.post('/providers/claude/login', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { method?: string };
+  const method: ClaudeLoginMethod = body.method === 'console' ? 'console' : 'claudeai';
+  try {
+    return Response.json(await startClaudeLogin(method), { headers: corsHeaders });
+  } catch (err) {
+    return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500, headers: corsHeaders });
+  }
+});
+
+app.post('/providers/claude/login/code', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { code?: string };
+  try {
+    return Response.json(await submitClaudeLoginCode(String(body.code ?? '')), { headers: corsHeaders });
+  } catch (err) {
+    return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400, headers: corsHeaders });
+  }
+});
+
+app.delete('/providers/claude/login', () => {
+  return Response.json(cancelClaudeLogin(), { headers: corsHeaders });
+});
+
+app.post('/providers/claude/logout', async () => {
+  return Response.json(await claudeLogout(), { headers: corsHeaders });
 });
 
 // Plan usage for every signed-in provider. `?refresh=1` skips the TTL cache

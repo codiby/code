@@ -599,6 +599,46 @@ export type ClaudeVersionStatus = {
 
 export type ClaudeUpdateResult = { ok: boolean; output: string; status: ClaudeVersionStatus };
 
+export type ClaudeAuthStatus = {
+  loggedIn: boolean;
+  authMethod: string | null;
+  apiProvider: string | null;
+  email: string | null;
+  orgName: string | null;
+  subscriptionType: string | null;
+};
+
+export type ClaudeLoginMethod = 'claudeai' | 'console';
+
+export type ClaudeLoginFlow = {
+  id: string;
+  method: ClaudeLoginMethod;
+  state: 'pending' | 'done' | 'error' | 'cancelled';
+  /** Paste-the-code URL. Works from any device. */
+  manualUrl: string;
+  /** Redirects to the CLI's listener on the bridge host's 127.0.0.1:`callbackPort`. */
+  automaticUrl: string;
+  callbackPort: number | null;
+  error: string | null;
+  status: ClaudeAuthStatus | null;
+  startedAt: number;
+};
+
+export type ClaudeLoginStart = ClaudeLoginFlow & {
+  /**
+   * Whether `automaticUrl` can reach the CLI from this viewer: the bridge is
+   * on this machine, or an SSH forward now exposes its callback port here.
+   * When false, only the paste-the-code path works.
+   */
+  automaticReachable: boolean;
+};
+
+/** True when a bridge at this hostname runs on the viewer's own machine. */
+function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '::1' || /^127\.\d+\.\d+\.\d+$/.test(h);
+}
+
 /** How the bridge server was launched. Informational only — session spawn is
  *  always lazy now (the server boots a provider when the user focuses a tab
  *  via `notifyActiveTab` or a message arrives for it). Kept on the welcome
@@ -1769,6 +1809,106 @@ export class ClaudeClient {
     const resp = await authedFetch(`${this.serverUrl}/providers/claude/update`, { method: 'POST' });
     if (!resp.ok) throw new Error(`Update failed (${resp.status})`);
     return resp.json();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Claude Code sign-in. Each bridge host has its own CLI credentials, so every
+  // call takes the remote it targets (null = the local bridge).
+  // ---------------------------------------------------------------------------
+
+  /** Login callback ports forwarded over SSH, per remote, so they can be closed when the flow ends. */
+  private loginForwards = new Map<string, number>();
+
+  private async claudeAuthBase(remoteId: string | null): Promise<string> {
+    if (!remoteId) return this.serverUrl;
+    this.ensureRemoteConn(remoteId);
+    const base = await this.ensureRemoteBaseUp(remoteId);
+    if (!base) throw new Error(`Remote ${remoteId} is unreachable — its tunnel could not be opened`);
+    return base;
+  }
+
+  async getClaudeAuth(remoteId: string | null = null): Promise<ClaudeAuthStatus | null> {
+    const resp = await authedFetch(`${await this.claudeAuthBase(remoteId)}/providers/claude/auth`);
+    if (!resp.ok) return null;
+    return resp.json();
+  }
+
+  /**
+   * Starts a sign-in on the target bridge. For a remote reached over SSH the
+   * CLI's callback listener sits on the remote's loopback, so the browser's
+   * redirect to `localhost:<port>` would miss it; an `-L <port>:localhost:<port>`
+   * over the ControlMaster fixes that. The port must stay the same because it
+   * is part of the redirect_uri — if it's taken here, only the paste-the-code
+   * path is offered.
+   */
+  async startClaudeLogin(method: ClaudeLoginMethod, remoteId: string | null = null): Promise<ClaudeLoginStart> {
+    const resp = await authedFetch(`${await this.claudeAuthBase(remoteId)}/providers/claude/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method }),
+    });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok) throw new Error(body?.error || `Sign-in failed to start (${resp.status})`);
+    const flow = body as ClaudeLoginFlow;
+
+    if (!remoteId) {
+      return { ...flow, automaticReachable: isLoopbackHost(new URL(this.serverUrl).hostname) };
+    }
+    await this.closeLoginForward(remoteId);
+    const port = flow.callbackPort;
+    const native = getNative();
+    if (!port || !native) return { ...flow, automaticReachable: false };
+    try {
+      await native.invoke('remote_forward_add', { remoteId, remotePort: port, localPort: port, label: 'Claude login' });
+      this.loginForwards.set(remoteId, port);
+      return { ...flow, automaticReachable: true };
+    } catch {
+      return { ...flow, automaticReachable: false };
+    }
+  }
+
+  /** Current flow on the target bridge. Closes the login forward once it's over. */
+  async getClaudeLoginFlow(remoteId: string | null = null): Promise<ClaudeLoginFlow | null> {
+    const resp = await authedFetch(`${await this.claudeAuthBase(remoteId)}/providers/claude/login`);
+    if (!resp.ok) return null;
+    const flow = (await resp.json()) as ClaudeLoginFlow | null;
+    if (remoteId && flow?.state !== 'pending') await this.closeLoginForward(remoteId);
+    return flow;
+  }
+
+  /** Submits the `code#state` the platform page shows after signing in. */
+  async submitClaudeLoginCode(code: string, remoteId: string | null = null): Promise<ClaudeLoginFlow> {
+    const resp = await authedFetch(`${await this.claudeAuthBase(remoteId)}/providers/claude/login/code`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok) throw new Error(body?.error || `Code rejected (${resp.status})`);
+    const flow = body as ClaudeLoginFlow;
+    if (remoteId && flow.state !== 'pending') await this.closeLoginForward(remoteId);
+    return flow;
+  }
+
+  async cancelClaudeLogin(remoteId: string | null = null): Promise<void> {
+    try {
+      await authedFetch(`${await this.claudeAuthBase(remoteId)}/providers/claude/login`, { method: 'DELETE' });
+    } finally {
+      if (remoteId) await this.closeLoginForward(remoteId);
+    }
+  }
+
+  async logoutClaude(remoteId: string | null = null): Promise<{ ok: boolean; output: string; status: ClaudeAuthStatus }> {
+    const resp = await authedFetch(`${await this.claudeAuthBase(remoteId)}/providers/claude/logout`, { method: 'POST' });
+    if (!resp.ok) throw new Error(`Sign-out failed (${resp.status})`);
+    return resp.json();
+  }
+
+  private async closeLoginForward(remoteId: string): Promise<void> {
+    const port = this.loginForwards.get(remoteId);
+    if (port == null) return;
+    this.loginForwards.delete(remoteId);
+    await getNative()?.invoke('remote_forward_remove', { remoteId, localPort: port, remotePort: port }).catch(() => {});
   }
 
   /**
