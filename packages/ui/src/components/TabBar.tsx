@@ -1131,6 +1131,17 @@ export const TabBar = memo(function TabBar(props: Props) {
     onReorder(fromId, toId);
   };
 
+  /** Folder tree: a row sits where its group puts it, so dropping onto a row
+   *  files the dragged session in that row's group (or back at the root). */
+  const handleDropTabInTree = (fromId: string, toId: string) => {
+    if (fromId === toId || shiftRef.current) return handleDropTab(fromId, toId);
+    const targetGroupId = tabGroupMap[toId];
+    if (targetGroupId !== tabGroupMap[fromId]) {
+      if (targetGroupId) onAddToGroup(fromId, targetGroupId);
+      else props.onUngroupTab(fromId);
+    }
+    onReorder(fromId, toId);
+  };
 
   const tp = (s: SessionInfo, groupColor?: string, compact?: boolean) => ({
     id: s.id, session: s, isActive: s.id === activeSessionId,
@@ -1201,7 +1212,7 @@ export const TabBar = memo(function TabBar(props: Props) {
         <ReorderTab
           key={node.id}
           {...tp(node.session, color || undefined, node.depth > 0)}
-          onDropTab={(from) => handleDropTab(from, node.id)}
+          onDropTab={(from) => handleDropTabInTree(from, node.id)}
         />
       );
     }
