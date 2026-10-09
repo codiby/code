@@ -97,6 +97,7 @@ import { RemoteVersionBanner } from './RemoteVersionBanner';
 import { ClaudeUpdateDialog } from './ClaudeUpdateDialog';
 import { ClaudeLoginDialog } from './ClaudeLoginDialog';
 import { ResumeInterruptedDialog } from './ResumeInterruptedDialog';
+import { CodexImportModal } from './CodexImportModal';
 import type { RequirementsSnapshot } from '../lib/requirements';
 import {
   ChatFocusLayout,
@@ -1056,6 +1057,7 @@ export function ChatApp() {
   const visibleMessageCount = useAppStore(s => s.visibleMessageCount);
   const setVisibleMessageCount = useAppStore(s => s.setVisibleMessageCount);
   const [showNewSession, setShowNewSession] = useState(false);
+  const [showCodexImport, setShowCodexImport] = useState(false);
   const turnCompleteIds = useAppStore(s => s.turnCompleteIds);
   const setTurnCompleteIds = useAppStore(s => s.setTurnCompleteIds);
   // Sessions whose turn finished while you were looking elsewhere — the
@@ -2743,6 +2745,18 @@ export function ChatApp() {
       // quietly booting the session here, so this is reachable — say so
       // instead of swallowing it and leaving the click looking ignored.
       console.error('[ChatApp] Failed to create session:', err);
+    }
+  };
+
+  /** Focus a session the bridge just imported; it may not be in the list yet. */
+  const handleCodexImported = (sessionId: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    setActiveId(sessionId);
+    setActiveNavView('sessions');
+    if (!subscribedRef.current.has(sessionId)) {
+      c.subscribe(sessionId);
+      subscribedRef.current.add(sessionId);
     }
   };
 
@@ -4982,6 +4996,7 @@ export function ChatApp() {
 
   const paletteActions: PaletteAction[] = [
     { id: 'new-session', label: 'New Session', chord: kbBindings['new-session'] ?? undefined, section: 'Sessions', onRun: () => setShowNewSession(true) },
+    { id: 'import-codex-session', label: 'Import Codex Session…', section: 'Sessions', onRun: () => setShowCodexImport(true) },
     { id: 'focus-input', label: 'Focus Chat Input', chord: kbBindings['focus-chat-input'] ?? undefined, section: 'Navigation', onRun: () => inputRef.current?.focus() },
     { id: 'toggle-sidebar', label: tabsCollapsed ? 'Show Sessions Sidebar' : 'Hide Sessions Sidebar', chord: kbBindings['toggle-sidebar'] ?? undefined, section: 'Navigation', onRun: () => toggleTabsCollapsed() },
     { id: 'toggle-explorer', label: explorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer', chord: kbBindings['toggle-explorer'] ?? undefined, section: 'Navigation', onRun: () => setExplorerCollapsed(c => !c) },
@@ -8019,6 +8034,7 @@ export function ChatApp() {
         <ClaudeUpdateDialog client={client} />
         <ClaudeLoginDialog client={client} remotes={remotes} remoteStatuses={remoteStatuses} />
         <ResumeInterruptedDialog client={client} onOpenSession={handleSelectSession} />
+        <CodexImportModal open={showCodexImport} client={client} remotes={remotes} onClose={() => setShowCodexImport(false)} onImported={handleCodexImported} />
         <SessionDeleteToast
           items={pendingDeletes}
           onUndo={undoQuickDelete}

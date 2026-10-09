@@ -612,6 +612,18 @@ export type ClaudeLoginMethod = 'claudeai' | 'console';
 
 export type InterruptedSession = { id: string; name: string; cwd: string; interruptedAt: number };
 
+export type CodexThread = {
+  id: string;
+  name: string;
+  cwd: string;
+  /** `codex-tui` for the terminal, `codiby_code` for this app. */
+  originator: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Session already holding the thread, when it was imported or started here. */
+  sessionId: string | null;
+};
+
 export type ClaudeLoginFlow = {
   id: string;
   method: ClaudeLoginMethod;
@@ -1811,6 +1823,43 @@ export class ClaudeClient {
     const resp = await authedFetch(`${this.serverUrl}/providers/claude/update`, { method: 'POST' });
     if (!resp.ok) throw new Error(`Update failed (${resp.status})`);
     return resp.json();
+  }
+
+  /** Bridge that owns a host's Codex threads: the local one, or the remote's tunnel. */
+  private async codexBase(remoteId: string | null): Promise<string> {
+    if (!remoteId) return this.serverUrl;
+    this.ensureRemoteConn(remoteId);
+    const base = await this.ensureRemoteBaseUp(remoteId);
+    if (!base) throw new Error(`No se pudo abrir el túnel a ${this.remoteMeta.get(remoteId)?.name || remoteId}.`);
+    return base;
+  }
+
+  /** Codex threads on a host (terminal `codex` runs included), newest first. */
+  async getCodexThreads(remoteId: string | null = null, limit = 50): Promise<CodexThread[]> {
+    const resp = await authedFetch(`${await this.codexBase(remoteId)}/codex/threads?limit=${limit}`);
+    // A bridge older than the importer has no such route.
+    if (resp.status === 404) throw new Error('Este host no tiene el importador de Codex; actualiza su bridge.');
+    if (!resp.ok) throw new Error(`Unable to list Codex threads (${resp.status})`);
+    return resp.json();
+  }
+
+  /** Imports a Codex thread as a session on its host, or tops up the one already holding it. */
+  async importCodexThread(threadId: string, remoteId: string | null = null): Promise<{ session: SessionInfo; added: number; created: boolean }> {
+    const resp = await authedFetch(`${await this.codexBase(remoteId)}/codex/threads/${encodeURIComponent(threadId)}/import`, { method: 'POST' });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => null) as { error?: string } | null;
+      throw new Error(detail?.error || `Import failed (${resp.status})`);
+    }
+    const result = await resp.json() as { session: SessionInfo; added: number; created: boolean };
+    if (remoteId) {
+      // Same mapping createSession records, so REST/WS for it route to the remote.
+      this.sessionRemote.set(result.session.id, remoteId);
+      const meta = this.remoteMeta.get(remoteId);
+      result.session.remoteId = remoteId;
+      result.session.remoteColor = meta?.color ?? null;
+      result.session.remoteName = meta?.name ?? null;
+    }
+    return result;
   }
 
   /** Sessions this bridge's previous run left mid-turn (app quit, crash). */

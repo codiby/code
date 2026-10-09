@@ -89,6 +89,8 @@ import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
 import { getClaudeVersionStatus, runClaudeUpdate } from './handlers/claude-update';
 import { loadInterruptedTurns, getInterruptedTurns, clearInterruptedTurns } from './session/interrupted';
+import { listCodexThreads, importCodexThread } from './session/codex-import';
+import { getDefaultPermissionMode } from './session/default-permission-mode';
 import {
   getClaudeAuthStatus,
   getClaudeLoginFlow,
@@ -1468,6 +1470,23 @@ app.post('/sessions', async (c) => {
     broadcastFocusSession(createdId);
   }
   return resp;
+});
+
+// Codex threads started in a terminal, importable as sessions so they can be
+// continued here (see session/codex-import.ts).
+app.get('/codex/threads', (c) => {
+  const limit = Math.min(Number(c.req.query('limit')) || 50, 200);
+  return Response.json(listCodexThreads(limit), { headers: corsHeaders });
+});
+
+app.post('/codex/threads/:id/import', (c) => {
+  const result = importCodexThread(c.req.param('id'), { permissionMode: getDefaultPermissionMode() });
+  if (!result) return Response.json({ error: 'Codex thread not found' }, { status: 404, headers: corsHeaders });
+  const { session, added, created } = result;
+  if (created) maybeAutoGroupSession(session.id, session.cwd);
+  else for (const message of added) broadcastToSession(session.id, { type: 'message', sessionId: session.id, message });
+  broadcastSessionList();
+  return Response.json({ session: sessionToJSON(session, server.port), added: added.length, created }, { headers: corsHeaders });
 });
 
 app.post('/sessions/:id/resume', (c) => {
