@@ -4016,6 +4016,10 @@ export function ChatApp() {
   }, [client]);
 
   const untitledCountRef = useRef(0);
+  /** Editor path that should take keyboard focus when it mounts (a file the
+   *  user just created). Other opens — agent tools, LSP jumps — leave focus
+   *  where it is so typing in the composer isn't hijacked. */
+  const focusOnMountRef = useRef<string | null>(null);
   const [saveAsPrompt, setSaveAsPrompt] = useState<{ content: string } | null>(null);
   const [saveAsPath, setSaveAsPath] = useState('');
   const saveAsInputRef = useRef<HTMLInputElement>(null);
@@ -4025,6 +4029,7 @@ export function ChatApp() {
     untitledCountRef.current++;
     const name = `untitled-${untitledCountRef.current}`;
     // Untitled files are born pinned + dirty (never a preview).
+    focusOnMountRef.current = name;
     openFileInEditor(activeId, name, '', undefined, { pin: true });
     markEditorDirty(activeId, name, true);
   };
@@ -7200,6 +7205,10 @@ export function ChatApp() {
                           // and the focus-mode/anchor logic via derived openFile).
                           if (active.activeEditorPath !== ePath) setActiveEditor(activeId, ePath);
                           handleEditorMount(editor, monaco);
+                          if (focusOnMountRef.current === ePath) {
+                            focusOnMountRef.current = null;
+                            editor.focus();
+                          }
                         }}
                         onChange={(value) => {
                           // Ref write (no re-render) preserves unsaved edits
