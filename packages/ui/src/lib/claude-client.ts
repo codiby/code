@@ -334,6 +334,12 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   seq?: number;
+  /**
+   * Local-only: for notes the UI writes itself (no server `seq`), the highest
+   * `seq` in the thread when the note was posted. Sorting places the note right
+   * after that message instead of pinning it below everything that arrives later.
+   */
+  afterSeq?: number;
   images?: { media_type: string; data: string }[];
   toolName?: string;
   toolInput?: unknown;

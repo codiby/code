@@ -270,6 +270,22 @@ function trimMessageWindow(messages: ChatMessage[], cap: number): ChatMessage[] 
   return [...persisted.slice(-Math.max(0, cap - transient.length)), ...transient];
 }
 
+/** Highest server `seq` in the thread, or 0 when nothing is persisted yet. */
+function lastSeq(messages: ChatMessage[]): number {
+  let max = 0;
+  for (const m of messages) if (typeof m.seq === 'number' && m.seq > max) max = m.seq;
+  return max;
+}
+
+/** Timeline position: server messages by `seq`, local notes right after the
+ *  message they were posted under, everything else (optimistic sends,
+ *  streaming blocks) at the bottom. */
+function messageSortKey(m: ChatMessage): number {
+  if (typeof m.seq === 'number') return m.seq;
+  if (typeof m.afterSeq === 'number') return m.afterSeq + 0.5;
+  return Number.MAX_SAFE_INTEGER;
+}
+
 // Settle every still-growing block in place (used on interrupt / barge-in /
 // turn end). The content keeps its exact slot in the array — it never
 // re-anchors to the bottom, and no snapshot-with-new-id dance is needed because
@@ -3469,10 +3485,13 @@ export function ChatApp() {
     if (text === '/restart') {
       setInputForSession(sid, '');
       const messageId = crypto.randomUUID();
+      // Every update reuses the first report's anchor, so the note stays where
+      // `/restart` was typed while the restart's own messages land below it.
       const report = (content: string) => updateLocalState(sid, s => ({
         ...s,
         messages: [...s.messages.filter(m => m.id !== messageId), {
           id: messageId, role: 'system', content, timestamp: Date.now(),
+          afterSeq: s.messages.find(m => m.id === messageId)?.afterSeq ?? lastSeq(s.messages),
         }],
       }));
       report('Restarting session…');
@@ -3491,7 +3510,9 @@ export function ChatApp() {
       setInputForSession(sid, '');
       const report = (content: string) => updateLocalState(sid, s => ({
         ...s,
-        messages: [...s.messages, { id: crypto.randomUUID(), role: 'system', content, timestamp: Date.now() }],
+        messages: [...s.messages, {
+          id: crypto.randomUUID(), role: 'system', content, timestamp: Date.now(), afterSeq: lastSeq(s.messages),
+        }],
       }));
       const provider = session.provider || 'claude';
       const hostKey = session.remoteId || '';
@@ -5693,7 +5714,7 @@ export function ChatApp() {
                 if (m.isInteractiveTerminal) return false;
                 return true;
               })
-              .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER))
+              .sort((a, b) => messageSortKey(a) - messageSortKey(b))
               .slice(-visibleMessageCount)
           ));
           const activeAskId = cs.permRequest?.toolName === 'AskUserQuestion' ? cs.permRequest.requestId : null;
