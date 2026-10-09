@@ -98,6 +98,17 @@ contextBridge.exposeInMainWorld('codiby', {
   },
 
   /**
+   * The OS handed the app files to open (Finder "Open With", double-click,
+   * argv). Only a ping — drain them with `invoke('take_open_files')`, which
+   * also covers files that arrived before this listener existed.
+   */
+  onOpenFilesAvailable(cb: () => void): () => void {
+    const handler = () => cb();
+    ipcRenderer.on('open-files-available', handler);
+    return () => ipcRenderer.removeListener('open-files-available', handler);
+  },
+
+  /**
    * Current zoom factor of the host webContents. `BrowserView.setBounds()`
    * takes window-content DIPs while `getBoundingClientRect()` in the renderer
    * returns CSS pixels — these diverge when the user hits Cmd+=/Cmd+-. The

@@ -48,6 +48,9 @@ export interface CodibyNative {
   onRemoteTunnelStatus(cb: (msg: RemoteTunnelStatusEvent) => void): Unlisten;
   /** Floating chat bubbles: floating-id list changes, and "back to tab". */
   onBubbleEvent(cb: (msg: BubbleEvent) => void): Unlisten;
+  /** Ping when the OS hands over files to open; drain with `invoke('take_open_files')`.
+   *  Optional: a renderer can outlive an app version whose preload lacks it. */
+  onOpenFilesAvailable?(cb: () => void): Unlisten;
   /** Host webContents zoom factor (1.0 = no zoom). Sync, no IPC. */
   getZoomFactor(): number;
   /** On-disk path of a dropped File ('' when not disk-backed). Sync, no IPC. */

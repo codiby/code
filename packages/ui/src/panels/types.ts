@@ -48,6 +48,8 @@ export interface Tab {
   icon?: string;
   /** Dotted "dirty" indicator in the tab. */
   dirty?: boolean;
+  /** Short accent label after the title, e.g. "fuera" for a file outside the project. */
+  badge?: string;
   /** When false the × is hidden and the tab can't be closed by the user. */
   closable?: boolean;
   /** Italic "preview" tab (VSCode style): replaced when the next file opens,

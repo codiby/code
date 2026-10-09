@@ -6,6 +6,7 @@
  */
 import type { ReactNode } from 'react';
 import type { PanelNode, Tab } from './types';
+import { langColor } from '../lib/lang-color';
 
 export interface PanelProps {
   node: PanelNode;
@@ -25,40 +26,48 @@ export interface PanelProps {
   renderTabBarExtra?: (node: PanelNode) => ReactNode;
 }
 
-function TabPill({
+/** One tab in a strip. Also used by the standalone editor so both strips match. */
+export function TabPill({
   tab, active, focused, onActivate, onClose, onDoubleClick,
 }: { tab: Tab; active: boolean; focused: boolean; onActivate: () => void; onClose: () => void; onDoubleClick?: () => void }) {
+  // File tabs get a language-colored dot; the rest keep their glyph, muted so
+  // the strip stays quiet. Only the active tab is underlined — brighter when
+  // its panel holds focus.
+  const isFile = tab.kind === 'editor' || tab.kind === 'diff';
   return (
     <div
       onMouseDown={onActivate}
       onDoubleClick={onDoubleClick}
-      // Active pill: bordered on top/sides only; the ::after strip paints
-      // surface-colored over the tab bar's bottom border so the pill's open
-      // bottom merges into the body (Chrome/Edge style). The pseudo-element is
-      // load-bearing: a -mb-px overlap alone does NOT reliably cover the strip
-      // border (h-full inside a definite-height flex row + zoom rounding can
-      // leave the pill flush above the border line, re-exposing the seam).
-      className={`group flex items-center gap-1.5 h-full px-2.5 rounded-t-lg text-[12px] whitespace-nowrap cursor-default select-none border-b-0 ${
+      className={`group relative flex items-center gap-1.5 h-full px-2.5 text-[12px] whitespace-nowrap cursor-default select-none transition-colors ${
         active
-          ? `relative z-10 -mb-px bg-surface text-zinc-100 border-t border-x after:content-[''] after:absolute after:left-0 after:right-0 after:-bottom-0.5 after:h-1 after:bg-surface ${focused ? 'border-blue-500/60' : 'border-blue-500/25'}`
-          : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
+          ? `text-zinc-100 after:content-[''] after:absolute after:left-2.5 after:right-2.5 after:bottom-0 after:h-[2px] after:rounded-full ${focused ? 'after:bg-zinc-100' : 'after:bg-zinc-500'}`
+          : 'text-zinc-500 hover:text-zinc-200'
       }`}
       title={tab.title}
     >
-      {tab.icon && <span className="text-[11px] leading-none opacity-80">{tab.icon}</span>}
+      {isFile
+        ? <span className="w-[7px] h-[7px] rounded-full shrink-0" style={{ background: langColor(tab.title) }} />
+        : tab.icon && <span className="text-[11px] leading-none grayscale opacity-70">{tab.icon}</span>}
       <span className={`truncate max-w-[160px] ${tab.preview ? 'italic' : ''} ${tab.deleted ? 'line-through opacity-60' : ''}`}>{tab.title}</span>
-      {tab.dirty && <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 shrink-0" />}
-      {tab.closable !== false && (
+      {tab.badge && (
+        <span className="shrink-0 rounded border border-[#d97757]/30 px-1 text-[10px] leading-[14px] text-[#d97757]">{tab.badge}</span>
+      )}
+      {tab.closable !== false ? (
         <span
           role="button"
           tabIndex={-1}
+          aria-label={`Close ${tab.title}`}
           onMouseDown={(e) => { e.stopPropagation(); }}
           onClick={(e) => { e.stopPropagation(); onClose(); }}
-          className="opacity-0 group-hover:opacity-60 hover:!opacity-100 text-[12px] leading-none px-0.5 cursor-pointer"
+          className="relative -mr-1 flex h-4 w-4 shrink-0 items-center justify-center rounded text-[13px] leading-none text-zinc-500 hover:bg-surface-lighter hover:text-zinc-100 cursor-pointer"
         >
-          ×
+          {/* Dirty dot doubles as the close button: it turns into × on hover. */}
+          {tab.dirty && <span className="absolute h-1.5 w-1.5 rounded-full bg-zinc-300 group-hover:opacity-0" />}
+          <span className={tab.dirty ? 'opacity-0 group-hover:opacity-100' : active ? '' : 'opacity-0 group-hover:opacity-100'}>×</span>
         </span>
-      )}
+      ) : tab.dirty ? (
+        <span className="h-1.5 w-1.5 rounded-full bg-zinc-300 shrink-0" />
+      ) : null}
     </div>
   );
 }
@@ -127,7 +136,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
         onMouseDownCapture={onFocus}
         className={`flex flex-col min-w-0 min-h-0 h-full w-full rounded-lg overflow-hidden bg-base border ${edge}`}
       >
-        <div className="flex items-stretch h-[28px] shrink-0 px-1 gap-0.5 border-b border-border bg-base">
+        <div className="flex items-stretch h-[32px] shrink-0 px-1 gap-0.5 border-b border-border bg-surface">
           {barExtras}
         </div>
         <div className="flex-1 min-h-0 min-w-0 relative">{body}</div>
@@ -135,22 +144,17 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
     );
   }
 
-  // Chrome/Edge tabs: the body is a fully rounded bordered box; the strip is a
-  // borderless row floating above it. The active pill's surface-colored ::after
-  // erases the body's top border underneath it, so a single continuous outline
-  // runs up and around the active tab with rounded corners at all four joints.
-  // Strip pl-2 (= the 8px --radius) keeps the first pill — and its ::after
-  // eraser — clear of the body's top-left corner curve.
+  // Underline tabs: one rounded frame holds the strip and the body; the strip
+  // sits on the surface with a hairline below it, and the active tab is just
+  // brighter text plus a 2px underline resting on that hairline.
   return (
     <div
       onMouseDownCapture={onFocus}
-      className="flex flex-col min-w-0 min-h-0 h-full w-full"
+      className={`flex flex-col min-w-0 min-h-0 h-full w-full rounded-lg overflow-hidden bg-surface border ${edge}`}
     >
-      <div className="flex items-stretch h-[28px] shrink-0 pl-2 pr-1 gap-0.5 bg-base">
-        {/* No overflow clip here: overflow-x-auto forces overflow-y to clip,
-            which would shave off the active pill's 1px overhang and re-expose
-            the seam under the tab. Tabs truncate (max-w) instead of scrolling. */}
-        <div className="flex items-stretch gap-0.5 min-w-0">
+      <div className="flex items-stretch h-[32px] shrink-0 px-1 gap-0.5 border-b border-border bg-surface">
+        {/* Tabs truncate (max-w) instead of scrolling. */}
+        <div className="flex items-stretch min-w-0">
           {orderedTabs.map((t) => (
             <TabPill
               key={t.id}
@@ -166,7 +170,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
         {barExtras}
       </div>
 
-      <div className={`flex-1 min-h-0 min-w-0 relative rounded-lg overflow-hidden bg-surface border ${edge}`}>
+      <div className="flex-1 min-h-0 min-w-0 relative">
         {body}
       </div>
     </div>

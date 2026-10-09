@@ -12,6 +12,8 @@ import { SessionTabStrip } from './SessionTabStrip';
 import { TabBar, type NavView } from './TabBar';
 import { SessionsBoardView } from './SessionsBoardView';
 import { AutomationsView } from './AutomationsView';
+import { StandaloneEditor, openFileDialog, confirmCloseStandaloneFile } from './StandaloneEditor';
+import { useStandaloneFiles, openStandaloneFiles, saveStandaloneFile, hideStandaloneEditor, readLocalText } from '../lib/standalone-files';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
 import { RunningInstancesButton } from './RunningInstancesButton';
 import { MessageBubble, AgentBubble, ToolRunBubble, groupMessages, collapseToolRuns, AnsiText } from './MessageBubble';
@@ -94,6 +96,7 @@ import { LoopBanner } from './LoopBanner';
 import { RemoteVersionBanner } from './RemoteVersionBanner';
 import { ClaudeUpdateDialog } from './ClaudeUpdateDialog';
 import { ClaudeLoginDialog } from './ClaudeLoginDialog';
+import { ResumeInterruptedDialog } from './ResumeInterruptedDialog';
 import type { RequirementsSnapshot } from '../lib/requirements';
 import {
   ChatFocusLayout,
@@ -469,6 +472,7 @@ export function ChatApp() {
   /** Open a draft in this group; creating the session waits for first send. */
   const handleNewSessionInGroup = (groupId: string) => {
     if (!sidebarGroups[groupId]) return;
+    hideStandaloneEditor();
     setSelectedGroupId(groupId);
     setActiveNavView('sessions');
     setActiveId(null);
@@ -2711,6 +2715,7 @@ export function ChatApp() {
   /** Open the unbound New chat draft. */
   const handleNewSessionComposer = () => {
     if (layoutMode === 'focus') { handleNewSession(); return; }
+    hideStandaloneEditor();
     setSelectedGroupId(null);
     setActiveNavView('sessions');
     setActiveId(null);
@@ -2776,6 +2781,8 @@ export function ChatApp() {
     if (isPendingSessionId(id)) return;
     const prevId = activeId;
     setActiveId(id);
+    // Clicking the already-active session still means "back to the chat".
+    hideStandaloneEditor();
     // Clicking a session tab takes focus away from any group composer.
     setActiveNavView('sessions');
     setSelectedGroupId(null);
@@ -4218,6 +4225,93 @@ export function ChatApp() {
   const terminalsFocusedRef = useRef(terminalsFocused);
   terminalsFocusedRef.current = terminalsFocused;
 
+  // Standalone editor: files opened without a session (⌘O, a drop, Finder).
+  // It covers the main area of the IDE layouts, so a file opened while in
+  // focus mode switches back to the standard layout.
+  const standaloneVisible = useStandaloneFiles(s => s.visible);
+  useEffect(() => {
+    if (standaloneVisible && layoutMode === 'focus') changeLayoutMode('standard');
+  }, [standaloneVisible, layoutMode, changeLayoutMode]);
+
+  // Going to a session, a group or another view puts the editor aside; its
+  // tabs come back with the next open.
+  useEffect(() => { hideStandaloneEditor(); }, [activeId, activeNavView, selectedGroupId]);
+
+  /**
+   * Where a file from ⌘O / a drop / Finder lands. These paths are on this
+   * Mac, so a local session's editor can show them: they open there as a
+   * pinned tab next to the chat. With no session — or a remote one, whose
+   * editor reads from the remote host — they open in the standalone editor.
+   * Focus mode and group view have no session editor on screen, so those use
+   * the standalone one too.
+   */
+  const routeOpenFiles = async (paths: string[]) => {
+    const c = clientRef.current;
+    if (!c || paths.length === 0) return;
+    const session = activeId ? sessions.find(s => s.id === activeId) : undefined;
+    if (!session || session.remoteId || layoutMode === 'focus' || selectedGroupId) {
+      const host = session?.remoteId ? (remotes.find(r => r.id === session.remoteId)?.name || session.remoteId) : null;
+      const notice = host ? `Abierto aparte: la sesión «${session!.name}» corre en ${host} y este archivo está en esta Mac.` : null;
+      await openStandaloneFiles(c, paths, notice);
+      return;
+    }
+    const sid = session.id;
+    const unreadable: string[] = [];
+    for (const path of paths) {
+      if (IMAGE_EXTS.has((path.split('.').pop() || '').toLowerCase())) {
+        const dataUrl = await c.readFileDataUrl(path);
+        if (dataUrl) openFileInEditor(sid, path, dataUrl, undefined, { image: true, readOnly: true, pin: true });
+        else unreadable.push(path);
+        continue;
+      }
+      const file = await readLocalText(c, path);
+      if (file.content !== null) openFileInEditor(sid, path, file.content, undefined, { pin: true });
+      else unreadable.push(path);
+    }
+    // Folders, binaries and unreadable files explain themselves in the standalone editor.
+    if (unreadable.length) { await openStandaloneFiles(c, unreadable); return; }
+    hideStandaloneEditor();
+    setActiveNavView('sessions');
+  };
+  const routeOpenFilesRef = useRef(routeOpenFiles);
+  routeOpenFilesRef.current = routeOpenFiles;
+
+  // Files the OS handed to the desktop app (Finder "Open With", argv). Main
+  // queues them; drain on connect and whenever it pings.
+  useEffect(() => {
+    const native = getNative();
+    if (!client || !native?.onOpenFilesAvailable) return;
+    const drain = () => {
+      void native.invoke<string[]>('take_open_files').then(paths => routeOpenFilesRef.current(paths ?? [])).catch(() => {});
+    };
+    drain();
+    return native.onOpenFilesAvailable(drain);
+  }, [client]);
+
+  // Files dropped anywhere on the window open in the standalone editor.
+  // Drop zones that take files themselves (the composer attaches them) call
+  // preventDefault first, so they keep working. Without the dragover
+  // preventDefault, Electron would navigate the whole window to the file.
+  useEffect(() => {
+    const native = getNative();
+    if (!client || !native) return;
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
+    const onDragOver = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
+    const onDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      const paths = [...(e.dataTransfer?.files ?? [])].map(f => native.getPathForFile(f)).filter(Boolean);
+      void routeOpenFilesRef.current(paths);
+    };
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [client]);
+
   const commandHandlersRef = useRef<Record<string, () => void>>({});
   commandHandlersRef.current = {
     'command-palette': () => {
@@ -4236,9 +4330,19 @@ export function ChatApp() {
     'focus-chat-input': () => inputRef.current?.focus(),
     'find-in-chat': () => setFindOpen(true),
     'search-files': () => { setSearchActive(true); setExplorerCollapsed(false); },
-    'save-file': () => saveRef.current(),
+    'open-file': () => { void openFileDialog(client, routeOpenFiles); },
+    // While the standalone editor is up, save/close act on its tabs, not the session's.
+    'save-file': () => {
+      const { visible, activePath } = useStandaloneFiles.getState();
+      if (visible) { if (activePath && client) void saveStandaloneFile(client, activePath); return; }
+      saveRef.current();
+    },
     'new-file': () => newFileRef.current(),
-    'close-tab': () => closePanelRef.current(),
+    'close-tab': () => {
+      const { visible, activePath } = useStandaloneFiles.getState();
+      if (visible) { if (activePath) confirmCloseStandaloneFile(activePath); return; }
+      closePanelRef.current();
+    },
     'new-session': () => setShowNewSession(true),
     'clear-chat': () => { if (activeId) clearSession(activeId); },
     'archive-session': () => { if (activeId) handleCloseTab(activeId); },
@@ -6374,7 +6478,7 @@ export function ChatApp() {
               collapsed={tabsCollapsed}
               onToggleCollapsed={toggleTabsCollapsed}
               activeNavView={activeNavView}
-              onSelectNavView={setActiveNavView}
+              onSelectNavView={(v) => { hideStandaloneEditor(); setActiveNavView(v); }}
               onOpenSkills={() => setShowSkills(true)}
               onOpenMemory={() => setShowMemory(true)}
               onOpenSettings={() => setProjectSettings({ open: true })}
@@ -6384,7 +6488,9 @@ export function ChatApp() {
               content — see below. */}
 
           <div className="flex-1 flex flex-col min-w-0">
-            {activeNavView === 'sessions-board' ? (
+            {standaloneVisible ? (
+              <StandaloneEditor client={client} onOpenPaths={(paths) => routeOpenFilesRef.current(paths)} />
+            ) : activeNavView === 'sessions-board' ? (
               <SessionsBoardView
                 sessions={sessions}
                 statuses={statuses}
@@ -6456,7 +6562,9 @@ export function ChatApp() {
                     // is an italic `preview` tab, replaced when the next file
                     // opens unless pinned (double-click) or modified.
                     for (const t of active.editorTabs) {
-                      panelTabs.push({ id: 'editor:' + t.path, kind: t.image ? 'image' : 'editor', title: t.path.split('/').pop() || 'editor', icon: t.image ? '🖼️' : '📄', dirty: t.dirty, preview: t.preview, deleted: t.deleted, zone: 'main' });
+                      // Files outside the session's folder (e.g. opened from Finder) say so.
+                      const outside = !!explorerRoot && !t.path.startsWith(explorerRoot.replace(/\/$/, '') + '/') && !t.path.startsWith('untitled-');
+                      panelTabs.push({ id: 'editor:' + t.path, kind: t.image ? 'image' : 'editor', title: t.path.split('/').pop() || 'editor', icon: t.image ? '🖼️' : '📄', dirty: t.dirty, preview: t.preview, deleted: t.deleted, badge: outside ? 'fuera' : undefined, zone: 'main' });
                     }
                     if (openMockup) panelTabs.push({ id: 'mockup', kind: 'mockup', title: openMockup.name, icon: '🎨', zone: 'main' });
                     // One panel tab per open browser — the previews live
@@ -7910,6 +8018,7 @@ export function ChatApp() {
         <RemoteVersionBanner client={client} remotes={remotes} remoteStatuses={remoteStatuses} />
         <ClaudeUpdateDialog client={client} />
         <ClaudeLoginDialog client={client} remotes={remotes} remoteStatuses={remoteStatuses} />
+        <ResumeInterruptedDialog client={client} onOpenSession={handleSelectSession} />
         <SessionDeleteToast
           items={pendingDeletes}
           onUndo={undoQuickDelete}

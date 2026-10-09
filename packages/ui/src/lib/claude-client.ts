@@ -610,6 +610,8 @@ export type ClaudeAuthStatus = {
 
 export type ClaudeLoginMethod = 'claudeai' | 'console';
 
+export type InterruptedSession = { id: string; name: string; cwd: string; interruptedAt: number };
+
 export type ClaudeLoginFlow = {
   id: string;
   method: ClaudeLoginMethod;
@@ -1811,6 +1813,33 @@ export class ClaudeClient {
     return resp.json();
   }
 
+  /** Sessions this bridge's previous run left mid-turn (app quit, crash). */
+  async getInterruptedSessions(): Promise<InterruptedSession[]> {
+    const resp = await authedFetch(`${this.serverUrl}/interrupted-sessions`);
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  /** Sends each session a "continue where you left off" message. */
+  async resumeInterruptedSessions(ids: string[]): Promise<{ id: string; ok: boolean; error?: string }[]> {
+    const resp = await authedFetch(`${this.serverUrl}/interrupted-sessions/resume`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!resp.ok) throw new Error(`Resume failed (${resp.status})`);
+    return resp.json();
+  }
+
+  /** Stops offering these sessions (all of them when `ids` is omitted). */
+  async dismissInterruptedSessions(ids?: string[]): Promise<void> {
+    await authedFetch(`${this.serverUrl}/interrupted-sessions/dismiss`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(ids ? { ids } : {}),
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Claude Code sign-in. Each bridge host has its own CLI credentials, so every
   // call takes the remote it targets (null = the local bridge).
@@ -2031,8 +2060,9 @@ export class ClaudeClient {
     return resp.json();
   }
 
-  async readFile(path: string): Promise<{ path: string; content: string } | null> {
-    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`));
+  /** `remoteId` pins the bridge (null = local); omitted, it follows the focused session's host. */
+  async readFile(path: string, remoteId?: string | null): Promise<{ path: string; content: string } | null> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-content?path=${encodeURIComponent(path)}`, remoteId));
     if (!resp.ok) return null;
     return resp.json();
   }
@@ -2061,8 +2091,8 @@ export class ClaudeClient {
     });
   }
 
-  async writeFile(path: string, content: string): Promise<boolean> {
-    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-content`), {
+  async writeFile(path: string, content: string, remoteId?: string | null): Promise<boolean> {
+    const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/file-content`, remoteId), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, content }),

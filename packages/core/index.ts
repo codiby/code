@@ -88,6 +88,7 @@ import { handleSessionNotes } from './handlers/session-notes';
 import { getOpencodeInfo } from './handlers/opencode-info';
 import { getClaudeInfo } from './handlers/claude-info';
 import { getClaudeVersionStatus, runClaudeUpdate } from './handlers/claude-update';
+import { loadInterruptedTurns, getInterruptedTurns, clearInterruptedTurns } from './session/interrupted';
 import {
   getClaudeAuthStatus,
   getClaudeLoginFlow,
@@ -207,6 +208,12 @@ const SPAWN_MODE: SpawnMode = parseSpawnMode();
 // touches disk. No-op once the move has happened.
 migrateToCodiby();
 loadSessions();
+// Turns the previous run never finished. Loops are left out: they come back
+// paused and have their own resume control.
+loadInterruptedTurns((id) => {
+  const s = sessions.get(id);
+  return !!s && s.status === 'open' && s.loopState?.phase !== 'paused';
+});
 loadRemotes();
 restoreProcessRegistry();
 ensureMcpConfig();
@@ -1703,6 +1710,34 @@ app.post('/sessions/:id/messages', async (c) => {
   if (!body.text) return Response.json({ error: 'text required' }, { status: 400, headers: corsHeaders });
   const result = await sendMessageToSession(sid, body.text, body.images);
   return Response.json(result, { headers: corsHeaders });
+});
+
+// Sessions the previous run left mid-turn (see session/interrupted.ts). The
+// UI asks once on launch; restoring sends a plain "continue", which also
+// respawns the provider with its resume id.
+const RESUME_PROMPT = 'Continúa.';
+
+app.get('/interrupted-sessions', () => {
+  const list = getInterruptedTurns().flatMap(({ sessionId, at }) => {
+    const s = sessions.get(sessionId);
+    return s ? [{ id: s.id, name: s.name, cwd: s.cwd, interruptedAt: at }] : [];
+  });
+  return Response.json(list, { headers: corsHeaders });
+});
+
+app.post('/interrupted-sessions/resume', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { ids?: string[] };
+  const offered = new Set(getInterruptedTurns().map(t => t.sessionId));
+  const ids = (Array.isArray(body.ids) ? body.ids : []).filter(id => typeof id === 'string' && offered.has(id));
+  clearInterruptedTurns(ids);
+  const results = await Promise.all(ids.map(async (id) => ({ id, ...(await sendMessageToSession(id, RESUME_PROMPT)) })));
+  return Response.json(results, { headers: corsHeaders });
+});
+
+app.post('/interrupted-sessions/dismiss', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { ids?: string[] };
+  clearInterruptedTurns(Array.isArray(body.ids) ? body.ids : undefined);
+  return Response.json({ ok: true }, { headers: corsHeaders });
 });
 
 app.delete('/sessions/:id', async (c) => {

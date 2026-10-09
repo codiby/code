@@ -66,6 +66,7 @@ export const COMMANDS: CommandDef[] = [
   { id: 'focus-chat-input', title: 'Focus Chat Input',     category: 'Navigation', when: 'always', defaultChord: 'mod+l' },
   { id: 'find-in-chat',     title: 'Find in Chat',         category: 'Chat',       when: 'terminalsNotFocused', defaultChord: 'mod+f' },
   { id: 'search-files',     title: 'Search Files',         category: 'Navigation', when: 'always', defaultChord: 'mod+shift+f' },
+  { id: 'open-file',        title: 'Open File…',           category: 'Editor',     when: 'always', defaultChord: 'mod+o' },
   { id: 'save-file',        title: 'Save File',            category: 'Editor',     when: 'always', defaultChord: 'mod+s' },
   { id: 'new-file',         title: 'New File',             category: 'Editor',     when: 'always', defaultChord: 'mod+n' },
   { id: 'close-tab',        title: 'Close Editor / Tab',   category: 'Navigation', when: 'always', defaultChord: 'mod+w' },

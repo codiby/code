@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.31.9",
+  "version": "0.31.10",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "electron-dist/main.js",
@@ -83,6 +83,23 @@
       {
         "from": "packages/desktop/resources/swagger-ui-dist",
         "to": "swagger-ui-dist"
+      }
+    ],
+    "fileAssociations": [
+      {
+        "name": "Text and source code",
+        "role": "Editor",
+        "rank": "Alternate",
+        "ext": [
+          "txt", "md", "markdown", "log", "csv", "tsv",
+          "json", "jsonc", "yaml", "yml", "toml", "ini", "conf", "cfg", "env", "xml", "plist",
+          "js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx", "vue", "svelte",
+          "html", "htm", "css", "scss", "sass", "less",
+          "py", "rb", "php", "go", "rs", "java", "kt", "kts", "swift", "scala", "dart", "lua", "pl", "r",
+          "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "m", "mm", "cs", "fs",
+          "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+          "sql", "graphql", "gql", "proto", "dockerfile", "makefile", "gradle", "tf", "hcl", "nix"
+        ]
       }
     ],
     "mac": {

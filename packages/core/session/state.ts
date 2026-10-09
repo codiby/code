@@ -7,6 +7,7 @@
 import { randomUUID } from 'crypto';
 import { loadMessages, loadUIState, saveUIState, appendMessage } from './storage';
 import { touchSession, unarchiveSession } from './sessions';
+import { trackTurnState } from './interrupted';
 import type { ProviderModelInfo } from '../provider/types';
 
 export interface ChatMessage {
@@ -250,6 +251,8 @@ export function updateSessionState(sessionId: string, fn: (state: SessionState) 
   const current = getSessionState(sessionId);
   const next = fn(current);
   sessionStates.set(sessionId, next);
+  // Mirror "mid-turn" to disk so a turn cut off by the bridge dying can be offered for resume.
+  if (current.isStreaming !== next.isStreaming) trackTurnState(sessionId, next.isStreaming);
   return next;
 }
 

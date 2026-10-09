@@ -9,8 +9,8 @@
  *   - on shutdown, kill the sidecar and tear down all preview surfaces.
  */
 import { app, BrowserWindow, ipcMain, shell, dialog, Notification, crashReporter, Menu, clipboard } from 'electron';
-import { join, basename } from 'node:path';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { join, basename, resolve } from 'node:path';
+import { readFileSync, writeFileSync, statSync } from 'node:fs';
 
 import { configureRemoteRegistry } from './remotes';
 import { getBridgePort, killSidecar } from './bridge_server';
@@ -86,10 +86,48 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
 }
-app.on('second-instance', () => {
+app.on('second-instance', (_e, argv, workingDirectory) => {
+  // Windows/Linux "Open with" launches a second instance with the file in argv.
+  const files = filesFromArgv(argv.slice(1), workingDirectory);
+  if (files.length) { queueOpenFiles(files); return; }
   if (!mainWindow) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.focus();
+});
+
+// ---------------------------------------------------------------------------
+// Files handed over by the OS (Finder "Open With", double-click, Dock drop,
+// or a path in argv on Windows/Linux). macOS fires `open-file` before the app
+// is ready on a cold launch, so paths queue here and the renderer drains them
+// with `take_open_files` once it's listening — on mount, and again whenever
+// `open-files-available` pings.
+// ---------------------------------------------------------------------------
+const pendingOpenFiles: string[] = [];
+
+function filesFromArgv(args: string[], cwd: string): string[] {
+  return args
+    .filter((a) => a && !a.startsWith('-'))
+    .map((a) => resolve(cwd, a))
+    .filter((p) => { try { return statSync(p).isFile(); } catch { return false; } });
+}
+
+function queueOpenFiles(paths: string[]) {
+  if (paths.length === 0) return;
+  pendingOpenFiles.push(...paths);
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    win.webContents.send('open-files-available');
+  } else if (app.isReady()) {
+    showMainWindow().catch(() => {});
+  }
+}
+
+app.on('open-file', (e, path) => {
+  e.preventDefault();
+  queueOpenFiles([path]);
 });
 
 app.commandLine.appendSwitch(
@@ -433,6 +471,15 @@ function registerIpcHandlers(): void {
     if (res.canceled || res.filePaths.length === 0) return [];
     return res.filePaths.map((p) => ({ name: basename(p), data: readFileSync(p) }));
   });
+  // Paths only — the standalone editor reads them through the local bridge.
+  ipcMain.handle('app:pick_paths', async () => {
+    const opts = { properties: ['openFile', 'multiSelections'] as Array<'openFile' | 'multiSelections'> };
+    const res = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, opts)
+      : await dialog.showOpenDialog(opts);
+    return res.canceled ? [] : res.filePaths;
+  });
+  ipcMain.handle('app:take_open_files', () => pendingOpenFiles.splice(0));
 
   // --- auto-update ----------------------------------------------------------
   registerUpdaterIpc(() => mainWindow);
@@ -447,6 +494,11 @@ function registerIpcHandlers(): void {
 app.whenReady().then(async () => {
   installCliScript();
   logMain(`[startup] taskr ${app.getVersion()} — diagnostics log at ${diagnosticsLogPath()}`);
+  // Cold launch with a file on Windows/Linux (macOS uses `open-file`). Packaged
+  // builds have no script argument; dev runs pass `electron <main.js>` first.
+  if (process.platform !== 'darwin') {
+    pendingOpenFiles.push(...filesFromArgv(process.argv.slice(app.isPackaged ? 1 : 2), process.cwd()));
+  }
 
   mainWindow = createMainWindow();
   initBrowserPreview({
