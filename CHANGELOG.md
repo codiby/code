@@ -5,6 +5,18 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.15] — 2026-10-09
+
+### Fixed
+
+- Update the bundled Codex runtime from 0.153.4 to 0.162.1 so the model picker includes the newer models available to the account.
+- Keep local system notes in chat timeline order.
+- Focus newly created untitled files in the editor.
+
+### Added
+
+- Move a session into a sidebar group by dropping it onto the group's tree row.
+
 ## [0.30.0] — 2026-09-10
 
 ### Added

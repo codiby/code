@@ -1,4 +1,4 @@
-/** Codex 0.153.4 app-server JSONL transport. Keeps the return channel open for approvals. */
+/** Codex app-server JSONL transport. Keeps the return channel open for approvals. */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { existsSync } from 'node:fs';
