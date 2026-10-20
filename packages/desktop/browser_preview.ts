@@ -199,7 +199,7 @@ export async function openBrowserPreview(args: {
       : args.openSeq !== existing.openSeq;
     if (repointed) {
       existing.openSeq = args.openSeq ?? existing.openSeq;
-      await existing.view.webContents.loadURL(targetUrl);
+      startLoad(existing.view.webContents, targetUrl);
     }
     return;
   }
@@ -240,7 +240,18 @@ export async function openBrowserPreview(args: {
   wireWebContents(args.label, view.webContents);
   attachCdp(args.label, view.webContents);
 
-  await view.webContents.loadURL(targetUrl);
+  startLoad(view.webContents, targetUrl);
+}
+
+/** Kick off navigation without holding the open IPC hostage to it. The
+ *  renderer only starts tracking bounds once `open_browser_preview`
+ *  resolves, so awaiting `loadURL` left the view pinned at its initial rect
+ *  for the whole page load — and forever when the load rejected
+ *  (ERR_ABORTED on a redirect, a click before load finished, an offline
+ *  host): window resizes then never reached the view until a remount. The
+ *  page renders its own error state, so a failed load isn't an open error. */
+function startLoad(wc: WebContents, url: string): void {
+  wc.loadURL(url).catch(() => {});
 }
 
 export function closeBrowserPreview(label: string): boolean {
