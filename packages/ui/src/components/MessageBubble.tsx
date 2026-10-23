@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
-import { ChevronDown, ChevronRight, Sparkles, Copy, Check } from 'lucide-react';
+import { ChevronDown, ChevronRight, Sparkles, Copy, Check, Reply } from 'lucide-react';
+import { canReplyTo, readReply } from '../lib/message-reply';
+import { ReplyQuote } from './ReplyQuote';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
 import { isDotenvPath } from '../lib/monaco-dotenv';
 import { MONO_FONT_STACK } from '../lib/fonts';
@@ -24,6 +26,7 @@ const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m
 
 interface Props {
   message: ChatMessage;
+  onReply?: (message: ChatMessage) => void;
   onOpenTerminal?: (msgId: string) => void;
   isLast?: boolean;
   onAnswerAskUser?: (answers: Record<string, string>) => void;
@@ -1077,11 +1080,18 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry, onCancelDelivery, nested }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, onReply, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry, onCancelDelivery, nested }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;
   const isThinking = !!message.isThinking;
+  const replyAction = onReply && canReplyTo(message) ? (
+    <button type="button" aria-label="Responder al mensaje" title="Responder al mensaje"
+      onClick={() => onReply(message)}
+      className="absolute right-1 top-1 z-10 rounded-md p-1 text-zinc-500 opacity-0 transition-colors hover:bg-white/10 hover:text-violet-300 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-violet-400 [@media(hover:none)]:opacity-100">
+      <Reply size={15} />
+    </button>
+  ) : null;
   // Local fullscreen image-viewer state — only the bubbles that contain
   // clickable images ever set this, but it lives at the top so any branch
   // can render the (portal-mounted) viewer next to its main content. The
@@ -1165,6 +1175,7 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
   }
 
   if (isUser) {
+    const body = readReply(message.content);
     const pending = !!message.isPending;
     const sending = message.deliveryStatus === 'sending';
     const failed = message.deliveryStatus === 'failed';
@@ -1179,7 +1190,7 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
               backgroundColor: `${accent}26`,
               ...(dim ? { borderColor: `${accent}66` } : {}),
             } : undefined}
-            className={`rounded-2xl rounded-br-sm px-3.5 py-2 transition-opacity ${
+            className={`relative rounded-2xl rounded-br-sm px-3.5 py-2 transition-opacity ${replyAction ? 'pr-9' : ''} ${
               accent ? '' : 'bg-blue-600/15'
             } ${
               dim ? `opacity-50 border border-dashed ${accent ? '' : 'border-blue-500/40'}` : ''
@@ -1187,6 +1198,8 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
               failed ? 'border border-red-500/50' : ''
             }`}
           >
+            {replyAction}
+            {body.reply && <div className="mb-2"><ReplyQuote reply={body.reply} /></div>}
             {message.images && message.images.length > 0 && (
               <div className="flex gap-1.5 flex-wrap mb-1.5">
                 {message.images.map((img, i) => {
@@ -1204,8 +1217,8 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
                 })}
               </div>
             )}
-            {message.content && (
-              <Markdown text={message.content} className="text-[13px] text-zinc-200 leading-relaxed" />
+            {body.text && (
+              <Markdown text={body.text} className="text-[13px] text-zinc-200 leading-relaxed" />
             )}
             {pending && (
               <div className="mt-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-blue-300/70">
@@ -1270,17 +1283,18 @@ export const MessageBubble = memo(function MessageBubble({ message, onOpenTermin
   const assistantTime = formatMsgTime(message.timestamp);
   return (
     <div className="group relative py-1">
+      {replyAction}
       {assistantTime !== null && (
         <span
           title={formatMsgTimeFull(message.timestamp)}
-          className="pointer-events-none absolute top-1 right-0 text-[11px] tabular-nums text-zinc-600 whitespace-nowrap bg-zinc-950/80 px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+          className={`pointer-events-none absolute top-1 ${replyAction ? 'right-9' : 'right-0'} text-[11px] tabular-nums text-zinc-600 whitespace-nowrap bg-zinc-950/80 px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity`}
         >
           {assistantTime}
         </span>
       )}
       <Markdown
         text={message.content}
-        className="text-[13px] text-zinc-300 leading-relaxed"
+        className={`text-[13px] text-zinc-300 leading-relaxed ${replyAction ? 'pr-8' : ''}`}
         messageId={message.id}
         explainParts={message.explainParts}
       />

@@ -1,4 +1,5 @@
 import type { SessionState } from './claude-client';
+import type { MessageReply } from './message-reply';
 import type { MockupComment } from './mockup-inspector';
 import type { PlanComment } from '../components/PlanPanel';
 import type { PRInfo } from '../components/PRDetail';
@@ -16,6 +17,8 @@ export type PendingMessage = {
  *  server doesn't track these fields, so the `onSessionState` merge must
  *  preserve them across re-subscribes (see the merge in ChatApp). */
 export type LocalSessionState = SessionState & {
+  /** Unsent citation, scoped to this session like its draft and attachments. */
+  replyTo?: MessageReply | null;
   contextTokens: number;
   pendingMessages: PendingMessage[];
   // Live HTML mockup preview shown in the side panel. UI-only — the bridge

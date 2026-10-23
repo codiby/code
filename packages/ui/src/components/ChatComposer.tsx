@@ -15,7 +15,9 @@
  *   - selection completion handlers for slash and file-mention (they only
  *     manipulate this pane's input via `onChangeInput`).
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { MessageReply } from '../lib/message-reply';
+import { ReplyQuote } from './ReplyQuote';
 import { useCodexModels, codexEfforts } from '../lib/codex-models';
 import { File as FileIcon, Folder as FolderIcon, Send as SendIcon } from 'lucide-react';
 import { CompactionIndicator } from './CompactionIndicator';
@@ -156,6 +158,8 @@ interface Props {
   autoFocus?: boolean;
 
   input: string;
+  replyTo?: MessageReply | null;
+  onCancelReply?: () => void;
   onChangeInput: (val: string | ((prev: string) => string)) => void;
   pastedImages: PastedImage[];
   onChangePastedImages: (
@@ -230,6 +234,9 @@ export function ChatComposer(props: Props) {
   // instance has independent slash / file-mention picker state.
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (props.replyTo) editorRef.current?.focus();
+  }, [props.replyTo]);
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
   const dropDepthRef = useRef(0);
@@ -348,6 +355,12 @@ export function ChatComposer(props: Props) {
   // Chat-mode key handling on the contenteditable editor. Selection comes from
   // `caret()` (character offsets), and edits go through `applyEdit`.
   const handleChatKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape' && props.replyTo && !slash.isActive && !fileMention.isActive) {
+      e.preventDefault();
+      e.stopPropagation();
+      props.onCancelReply?.();
+      return;
+    }
     const mod = e.metaKey || e.ctrlKey;
     // Wrap selection: Mod+E inline `code`, Mod+Shift+E ``` block.
     if (mod && (e.key === 'e' || e.key === 'E')) {
@@ -645,6 +658,11 @@ export function ChatComposer(props: Props) {
             {dragKind && (
               <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[18px] border-2 border-dashed border-violet-400/70 bg-violet-500/10 text-sm font-medium text-violet-200 pointer-events-none">
                 {dragKind === 'file-reference' ? 'Drop to mention file' : 'Drop files to attach'}
+              </div>
+            )}
+            {!isTerminalMode && props.replyTo && (
+              <div className="px-3 pt-3" aria-label="Respondiendo a un mensaje">
+                <ReplyQuote reply={props.replyTo} onCancel={props.onCancelReply} />
               </div>
             )}
             {refs && refs.length > 0 && (

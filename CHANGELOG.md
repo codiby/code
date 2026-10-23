@@ -5,6 +5,17 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.17] — 2026-10-23
+
+### Added
+
+- Reply to user and assistant messages from the desktop chat, with a quoted preview above the composer and cancellation using Escape or the close button.
+- Read and send the same reply references as Android, preserving citations in conversation history, queued messages, and delivery retries.
+
+### Fixed
+
+- Keep browser preview bounds in sync without waiting for the page to load.
+
 ## [0.31.15] — 2026-10-09
 
 ### Fixed

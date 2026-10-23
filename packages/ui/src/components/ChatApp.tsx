@@ -109,6 +109,7 @@ import {
 import { BookmarkPlus, MessageCircle, MessageSquarePlus } from 'lucide-react';
 import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
+import { readReply, replyFromMessage, withReply } from '../lib/message-reply';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
 import { GroupComposer } from './GroupComposer';
 import { EmptyComposerStage } from './EmptyComposerStage';
@@ -1302,6 +1303,7 @@ export function ChatApp() {
     openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
     input: '', inputHistory: [],
+    replyTo: null,
     contextTokens: 0,
     pendingMessages: [],
     openMockup: null, lastMockup: null,
@@ -1603,6 +1605,7 @@ export function ChatApp() {
                 // first message as the provider boots.
                 pastedImages: existing?.pastedImages ?? [],
                 attachedFiles: existing?.attachedFiles ?? [],
+                replyTo: existing?.replyTo ?? null,
                 pendingMessages: existing?.pendingMessages ?? [],
                 editorTabs: existing?.editorTabs ?? [],
                 activeEditorPath: existing?.activeEditorPath ?? null,
@@ -3597,7 +3600,8 @@ export function ChatApp() {
       updateLocalState(sid, s => ({ ...s, permRequest: null }));
     }
 
-    const effectiveText = text || ' ';
+    const effectiveText = withReply(text || ' ', state.replyTo ?? null);
+    updateLocalState(sid, s => ({ ...s, replyTo: null }));
 
     // Session closed (remote bridge offline / runtime stopped): stage the
     // message locally with a "sending" loader instead of dropping it. The
@@ -4847,7 +4851,7 @@ export function ChatApp() {
         if (m.role === 'system') continue;
         if (m.isToolResult || m.toolName) continue;
         if (m.isThinking) continue;
-        const c = (m.content || '').trim();
+        const c = (m.role === 'user' ? readReply(m.content || '').text : m.content || '').trim();
         if (!c) continue;
         preview = c;
         break;
@@ -5561,6 +5565,8 @@ export function ChatApp() {
         widthClass={chatWidthClass}
         autoFocus={sid === activeId}
         input={s.input}
+        replyTo={s.replyTo}
+        onCancelReply={() => updateLocalState(sid, st => ({ ...st, replyTo: null }))}
         onChangeInput={(val) => setInputForSession(sid, val)}
         pastedImages={s.pastedImages}
         onChangePastedImages={(val) => setPastedImagesForSession(sid, val)}
@@ -5764,6 +5770,7 @@ export function ChatApp() {
               <div key={item.uiKey ?? item.id} id={`msg-${item.id}`} className={inFold && !item.toolName ? 'opacity-70' : undefined}>
                 <MessageBubble
                   message={item}
+                  onReply={(message) => updateLocalState(sid, st => ({ ...st, replyTo: replyFromMessage(message) }))}
                   onOpenTerminal={handleOpenTerminal}
                   isLast={isLast}
                   onAnswerAskUser={answerCb}
