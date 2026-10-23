@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Markdown } from './Markdown';
 import {
   ArrowLeftRight, Brain, Check, ChevronDown, CircleDot, GitCompare, List, RefreshCw, Search, Send, Trash2, UserRound, X,
 } from 'lucide-react';
@@ -67,6 +68,16 @@ function PresenceChip({ list }: { list: { host: HostRow; presence: Presence }[] 
   return <span className="ml-auto shrink-0 flex items-center gap-1 text-[10px] text-amber-400"><CircleDot size={11} />{label}</span>;
 }
 
+function MemoryPreview({ content }: { content: string }) {
+  // Frontmatter describes the memory; keep it in the source, outside the prose.
+  const body = content.replace(/^\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, '');
+  return (
+    <div className="flex-1 min-w-0 overflow-auto bg-base border border-border rounded-lg px-4 py-3.5 text-[13px] leading-relaxed text-zinc-300">
+      {body.trim() ? <Markdown text={body} /> : <p className="text-zinc-500">No content to preview.</p>}
+    </div>
+  );
+}
+
 export function MemoryModal({ open, onClose, client, remotes, remoteStatuses }: Props) {
   const hosts = useMemo<HostRow[]>(() => [
     { key: LOCAL, name: 'This computer', color: '#4ade80', online: true },
@@ -86,6 +97,7 @@ export function MemoryModal({ open, onClose, client, remotes, remoteStatuses }: 
   const [query, setQuery] = useState('');
 
   const [content, setContent] = useState('');
+  const [viewMode, setViewMode] = useState<'preview' | 'edit'>('preview');
   const [baseline, setBaseline] = useState('');
   const [fileLoading, setFileLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -194,6 +206,7 @@ export function MemoryModal({ open, onClose, client, remotes, remoteStatuses }: 
   useEffect(() => {
     setCompare(null);
     setConfirmDelete(false);
+    setViewMode('preview');
     if (!client || !current || !memory) { setContent(''); setBaseline(''); return; }
     if (current.scope === 'user' && !current.exists) { setContent(''); setBaseline(''); return; }
     const target = targetFor(current, project);
@@ -590,21 +603,36 @@ export function MemoryModal({ open, onClose, client, remotes, remoteStatuses }: 
                   </div>
                 </div>
                 {error && <div className="mx-[18px] mt-3 text-[12px] text-red-400/90">{error}</div>}
+                <div className="flex items-center gap-1 mx-[18px] mt-3" role="group" aria-label="Memory view">
+                  {(['preview', 'edit'] as const).map(mode => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={viewMode === mode}
+                      onClick={() => setViewMode(mode)}
+                      className={`px-3 py-1 rounded-md text-[12px] font-semibold ${viewMode === mode ? 'bg-violet-400/15 text-violet-300' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >
+                      {mode === 'preview' ? 'Preview' : 'Edit'}
+                    </button>
+                  ))}
+                </div>
                 <div className="flex-1 flex gap-3 mx-[18px] my-3.5 min-h-0">
-                  <textarea
+                  {fileLoading ? (
+                    <div className="flex-1 text-[12px] text-zinc-500" role="status">Loading memory…</div>
+                  ) : viewMode === 'preview' ? <MemoryPreview content={content} /> : <textarea
                     value={content}
                     onChange={e => setContent(e.target.value)}
                     disabled={fileLoading}
                     spellCheck={false}
                     placeholder={current.scope === 'user' && !current.exists ? 'Write instructions to create this file on this host…' : ''}
                     className="flex-1 min-w-0 bg-base border border-border rounded-lg px-4 py-3.5 text-[12.5px] leading-relaxed text-zinc-300 font-mono outline-none focus:border-violet-500 resize-none"
-                  />
+                  />}
                   {compare && (
                     <div className="flex-1 min-w-0 flex flex-col">
                       <div className="text-[10px] uppercase tracking-wider text-zinc-600 font-semibold mb-1.5 flex items-center gap-1.5">
                         <ArrowLeftRight size={11} />{compare.host.name} (read-only)
                       </div>
-                      <pre className="flex-1 overflow-auto bg-base/60 border border-dashed border-border rounded-lg px-4 py-3.5 text-[12.5px] leading-relaxed text-zinc-400 font-mono whitespace-pre-wrap">{compare.content}</pre>
+                      {viewMode === 'preview' ? <MemoryPreview content={compare.content} /> : <pre className="flex-1 overflow-auto bg-base/60 border border-dashed border-border rounded-lg px-4 py-3.5 text-[12.5px] leading-relaxed text-zinc-400 font-mono whitespace-pre-wrap">{compare.content}</pre>}
                     </div>
                   )}
                 </div>
