@@ -1,44 +1,40 @@
 # Share images with a Codiby session
 
-From Photos, Files, a gallery or another app, select **1–4 images → Share →
-Codiby Code**. Pick an active session, optionally add a message, and tap **Enviar**.
-The chat picker uses the same saved active chats as Home, including pinned order
-and message previews. Chats appear immediately on cold start; search finds a
-chat by name, host or project. The compact image/message composer stays at the
-bottom, with a round send button after selecting a chat.
-It sends directly from the share screen; opening the React Native chat first is
-not required. Nothing is sent until the user selects a destination and confirms.
+Select **1–4 images → Share → Codiby Code**, choose a conversation, optionally
+add a message, then tap **Enviar**. Nothing is sent before confirmation.
 
-Open Codiby Code once after installing this version so it can synchronize the
-configured hosts with the native share receiver. Changes or removals in Settings
-also update that native configuration. Images and their URI grants stay within
-the share operation; the native mirror contains host configuration and chat-list
-metadata, not images.
+The share UI is **React Native on both platforms**. `src/ShareApp.tsx` reuses the
+actual `SessionRow` and separator from Home and `Composer` from the conversation.
+There is no separate Android widget layout or SwiftUI copy of those components.
+Host colors, avatars, timestamps, pinned order, previews, selected rows, attachment
+thumbnails and the send button follow the app's existing components.
 
-## Android
+Open Home once after installing to synchronize configured hosts and recent chats.
+The private native mirror stores host configuration and chat-list metadata, not
+images. ShareApp paints that saved list, refreshes hosts independently and races
+LAN/internet GETs. A slow host retains its cached chats. Reads validate the selected
+chat and current route before a single POST; a failed POST is never retried
+automatically. The existing Composer restores the caption and attachments on error.
 
-`ShareImageActivity` handles `ACTION_SEND` and `ACTION_SEND_MULTIPLE` with the
-`image/*` MIME type. It reads `EXTRA_STREAM` or `ClipData` content URIs while the
-sender's temporary permission remains valid. No broad media-library permission
-is requested. Images are decoded off the UI thread, downsampled, corrected for
-EXIF orientation and encoded with a 1920-pixel size limit.
+## Native image ingress
 
-The native picker works on cold start and does not require Metro. It uses the
-existing configured hosts and respects forced local/remote route modes. Hosts
-refresh independently, and LAN/internet GETs race so an unreachable LAN
-does not hold up an available remote route. A failed host retains its cached chats;
-a successful refresh replaces only that host’s list. Selecting a cached chat is
-allowed during refresh; its route is validated with a GET before sending.
-POSTs are not retried automatically;
-a lost response may follow a successful send. Errors keep the selected images
-and message available for the user to inspect and retry.
+Android's `ShareImageActivity` is a `ReactActivity` mounting `CodibyShare`. It only
+reads `ACTION_SEND`/`ACTION_SEND_MULTIPLE` temporary content URI grants and prepares
+images off the UI thread. No broad media-library permission is requested.
+
+On iOS, `CodibyShare` is a Share Extension hosting the same `CodibyShare` React Native
+component. `NSItemProvider` supplies images; ImageIO downsamples and corrects
+orientation. The extension has its own `share.index.js` bundle and links React
+Native, SVG and Safe Area dependencies. App-only animation/gallery modules are
+loaded lazily and are not needed by the extension.
+
+Both bridges return the prepared images and shared configuration to JavaScript;
+list refresh and message submission use the app's existing TypeScript API client.
+Native image processing retains the 1920-pixel size limit, JPEG compression and
+white background for transparent images. Native completion dismisses the share
+activity or extension after a successful send.
 
 ## iOS signing setup
-
-The `CodibyShare` target is an embedded, native Share Extension. It uses
-`NSItemProvider` to load images, ImageIO to downsample and orient them, and the
-same authenticated session/message API as Android. It does not open its
-containing app through private APIs.
 
 Both targets use the App Group **`group.com.codiby.code`** to share the host
 configuration. To sign and distribute on a physical iPhone:
@@ -64,16 +60,25 @@ The simulator extension and full app can be compiled without distribution creden
 # Repository root
 bun run mobile:test --runInBand
 
-# On macOS: real Swift client + isolated HTTP fixture, no account or real host needed
-python3 packages/mobile/scripts/test-ios-share.py
-
-# Compile the extension alone, without React Native dependencies or signing
+# Android: compile the actual React Native release, then native unit tests
 cd packages/mobile
-xcodebuild -project ios/CodibyCode.xcodeproj -target CodibyShare \
-  -configuration Debug -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
+JAVA_HOME=/opt/homebrew/opt/openjdk@17 android/gradlew -p android \
+  assembleRelease :app:testDebugUnitTest -PreactNativeArchitectures=arm64-v8a
+
+# macOS: install the app and extension Pods, then build both simulator targets
+bundle exec pod install --project-directory=ios
+xcodebuild -workspace ios/CodibyCode.xcworkspace -scheme CodibyCode \
+  -configuration Debug -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
-The Android integration check uses a separate fixture app with its own content
-provider to exercise real cross-app URI grants. It covers single/multiple images,
-no send on receipt, the selected session and authorization header, a failed POST,
-manual retry with retained attachments, and cancellation without a POST.
+`ShareScreen.test.tsx` mounts the real SessionRow and Composer with an incoming
+image and a pending network request. It checks selection, explicit send, error
+restoration and successful completion. `incomingShare.test.ts` checks cross-host
+identities, pinned order, accent-insensitive search, a stalled LAN, one POST and
+archived-session rejection. These replace the former duplicated Swift REST tests.
+
+The Android integration fixture is a separate app with its own content provider;
+it exercises real cross-app URI grants, cold React Native startup without Metro,
+single/multiple images, correct session/auth/payload, failure and manual retry,
+cancellation, search, the keyboard and receiving a share while the main app is open.

@@ -23,6 +23,7 @@ test('el receptor usa las rutas configuradas y respeta el modo forzado', () => {
   expect(read(server)[0]).toEqual({
     id: 'host',
     name: 'Mi host',
+    color: 'green',
     token: 'token',
     urls: ['http://192.168.1.5:3111', 'https://host.example'],
   });

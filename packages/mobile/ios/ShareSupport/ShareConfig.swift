@@ -46,11 +46,12 @@ enum ShareConfig {
     return try? Data(contentsOf: file)
   }
 
-  static func read() throws -> ShareConfiguration {
+  static func readData() throws -> Data {
     guard let file, let data = try? Data(contentsOf: file) else {
       throw ShareError.message("Abre Codiby Code y configura tus hosts antes de compartir.")
     }
-    return try validate(data)
+    _ = try validate(data)
+    return data
   }
 
   static func write(_ data: Data) throws {

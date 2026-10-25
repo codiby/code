@@ -23,6 +23,16 @@ target 'CodibyCode' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
+  target 'CodibyShare' do
+    inherit! :search_paths
+    use_react_native!(
+      :path => config[:reactNativePath],
+      :app_path => "#{Pod::Config.instance.installation_root}/.."
+    )
+    pod 'react-native-safe-area-context', :path => '../node_modules/react-native-safe-area-context'
+    pod 'RNSVG', :path => '../node_modules/react-native-svg'
+  end
+
   post_install do |installer|
     react_native_post_install(
       installer,

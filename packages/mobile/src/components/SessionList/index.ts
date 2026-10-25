@@ -11,5 +11,5 @@ export {
 } from './icons';
 export { RenameDialog } from './RenameDialog';
 export type { RenameDialogProps } from './RenameDialog';
-export { SessionRow } from './SessionRow';
+export { SessionRow, SessionRowSeparator } from './SessionRow';
 export type { SessionRowProps } from './SessionRow';

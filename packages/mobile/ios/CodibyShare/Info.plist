@@ -44,5 +44,7 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Codiby Code connects to your development servers to share images with your sessions.</string>
+	<key>RCTNewArchEnabled</key>
+	<true/>
 </dict>
 </plist>

@@ -53,6 +53,7 @@ import {
   RenameIcon,
   SearchIcon,
   SessionRow,
+  SessionRowSeparator,
   TrashIcon,
 } from '../components/SessionList';
 import { UsageIndicator } from '../components/UsageIndicator';
@@ -247,11 +248,6 @@ function GroupChipButton({
 
 /** Punto de «Sin grupo». Fuera del JSX por `no-inline-styles`. */
 const UNGROUPED_DOT = { backgroundColor: '#94a3b8' } as const;
-
-/** Separador alineado con el texto, no con el avatar (como en WhatsApp). */
-function RowSeparator() {
-  return <View className="ml-16 h-px bg-slate-100" />;
-}
 
 export interface HomeScreenProps {
   readonly onOpenSession: (session: SessionSummary) => void;
@@ -1592,7 +1588,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
               />
             );
           }}
-          ItemSeparatorComponent={RowSeparator}
+          ItemSeparatorComponent={SessionRowSeparator}
           contentContainerStyle={{
             paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
           }}

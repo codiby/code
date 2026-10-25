@@ -61,6 +61,7 @@ source changes. Mobile development now lives here alongside desktop in
 ## Share images from other apps
 
 Select 1–4 images in another app, choose **Share → Codiby Code**, select a session,
-and confirm the message. Android uses native share intents; iOS embeds a native
-Share Extension. Open Codiby Code once after installing so the share picker can
+and confirm the message. Both platforms show the same React Native session rows
+and chat composer used in the app. Android receives native share intents; iOS
+embeds that React Native screen in its Share Extension. Open Codiby Code once after installing so the share picker can
 use your configured hosts. See [image sharing and iOS signing setup](../../docs/image-sharing.md).

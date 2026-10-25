@@ -39,6 +39,7 @@ export function shareTargetsConfig(
             {
               id: server.id,
               name: server.name,
+              color: server.color,
               token: server.token.trim(),
               urls,
             },
@@ -68,6 +69,8 @@ export function shareSessionsSnapshot(snapshot: HomeSnapshot): string {
         id: session.id,
         serverId: session.serverId,
         name: session.name,
+        provider: session.provider,
+        runtime_status: session.isRunning ? 'running' : 'idle',
         cwd: session.cwd,
         updated_at: session.updatedAt,
         pinned: pinned.has(session.key),

@@ -9,6 +9,20 @@ class ShareTargetsModule(private val context: ReactApplicationContext) : ReactCo
     override fun getName() = "ShareTargets"
 
     @ReactMethod
+    fun read(requestId: String, promise: Promise) {
+        val activity = ShareImageActivity.receiver(requestId)
+        if (activity == null) promise.reject("SHARE_ACTIVITY", "No hay imágenes compartidas")
+        else activity.readIncoming(promise)
+    }
+
+    @ReactMethod
+    fun finish(requestId: String, sent: Boolean, promise: Promise) {
+        val activity = ShareImageActivity.receiver(requestId)
+        if (activity == null) { promise.resolve(null); return }
+        activity.runOnUiThread { activity.finish(); promise.resolve(null) }
+    }
+
+    @ReactMethod
     fun cacheSessions(snapshot: String, promise: Promise) {
         try {
             org.json.JSONArray(snapshot)

@@ -68,7 +68,10 @@ export function SessionRow({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Sesión ${session.name}`}
-      accessibilityHint="Mantén pulsado para más acciones"
+      accessibilityState={{ selected: isSelected }}
+      accessibilityHint={
+        onLongPress ? 'Mantén pulsado para más acciones' : undefined
+      }
       onPress={() => onPress?.(session)}
       onLongPress={() => onLongPress?.(session)}
       delayLongPress={350}
@@ -186,4 +189,9 @@ export function SessionRow({
       </View>
     </Pressable>
   );
+}
+
+/** Separador compartido con el inicio y el selector de imágenes. */
+export function SessionRowSeparator() {
+  return <View className="ml-16 h-px bg-slate-100" />;
 }

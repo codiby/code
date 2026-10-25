@@ -14,12 +14,10 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { launchImageLibrary } from 'react-native-image-picker';
 
 import type { MessageImage } from '../../api/types';
 import type { MessageReply } from '../../lib/messageReply';
 import { ReplyQuote } from './ReplyQuote';
-import { ComposerSpots } from './ComposerSpots';
 import { AttachIcon, CloseIcon, SendIcon } from './icons';
 
 export interface ComposerProps {
@@ -31,6 +29,10 @@ export interface ComposerProps {
   readonly isStreaming?: boolean;
   readonly onSend: (text: string, images: MessageImage[]) => Promise<void>;
   readonly disabled?: boolean;
+  /** Solo bloquea Enviar; el mensaje se puede preparar antes de elegir chat. */
+  readonly sendDisabled?: boolean;
+  readonly initialImages?: MessageImage[];
+  readonly allowAttachments?: boolean;
   readonly placeholder?: string;
   /** Host o modo del chat, dentro de la fila de acciones. */
   readonly context?: ReactNode;
@@ -67,6 +69,9 @@ const PICKER_OPTIONS = {
 export function Composer({
   onSend,
   disabled = false,
+  sendDisabled = false,
+  initialImages = [],
+  allowAttachments = true,
   placeholder = 'Escribe un mensaje…',
   context,
   replyTo,
@@ -95,7 +100,7 @@ export function Composer({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [insertNonce]);
-  const [images, setImages] = useState<MessageImage[]>([]);
+  const [images, setImages] = useState<MessageImage[]>(initialImages);
   const [isSending, setIsSending] = useState(false);
   const sendingRef = useRef(false);
   const [frameHeight, setFrameHeight] = useState(44);
@@ -103,10 +108,16 @@ export function Composer({
 
   const trimmed = text.trim();
   const canSend =
-    (trimmed.length > 0 || images.length > 0) && !isSending && !disabled;
+    (trimmed.length > 0 || images.length > 0) &&
+    !isSending &&
+    !disabled &&
+    !sendDisabled;
 
   const pickImages = () => {
     setError(null);
+    // La extensión no abre la galería ni carga sus módulos nativos.
+    const { launchImageLibrary } =
+      require('react-native-image-picker') as typeof import('react-native-image-picker');
     launchImageLibrary(PICKER_OPTIONS)
       .then(result => {
         if (result.didCancel === true) {
@@ -159,6 +170,11 @@ export function Composer({
       });
   };
 
+  // Las animaciones del chat se cargan solo cuando se necesitan; compartir no las monta.
+  const Spots = isStreaming
+    ? (require('./ComposerSpots') as typeof import('./ComposerSpots'))
+        .ComposerSpots
+    : null;
   return (
     <View pointerEvents="box-none" className="px-3 pb-2 pt-1">
       {error !== null ? (
@@ -197,7 +213,7 @@ export function Composer({
         onLayout={event => setFrameHeight(event.nativeEvent.layout.height)}
         className="overflow-hidden rounded-[20px] border border-slate-200 bg-white"
       >
-        {isStreaming ? <ComposerSpots height={frameHeight} /> : null}
+        {Spots ? <Spots height={frameHeight} /> : null}
         {replyTo ? (
           <View className="mx-2 mt-2">
             <ReplyQuote reply={replyTo} onCancel={onCancelReply} />
@@ -219,15 +235,17 @@ export function Composer({
           className="max-h-32 min-h-10 bg-transparent px-3.5 pb-1.5 pt-2.5 text-[14px] leading-5 text-slate-900"
         />
         <View className="flex-row items-center gap-2 px-2 pb-2">
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Adjuntar imagen"
-            onPress={pickImages}
-            disabled={disabled || isSending}
-            className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
-          >
-            <AttachIcon size={20} color="#64748b" />
-          </Pressable>
+          {allowAttachments ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Adjuntar imagen"
+              onPress={pickImages}
+              disabled={disabled || isSending}
+              className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
+            >
+              <AttachIcon size={20} color="#64748b" />
+            </Pressable>
+          ) : null}
           <View className="flex-1">{context}</View>
           <Pressable
             accessibilityRole="button"
