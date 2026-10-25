@@ -60,11 +60,11 @@ jobs:
         run: bun run mobile:test --runInBand
       - name: Check TypeScript
         run: packages/mobile/node_modules/.bin/tsc --noEmit --project packages/mobile/tsconfig.json
-      - name: Build release APK (ARM64)
+      - name: Test native gestures and build release APK (ARM64)
         working-directory: packages/mobile/android
         run: |
           stamp="$(date -u +%Y%m%d.%H%M).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
-          ./gradlew assembleRelease \
+          ./gradlew :app:testDebugUnitTest assembleRelease \
             -PreactNativeArchitectures=arm64-v8a \
             -PbuildStamp="$stamp" \
             --no-daemon --max-workers=2 --console=plain

@@ -5,8 +5,8 @@ The **Android APK** GitHub Actions workflow builds the React Native app from
 or the workflow change on `main` or in a pull request. You can also run it from
 **Actions → Android APK → Run workflow**.
 
-Each run installs the locked dependencies, runs mobile Jest tests and TypeScript,
-builds a release APK for **ARM64**, and verifies its signature. The version includes
+Each run installs the locked dependencies, runs mobile Jest tests, native gesture
+unit tests and TypeScript, builds a release APK for **ARM64**, and verifies its signature. The version includes
 a UTC timestamp, run number and attempt so builds can be distinguished in Settings.
 
 Download the `android-apk-<run>-<attempt>` artifact from the run summary and unzip

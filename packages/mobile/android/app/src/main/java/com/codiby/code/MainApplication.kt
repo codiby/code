@@ -17,6 +17,7 @@ class MainApplication : Application(), ReactApplication {
           // Vive en la app, no en un módulo npm: es un puente de 150 líneas al
           // gesto predictivo de Android que React Native todavía no expone.
           add(PredictiveBackPackage())
+          add(TableScrollPackage())
         },
     )
   }

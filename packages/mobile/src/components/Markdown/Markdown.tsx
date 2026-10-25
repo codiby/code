@@ -7,6 +7,7 @@ import type { InlineNode, MarkdownBlock } from '../../lib/markdown';
 import { inlineText, parseMarkdown } from '../../lib/markdown';
 import { CheckIcon, CopyIcon } from '../Chat/icons';
 import { DiffDocView } from './DiffDocView';
+import { TableScrollBoundary } from './TableScrollBoundary';
 import { HorizontalScrollGestureContext } from '../ScrollGestureContext';
 
 export interface MarkdownProps {
@@ -257,41 +258,43 @@ function Table({ block }: { readonly block: Extract<MarkdownBlock, { type: 'tabl
   });
 
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator
-      // El bloqueo direccional es exclusivo de iOS.
-      directionalLockEnabled
-      onTouchStartCapture={claimHorizontalTouch}
-      className="my-1.5 grow-0"
-    >
-      <View className="overflow-hidden rounded-lg border border-slate-200">
-        <View className="flex-row bg-slate-50">
-          {block.headers.map((cell, index) => (
-            <Text
-              key={index}
-              style={{ width: widths[index] }}
-              className="border-b border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-500"
-            >
-              <Inline nodes={cell} />
-            </Text>
-          ))}
-        </View>
-        {block.rows.map((row, rowIndex) => (
-          <View key={rowIndex} className="flex-row">
-            {row.map((cell, cellIndex) => (
+    <TableScrollBoundary>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator
+        // El bloqueo direccional es exclusivo de iOS.
+        directionalLockEnabled
+        onTouchStartCapture={claimHorizontalTouch}
+        className="my-1.5 grow-0"
+      >
+        <View className="overflow-hidden rounded-lg border border-slate-200">
+          <View className="flex-row bg-slate-50">
+            {block.headers.map((cell, index) => (
               <Text
-                key={cellIndex}
-                style={{ width: widths[cellIndex] }}
-                className="border-b border-slate-100 px-2 py-1 text-[11px] text-slate-700"
+                key={index}
+                style={{ width: widths[index] }}
+                className="border-b border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-500"
               >
                 <Inline nodes={cell} />
               </Text>
             ))}
           </View>
-        ))}
-      </View>
-    </ScrollView>
+          {block.rows.map((row, rowIndex) => (
+            <View key={rowIndex} className="flex-row">
+              {row.map((cell, cellIndex) => (
+                <Text
+                  key={cellIndex}
+                  style={{ width: widths[cellIndex] }}
+                  className="border-b border-slate-100 px-2 py-1 text-[11px] text-slate-700"
+                >
+                  <Inline nodes={cell} />
+                </Text>
+              ))}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+    </TableScrollBoundary>
   );
 }
 
