@@ -7,8 +7,10 @@ import { parseLiveMessage } from './messages';
 export type { SocketStatus };
 
 /**
- * Estados que difunde el bridge. No existe un `idle`: el turno termina con
- * `turn_complete`, o con `interrupted` si se cortó a media respuesta.
+ * Estados que difunde el bridge. El bridge no manda un `idle`: el turno
+ * termina con `turn_complete`, o con `interrupted` si se cortó a media
+ * respuesta. `idle` lo emite este hook cuando el `session_state` de una
+ * (re)suscripción dice que no hay turno en curso.
  */
 export const SESSION_STATUSES = [
   'connected',
@@ -16,6 +18,7 @@ export const SESSION_STATUSES = [
   'streaming',
   'turn_complete',
   'interrupted',
+  'idle',
 ] as const;
 
 export type SessionStatusEvent = (typeof SESSION_STATUSES)[number];
@@ -277,9 +280,13 @@ export function useSessionSocket({
           }
           const record = state as Record<string, unknown>;
           // El turno pudo empezar antes de que nos suscribiéramos, así que el
-          // evento `status: streaming` ya pasó y no volverá.
+          // evento `status: streaming` ya pasó y no volverá. Y al revés: si
+          // terminó con el socket muerto —Android lo congela en segundo
+          // plano—, el `turn_complete` se perdió y solo esto lo apaga.
           if (record.isStreaming === true) {
             handlers.current.onStatus('streaming');
+          } else if (record.isStreaming === false) {
+            handlers.current.onStatus('idle');
           }
           handlers.current.onPermission?.(parsePermission(record.permRequest));
           if (typeof record.totalMessages === 'number') {

@@ -369,13 +369,16 @@ export function SessionChatScreen({
       // NO es uno: el bridge lo manda ~100 ms DESPUÉS de `streaming` —medido:
       // streaming a +819 ms, connected a +921 ms— y apagar con él hacía que
       // las luces del composer se encendieran y murieran al instante.
-      if (status === 'streaming') {
-        setIsStreaming(true);
-      } else if (
+      // `idle` viene del `session_state` al (re)suscribirse: es lo que apaga
+      // un turno cuyo `turn_complete` se perdió con el socket caído.
+      const endsTurn =
         status === 'turn_complete' ||
         status === 'interrupted' ||
-        status === 'disconnected'
-      ) {
+        status === 'disconnected' ||
+        status === 'idle';
+      if (status === 'streaming') {
+        setIsStreaming(true);
+      } else if (endsTurn) {
         setIsStreaming(false);
       }
 
@@ -392,11 +395,7 @@ export function SessionChatScreen({
       // previa. `connected` llega justo DESPUÉS de `session_state`, que es
       // quien siembra los parciales al abrir una sesión a media respuesta:
       // limpiar ahí borraría lo que se acaba de recibir.
-      if (
-        status === 'turn_complete' ||
-        status === 'interrupted' ||
-        status === 'disconnected'
-      ) {
+      if (endsTurn) {
         setPartialText('');
         setPartialThinking('');
       }
