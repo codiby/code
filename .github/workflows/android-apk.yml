@@ -1,0 +1,120 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/mobile/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'bunfig.toml'
+      - '.bun-version'
+      - '.github/workflows/android-apk.yml'
+  pull_request:
+    paths:
+      - 'packages/mobile/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'bunfig.toml'
+      - '.bun-version'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: '.bun-version'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK components
+        run: >-
+          sdkmanager
+          'platforms;android-37.0'
+          'build-tools;37.0.0'
+          'ndk;27.1.12297006'
+          'cmake;3.22.1'
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Test mobile app
+        run: bun run mobile:test --runInBand
+      - name: Check TypeScript
+        run: packages/mobile/node_modules/.bin/tsc --noEmit --project packages/mobile/tsconfig.json
+      - name: Build release APK (ARM64)
+        working-directory: packages/mobile/android
+        run: |
+          stamp="$(date -u +%Y%m%d.%H%M).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          ./gradlew assembleRelease \
+            -PreactNativeArchitectures=arm64-v8a \
+            -PbuildStamp="$stamp" \
+            --no-daemon --max-workers=2 --console=plain
+      - name: Verify APK signature
+        run: >-
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose
+          packages/mobile/android/app/build/outputs/apk/release/app-release.apk
+      - name: Prepare versioned APK and checksum
+        id: apk
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+
+          output = Path('packages/mobile/android/app/build/outputs/apk/release')
+          metadata = json.loads((output / 'output-metadata.json').read_text())
+          assert metadata['applicationId'] == 'com.codiby.code'
+          item = metadata['elements'][0]
+          artifacts = Path('artifacts')
+          artifacts.mkdir()
+          name = f"codiby-code-v{item['versionName']}-arm64.apk"
+          apk = artifacts / name
+          shutil.copyfile(output / item['outputFile'], apk)
+          digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+          (artifacts / f'{name}.sha256').write_text(f'{digest}  {name}\n')
+          shutil.copyfile(output / 'output-metadata.json', artifacts / 'output-metadata.json')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as result:
+              result.write(f'name={name}\nsha256={digest}\n')
+      - name: Upload APK
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apk-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Write download summary
+        env:
+          APK_NAME: ${{ steps.apk.outputs.name }}
+          APK_SHA256: ${{ steps.apk.outputs.sha256 }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF_SUMMARY
+          ## Android APK
+          [Download $APK_NAME (ZIP)]($ARTIFACT_URL)
+
+          - Architecture: ARM64 (arm64-v8a)
+          - Source commit: $GITHUB_SHA
+          - SHA-256: \`$APK_SHA256\`
+          EOF_SUMMARY
