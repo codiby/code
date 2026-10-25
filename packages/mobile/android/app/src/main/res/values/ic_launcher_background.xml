@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- El mismo blanco que trae el fondo del icono del escritorio, no #ffffff:
+         con blanco puro se vería una costura donde acaba la capa de delante. -->
+    <color name="ic_launcher_background">#fefefe</color>
+</resources>

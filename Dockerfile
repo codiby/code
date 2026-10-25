@@ -1,15 +1,15 @@
-FROM oven/bun:1.3 AS builder
+FROM oven/bun:1.4.4 AS builder
 
 WORKDIR /app
 
 # Install dependencies (production + dev; bun-plugin-tailwind is a devDep).
 # The workspace package.json files must be present for a frozen-lockfile install.
-COPY package.json bun.lock ./
+COPY package.json bun.lock bunfig.toml .bun-version ./
 COPY packages/core/package.json packages/core/
 COPY packages/ui/package.json packages/ui/
 COPY packages/desktop/package.json packages/desktop/
 COPY packages/mobile/package.json packages/mobile/
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --filter '*' --filter '!@codiby/mobile'
 
 # Copy server + frontend sources
 COPY packages/core/ packages/core/
@@ -24,7 +24,7 @@ RUN bun run scripts/build.ts
 RUN bun build ./packages/core/index.ts --outfile /app/server.js --target bun --minify
 
 # ---- Runtime stage ----
-FROM oven/bun:1.3-slim
+FROM oven/bun:1.4.4-slim
 
 # Install dependencies and Claude CLI
 RUN apt-get update && apt-get install -y curl git bash && \

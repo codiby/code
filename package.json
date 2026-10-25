@@ -1,18 +1,28 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.31.18",
+  "version": "0.31.19",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "electron-dist/main.js",
   "workspaces": [
     "packages/*"
   ],
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "bun": ">=1.4.4"
+  },
   "dependencies": {
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
   "scripts": {
+    "mobile:start": "bun run --cwd packages/mobile start",
+    "mobile:ios": "bun run --cwd packages/mobile ios",
+    "mobile:android": "bun run --cwd packages/mobile android",
+    "mobile:test": "bun run --cwd packages/mobile test",
+    "mobile:pods": "cd packages/mobile/ios && bundle exec pod install --deployment",
+    "mobile:testflight": "cd packages/mobile && bundle exec fastlane ios beta",
     "dev": "bash run.sh",
     "ui:dev": "bun run scripts/build.ts --watch",
     "build-server": "bun run scripts/build.ts",

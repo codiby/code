@@ -1,4 +1,13 @@
 node_modules
+**/node_modules
+packages/mobile/ios/Pods
+packages/mobile/ios/build
+packages/mobile/android/.gradle
+packages/mobile/android/.kotlin
+packages/mobile/android/app/.cxx
+packages/mobile/android/app/build
+packages/mobile/vendor
+packages/mobile/build
 dist
 .astro
 electron-dist
@@ -11,4 +20,3 @@ electron/resources
 src
 public
 astro.config.mjs
-tsconfig.json

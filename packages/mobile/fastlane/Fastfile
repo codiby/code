@@ -1,0 +1,109 @@
+require 'base64'
+require 'tmpdir'
+require 'securerandom'
+
+opt_out_usage
+default_platform(:ios)
+
+platform :ios do
+  desc 'Archive Codiby Code and upload it to TestFlight'
+  lane :beta do
+    root = File.expand_path('..', __dir__)
+    project = File.join(root, 'ios/CodibyCode.xcodeproj')
+    bundle_id = 'com.codiby.code'
+    team_id = ENV.fetch('APPLE_TEAM_ID')
+    keychain_name = "codiby-testflight-#{SecureRandom.hex(8)}"
+    keychain_password = SecureRandom.hex(32)
+    keychain_created = false
+    installed_profile = nil
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch('APP_STORE_CONNECT_KEY_ID'),
+      issuer_id: ENV.fetch('APP_STORE_CONNECT_ISSUER_ID'),
+      key_content: ENV.fetch('APP_STORE_CONNECT_PRIVATE_KEY'),
+      in_house: false
+    )
+
+    begin
+      Dir.mktmpdir('codiby-signing-') do |dir|
+        certificate = File.join(dir, 'distribution.p12')
+        profile_path = File.join(dir, 'distribution.mobileprovision')
+        File.binwrite(certificate, Base64.strict_decode64(ENV.fetch('IOS_DISTRIBUTION_P12_BASE64')), perm: 0o600)
+        File.binwrite(profile_path, Base64.strict_decode64(ENV.fetch('IOS_PROVISIONING_PROFILE_BASE64')), perm: 0o600)
+
+        profile = FastlaneCore::ProvisioningProfile.parse(profile_path)
+        entitlements = profile.fetch('Entitlements')
+        prefix = profile.fetch('ApplicationIdentifierPrefix').first
+        UI.user_error!('Provisioning profile belongs to another Apple team') unless profile.fetch('TeamIdentifier').include?(team_id)
+        UI.user_error!('Provisioning profile must match com.codiby.code') unless entitlements['application-identifier'] == "#{prefix}.#{bundle_id}"
+        UI.user_error!('Provisioning profile has expired') unless profile.fetch('ExpirationDate').to_time > Time.now
+        if entitlements['get-task-allow'] || profile.key?('ProvisionedDevices') || profile['ProvisionsAllDevices']
+          UI.user_error!('Use an App Store Connect distribution profile, not development, Ad Hoc, or enterprise')
+        end
+
+        create_keychain(
+          name: keychain_name,
+          password: keychain_password,
+          default_keychain: false,
+          unlock: true,
+          timeout: 7200,
+          require_create: true
+        )
+        keychain_created = true
+        import_certificate(
+          certificate_path: certificate,
+          certificate_password: ENV.fetch('IOS_DISTRIBUTION_P12_PASSWORD'),
+          keychain_name: keychain_name,
+          keychain_password: keychain_password
+        )
+        installed_profile = install_provisioning_profile(path: profile_path)
+
+        update_code_signing_settings(
+          use_automatic_signing: false,
+          path: project,
+          targets: ['CodibyCode'],
+          build_configurations: ['Release'],
+          team_id: team_id,
+          code_sign_identity: 'Apple Distribution',
+          profile_name: profile.fetch('Name')
+        )
+        version = get_version_number(xcodeproj: project, target: 'CodibyCode')
+        build_number = latest_testflight_build_number(
+          api_key: api_key,
+          app_identifier: bundle_id,
+          version: version,
+          initial_build_number: 0
+        ).to_i + 1
+        increment_build_number(xcodeproj: project, build_number: build_number)
+
+        ipa = build_app(
+          workspace: File.join(root, 'ios/CodibyCode.xcworkspace'),
+          scheme: 'CodibyCode',
+          configuration: 'Release',
+          clean: true,
+          export_method: 'app-store',
+          export_team_id: team_id,
+          export_options: {
+            signingStyle: 'manual',
+            signingCertificate: 'Apple Distribution',
+            provisioningProfiles: { bundle_id => profile.fetch('Name') }
+          },
+          output_directory: File.join(root, 'build/ios'),
+          buildlog_path: File.join(root, 'build/ios/logs')
+        )
+        upload_to_testflight(
+          api_key: api_key,
+          app_identifier: bundle_id,
+          ipa: ipa,
+          distribute_external: false,
+          skip_waiting_for_build_processing: false,
+          wait_processing_timeout_duration: 1200
+        )
+        UI.success("TestFlight: #{bundle_id} #{version} (#{build_number}) processed successfully")
+      end
+    ensure
+      File.delete(installed_profile) if installed_profile && File.exist?(installed_profile)
+      delete_keychain(name: keychain_name) if keychain_created
+    end
+  end
+end

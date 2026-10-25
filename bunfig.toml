@@ -1,4 +1,10 @@
+[install]
+# Use hoisting for desktop and honor mobile's self-contained boundary.
+linker = "hoisted"
+
 [test]
+# React Native tests use Jest and its native mocks; run them with `bun run mobile:test`.
+pathIgnorePatterns = ["packages/mobile/**"]
 # Points every suite at a throwaway database before the first test file loads.
 # See scripts/test-preload.ts for why this cannot live inside a test file.
 preload = ["./scripts/test-preload.ts"]
