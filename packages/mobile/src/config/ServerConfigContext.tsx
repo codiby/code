@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 
+import { syncShareTargets } from '../lib/shareTargets';
 import { useServerRoutes, type ServerRoutes } from '../api/useServerRoutes';
 import {
   DEFAULT_SERVERS,
@@ -80,6 +81,12 @@ export function ServerConfigProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const { routes, refresh: refreshRoutes } = useServerRoutes(servers, isLoaded);
+
+  useEffect(() => {
+    if (isLoaded) {
+      syncShareTargets(servers).catch(() => undefined);
+    }
+  }, [servers, isLoaded]);
 
   const saveServers = useCallback(async (next: ServerEntry[]) => {
     setServers(next);

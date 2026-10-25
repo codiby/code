@@ -18,6 +18,7 @@ class MainApplication : Application(), ReactApplication {
           // gesto predictivo de Android que React Native todavía no expone.
           add(PredictiveBackPackage())
           add(TableScrollPackage())
+          add(ShareTargetsPackage())
         },
     )
   }

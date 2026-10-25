@@ -11,11 +11,13 @@ platform :ios do
     root = File.expand_path('..', __dir__)
     project = File.join(root, 'ios/CodibyCode.xcodeproj')
     bundle_id = 'com.codiby.code'
+    share_bundle_id = 'com.codiby.code.share'
+    app_group = 'group.com.codiby.code'
     team_id = ENV.fetch('APPLE_TEAM_ID')
     keychain_name = "codiby-testflight-#{SecureRandom.hex(8)}"
     keychain_password = SecureRandom.hex(32)
     keychain_created = false
-    installed_profile = nil
+    installed_profiles = []
 
     api_key = app_store_connect_api_key(
       key_id: ENV.fetch('APP_STORE_CONNECT_KEY_ID'),
@@ -41,6 +43,24 @@ platform :ios do
           UI.user_error!('Use an App Store Connect distribution profile, not development, Ad Hoc, or enterprise')
         end
 
+        unless Array(entitlements['com.apple.security.application-groups']).include?(app_group)
+          UI.user_error!("Enable #{app_group} and regenerate the app provisioning profile (see docs/image-sharing.md)")
+        end
+        share_profile_path = File.join(dir, 'share.mobileprovision')
+        File.binwrite(share_profile_path, Base64.strict_decode64(ENV.fetch('IOS_SHARE_PROVISIONING_PROFILE_BASE64')), perm: 0o600)
+        share_profile = FastlaneCore::ProvisioningProfile.parse(share_profile_path)
+        share_entitlements = share_profile.fetch('Entitlements')
+        share_prefix = share_profile.fetch('ApplicationIdentifierPrefix').first
+        UI.user_error!('Share profile belongs to another Apple team') unless share_profile.fetch('TeamIdentifier').include?(team_id)
+        UI.user_error!('Share profile must match com.codiby.code.share') unless share_entitlements['application-identifier'] == "#{share_prefix}.#{share_bundle_id}"
+        UI.user_error!('Share profile has expired') unless share_profile.fetch('ExpirationDate').to_time > Time.now
+        if share_entitlements['get-task-allow'] || share_profile.key?('ProvisionedDevices') || share_profile['ProvisionsAllDevices']
+          UI.user_error!('Use an App Store Connect distribution profile for the share extension')
+        end
+        unless Array(share_entitlements['com.apple.security.application-groups']).include?(app_group)
+          UI.user_error!("Share extension profile must include #{app_group}")
+        end
+
         create_keychain(
           name: keychain_name,
           password: keychain_password,
@@ -56,7 +76,8 @@ platform :ios do
           keychain_name: keychain_name,
           keychain_password: keychain_password
         )
-        installed_profile = install_provisioning_profile(path: profile_path)
+        installed_profiles << install_provisioning_profile(path: profile_path)
+        installed_profiles << install_provisioning_profile(path: share_profile_path)
 
         update_code_signing_settings(
           use_automatic_signing: false,
@@ -66,6 +87,15 @@ platform :ios do
           team_id: team_id,
           code_sign_identity: 'Apple Distribution',
           profile_name: profile.fetch('Name')
+        )
+        update_code_signing_settings(
+          use_automatic_signing: false,
+          path: project,
+          targets: ['CodibyShare'],
+          build_configurations: ['Release'],
+          team_id: team_id,
+          code_sign_identity: 'Apple Distribution',
+          profile_name: share_profile.fetch('Name')
         )
         version = get_version_number(xcodeproj: project, target: 'CodibyCode')
         build_number = latest_testflight_build_number(
@@ -86,7 +116,7 @@ platform :ios do
           export_options: {
             signingStyle: 'manual',
             signingCertificate: 'Apple Distribution',
-            provisioningProfiles: { bundle_id => profile.fetch('Name') }
+            provisioningProfiles: { bundle_id => profile.fetch('Name'), share_bundle_id => share_profile.fetch('Name') }
           },
           output_directory: File.join(root, 'build/ios'),
           buildlog_path: File.join(root, 'build/ios/logs')
@@ -102,7 +132,7 @@ platform :ios do
         UI.success("TestFlight: #{bundle_id} #{version} (#{build_number}) processed successfully")
       end
     ensure
-      File.delete(installed_profile) if installed_profile && File.exist?(installed_profile)
+      installed_profiles.each { |path| File.delete(path) if path && File.exist?(path) }
       delete_keychain(name: keychain_name) if keychain_created
     end
   end
