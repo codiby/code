@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 
 root = Path(__file__).resolve().parent.parent
 requests = []
@@ -14,7 +15,8 @@ requests = []
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        assert self.path == '/sessions'
+        assert self.path in ['/sessions', '/slow/sessions']
+        if self.path == '/slow/sessions': time.sleep(2)
         assert self.headers.get('Authorization') == 'Bearer share-test-token'
         body = json.dumps([
             {'id': 'share session/one', 'name': 'Test', 'cwd': '/test/mobile', 'status': 'open', 'updated_at': 2},
@@ -23,7 +25,8 @@ class Fixture(BaseHTTPRequestHandler):
         ]).encode()
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(body)
+        try: self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError): pass
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))

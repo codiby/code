@@ -9,6 +9,15 @@ class ShareTargetsModule(private val context: ReactApplicationContext) : ReactCo
     override fun getName() = "ShareTargets"
 
     @ReactMethod
+    fun cacheSessions(snapshot: String, promise: Promise) {
+        try {
+            org.json.JSONArray(snapshot)
+            check(context.getSharedPreferences("share-targets", 0).edit().putString("sessions", snapshot).commit())
+            promise.resolve(null)
+        } catch (error: Exception) { promise.reject("SHARE_SESSIONS", error) }
+    }
+
+    @ReactMethod
     fun configure(config: String, promise: Promise) {
         try {
             require(config.length < 1_000_000 && JSONObject(config).getInt("version") == 1)

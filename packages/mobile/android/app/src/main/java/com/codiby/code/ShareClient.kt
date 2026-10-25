@@ -7,7 +7,7 @@ import java.net.URI
 import java.net.URL
 
 internal data class ShareServer(val id: String, val name: String, val token: String, val urls: List<String>)
-internal data class ShareSession(val id: String, val name: String, val folder: String, val updated: Double, val server: ShareServer, val baseUrl: String)
+internal data class ShareSession(val id: String, val name: String, val folder: String, val updated: Double, val server: ShareServer, val baseUrl: String, val pinned: Boolean = false, val preview: String = "", val pinOrder: Int = -1)
 
 internal object ShareClient {
     fun servers(config: String): List<ShareServer> {
@@ -25,12 +25,25 @@ internal object ShareClient {
         }.filter { it.urls.isNotEmpty() }
     }
 
+    fun cached(config: String, snapshot: String): List<ShareSession> {
+        val servers = servers(config).associateBy { it.id }
+        val rows = JSONArray(snapshot)
+        return (0 until rows.length()).mapNotNull { i ->
+            val row = rows.optJSONObject(i) ?: return@mapNotNull null
+            val server = servers[row.optString("serverId")] ?: return@mapNotNull null
+            val id = row.optString("id"); val name = row.optString("name")
+            if (id.isEmpty() || name.isEmpty()) return@mapNotNull null
+            ShareSession(id, name, row.optString("cwd").trimEnd('/').substringAfterLast('/'),
+                row.optDouble("updated_at", 0.0), server, server.urls.first(), row.optBoolean("pinned"), row.optString("preview"), row.optInt("pinOrder", -1))
+        }
+    }
+
     private fun request(base: String, path: String, token: String, body: JSONObject? = null): String {
         val connection = URL(base.trimEnd('/') + path).openConnection() as HttpURLConnection
         try {
             connection.instanceFollowRedirects = false
-            connection.connectTimeout = if (body == null) 5000 else 10000
-            connection.readTimeout = if (body == null) 8000 else 30000
+            connection.connectTimeout = if (body == null) 2500 else 10000
+            connection.readTimeout = if (body == null) 6000 else 30000
             connection.setRequestProperty("Accept", "application/json")
             if (token.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $token")
             if (body != null) {
@@ -47,20 +60,25 @@ internal object ShareClient {
     }
 
     fun sessions(server: ShareServer): List<ShareSession> {
-        for (url in server.urls) {
-            try {
-                val rows = JSONArray(request(url, "/sessions", server.token))
-                return (0 until rows.length()).mapNotNull { index ->
-                    val row = rows.optJSONObject(index) ?: return@mapNotNull null
-                    val id = row.optString("id")
-                    val name = row.optString("name")
-                    if (id.isEmpty() || name.isEmpty() || row.optString("status") in listOf("archived", "closed")) return@mapNotNull null
-                    ShareSession(id, name, row.optString("cwd").trimEnd('/').substringAfterLast('/'),
-                        row.optDouble("updated_at", 0.0), server, url)
-                }
-            } catch (_: Exception) { /* Las lecturas pueden probar la siguiente ruta. */ }
-        }
-        error("No se pudo conectar con ${server.name}")
+        // Compite LAN contra internet: una LAN inaccesible no bloquea el respaldo.
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(server.urls.size)
+        val completed = java.util.concurrent.ExecutorCompletionService<List<ShareSession>>(pool)
+        val requests = server.urls.map { url -> completed.submit(java.util.concurrent.Callable {
+            val rows = JSONArray(request(url, "/sessions", server.token))
+            (0 until rows.length()).mapNotNull { index ->
+                val row = rows.optJSONObject(index) ?: return@mapNotNull null
+                val id = row.optString("id"); val name = row.optString("name")
+                if (id.isEmpty() || name.isEmpty() || row.optString("status") != "open") return@mapNotNull null
+                ShareSession(id, name, row.optString("cwd").trimEnd('/').substringAfterLast('/'),
+                    row.optDouble("updated_at", 0.0), server, url)
+            }
+        }) }
+        try {
+            repeat(requests.size) {
+                try { return completed.take().get() } catch (error: java.util.concurrent.ExecutionException) { /* otra ruta sigue en vuelo */ }
+            }
+            error("No se pudo conectar con ${server.name}")
+        } finally { requests.forEach { it.cancel(true) }; pool.shutdownNow() }
     }
 
     fun send(session: ShareSession, text: String, images: List<JSONObject>) {

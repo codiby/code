@@ -7,6 +7,9 @@ struct ShareSession: Identifiable {
   let updatedAt: Double
   let server: ShareServer
   let baseURL: String
+  var pinned = false
+  var pinOrder = -1
+  var preview = ""
   var id: String { "\(server.id):\(sessionID)" }
 }
 
@@ -54,13 +57,25 @@ final class ShareClient {
     return data
   }
 
+  static func cachedSessions(_ data: Data?, config: ShareConfiguration) -> [ShareSession] {
+    guard let data, let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
+    return rows.compactMap { row in
+      guard let serverID = row["serverId"] as? String,
+        let server = config.servers.first(where: { $0.id == serverID }), let base = server.urls.first,
+        let id = row["id"] as? String, !id.isEmpty, let name = row["name"] as? String, !name.isEmpty else { return nil }
+      return ShareSession(sessionID: id, name: name, folder: ((row["cwd"] as? String) ?? "").split(separator: "/").last.map(String.init) ?? "",
+        updatedAt: row["updated_at"] as? Double ?? 0, server: server, baseURL: base,
+        pinned: row["pinned"] as? Bool ?? false, pinOrder: row["pinOrder"] as? Int ?? -1, preview: row["preview"] as? String ?? "")
+    }
+  }
+
   static func parseSessions(_ data: Data, server: ShareServer, base: String) throws -> [ShareSession] {
     guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
       throw ShareError.message("Lista de sesiones inválida.")
     }
     return rows.compactMap { row in
       guard let id = row["id"] as? String, !id.isEmpty, let name = row["name"] as? String, !name.isEmpty,
-        !["archived", "closed"].contains(row["status"] as? String ?? "") else { return nil }
+        row["status"] as? String == "open" else { return nil }
       return ShareSession(sessionID: id, name: name,
         folder: ((row["cwd"] as? String) ?? "").split(separator: "/").last.map(String.init) ?? "",
         updatedAt: row["updated_at"] as? Double ?? 0, server: server, baseURL: base)
@@ -68,13 +83,20 @@ final class ShareClient {
   }
 
   func sessions(_ server: ShareServer) async throws -> [ShareSession] {
-    for base in server.urls {
-      do {
-        let data = try await request(base: base, path: "/sessions", token: server.token)
-        return try Self.parseSessions(data, server: server, base: base)
-      } catch { continue }
+    try await withThrowingTaskGroup(of: [ShareSession].self) { group in
+      for base in server.urls {
+        group.addTask {
+          let data = try await self.request(base: base, path: "/sessions", token: server.token)
+          return try Self.parseSessions(data, server: server, base: base)
+        }
+      }
+      while !group.isEmpty {
+        do {
+          if let result = try await group.next() { group.cancelAll(); return result }
+        } catch { continue }
+      }
+      throw ShareError.message("No se pudo conectar con \(server.name).")
     }
-    throw ShareError.message("No se pudo conectar con \(server.name).")
   }
 
   func send(to session: ShareSession, text: String, images: [SharedImagePayload]) async throws {

@@ -22,7 +22,17 @@ struct ShareClientTests {
     let other = ShareServer(id: "other", name: "Other", token: "", urls: server.urls)
     let second = try ShareClient.parseSessions(data, server: other, base: server.urls[1])
     precondition(parsed[0].id != second[0].id, "Session identities collide across hosts")
+    let cached = Data("""
+      [{"id":"same","serverId":"test","name":"Cached chat","cwd":"/test/mobile","updated_at":10,"pinned":true,"pinOrder":1,"preview":"Hello"},
+       {"id":"same","serverId":"removed","name":"Removed host"}]
+      """.utf8)
+    let cache = ShareClient.cachedSessions(cached, config: decoded)
+    precondition(cache.count == 1 && cache[0].pinOrder == 1 && cache[0].preview == "Hello", "Cached Home chats must be available without a network request; removed hosts must be excluded")
     let client = ShareClient()
+    let start = Date()
+    let raced = try await client.sessions(ShareServer(id: "race", name: "Race", token: server.token, urls: [base + "/slow", base]))
+    precondition(Date().timeIntervalSince(start) < 1.5 && raced.first?.baseURL == base, "A stalled local route blocked the reachable remote route")
+    print("PASS: cached Home sessions and fast remote route despite stalled LAN.")
     let sessions = try await client.sessions(server)
     precondition(sessions.count == 2 && sessions[0].baseURL == server.urls[1], "GET fallback failed")
     let target = sessions.first { $0.sessionID == "share session/one" }!

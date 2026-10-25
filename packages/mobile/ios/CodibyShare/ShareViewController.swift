@@ -20,20 +20,24 @@ private final class ShareModel: ObservableObject {
   @Published var loading = true
   @Published var sending = false
   private let client = ShareClient()
+  private var freshHosts = Set<String>()
+  private var sendError = false
   var complete: (() -> Void)?
 
   var filtered: [ShareSession] {
-    sessions.filter { search.isEmpty || "\($0.name) \($0.folder) \($0.server.name)".localizedCaseInsensitiveContains(search) }
+    sessions.filter { search.isEmpty || "\($0.name) \($0.folder) \($0.server.name)".localizedCaseInsensitiveContains(search) }.sorted { $0.pinOrder == $1.pinOrder ? $0.updatedAt > $1.updatedAt : $0.pinOrder > $1.pinOrder }
   }
-  var canSend: Bool { !loading && !sending && !images.isEmpty && filtered.contains { $0.id == selected } }
+  var canSend: Bool { !sending && !images.isEmpty && filtered.contains { $0.id == selected } }
 
   func prepare(_ items: [NSExtensionItem]) async {
     let providers = items.flatMap { $0.attachments ?? [] }.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
     guard !providers.isEmpty && providers.count <= 4 else { loading = false; error = "Comparte entre 1 y 4 imágenes."; return }
     text = String(items.compactMap { $0.attributedContentText?.string }.joined(separator: "\n").prefix(8000))
+    if let config = try? ShareConfig.read() { sessions = ShareClient.cachedSessions(ShareConfig.sessionsData(), config: config) }
+    let refresh = Task { await loadSessions() }
     do {
       for provider in providers { images.append(try await Self.loadImage(provider)) }
-      await loadSessions()
+      await refresh.value
     } catch { loading = false; images = []; self.error = "No se pudo leer alguna imagen. Vuelve a compartirla desde Fotos." }
   }
 
@@ -95,25 +99,46 @@ private final class ShareModel: ObservableObject {
     do {
       let config = try ShareConfig.read()
       guard !config.servers.isEmpty else { throw ShareError.message("Configura al menos un host en Codiby Code.") }
-      var found: [ShareSession] = []
       var failed: [String] = []
-      for server in config.servers {
-        do { found += try await client.sessions(server) } catch { failed.append(server.name) }
+      await withTaskGroup(of: (String, [ShareSession]?).self) { group in
+        for server in config.servers {
+          group.addTask { [client] in (server.id, try? await client.sessions(server)) }
+        }
+        for await (serverID, result) in group {
+          if let found = result {
+            let old = sessions.filter { $0.server.id == serverID }
+            sessions.removeAll { $0.server.id == serverID }
+            sessions += found.map { session in
+              var copy = session
+              copy.pinOrder = old.first { $0.id == session.id }?.pinOrder ?? -1
+              copy.pinned = old.first { $0.id == session.id }?.pinned ?? false
+              copy.preview = old.first { $0.id == session.id }?.preview ?? ""
+              return copy
+            }
+            freshHosts.insert(serverID)
+            if let selected, !sessions.contains(where: { $0.id == selected }) { self.selected = nil }
+          } else { failed.append(config.servers.first { $0.id == serverID }?.name ?? serverID) }
+        }
       }
-      sessions = found.sorted { $0.updatedAt > $1.updatedAt }
-      if !failed.isEmpty { error = "Sin conexión: \(failed.joined(separator: ", "))." }
-      else if sessions.isEmpty { error = "No hay sesiones disponibles. Crea una en Codiby Code." }
+      if !sending && !sendError && !failed.isEmpty { error = "Sin conexión: \(failed.joined(separator: ", ")). Mostrando chats recientes." }
+      else if !sending && !sendError && sessions.isEmpty { error = "No hay chats activos en tus hosts." }
     } catch { self.error = error.localizedDescription }
     loading = false
   }
 
   func send() async {
     guard canSend, let session = sessions.first(where: { $0.id == selected }) else { return }
-    sending = true; error = nil
+    sending = true; sendError = false; error = nil
     do {
-      try await client.send(to: session, text: String(text.prefix(8000)), images: images.map(\.payload))
+      let target: ShareSession
+      if freshHosts.contains(session.server.id) { target = session }
+      else {
+        guard let live = try await client.sessions(session.server).first(where: { $0.id == session.id }) else { throw ShareError.message("El chat ya no está activo") }
+        target = live
+      }
+      try await client.send(to: target, text: String(text.prefix(8000)), images: images.map(\.payload))
       complete?()
-    } catch { self.error = "No se confirmó el envío. Revisa la sesión antes de reintentar para evitar duplicarlo." }
+    } catch { sendError = true; self.error = "No se confirmó el envío. Revisa la sesión antes de reintentar para evitar duplicarlo." }
     sending = false
   }
 }
@@ -122,54 +147,67 @@ private struct ShareView: View {
   @ObservedObject var model: ShareModel
   let cancel: () -> Void
 
+  private let green = Color(red: 0.07, green: 0.55, blue: 0.49)
+
   var body: some View {
-    VStack(spacing: 12) {
+    VStack(spacing: 0) {
+      HStack(spacing: 16) {
+        Button(action: cancel) { Image(systemName: "chevron.left").font(.title2) }.disabled(model.sending)
+        Text("Enviar a…").font(.title3.bold())
+        Spacer()
+        Button { Task { await model.loadSessions() } } label: { Image(systemName: "arrow.clockwise").font(.title3) }.disabled(model.loading || model.sending)
+      }.foregroundColor(.white).padding().background(green)
       HStack {
-        Button("Cancelar", action: cancel).disabled(model.sending)
+        Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+        TextField("Buscar chats o proyectos", text: $model.search).disabled(model.sending)
+      }.padding(12).background(Color(.secondarySystemBackground)).cornerRadius(24).padding(.horizontal).padding(.top, 12)
+      HStack {
+        Text(model.loading ? "Chats recientes · Actualizando…" : "Chats recientes").font(.caption).foregroundColor(.secondary)
         Spacer()
-        Text("Compartir con una sesión").font(.headline)
-        Spacer()
-        Button("Enviar") { Task { await model.send() } }.disabled(!model.canSend)
-      }.padding(.horizontal)
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack {
-          ForEach(model.images) { image in
-            Image(uiImage: image.preview).resizable().scaledToFill().frame(width: 72, height: 72).clipped().cornerRadius(10)
-          }
-        }.padding(.horizontal)
-      }.frame(height: 76)
-      ZStack(alignment: .topLeading) {
-        TextEditor(text: $model.text).accessibilityLabel("Mensaje opcional")
-          .onChange(of: model.text) { value in
-            if value.count > 8000 { model.text = String(value.prefix(8000)) }
-          }
-        if model.text.isEmpty { Text("Mensaje opcional").foregroundColor(.secondary).padding(.top, 8).padding(.leading, 4).allowsHitTesting(false) }
-      }.frame(height: 65).padding(.horizontal).disabled(model.sending)
-      TextField("Buscar sesión o host", text: $model.search).textFieldStyle(.roundedBorder).padding(.horizontal).disabled(model.sending)
-      if model.loading || model.sending { ProgressView(model.sending ? "Enviando…" : "Buscando sesiones…") }
+        if model.loading { ProgressView().scaleEffect(0.7) }
+      }.padding(.horizontal, 22).padding(.vertical, 8)
       if let error = model.error {
-        VStack {
-          Text(error).font(.footnote).foregroundColor(.red)
-          if !model.loading && !model.sending && !model.images.isEmpty {
-            Button("Actualizar sesiones") { Task { await model.loadSessions() } }
-          }
-        }.padding(.horizontal)
+        Button { Task { await model.loadSessions() } } label: {
+          Text(error).font(.caption).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+        }.disabled(model.loading || model.sending).padding(.horizontal).padding(.bottom, 8)
       }
       List(model.filtered) { session in
-        Button {
-          model.selected = session.id
-        } label: {
-          HStack {
+        Button { model.selected = session.id } label: {
+          HStack(spacing: 14) {
+            Text(session.name.split(separator: " ").prefix(2).compactMap { $0.first }.map { String($0).uppercased() }.joined())
+              .font(.headline).foregroundColor(green).frame(width: 48, height: 48).background(green.opacity(0.12)).clipShape(Circle())
             VStack(alignment: .leading, spacing: 4) {
-              Text(session.name).foregroundColor(.primary)
-              Text("\(session.server.name) · \(session.folder)").font(.caption).foregroundColor(.secondary)
+              Text(session.name).font(.body.weight(.semibold)).foregroundColor(.primary).lineLimit(1)
+              Text("\(session.server.name) · \(session.folder)").font(.caption).foregroundColor(.secondary).lineLimit(1)
+              if !session.preview.isEmpty { Text(session.preview).font(.subheadline).foregroundColor(.secondary).lineLimit(1) }
             }
-            Spacer()
-            if model.selected == session.id { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
-          }.contentShape(Rectangle())
-        }.disabled(model.sending)
+            Spacer(minLength: 0)
+            Image(systemName: model.selected == session.id ? "checkmark.circle.fill" : "circle").font(.title2).foregroundColor(model.selected == session.id ? green : Color(.tertiaryLabel))
+          }.padding(.vertical, 6).contentShape(Rectangle())
+        }.disabled(model.sending).listRowBackground(model.selected == session.id ? green.opacity(0.08) : Color(.systemBackground))
       }.listStyle(.plain)
-    }.padding(.top, 16).padding(.bottom, 8)
+      VStack(spacing: 10) {
+        HStack(spacing: 12) {
+          ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+              ForEach(model.images) { image in Image(uiImage: image.preview).resizable().scaledToFill().frame(width: 52, height: 52).clipped().cornerRadius(8) }
+            }
+          }.frame(width: 60, height: 54)
+          ZStack(alignment: .leading) {
+            if model.text.isEmpty { Text("Añade un mensaje…").foregroundColor(.secondary).padding(.leading, 5) }
+            TextEditor(text: $model.text).opacity(model.text.isEmpty ? 0.5 : 1).accessibilityLabel("Mensaje opcional")
+              .onChange(of: model.text) { value in if value.count > 8000 { model.text = String(value.prefix(8000)) } }
+          }.frame(height: 48).padding(4).background(Color(.systemBackground)).cornerRadius(16).disabled(model.sending)
+        }
+        HStack {
+          Text(model.sending ? "Enviando…" : model.sessions.first { $0.id == model.selected }?.name ?? "Elige un chat para continuar").font(.subheadline).foregroundColor(.secondary).lineLimit(1)
+          Spacer()
+          Button { Task { await model.send() } } label: {
+            Image(systemName: "paperplane.fill").font(.title3).foregroundColor(.white).frame(width: 48, height: 48).background(green).clipShape(Circle())
+          }.disabled(!model.canSend).opacity(model.canSend ? 1 : 0.35).accessibilityLabel("Enviar")
+        }
+      }.padding().background(Color(.secondarySystemBackground))
+    }
   }
 }
 

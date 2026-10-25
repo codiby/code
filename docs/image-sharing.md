@@ -2,14 +2,18 @@
 
 From Photos, Files, a gallery or another app, select **1–4 images → Share →
 Codiby Code**. Pick an active session, optionally add a message, and tap **Enviar**.
-The picker shows the session name, host and project folder and supports search.
+The chat picker uses the same saved active chats as Home, including pinned order
+and message previews. Chats appear immediately on cold start; search finds a
+chat by name, host or project. The compact image/message composer stays at the
+bottom, with a round send button after selecting a chat.
 It sends directly from the share screen; opening the React Native chat first is
 not required. Nothing is sent until the user selects a destination and confirms.
 
 Open Codiby Code once after installing this version so it can synchronize the
 configured hosts with the native share receiver. Changes or removals in Settings
 also update that native configuration. Images and their URI grants stay within
-the share operation; the native mirror contains host configuration, not images.
+the share operation; the native mirror contains host configuration and chat-list
+metadata, not images.
 
 ## Android
 
@@ -20,8 +24,12 @@ is requested. Images are decoded off the UI thread, downsampled, corrected for
 EXIF orientation and encoded with a 1920-pixel size limit.
 
 The native picker works on cold start and does not require Metro. It uses the
-existing configured hosts and respects forced local/remote route modes. A failed
-GET can try the configured fallback URL. POSTs are not retried automatically;
+existing configured hosts and respects forced local/remote route modes. Hosts
+refresh independently, and LAN/internet GETs race so an unreachable LAN
+does not hold up an available remote route. A failed host retains its cached chats;
+a successful refresh replaces only that host’s list. Selecting a cached chat is
+allowed during refresh; its route is validated with a GET before sending.
+POSTs are not retried automatically;
 a lost response may follow a successful send. Errors keep the selected images
 and message available for the user to inspect and retry.
 

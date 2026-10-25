@@ -84,9 +84,9 @@ export function ServerConfigProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isLoaded) {
-      syncShareTargets(servers).catch(() => undefined);
+      syncShareTargets(servers, routes).catch(() => undefined);
     }
-  }, [servers, isLoaded]);
+  }, [servers, routes, isLoaded]);
 
   const saveServers = useCallback(async (next: ServerEntry[]) => {
     setServers(next);
@@ -120,7 +120,15 @@ export function ServerConfigProvider({ children }: { children: ReactNode }) {
       removeServer,
       refreshRoutes,
     }),
-    [servers, routes, isLoaded, saveServers, upsertServer, removeServer, refreshRoutes],
+    [
+      servers,
+      routes,
+      isLoaded,
+      saveServers,
+      upsertServer,
+      removeServer,
+      refreshRoutes,
+    ],
   );
 
   return (

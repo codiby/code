@@ -31,6 +31,21 @@ enum ShareConfig {
     return config
   }
 
+  static var sessionsFile: URL? {
+    FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?.appendingPathComponent("share-sessions.json")
+  }
+
+  static func writeSessions(_ data: Data) throws {
+    _ = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+    guard let file = sessionsFile else { throw ShareError.message("App Group no disponible") }
+    try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+  }
+
+  static func sessionsData() -> Data? {
+    guard let file = sessionsFile else { return nil }
+    return try? Data(contentsOf: file)
+  }
+
   static func read() throws -> ShareConfiguration {
     guard let file, let data = try? Data(contentsOf: file) else {
       throw ShareError.message("Abre Codiby Code y configura tus hosts antes de compartir.")

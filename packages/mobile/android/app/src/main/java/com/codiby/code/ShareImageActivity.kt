@@ -6,6 +6,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Bundle
@@ -13,6 +15,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.util.Base64
 import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -23,84 +26,132 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import kotlin.math.max
 
-/** UI independiente de React Native: recibe los permisos URI mientras vive el intent. */
+/** Selector nativo que comparte la foto de chats del inicio, incluso en arranque frío. */
 class ShareImageActivity : Activity() {
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newFixedThreadPool(4)
+    private val decoder = Executors.newSingleThreadExecutor()
     private lateinit var status: TextView
     private lateinit var message: EditText
-    private lateinit var send: Button
-    private lateinit var cancel: Button
+    private lateinit var search: EditText
+    private lateinit var send: TextView
+    private lateinit var cancel: TextView
+    private lateinit var destination: TextView
     private lateinit var list: ListView
-    private lateinit var adapter: ArrayAdapter<String>
+    private lateinit var adapter: BaseAdapter
     private val sessions = mutableListOf<ShareSession>()
     private var filtered = listOf<ShareSession>()
     private var selected: ShareSession? = null
     private var images = listOf<JSONObject>()
     private var loading = false
     private var sending = false
+    private var sendError = false
+    private var imageError = false
+    private val freshHosts = mutableSetOf<String>()
+    private val ink = Color.rgb(15, 23, 42)
+    private val muted = Color.rgb(100, 116, 139)
+    private val green = Color.rgb(18, 140, 126)
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
     private fun ui(action: () -> Unit) { if (!isFinishing && !isDestroyed) runOnUiThread { if (!isFinishing && !isDestroyed) action() } }
+    private fun shape(color: Int, radius: Int = 12) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
+    private fun label(value: String, size: Float, color: Int = ink) = TextView(this).apply { text = value; textSize = size; setTextColor(color) }
+    private fun key(session: ShareSession) = "${session.server.id}:${session.id}"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(12)); setBackgroundColor(Color.WHITE) }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); isFocusableInTouchMode = true }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
-            view.setPadding(dp(20) + bars.left, dp(12) + bars.top, dp(20) + bars.right, dp(12) + max(bars.bottom, keyboard.bottom))
+            view.setPadding(bars.left, bars.top, bars.right, max(bars.bottom, keyboard.bottom))
             insets
         }
-        root.addView(TextView(this).apply { text = "Compartir con una sesión"; textSize = 22f; setTextColor(Color.BLACK) })
-        val previews = LinearLayout(this)
-        root.addView(HorizontalScrollView(this).apply { addView(previews) }, LinearLayout.LayoutParams(-1, dp(90)))
-        status = TextView(this).apply { text = "Preparando imágenes…"; setPadding(0, dp(8), 0, dp(8)) }
+        val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(dp(16), 0, dp(12), 0); setBackgroundColor(green) }
+        cancel = label("‹", 36f, Color.WHITE).apply { contentDescription = "Cancelar"; gravity = android.view.Gravity.CENTER; setOnClickListener { finish() } }
+        header.addView(cancel, LinearLayout.LayoutParams(dp(40), dp(56)))
+        header.addView(label("Enviar a…", 21f, Color.WHITE).apply { setTypeface(null, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(label("↻", 28f, Color.WHITE).apply { contentDescription = "Actualizar chats"; gravity = android.view.Gravity.CENTER; setOnClickListener { if (!loading && !sending) loadSessions() } }, LinearLayout.LayoutParams(dp(44), dp(48)))
+        root.addView(header)
+        search = EditText(this).apply {
+            hint = "Buscar chats o proyectos"; textSize = 16f; isSingleLine = true
+            setTextColor(ink); setHintTextColor(muted); background = shape(Color.rgb(241,245,249), 24)
+            setPadding(dp(18), 0, dp(18), 0)
+        }
+        root.addView(search, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(dp(16), dp(12), dp(16), dp(4)) })
+        status = label("Tus chats recientes", 12f, muted).apply { setPadding(dp(22), dp(8), dp(16), dp(8)); setOnClickListener { if (!loading && !sending) loadSessions() } }
         root.addView(status)
-        message = EditText(this).apply { filters = arrayOf(android.text.InputFilter.LengthFilter(8000)); hint = "Mensaje opcional"; maxLines = 3; minLines = 1; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE }
-        root.addView(message)
-        val search = EditText(this).apply { hint = "Buscar sesión o host"; isSingleLine = true }
-        root.addView(search)
-        list = ListView(this).apply { choiceMode = ListView.CHOICE_MODE_SINGLE }
-        adapter = ArrayAdapter(this, android.R.layout.simple_list_item_single_choice, mutableListOf())
-        list.adapter = adapter
+        adapter = object : BaseAdapter() {
+            override fun getCount() = filtered.size
+            override fun getItem(position: Int) = filtered[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                val session = filtered[position]
+                val chosen = selected?.let { key(it) == key(session) } == true
+                val row = LinearLayout(this@ShareImageActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL
+                    setPadding(dp(18), dp(12), dp(18), dp(12)); minimumHeight = dp(84)
+                    setBackgroundColor(if (chosen) Color.rgb(232, 247, 240) else Color.WHITE)
+                }
+                val colors = intArrayOf(0xffdcece7.toInt(),0xffe4e8f7.toInt(),0xfff9eadb.toInt(),0xfff3e2ec.toInt())
+                val initials = session.name.trim().split(Regex("\\s+")).take(2).mapNotNull { it.firstOrNull()?.uppercase() }.joinToString("")
+                row.addView(label(initials, 18f, green).apply { gravity = android.view.Gravity.CENTER; setTypeface(null, Typeface.BOLD); background = shape(colors[(session.server.id.hashCode() and Int.MAX_VALUE) % colors.size], 30) }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                val texts = LinearLayout(this@ShareImageActivity).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14),0,dp(8),0) }
+                texts.addView(label(session.name, 16f).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTypeface(null, Typeface.BOLD) })
+                texts.addView(label(listOf(session.server.name, session.folder).filter { it.isNotEmpty() }.joinToString(" · "), 12f, muted).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(0,dp(4),0,0) })
+                if (session.preview.isNotBlank()) texts.addView(label(session.preview.replace('\n', ' '), 13f, muted).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(0,dp(3),0,0) })
+                row.addView(texts, LinearLayout.LayoutParams(0,-2,1f))
+                row.addView(label(if (chosen) "✓" else "○", 24f, if (chosen) green else Color.rgb(203,213,225)).apply { gravity = android.view.Gravity.CENTER; contentDescription = if (chosen) "Seleccionado" else "Seleccionar chat" }, LinearLayout.LayoutParams(dp(32),dp(40)))
+                return row
+            }
+        }
+        list = ListView(this).apply { divider = null; adapter = this@ShareImageActivity.adapter; clipToPadding = false }
+        list.setOnItemClickListener { _, _, position, _ -> selected = filtered[position]; adapter.notifyDataSetChanged(); updateSend() }
         root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+        val footer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16),dp(12),dp(16),dp(12)); setBackgroundColor(Color.rgb(248,250,252)) }
+        val compose = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        val previews = LinearLayout(this)
+        compose.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(previews) }, LinearLayout.LayoutParams(dp(64),dp(56)))
+        message = EditText(this).apply {
+            filters = arrayOf(android.text.InputFilter.LengthFilter(8000)); hint = "Añade un mensaje…"; textSize = 15f
+            maxLines = 3; minLines = 1; setTextColor(ink); setHintTextColor(muted)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            background = shape(Color.WHITE,16); setPadding(dp(12),dp(8),dp(12),dp(8))
+        }
+        compose.addView(message, LinearLayout.LayoutParams(0,-2,1f).apply { marginStart = dp(10) }); footer.addView(compose)
+        val actions = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0,dp(10),0,0) }
+        destination = label("Elige un chat para continuar", 13f, muted).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        actions.addView(destination, LinearLayout.LayoutParams(0,-2,1f))
+        send = label("➤",24f,Color.WHITE).apply { gravity = android.view.Gravity.CENTER; contentDescription = "Enviar"; background = shape(green,28); setOnClickListener { submit() } }
+        actions.addView(send,LinearLayout.LayoutParams(dp(48),dp(48)).apply { marginStart = dp(12) }); footer.addView(actions); root.addView(footer)
+        setContentView(root)
+        window.statusBarColor = green
+        root.post {
+            if (!isFinishing && !isDestroyed) WindowInsetsControllerCompat(window,root).apply { isAppearanceLightStatusBars = true; isAppearanceLightNavigationBars = true }
+        }
+        ViewCompat.requestApplyInsets(root)
         search.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { showSessions(s.toString()) }
             override fun afterTextChanged(s: Editable?) {}
         })
-        list.setOnItemClickListener { _, _, position, _ -> selected = filtered[position]; updateSend() }
-        val buttons = LinearLayout(this)
-        cancel = Button(this).apply { text = "Cancelar"; setOnClickListener { finish() } }
-        buttons.addView(cancel, LinearLayout.LayoutParams(0, -2, 1f))
-        send = Button(this).apply { text = "Enviar"; isEnabled = false; setOnClickListener { submit() } }
-        buttons.addView(send, LinearLayout.LayoutParams(0, -2, 1f)); root.addView(buttons)
-        setContentView(root)
-        root.post {
-            if (!isFinishing && !isDestroyed) {
-                WindowInsetsControllerCompat(window, root).apply {
-                    isAppearanceLightStatusBars = true
-                    isAppearanceLightNavigationBars = true
-                }
-            }
-        }
-        ViewCompat.requestApplyInsets(root)
         message.setText(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty())
+        // Pinta la MISMA lista persistida del inicio antes de esperar la red o el decoder.
+        val prefs = getSharedPreferences("share-targets",0)
+        runCatching { ShareClient.cached(prefs.getString("config", "{}")!!, prefs.getString("sessions", "[]")!!) }.getOrNull()?.let { sessions.addAll(it) }
+        showSessions("")
         val uris = runCatching { sharedUris(intent) }.getOrDefault(emptyList())
-        if (uris.isEmpty() || uris.size > 4) { status.text = "Comparte entre 1 y 4 imágenes."; return }
-        loading = true
-        worker.execute {
+        if (uris.isEmpty() || uris.size > 4) { status.text = "Comparte entre 1 y 4 imágenes."; updateSend(); return }
+        loadSessions()
+        decoder.execute {
             try {
                 val decoded = uris.map { loadImage(it) }
-                images = decoded.map { it.first }
                 ui {
-                    decoded.forEach { (_, bitmap) ->
-                        previews.addView(ImageView(this).apply { setImageBitmap(bitmap); scaleType = ImageView.ScaleType.CENTER_CROP }, LinearLayout.LayoutParams(dp(76), dp(76)).apply { marginEnd = dp(8) })
-                    }
-                    loadSessions()
+                    images = decoded.map { it.first }
+                    decoded.forEach { (_, bitmap) -> previews.addView(ImageView(this).apply { setImageBitmap(bitmap); scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; background = shape(Color.LTGRAY,8) },LinearLayout.LayoutParams(dp(52),dp(52)).apply { marginEnd = dp(4) }) }
+                    updateSend()
                 }
-            } catch (_: Exception) { ui { loading = false; status.text = "No se pudo leer alguna imagen. Vuelve a compartirla desde la galería." } }
+            } catch (_: Exception) { ui { imageError = true; status.text = "No se pudo leer alguna imagen. Vuelve a compartirla desde la galería." } }
         }
     }
 
@@ -154,58 +205,70 @@ class ShareImageActivity : Activity() {
     }
 
     private fun loadSessions() {
-        loading = true; selected = null; updateSend()
-        status.text = "Buscando sesiones…"
-        worker.execute {
-            try {
-                val config = getSharedPreferences("share-targets", 0).getString("config", null)
-                    ?: error("Abre Codiby Code y configura tus hosts antes de compartir.")
-                val servers = ShareClient.servers(config)
-                check(servers.isNotEmpty()) { "Configura al menos un host en Codiby Code." }
-                val found = mutableListOf<ShareSession>(); val failures = mutableListOf<String>()
-                servers.forEach { server -> try { found.addAll(ShareClient.sessions(server)) } catch (_: Exception) { failures.add(server.name) } }
-                ui {
-                    sessions.clear(); sessions.addAll(found.sortedByDescending { it.updated }); loading = false
-                    status.text = if (failures.isEmpty()) "${images.size} imagen(es) · Elige la sesión"
-                        else "Sin conexión: ${failures.joinToString()}. Puedes reintentar tocando aquí."
-                    status.setOnClickListener { if (!loading && !sending) { loading = true; loadSessions() } }
-                    if (found.isEmpty() && failures.isEmpty()) status.text = "No hay sesiones disponibles. Crea una en Codiby Code."
-                    showSessions(""); updateSend()
+        loading = true; sendError = false
+        status.text = if (sessions.isEmpty()) "Conectando con tus hosts…" else "Chats recientes · Actualizando…"
+        val prefs = getSharedPreferences("share-targets",0)
+        val servers = runCatching { ShareClient.servers(prefs.getString("config", "{}")!!) }.getOrElse { emptyList() }
+        if (servers.isEmpty()) { loading = false; status.text = "Abre Codiby Code para sincronizar tus chats."; return }
+        var pending = servers.size
+        val failed = mutableListOf<String>()
+        servers.forEach { server -> worker.execute {
+            val result = runCatching { ShareClient.sessions(server) }
+            ui {
+                result.onSuccess { found ->
+                    val old = sessions.filter { it.server.id == server.id }.associateBy { it.id }
+                    sessions.removeAll { it.server.id == server.id }
+                    sessions.addAll(found.map { it.copy(pinned = old[it.id]?.pinned ?: false, preview = old[it.id]?.preview.orEmpty(), pinOrder = old[it.id]?.pinOrder ?: -1) })
+                    freshHosts.add(server.id)
+                    selected = selected?.let { chosen -> sessions.find { key(it) == key(chosen) } }
+                    showSessions(search.text.toString())
+                }.onFailure { failed.add(server.name) }
+                pending--; loading = pending > 0
+                if (!sending && !sendError && !imageError) status.text = when {
+                    loading -> "${sessions.size} chats · Actualizando…"
+                    failed.isNotEmpty() -> "Sin conexión: ${failed.joinToString()} · Toca para reintentar"
+                    sessions.isEmpty() -> "No hay chats activos en tus hosts."
+                    else -> "Chats recientes"
                 }
-            } catch (error: Exception) { ui { loading = false; status.text = error.message; status.setOnClickListener { if (!loading) { loading = true; loadSessions() } } } }
-        }
+                updateSend()
+            }
+        } }
     }
 
     private fun showSessions(query: String) {
         filtered = sessions.filter { "${it.name} ${it.folder} ${it.server.name}".contains(query, ignoreCase = true) }
-        adapter.clear(); adapter.addAll(filtered.map { "${it.name}\n${it.server.name} · ${it.folder}" }); adapter.notifyDataSetChanged()
-        list.clearChoices()
-        selected?.let { chosen -> filtered.indexOf(chosen).takeIf { it >= 0 }?.let { list.setItemChecked(it, true) } }
-        updateSend()
+            .sortedWith(compareByDescending<ShareSession> { it.pinned }.thenByDescending { it.pinOrder }.thenByDescending { it.updated })
+        adapter.notifyDataSetChanged(); updateSend()
     }
 
     private fun updateSend() {
-        send.isEnabled = selected?.let { it in filtered } == true && images.isNotEmpty() && !loading && !sending
+        send.isEnabled = selected?.let { chosen -> filtered.any { key(it) == key(chosen) } } == true && images.isNotEmpty() && !sending
+        send.alpha = if (send.isEnabled) 1f else 0.35f
         cancel.isEnabled = !sending
+        destination.text = if (sending) "Enviando…" else selected?.name ?: "Elige un chat para continuar"
     }
 
     private fun submit() {
         val target = selected ?: return
-        if (sending || loading || images.isEmpty()) return
-        sending = true; updateSend(); list.isEnabled = false; message.isEnabled = false; send.text = "Enviando…"
+        if (sending || images.isEmpty()) return
+        sending = true; sendError = false; updateSend(); list.isEnabled = false; message.isEnabled = false; search.isEnabled = false
         val text = message.text.toString().take(8000)
+        val isFresh = target.server.id in freshHosts
         worker.execute {
             try {
-                ShareClient.send(target, text, images)
+                // La foto permite elegir al instante; una lectura valida la ruta antes de escribir.
+                val liveTarget = if (isFresh) target else ShareClient.sessions(target.server).firstOrNull { it.id == target.id }
+                    ?: error("El chat ya no está activo")
+                ShareClient.send(liveTarget, text, images)
                 ui { Toast.makeText(this, "Enviado a ${target.name}", Toast.LENGTH_SHORT).show(); finish() }
             } catch (_: Exception) {
                 ui {
-                    sending = false; updateSend(); list.isEnabled = true; message.isEnabled = true; send.text = "Enviar"
-                    status.text = "No se confirmó el envío. Revisa la sesión antes de reintentar para evitar duplicarlo."
+                    sending = false; sendError = true; updateSend(); list.isEnabled = true; message.isEnabled = true; search.isEnabled = true
+                    status.text = "No se confirmó el envío. Revisa el chat antes de reintentar."
                 }
             }
         }
     }
 
-    override fun onDestroy() { worker.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() { worker.shutdownNow(); decoder.shutdownNow(); super.onDestroy() }
 }

@@ -1,8 +1,13 @@
 import { NativeModules } from 'react-native';
+import type { HomeSnapshot } from '../api/homeSnapshot';
+import type { ServerRoutes } from '../api/useServerRoutes';
 import type { ServerEntry } from '../config/servers';
 
 /** Configuración mínima que usa el selector nativo, incluso con la app cerrada. */
-export function shareTargetsConfig(servers: readonly ServerEntry[]): string {
+export function shareTargetsConfig(
+  servers: readonly ServerEntry[],
+  routes: ServerRoutes = {},
+): string {
   return JSON.stringify({
     version: 1,
     servers: servers.flatMap(server => {
@@ -12,6 +17,10 @@ export function shareTargetsConfig(servers: readonly ServerEntry[]): string {
           : server.mode === 'remote'
           ? [server.remoteUrl]
           : [server.localUrl, server.remoteUrl];
+      const preferred = routes[server.id]?.baseUrl;
+      if (preferred && candidates.includes(preferred)) {
+        candidates.sort(url => (url === preferred ? -1 : 1));
+      }
       const urls = [
         ...new Set(candidates.map(url => url.trim().replace(/\/+$/, ''))),
       ].filter(value => {
@@ -41,9 +50,35 @@ export function shareTargetsConfig(servers: readonly ServerEntry[]): string {
 
 export async function syncShareTargets(
   servers: readonly ServerEntry[],
+  routes: ServerRoutes = {},
 ): Promise<void> {
   const native = NativeModules.ShareTargets as
     | { configure: (config: string) => Promise<void> }
     | undefined;
-  await native?.configure(shareTargetsConfig(servers));
+  await native?.configure(shareTargetsConfig(servers, routes));
+}
+
+/** La misma foto del inicio; solo metadatos de chats activos, sin conversaciones. */
+export function shareSessionsSnapshot(snapshot: HomeSnapshot): string {
+  const pinned = new Set(snapshot.pinnedIds);
+  return JSON.stringify(
+    snapshot.sessions
+      .filter(session => session.isOpen)
+      .map(session => ({
+        id: session.id,
+        serverId: session.serverId,
+        name: session.name,
+        cwd: session.cwd,
+        updated_at: session.updatedAt,
+        pinned: pinned.has(session.key),
+        pinOrder: snapshot.pinnedIds.indexOf(session.key),
+        preview: snapshot.previews[session.key]?.text.slice(0, 160) ?? '',
+      })),
+  );
+}
+
+export async function syncShareSessions(snapshot: HomeSnapshot): Promise<void> {
+  await NativeModules.ShareTargets?.cacheSessions?.(
+    shareSessionsSnapshot(snapshot),
+  );
 }

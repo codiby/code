@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { syncShareSessions } from '../lib/shareTargets';
 
 import type { TabGroup } from './preferences';
 import type { SessionSummary } from './types';
@@ -19,7 +20,10 @@ export interface HomeSnapshot {
   readonly pinnedIds: string[];
   readonly pinnedGroups: string[];
   /** clave de sesión → resumen, con el `updatedAt` para el que vale. */
-  readonly previews: Record<string, { readonly at: number; readonly text: string }>;
+  readonly previews: Record<
+    string,
+    { readonly at: number; readonly text: string }
+  >;
 }
 
 const KEY = 'codiby.home-snapshot.v1';
@@ -63,6 +67,9 @@ const pending: Promise<HomeSnapshot | null> = AsyncStorage.getItem(KEY)
   .catch(() => null)
   .then(value => {
     loaded = value;
+    if (value) {
+      syncShareSessions(value).catch(() => undefined);
+    }
     return value;
   });
 
@@ -83,6 +90,7 @@ let latest: HomeSnapshot | null = null;
 
 export function saveHomeSnapshot(snapshot: HomeSnapshot) {
   latest = snapshot;
+  syncShareSessions(snapshot).catch(() => undefined);
   if (timer !== null) {
     return;
   }
