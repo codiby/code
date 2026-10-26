@@ -11,9 +11,10 @@ import type { SessionInfo, ConnectionStatus, SessionActivity } from '../lib/clau
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 import type { TabGroupInfo } from '../lib/tab-groups';
 import {
-  buildGroupTree, descendantGroupIds, isAncestorOf, pinOrder,
+  ancestorChain, buildGroupTree, descendantGroupIds, isAncestorOf, pinOrder,
   resolveGroupColor, type TreeNode,
 } from '../lib/group-tree';
+import { isRemoteGroupKey } from '../lib/remote-groups';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
 import { UsagePopover } from './UsagePopover';
@@ -63,6 +64,10 @@ interface Props {
   groupRemoteInfo?: Record<string, { remoteId: string; remoteName: string | null; remoteColor: string | null }>;
   expandedGroupIds: Set<string>;
   onCreateGroup: (tabIds: string[]) => void;
+  /** Create a group with no folder of its own at the sidebar root, optionally
+   *  filing `tabIds` in it. Unlike `onCreateGroup`, it never joins or nests
+   *  under the members' project folder. */
+  onCreateFreeGroup?: (tabIds?: string[]) => void;
   onGroupTabs: (a: string, b: string) => void;
   onAddToGroup: (tabId: string, groupId: string) => void;
   onUngroupTab: (tabId: string) => void;
@@ -887,7 +892,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     pinnedSessionIds, onTogglePin, onKeepSession,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
-    onCreateSubgroup, onMoveGroup, onAutoGroupSessions,
+    onCreateSubgroup, onMoveGroup, onAutoGroupSessions, onCreateFreeGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
     activeNavView = 'sessions', onSelectNavView,
@@ -1541,6 +1546,14 @@ export const TabBar = memo(function TabBar(props: Props) {
             className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl min-w-[190px] py-1"
             style={{ top: sidebarMenu.y, left: sidebarMenu.x, transform: 'translateX(-100%)' }}
           >
+            {onCreateFreeGroup && (
+              <Button variant="ghost" fullWidth
+                className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                onPress={() => { setSidebarMenu(null); onCreateFreeGroup(); }}>
+                <FolderPlus size={12} className="text-zinc-500" />
+                New group
+              </Button>
+            )}
             <Button variant="ghost" fullWidth
               className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
               onPress={() => { setSidebarMenu(null); onAutoGroupSessions?.(); }}>
@@ -1672,6 +1685,16 @@ export const TabBar = memo(function TabBar(props: Props) {
       {tabMenu && (() => {
         const isGrouped = !!tabGroupMap[tabMenu.tabId];
         const otherUngroupedTabs = sessions.filter(s => s.id !== tabMenu.tabId && !tabGroupMap[s.id]);
+        // Every local group is a valid destination, whatever folder it was
+        // made for. Remote-only groups are excluded: `onAddToGroup` refuses
+        // them. Labelled by full path so same-name subgroups stay apart.
+        const moveTargets = Object.values(tabGroups)
+          .filter(g => g.id !== tabGroupMap[tabMenu.tabId] && !isRemoteGroupKey(g.id))
+          .map(g => ({
+            id: g.id,
+            label: ancestorChain(tabGroups, g.id).reverse().map(id => tabGroups[id]!.name).join(' › '),
+          }))
+          .sort((a, b) => a.label.localeCompare(b.label));
 
         return (
           <>
@@ -1790,6 +1813,27 @@ export const TabBar = memo(function TabBar(props: Props) {
                   onPress={() => { onCreateGroup([tabMenu.tabId]); setTabMenu(null); }}>
                   Create group
                 </Button>
+              )}
+
+              {/* Free-form group: not tied to this session's project folder. */}
+              {onCreateFreeGroup && (
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                  onPress={() => { onCreateFreeGroup([tabMenu.tabId]); setTabMenu(null); }}>
+                  <FolderPlus size={12} className="text-zinc-500" />
+                  Move to new group
+                </Button>
+              )}
+
+              {moveTargets.length > 0 && (
+                <>
+                  <div className="px-3 py-1 text-[10px] text-zinc-600 uppercase tracking-wider">Move to group</div>
+                  {moveTargets.map(g => (
+                    <Button key={g.id} variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors truncate"
+                      onPress={() => { onAddToGroup(tabMenu.tabId, g.id); setTabMenu(null); }}>
+                      {g.label}
+                    </Button>
+                  ))}
+                </>
               )}
 
               {/* Create group with another tab */}

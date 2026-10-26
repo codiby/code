@@ -70,7 +70,7 @@ const GROUP_COLORS = ['blue', 'green', 'amber', 'violet', 'red', 'pink'];
  *  absent — arming a loop is a user action driven by /sessions/:id/loop/start. */
 const SETTABLE_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'];
 
-type TabGroup = { id: string; name: string; color: string; cwd?: string; icon?: string };
+type TabGroup = { id: string; name: string; color?: string; cwd?: string; icon?: string; parentId?: string | null; allowEmpty?: boolean };
 
 // ---------------------------------------------------------------------------
 // In-process deps — wired from index.ts after the HTTP server starts. Lets the
@@ -721,14 +721,15 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'ui_create_tab_group',
-      description: 'Create a new tab group. Returns the new group id. If session_ids is provided, those sessions are added to the group immediately.',
+      description: 'Create a new tab group. Groups are free-form: they need not match a project folder, and may hold sessions from any cwd. Returns the new group id. If session_ids is provided, those sessions are added to the group immediately; a group created without members is kept as an empty folder.',
       inputSchema: {
         type: 'object' as const,
         properties: {
           name: { type: 'string', description: 'Group name shown in the tab bar.' },
           color: { type: 'string', enum: GROUP_COLORS, description: 'Optional color. Auto-cycles from the palette if unset.' },
           icon: { type: 'string', description: 'Optional emoji/icon for the group. Omit for the colored dot default.' },
-          cwd: { type: 'string', description: 'Optional default cwd for sessions created in this group.' },
+          cwd: { type: 'string', description: 'Optional default cwd for sessions created in this group. Omit for a group not tied to any folder.' },
+          parent_id: { type: 'string', description: 'Optional parent group id (from ui_list_tab_groups) to nest this group under. Omit for a top-level group.' },
           session_ids: { type: 'array', items: { type: 'string' }, description: 'Optional list of session ids to add to the new group.' },
         },
         required: ['name'],
@@ -1673,7 +1674,8 @@ export async function executeLocalMcpTool(
           const members = membersByGroup[gid] || [];
           const icon = g.icon ? `${g.icon} ` : '';
           const cwd = g.cwd ? `  cwd=${g.cwd}` : '';
-          return `${gid}  ${icon}[${g.color}] ${g.name}${cwd}\n  members: ${members.length === 0 ? '(none)' : members.join(', ')}`;
+          const parent = g.parentId ? `  parent=${g.parentId}` : '';
+          return `${gid}  ${icon}[${g.color ?? 'inherited'}] ${g.name}${cwd}${parent}\n  members: ${members.length === 0 ? '(none)' : members.join(', ')}`;
         });
         return { content: [{ type: 'text', text: lines.join('\n\n') }] };
       }
@@ -1690,7 +1692,14 @@ export async function executeLocalMcpTool(
         const color = GROUP_COLORS.includes(providedColor)
           ? providedColor
           : GROUP_COLORS[Object.keys(groups).length % GROUP_COLORS.length]!;
-        const group: TabGroup = { id: randomUUID(), name: nm, color };
+        const parentId = typeof args!.parent_id === 'string' && args!.parent_id ? args!.parent_id as string : null;
+        if (parentId && !groups[parentId]) {
+          return { content: [{ type: 'text', text: `Unknown parent group: ${parentId}` }], isError: true };
+        }
+        // Subgroups inherit the nearest ancestor's colour unless one is given.
+        const group: TabGroup = parentId
+          ? { id: randomUUID(), name: nm, parentId, ...(GROUP_COLORS.includes(providedColor) ? { color } : {}) }
+          : { id: randomUUID(), name: nm, color, parentId: null };
         if (typeof args!.icon === 'string' && args!.icon) group.icon = args!.icon as string;
         if (typeof args!.cwd === 'string' && args!.cwd) group.cwd = args!.cwd as string;
         groups[group.id] = group;
@@ -1704,8 +1713,11 @@ export async function executeLocalMcpTool(
           }
         }
 
+        // Without members the clients' orphan-pruning pass would delete it.
+        if (!Object.values(map).includes(group.id)) group.allowEmpty = true;
+
         _deps.updatePreferences({ tabGroups: groups, tabGroupMap: map });
-        return { content: [{ type: 'text', text: `Created tab group ${group.id} — ${group.name} [${group.color}]` }] };
+        return { content: [{ type: 'text', text: `Created tab group ${group.id} — ${group.name} [${group.color ?? 'inherited'}]` }] };
       }
       case 'ui_rename_tab_group': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

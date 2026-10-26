@@ -487,6 +487,36 @@ export function ChatApp() {
     persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
   };
 
+  /** Create a free-form group at the sidebar root: no folder of its own, so it
+   *  can hold sessions from any project. `tabIds` (optional) are filed in it
+   *  right away; `allowEmpty` keeps it alive while it has none. The name is
+   *  kept unique among root groups because the server folds same-name
+   *  siblings into one (`dedupeGroups`). */
+  const handleCreateFreeGroup = (tabIds: string[] = []) => {
+    const groupId = crypto.randomUUID();
+    const taken = new Set(Object.values(tabGroups)
+      .filter(g => !g.parentId)
+      .map(g => g.name.trim().toLowerCase()));
+    let n = 1;
+    while (taken.has(`group ${n}`)) n++;
+    const newGroups: Record<string, TabGroupInfo> = {
+      ...tabGroups,
+      [groupId]: {
+        id: groupId,
+        name: `Group ${n}`,
+        parentId: null,
+        allowEmpty: true,
+        color: GROUP_COLORS[groupColorIdx++ % GROUP_COLORS.length]!,
+      },
+    };
+    const newMap = { ...tabGroupMap };
+    for (const id of tabIds) if (!isPendingSessionId(id)) newMap[id] = groupId;
+    setTabGroups(newGroups);
+    setTabGroupMap(newMap);
+    setExpandedGroupIds(prev => new Set([...prev, groupId]));
+    persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
+  };
+
   /** Open a draft in this group; creating the session waits for first send. */
   const handleNewSessionInGroup = (groupId: string) => {
     if (!sidebarGroups[groupId]) return;
@@ -6506,6 +6536,7 @@ export function ChatApp() {
               groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
               onCreateGroup={handleCreateGroup}
+              onCreateFreeGroup={handleCreateFreeGroup}
               onGroupTabs={handleGroupTabs}
               onAddToGroup={handleAddToGroup}
               onUngroupTab={handleUngroupTab}
