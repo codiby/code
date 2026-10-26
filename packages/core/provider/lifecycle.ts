@@ -6,7 +6,7 @@
 import { getProvider } from './registry';
 import { clearPendingDecisionsForSession, createBridgeEvents } from './bridge';
 import { randomUUID } from 'crypto';
-import { addMessage, getSessionState, healOrphanedToolUses, updateSessionState } from '../session/state';
+import { addMessage, getSessionState, healOrphanedToolUses, markSessionActivity, updateSessionState } from '../session/state';
 import type { BridgeDeps } from './bridge';
 import { buildSessionSdkMcpServer } from './sdk-tools';
 import { loadExternalMcpServers } from '../mcp/mcp-config';
@@ -88,6 +88,7 @@ export function startProviderSession(session: Session, port: number, resumeSessi
 
   session.runtimeStatus = 'starting';
   session.ready = false;
+  markSessionActivity(session.id);
   // Bump the generation BEFORE creating the bridge so the bridge's
   // captured `gen` reflects the new provider. A late-firing `onExit`
   // from a previous provider (e.g. when the user restarts the session

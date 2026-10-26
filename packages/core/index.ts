@@ -135,6 +135,7 @@ import { handleSearch } from './handlers/search';
 import { handleCreateWorktree, handleRemoveWorktree, rootRepoOf, WORKTREE_CWD_RE } from './handlers/worktree';
 import { planAutoGroup, planAutoGroupExisting, type AutoGroup } from './config/auto-group';
 import { DISPOSABLES_GROUP_ID, expiredDisposables, placeInDisposables, refileDisposables } from './session/disposables';
+import { idleSessions } from './session/idle-shutdown';
 import { dedupePreferenceGroups } from './config/group-dedupe';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
@@ -157,6 +158,7 @@ import {
   getStateForClient,
   getOlderMessages,
   clearSessionState,
+  getLastActivityAt,
 } from './session/state';
 import type { ChatMessage } from './session/state';
 import { loadPRLinks, addPRLink, setPRLinks, removePRLink, getPRLinks, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './session/storage';
@@ -558,6 +560,41 @@ function sweepDisposables() {
 }
 setInterval(sweepDisposables, 5 * 60_000);
 setTimeout(sweepDisposables, 10_000);
+
+/** Close the provider of every session idle for an hour. The session stays
+ *  open as `stopped`; the sidebar shows it off, and selecting it or sending a
+ *  message resumes the conversation. Terminals and the chat socket are left
+ *  alone — the user may still be reading the transcript. */
+async function shutdownIdleSessions() {
+  const idle = idleSessions(
+    [...sessions.values()].map(s => ({
+      id: s.id,
+      running: !!s.providerSession,
+      busy: !!s.providerSession && getSessionState(s.id).isStreaming,
+      lastActivityAt: getLastActivityAt(s.id) ?? s.updatedAt,
+    })),
+    Date.now(),
+  );
+  if (!idle.length) return;
+  for (const id of idle) {
+    const s = sessions.get(id);
+    if (!s?.providerSession) continue;
+    const provider = s.providerSession;
+    const gen = s.providerSessionGen;
+    s.providerSession = null;
+    try { await provider.close(); } catch {}
+    // A message that arrived during close() already restarted it.
+    if (s.providerSessionGen !== gen) continue;
+    clearPendingDecisionsForSession(id, 'Session stopped after 1 h idle');
+    s.ready = false;
+    s.runtimeStatus = 'stopped';
+    broadcastToSession(id, { type: 'status', sessionId: id, status: 'disconnected' });
+    log(`[${id.slice(0, 8)}] Session stopped after 1 h idle`);
+  }
+  saveSessions();
+  broadcastSessionList();
+}
+setInterval(() => { shutdownIdleSessions().catch(err => log(`[idle-shutdown] ${err}`)); }, 60_000);
 
 const IMG_MIME_EXT: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',

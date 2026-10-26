@@ -256,6 +256,19 @@ export function updateSessionState(sessionId: string, fn: (state: SessionState) 
   return next;
 }
 
+/** Last message or tool call per session, for the idle shutdown in
+ *  session/idle-shutdown.ts. In-memory only: after a restart every session
+ *  starts stopped, and starting one marks it. */
+const lastActivityAt = new Map<string, number>();
+
+export function markSessionActivity(sessionId: string) {
+  lastActivityAt.set(sessionId, Date.now());
+}
+
+export function getLastActivityAt(sessionId: string): number | undefined {
+  return lastActivityAt.get(sessionId);
+}
+
 /** Returns true if message was added, false if duplicate */
 export function addMessage(sessionId: string, msg: ChatMessage): boolean {
   const state = getSessionState(sessionId);
@@ -272,6 +285,7 @@ export function addMessage(sessionId: string, msg: ChatMessage): boolean {
   msg.seq = nextSeq;
   state.messages.push(msg);
   appendMessage(sessionId, msg);
+  markSessionActivity(sessionId);
   // Bump the session's last-activity timestamp so the archive dropdown
   // shows recently active conversations first. Skip pure tool bookkeeping
   // (tool_use notifications + tool_results) — those spam Date.now() on
