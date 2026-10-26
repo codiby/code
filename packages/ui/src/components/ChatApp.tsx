@@ -1486,6 +1486,7 @@ export function ChatApp() {
   // Close an editor tab; if it was active, fall back to the left neighbour
   // (else null). Mirrors the browser close fallback.
   const closeEditor = useCallback((sid: string, path: string) => {
+    if (lspSessionIdRef.current === sid) lspClientRef.current?.closeDocument(path);
     delete liveBuffersRef.current[liveBufKey(sid, path)];
     updateLocalState(sid, s => {
       const idx = s.editorTabs.findIndex(t => t.path === path);
@@ -4923,7 +4924,7 @@ export function ChatApp() {
   // navigation, not editing.
   const isExternalPath = useCallback((path: string) => {
     if (path.includes('/node_modules/')) return true;
-    if (explorerRoot && !path.startsWith(explorerRoot)) return true;
+    if (explorerRoot && path !== explorerRoot && !path.startsWith(explorerRoot.replace(/\/$/, '') + '/')) return true;
     return false;
   }, [explorerRoot]);
 
@@ -4940,10 +4941,39 @@ export function ChatApp() {
     });
   }, [activeId, isExternalPath, openFileInEditor]);
 
-  // Stable handle so the (once-patched) Monaco editor service always calls the
-  // latest navigate closure without re-patching on every editor mount.
+  // Registered editor openers always use the current session navigation callback.
   const navigateToDefinitionRef = useRef(navigateToDefinition);
   useEffect(() => { navigateToDefinitionRef.current = navigateToDefinition; }, [navigateToDefinition]);
+
+  const loadLspModelRef = useRef<(uri: string, forEdit: boolean) => Promise<MonacoEditor.ITextModel | null>>(async () => null);
+  loadLspModelRef.current = async (uri, forEdit) => {
+    const monaco = monacoRef.current;
+    const sid = activeId;
+    const client = clientRef.current;
+    if (!monaco || !sid || !client) return null;
+    const resource = monaco.Uri.parse(uri);
+    if (resource.scheme !== 'file') return null;
+    const path = resource.fsPath;
+    if (forEdit && isExternalPath(path)) throw new Error('Cannot rename symbols in read-only files.');
+    let model = monaco.editor.getModel(resource);
+    const tab = editorTabsRef.current.find(tab => tab.path === path);
+    const file = tab || await client.readFile(path);
+    if (!file) return null;
+    if (!model) {
+      const extension = path.split('.').pop()?.toLowerCase();
+      const language = ['ts', 'tsx', 'mts', 'cts'].includes(extension || '') ? 'typescript'
+        : ['js', 'jsx', 'mjs', 'cjs'].includes(extension || '') ? 'javascript' : undefined;
+      model = monaco.editor.getModel(resource) || monaco.editor.createModel(liveBuffersRef.current[liveBufKey(sid, path)] ?? file.content, language, resource);
+    }
+    if (forEdit) {
+      // Keep the rename input mounted; expose affected files as pinned tabs.
+      updateLocalState(sid, state => ({ ...state, editorTabs: state.editorTabs.some(tab => tab.path === path)
+        ? state.editorTabs.map(tab => tab.path === path ? { ...tab, preview: false } : tab)
+        : [...state.editorTabs, { path, content: file.content, dirty: false, preview: false }] }));
+      lspClientRef.current?.syncModel(model);
+    }
+    return model;
+  };
 
   // Load git modified when root changes — instant from cache, then refresh
   useEffect(() => {
@@ -5152,29 +5182,27 @@ export function ChatApp() {
     editorRef.current = editor;
     monacoRef.current = monaco;
 
-    // Cross-file go-to-definition. A standalone Monaco only knows about the one
-    // model it has mounted, so when F12 / Cmd+Click resolves to another file
-    // its editor service can't open it and returns null. We patch the service
-    // (once — it's shared across editor instances): let Monaco handle same-file
-    // jumps natively, and for a different file route the target through our tab
-    // system instead. Uses the private _codeEditorService — the standard
-    // standalone-Monaco escape hatch.
-    const codeEditorService = (editor as unknown as { _codeEditorService?: any })._codeEditorService;
-    if (codeEditorService && !codeEditorService.__taskrCrossFileNav) {
-      const openCodeEditorBase = codeEditorService.openCodeEditor.bind(codeEditorService);
-      codeEditorService.openCodeEditor = async (input: any, sourceEditor: any, sideBySide?: boolean) => {
-        const handled = await openCodeEditorBase(input, sourceEditor, sideBySide);
-        if (handled === null && input?.resource?.scheme === 'file') {
-          // Different file — Monaco couldn't open it. `resource.path` is the
-          // absolute fs path; `options.selection` is already 1-based Monaco
-          // coords. Jump to the first definition (we ignore extra results).
-          navigateToDefinitionRef.current(input.resource.path, input.options?.selection);
-          return sourceEditor; // signal "handled" so Monaco doesn't warn
-        }
-        return handled;
-      };
-      codeEditorService.__taskrCrossFileNav = true;
-    }
+    const opener = monaco.editor.registerEditorOpener({
+      openCodeEditor: async (source: MonacoEditor.ICodeEditor, resource: import('monaco-editor').Uri, selection?: import('monaco-editor').IRange | import('monaco-editor').IPosition) => {
+        if (source !== editor || resource.scheme !== 'file') return false;
+        if (resource.toString() === source.getModel()?.uri.toString()) return false;
+        const range = selection && ('startLineNumber' in selection
+          ? selection : { startLineNumber: selection.lineNumber, startColumn: selection.column });
+        await navigateToDefinitionRef.current(resource.fsPath, range);
+        return true;
+      },
+    });
+    // Monaco uses Cmd+click on macOS. Also accept the requested Ctrl+click.
+    const controlClick = editor.onMouseDown((event) => {
+      if (!event.event.ctrlKey || event.event.metaKey || event.event.altKey || event.event.shiftKey || !event.target.position ||
+          event.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT) return;
+      if (!IS_MAC) return; // Monaco already handles Ctrl+click on Windows/Linux.
+      event.event.preventDefault();
+      event.event.stopPropagation();
+      editor.setPosition(event.target.position);
+      void editor.getAction('editor.action.revealDefinition')?.run();
+    });
+    editor.onDidDispose(() => { opener.dispose(); controlClick.dispose(); });
 
     // Jump to line/column if specified (search results, go-to-definition)
     if (openFile?.line) {
@@ -5318,67 +5346,42 @@ export function ChatApp() {
       }
     });
 
-    // --- LSP integration ---
-    // Disable Monaco's built-in TS/JS diagnostics — LSP provides its own
-    monaco.languages.typescript?.typescriptDefaults?.setDiagnosticsOptions({
-      noSemanticValidation: true, noSyntaxValidation: true,
-    });
-    monaco.languages.typescript?.javascriptDefaults?.setDiagnosticsOptions({
-      noSemanticValidation: true, noSyntaxValidation: true,
-    });
+    // Preserve the existing diagnostic ownership: the project LSP supplies errors.
+    monaco.languages.typescript?.typescriptDefaults?.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: true });
+    monaco.languages.typescript?.javascriptDefaults?.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: true });
 
-    // Determine language from file extension
+    // Read the mounted model, not the active tab captured before React switched it.
     const model = editor.getModel();
-    const langId = model?.getLanguageId();
-    if (langId && LSP_LANGUAGES.has(langId) && activeId) {
-      // Start LSP client for this session if not already running
-      const needsNewClient = !lspClientRef.current || lspSessionIdRef.current !== activeId;
-      if (needsNewClient) {
-        lspClientRef.current?.dispose();
-        const sessionCwd = active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd || '/';
-        setLspStatus('connecting');
-        resolveServerUrl().then(serverUrl => {
-          const lsp = new LspClient({ serverUrl, sessionId: activeId!, languageId: 'typescript', rootUri: `file://${sessionCwd}`, monaco });
-          lspClientRef.current = lsp;
-          lspSessionIdRef.current = activeId;
-          lsp.start().then(() => {
-            setLspStatus('running');
-            // Open the current document
-            if (openFile) {
-              lsp.openDocument(openFile.path, openFile.content, langId);
-            }
-          }).catch((e) => {
-            console.warn('LSP start failed:', e);
-            setLspStatus('error');
+    if (model && LSP_LANGUAGES.has(model.getLanguageId()) && activeId) {
+      const sid = activeId;
+      const connect = async () => {
+        const serverUrl = await resolveServerUrl();
+        if (editor.getModel() !== model || model.isDisposed()) return;
+        let lsp = lspClientRef.current;
+        if (!lsp || lspSessionIdRef.current !== sid) {
+          lsp?.dispose();
+          setLspStatus('connecting');
+          const sessionCwd = active.initInfo?.cwd || sessions.find(s => s.id === sid)?.cwd || '/';
+          lsp = new LspClient({ serverUrl, sessionId: sid, languageId: 'typescript', rootUri: monaco.Uri.file(sessionCwd).toString(), monaco,
+            loadModel: (uri, forEdit) => lspSessionIdRef.current === sid ? loadLspModelRef.current(uri, forEdit) : Promise.resolve(null),
+            onDocumentChange: (path, content) => {
+              liveBuffersRef.current[liveBufKey(sid, path)] = content;
+              if (!externalEditRef.current) updateLocalState(sid, state => ({ ...state, editorTabs: state.editorTabs.map(tab => tab.path === path
+                ? { ...tab, dirty: content !== tab.content, preview: content !== tab.content ? false : tab.preview } : tab) }));
+            },
           });
-        });
-      } else if (lspClientRef.current && openFile) {
-        // LSP already running — just open this document
-        lspClientRef.current.openDocument(openFile.path, openFile.content, langId);
-      }
-
-      // Listen for content changes to sync with LSP
-      const changeDisposable = editor.onDidChangeModelContent(() => {
-        const content = editor.getModel()?.getValue();
-        if (content !== undefined && openFile?.path && lspClientRef.current) {
-          lspClientRef.current.changeDocument(openFile.path, content);
+          lspClientRef.current = lsp;
+          lspSessionIdRef.current = sid;
+          await lsp.start();
+          if (lspClientRef.current !== lsp) return;
+          setLspStatus('running');
         }
-      });
-      // Clean up on next mount
-      return () => changeDisposable.dispose();
+        await lsp.start();
+        if (lspClientRef.current === lsp && !model.isDisposed()) lsp.syncModel(model);
+      };
+      void connect().catch(error => { console.warn('LSP start failed:', error); setLspStatus('error'); });
     }
   }, [openFile, explorerRoot, activeId]);
-
-  // Track previous openFile path to close documents in LSP when switching files
-  const prevOpenFilePathRef = useRef<string | null>(null);
-  useEffect(() => {
-    const prevPath = prevOpenFilePathRef.current;
-    const newPath = openFile?.path || null;
-    if (prevPath && prevPath !== newPath && lspClientRef.current) {
-      lspClientRef.current.closeDocument(prevPath);
-    }
-    prevOpenFilePathRef.current = newPath;
-  }, [openFile?.path]);
 
   // Update breakpoint + debug line decorations in the editor
   useEffect(() => {
@@ -5427,15 +5430,23 @@ export function ChatApp() {
     const sessionCwd = active.initInfo?.cwd || sessions.find(s => s.id === activeId)?.cwd || '/';
     const serverUrl = await resolveServerUrl();
     const monaco = monacoRef.current;
-    const lsp = new LspClient({ serverUrl, sessionId: activeId, languageId: 'typescript', rootUri: `file://${sessionCwd}`, monaco });
+    const lsp = new LspClient({ serverUrl, sessionId: activeId, languageId: 'typescript', rootUri: monaco.Uri.file(sessionCwd).toString(), monaco,
+      loadModel: (uri, forEdit) => loadLspModelRef.current(uri, forEdit),
+      onDocumentChange: (path, content) => {
+        liveBuffersRef.current[liveBufKey(activeId, path)] = content;
+        if (!externalEditRef.current) updateLocalState(activeId, state => ({ ...state, editorTabs: state.editorTabs.map(tab => tab.path === path
+          ? { ...tab, dirty: content !== tab.content, preview: content !== tab.content ? false : tab.preview } : tab) }));
+      },
+    });
     lspClientRef.current = lsp;
     lspSessionIdRef.current = activeId;
     try {
       await lsp.start();
+      if (lspClientRef.current !== lsp) return;
       setLspStatus('running');
       if (openFile) {
-        const langId = monaco.editor.getModel(monaco.Uri.file(openFile.path))?.getLanguageId();
-        lsp.openDocument(openFile.path, openFile.content, langId);
+        const model = editorRef.current?.getModel();
+        if (model) lsp.syncModel(model);
       }
     } catch (e) {
       console.warn('LSP restart failed:', e);
@@ -5451,7 +5462,7 @@ export function ChatApp() {
       lspSessionIdRef.current = null;
       setLspStatus('off');
     };
-  }, []);
+  }, [activeId]);
 
   // Reconcile focus-mode workspaces with the host's open-sessions list: drop
   // sessions from workspaces once they close externally (and collapse their
@@ -7243,7 +7254,7 @@ export function ChatApp() {
                     <div className={showDebugPanel ? 'flex-1 min-h-0' : 'flex-1'} style={showDebugPanel ? { flex: '1 1 60%' } : undefined}>
                       <Editor
                         key={ePath}
-                        path={ePath}
+                        path={monacoRef.current ? monacoRef.current.Uri.file(ePath).toString() : `file://${ePath.split('/').map(encodeURIComponent).join('/')}`}
                         defaultValue={liveBuffersRef.current[liveKey] ?? eTab.content}
                         theme="vs-dark"
                         beforeMount={(monaco) => registerDotenv(monaco)}
