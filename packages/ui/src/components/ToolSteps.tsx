@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Copy, Eye, FilePlus, Pencil, Play, Search, Sparkles, Wrench, X, ExternalLink } from 'lucide-react';
+import { Check, ChevronRight, Copy, Eye, FilePlus, Pencil, Play, Search, Sparkles, Wrench, X, ExternalLink } from 'lucide-react';
 import type { ChatMessage } from '../lib/claude-client';
 import {
   basename,
@@ -108,7 +108,16 @@ type WindowState =
  * diff or the command's output in a window over the chat instead of unfolding
  * it inside the thread.
  */
-export function ToolSteps({ items, hasContentAfter }: { items: ChatMessage[]; hasContentAfter?: boolean }) {
+export function ToolSteps({
+  items, hasContentAfter, collapse, live,
+}: {
+  items: ChatMessage[];
+  hasContentAfter?: boolean;
+  /** Fold the run into one line (spinner · current tool) that opens to the steps. */
+  collapse?: boolean;
+  /** The turn is still working on this run — show the spinner and the current tool. */
+  live?: boolean;
+}) {
   const all = useMemo(() => buildToolSteps(items), [items]);
   // Finished reasoning isn't a line of its own — it rides on the step it led
   // to, as that step's tooltip. Only live thinking gets a line.
@@ -128,16 +137,47 @@ export function ToolSteps({ items, hasContentAfter }: { items: ChatMessage[]; ha
   }, [all]);
   const [win, setWin] = useState<WindowState | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [open, setOpen] = useState(false);
 
   if (steps.length === 0) return null;
 
-  const folded = !showAll && !!hasContentAfter && steps.length > FOLD_AFTER;
+  const running = !!live || steps.some(s => s.running);
+  // A lone finished step says more as itself than as "Used 1 tool".
+  const asLine = !!collapse && (running || steps.length > 1);
+
+  const folded = !asLine && !showAll && !!hasContentAfter && steps.length > FOLD_AFTER;
   const visible = folded ? steps.slice(-FOLD_KEEP) : steps;
   const openStep = win ? steps.find(s => s.id === win.stepId) : undefined;
 
   return (
     <div className="py-1 select-none">
-      {folded && (
+      {asLine && (
+        <RunLine
+          steps={steps}
+          running={running}
+          open={open}
+          onToggle={() => setOpen(o => !o)}
+        />
+      )}
+      {asLine ? (
+        <div className={`grid transition-[grid-template-rows] duration-300 ease-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+          <div className="overflow-hidden">
+            <div className="ml-[7px] mt-0.5 mb-1 pl-3 border-l border-border max-h-64 overflow-y-auto">
+              {steps.map(step => (
+                <StepLine
+                  key={step.id}
+                  step={step}
+                  why={reasoning.get(step.id)}
+                  selectedPath={win?.type === 'diff' && win.stepId === step.id ? win.path : null}
+                  onOpenDiff={(path) => setWin({ type: 'diff', stepId: step.id, path })}
+                  onOpenOutput={() => setWin({ type: 'output', stepId: step.id })}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {!asLine && folded && (
         <button
           type="button"
           onClick={() => setShowAll(true)}
@@ -147,7 +187,7 @@ export function ToolSteps({ items, hasContentAfter }: { items: ChatMessage[]; ha
           {steps.length - FOLD_KEEP} more
         </button>
       )}
-      {visible.map(step => (
+      {!asLine && visible.map(step => (
         <StepLine
           key={step.id}
           step={step}
@@ -169,6 +209,113 @@ export function ToolSteps({ items, hasContentAfter }: { items: ChatMessage[]; ha
         <OutputWindow step={openStep} onClose={() => setWin(null)} />
       )}
     </div>
+  );
+}
+
+/** What a step is doing, as the one-liner the run line rolls through. */
+function stepLabel(step: ToolStep): string {
+  switch (step.kind) {
+    case 'read': return `${step.running ? 'Reading' : 'Read'} ${step.files.map(basename).join(' ')}`;
+    case 'search': return `${step.running ? 'Searching' : 'Searched'} ${step.queries.map(q => `"${q.pattern}"`).join(' ')}`;
+    case 'change': {
+      const verb = step.files.every(f => f.created)
+        ? (step.running ? 'Creating' : 'Created')
+        : (step.running ? 'Editing' : 'Edited');
+      return `${verb} ${step.files.map(f => basename(f.path)).join(' ')}`;
+    }
+    case 'bash': return step.short;
+    case 'thought': return 'Thinking…';
+    case 'other': return step.summary ? `${step.name} ${step.summary}` : step.name;
+  }
+}
+
+function stepFailed(step: ToolStep): boolean {
+  if (step.kind === 'bash' || step.kind === 'other') return step.failed;
+  if (step.kind === 'change') return step.files.some(f => !!f.error);
+  return false;
+}
+
+/**
+ * A run as one line. While it works: `◌ 🔧 grep -rn "login" …` with the label
+ * rolling to each new tool and a chevron once there's history to open. When
+ * it's done the spinner fades into the chevron and the count takes the
+ * label's place: `› 🔧 Used 15 tools  2 failed`.
+ */
+function RunLine({
+  steps, running, open, onToggle,
+}: { steps: ToolStep[]; running: boolean; open: boolean; onToggle: () => void }) {
+  const tools = steps.filter(s => s.kind !== 'thought');
+  const failed = tools.filter(stepFailed).length;
+  const current = steps[steps.length - 1]!;
+  const hasHistory = steps.length > 1 || !running;
+  const fade = 'transition-[opacity,transform] duration-300 ease-out';
+
+  return (
+    <button
+      type="button"
+      onClick={hasHistory ? onToggle : undefined}
+      aria-expanded={hasHistory ? open : undefined}
+      className={`group flex items-center gap-2 w-full h-7 pr-2 rounded-md text-[12.5px] text-zinc-500 transition-colors ${hasHistory ? 'hover:text-zinc-300 cursor-pointer' : 'cursor-default'}`}
+    >
+      <span className="relative w-4 h-4 shrink-0">
+        <span className={`absolute inset-0 flex items-center justify-center ${fade} ${running ? 'opacity-100' : 'opacity-0 scale-50'}`}>
+          <span className="w-3 h-3 rounded-full border-[1.5px] border-zinc-500/25 border-t-teal-400 animate-spin" />
+        </span>
+        <span className={`absolute inset-0 flex items-center justify-center text-zinc-600 group-hover:text-zinc-400 ${fade} ${running ? 'opacity-0 scale-50' : 'opacity-100'}`}>
+          <ChevronRight size={13} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
+        </span>
+      </span>
+      <Wrench size={12} className="shrink-0 text-zinc-500" />
+      <span className="relative flex-1 min-w-0 h-5 text-left">
+        <span className={`absolute inset-0 ${fade} ${running ? 'opacity-100' : 'opacity-0'}`}>
+          <Ticker text={stepLabel(current)} />
+        </span>
+        <span className={`absolute inset-0 leading-5 whitespace-nowrap text-zinc-400 group-hover:text-zinc-300 ${fade} ${running ? 'opacity-0 translate-y-1' : 'opacity-100 delay-100'}`}>
+          Used {tools.length} {tools.length === 1 ? 'tool' : 'tools'}
+        </span>
+      </span>
+      {failed > 0 && (
+        <span className="shrink-0 font-mono text-[11px] leading-[17px] px-[7px] rounded-full border border-red-400/25 text-red-400 tool-ticker-in">
+          {failed} failed
+        </span>
+      )}
+      {running && (
+        <ChevronRight
+          size={12}
+          className={`shrink-0 text-zinc-600 transition-[opacity,transform] duration-300 ${hasHistory ? 'opacity-100' : 'opacity-0'} ${open ? 'rotate-90' : ''}`}
+        />
+      )}
+    </button>
+  );
+}
+
+/** One line of text that rolls to its new value: old leaves up, new enters from below. */
+function Ticker({ text }: { text: string }) {
+  const [lines, setLines] = useState<{ key: number; text: string; leaving: boolean }[]>(
+    () => [{ key: 0, text, leaving: false }],
+  );
+  const next = useRef(1);
+  useEffect(() => {
+    setLines(prev => {
+      const shown = prev.filter(l => !l.leaving);
+      if (shown.length && shown[shown.length - 1]!.text === text) return prev;
+      return [...shown.map(l => ({ ...l, leaving: true })), { key: next.current++, text, leaving: false }];
+    });
+    const t = setTimeout(() => setLines(prev => prev.filter(l => !l.leaving)), 400);
+    return () => clearTimeout(t);
+  }, [text]);
+  return (
+    <span className="relative block h-5 overflow-hidden">
+      {lines.map(l => (
+        <span
+          key={l.key}
+          title={l.leaving ? undefined : l.text}
+          className={`absolute inset-x-0 top-0 leading-5 font-mono text-[11.5px] text-zinc-500 truncate ${lines.length > 1 ? (l.leaving ? 'tool-ticker-out' : 'tool-ticker-in') : ''}`}
+        >
+          {l.text}
+        </span>
+      ))}
+    </span>
   );
 }
 

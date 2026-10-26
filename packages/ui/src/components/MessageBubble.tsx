@@ -888,6 +888,8 @@ export type { ToolRunGroup };
 export function ToolRunBubble({
   group,
   hasContentAfter,
+  collapse,
+  live,
 }: {
   group: ToolRunGroup;
   onOpenTerminal?: (msgId: string) => void;
@@ -896,10 +898,14 @@ export function ToolRunBubble({
   /** True once an assistant text message (or any later item) follows this
    *  group — used to fold a long run down to its last steps. */
   hasContentAfter?: boolean;
+  /** Fold the run into one line that opens to its steps. */
+  collapse?: boolean;
+  /** The turn is still working on this run. */
+  live?: boolean;
 }) {
   // A run reads as a few one-line steps — no card, no header to open. Once the
   // agent has moved on, a long run folds to its last lines (ToolSteps).
-  return <ToolSteps items={group.items} hasContentAfter={hasContentAfter} />;
+  return <ToolSteps items={group.items} hasContentAfter={hasContentAfter} collapse={collapse} live={live} />;
 }
 
 /** Groups flat messages: Agent tool_use + everything produced by its

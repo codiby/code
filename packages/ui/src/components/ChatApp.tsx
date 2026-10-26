@@ -5776,6 +5776,10 @@ export function ChatApp() {
                   sessionId={sid}
                   client={clientRef.current || undefined}
                   hasContentAfter={hasContentAfter}
+                  // Opened turn folds list every step; the live turn shows each
+                  // run as one line that rolls through its tools.
+                  collapse={!inFold}
+                  live={!!cs.isStreaming && !hasContentAfter}
                 />
               );
             }

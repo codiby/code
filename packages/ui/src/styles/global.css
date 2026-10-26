@@ -502,6 +502,25 @@ html.light .thinking-sweep {
 }
 
 /* ---------------------------------------------------------------------------
+   Tool run line (ToolSteps `collapse`) — one line per run. The current tool's
+   label rolls: the old one leaves upward while the new one enters from below,
+   so a burst of tools reads as one line updating instead of rows appearing.
+   --------------------------------------------------------------------------- */
+@keyframes tool-ticker-in {
+  from { transform: translateY(70%); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes tool-ticker-out {
+  from { transform: none; opacity: 1; }
+  to   { transform: translateY(-70%); opacity: 0; }
+}
+.tool-ticker-in  { animation: tool-ticker-in 380ms cubic-bezier(.22,.61,.36,1) both; }
+.tool-ticker-out { animation: tool-ticker-out 380ms cubic-bezier(.22,.61,.36,1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .tool-ticker-in, .tool-ticker-out { animation-duration: 1ms; }
+}
+
+/* ---------------------------------------------------------------------------
    Mobile WS connection indicator — indeterminate progress bar that slides a
    gradient sliver across a thin track. Fades in while the WebSocket is
    connecting / disconnected and fades out once `'connected'`.
