@@ -6,6 +6,8 @@ import { join } from 'path';
 const dir = mkdtempSync(join(tmpdir(), 'codiby-interrupted-'));
 const m = await import('./interrupted');
 m.setInterruptedTurnsFile(join(dir, 'inflight-turns.json'));
+// Simulate a fresh boot; earlier suites can leave sessions in the shared tracker.
+m.loadInterruptedTurns(() => false);
 const onDisk = () => JSON.parse(readFileSync(join(dir, 'inflight-turns.json'), 'utf-8')).sessionIds as string[];
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
