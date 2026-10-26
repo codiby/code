@@ -1,0 +1,105 @@
+name: iOS TestFlight
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/mobile/**'
+      - 'package.json'
+      - 'bun.lock'
+      - '.bun-version'
+      - 'bunfig.toml'
+      - '.github/workflows/testflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One upload at a time, including manual runs and reruns, so build numbers cannot collide.
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deployment credentials
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          missing=0
+          for key in APPLE_TEAM_ID APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_PRIVATE_KEY IOS_DISTRIBUTION_P12_BASE64 IOS_DISTRIBUTION_P12_PASSWORD IOS_PROVISIONING_PROFILE_BASE64; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::Missing repository secret: $key (see docs/testflight.md)"
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - run: bun install --frozen-lockfile
+      - run: bun run mobile:test --runInBand
+
+  deploy:
+    needs: verify
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      CI: 'true'
+      FASTLANE_SKIP_UPDATE_CHECK: 'true'
+      FASTLANE_HIDE_CHANGELOG: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: packages/mobile
+      - name: Check Xcode
+        run: xcodebuild -version
+      - run: bun install --frozen-lockfile
+      - name: Install native dependencies
+        working-directory: packages/mobile/ios
+        run: bundle exec pod install --deployment
+      - name: Archive and upload to TestFlight
+        working-directory: packages/mobile
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: bundle exec fastlane ios beta
+      - name: Save build artifacts and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-testflight-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            packages/mobile/build/ios/*.ipa
+            packages/mobile/build/ios/*.dSYM.zip
+            packages/mobile/build/ios/logs/*.log
+          if-no-files-found: ignore
+          retention-days: 14

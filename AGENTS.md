@@ -65,3 +65,20 @@ bun run version:bump minor    # 0.0.1 -> 0.1.0
 bun run version:bump major    # 0.1.2 -> 1.0.0
 bun run version:bump 1.2.3    # explicit x.y.z
 ```
+
+## React Native app
+
+The iOS and Android client lives in `packages/mobile`, alongside `packages/desktop`,
+`packages/ui`, and `packages/core`. Use Bun 1.4.4 or newer and the root `bun.lock`.
+Run `bun install --frozen-lockfile` from the repository root; mobile is a
+self-contained workspace, so its React Native dependencies stay local to it.
+Keep `install.linker = "hoisted"` and mobile's `installConfig.hoistingLimits`.
+
+Root commands: `bun run mobile:start`, `mobile:ios`, `mobile:android`,
+`mobile:test --runInBand`, `mobile:pods`, and `mobile:testflight`.
+Mobile tests use Jest; root `bun test` excludes them. Run `bundle install` inside
+`packages/mobile` before the CocoaPods or Fastlane commands.
+
+The TestFlight workflow is `.github/workflows/testflight.yml`; its signing secrets
+belong to `codiby/code`. See `docs/testflight.md`. Desktop release packaging remains
+in `.github/workflows/release.yml`.

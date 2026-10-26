@@ -1,10 +1,11 @@
 # Codiby Code
 
-A native desktop and mobile UI for Claude Code. The desktop app ships as an [Electron](https://www.electronjs.org/) build for macOS and Windows; the mobile experience is a PWA served from the same bundle. Both talk to a local [Bun](https://bun.sh/) bridge server that drives the Claude Agent SDK, MCP tools, a PTY-backed terminal, and an optional Telegram bot.
+A native desktop and mobile UI for Claude Code. This repository contains the [Electron](https://www.electronjs.org/) app for macOS and Windows and the React Native app for iOS and Android. A mobile PWA is also served from the web bundle. The clients connect to a [Bun](https://bun.sh/) bridge server that drives the Claude Agent SDK, MCP tools, a PTY-backed terminal, and an optional Telegram bot.
 
 ## Features
 
 - Native macOS and Windows builds (Electron) with transparent title bar
+- Native iOS and Android app in `packages/mobile`, with automatic TestFlight uploads
 - React + Tailwind + HeroUI frontend bundled directly with `Bun.build`
 - Local Bun bridge server with MCP tools for session and tab-group management
 - Built-in xterm.js terminal backed by `Bun.Terminal`
@@ -18,8 +19,10 @@ A native desktop and mobile UI for Claude Code. The desktop app ships as an [Ele
 
 ## Requirements
 
-- [Bun](https://bun.sh/) >= 1.3.5 (required for `Bun.Terminal` PTY support)
+- [Bun](https://bun.sh/) >= 1.4.4 (see `.bun-version`; required for self-contained mobile dependencies)
 - **macOS**: Xcode Command Line Tools (for code signing during electron-builder)
+- **iOS**: full Xcode and Ruby/CocoaPods; see [mobile setup](packages/mobile/README.md)
+- **Android**: Android Studio, Android SDK and JDK 17
 
 ## Getting Started
 
@@ -40,6 +43,10 @@ Run the full Electron desktop app in dev mode:
 ```sh
 bun run electron:dev
 ```
+
+For React Native, start Metro with `bun run mobile:start`, then run
+`bun run mobile:ios` or `bun run mobile:android` in another terminal.
+See [mobile setup](packages/mobile/README.md) and [TestFlight CI](docs/testflight.md).
 
 ## Headless Deployment (Linux)
 
@@ -83,15 +90,20 @@ inherit from your shell profile; the unit sets it explicitly.
 
 ```text
 /
-├── public/                 # Static assets (favicon, manifest, service worker)
-├── scripts/                # Frontend build driver + install / bundle helpers
-├── server/                 # Bun bridge server (Claude Agent SDK, MCP, PTY)
-├── src/                    # React frontend (desktop + mobile entries)
-├── electron/               # Electron main + preload + browser-preview / CDP
-│   ├── build/              # Icons, entitlements, notarize hook
-│   └── resources/          # Bundled bun + server.js (generated)
+├── packages/
+│   ├── core/               # Bun bridge, agent runtimes and MCP tools
+│   ├── ui/                 # React web frontend (desktop + mobile PWA)
+│   ├── desktop/            # Electron main, preload, icons and bundle resources
+│   └── mobile/             # React Native app, ios/, android/, Jest and Fastlane
+├── scripts/                # Frontend build, install and Electron bundle helpers
+├── .github/workflows/      # Desktop release + iOS TestFlight
+├── bun.lock                # Shared dependency lockfile for all workspaces
 └── package.json
 ```
+
+`packages/mobile` is a Bun workspace with self-contained dependencies. A single
+`bun install` at the root installs all apps while keeping React Native's React
+and Tailwind versions inside `packages/mobile/node_modules`.
 
 ## Scripts
 
@@ -104,6 +116,12 @@ inherit from your shell profile; the unit sets it explicitly.
 | `bun run electron:dev`        | Run the Electron desktop app in dev mode             |
 | `bun run electron:build`      | Build the desktop installer (mac DMG + win NSIS)     |
 | `bun run electron:build:replace` | Build and atomically swap `/Applications/Codiby Code.app` |
+| `bun run mobile:start`        | Start React Native Metro                            |
+| `bun run mobile:ios`          | Build and run the iOS app                            |
+| `bun run mobile:android`      | Build and run the Android app                        |
+| `bun run mobile:test --runInBand` | Run the React Native Jest suite                  |
+| `bun run mobile:pods`         | Install locked iOS pods after Bundler setup          |
+| `bun run mobile:testflight`   | Archive and upload iOS using Apple signing secrets   |
 
 ## macOS: "Codiby Code is damaged and can't be opened"
 
