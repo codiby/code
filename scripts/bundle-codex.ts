@@ -13,8 +13,10 @@ const targets: Record<string, string> = {
 };
 const target = targets[`${process.platform}-${process.arch}`];
 if (!target) throw new Error(`Unsupported Codex platform: ${process.platform}-${process.arch}`);
-const sdkEntry = import.meta.resolve('../packages/core/node_modules/@openai/codex-sdk/dist/index.js');
-const sdkRequire = createRequire(realpathSync(new URL(sdkEntry)));
+// Resolve as packages/core would, so it works whether the linker hoists the
+// SDK to the root node_modules (current `hoisted` setup) or keeps it local.
+const sdkEntry = Bun.resolveSync('@openai/codex-sdk', join(import.meta.dir, '../packages/core'));
+const sdkRequire = createRequire(realpathSync(sdkEntry));
 const cliRequire = createRequire(sdkRequire.resolve('@openai/codex/package.json'));
 const platformPackage = cliRequire.resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`);
 const source = join(dirname(platformPackage), 'vendor', target);

@@ -5,7 +5,7 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.31.28] — 2026-10-26
+## [0.31.29] — 2026-10-26
 
 ### Added
 
@@ -21,6 +21,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - The mobile share picker shows cached Home chats immediately instead of waiting on slow hosts.
 - Horizontal drags on tables take priority over chat scrolling on Android.
+- The macOS release build finds the Codex runtime again now that dependencies are hoisted to the root `node_modules`.
 
 ## [0.31.17] — 2026-10-23
 
