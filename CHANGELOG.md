@@ -5,6 +5,23 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.28] — 2026-10-26
+
+### Added
+
+- Create sidebar groups that are not tied to a project folder: "New group" in the sidebar menu, and "Move to new group" on a session.
+- Move a session into any group from its context menu. "Move to group" and "Group with" open as flyout submenus instead of long inline lists.
+- Agents can nest new groups with `parent_id` in `ui_create_tab_group`, and a group created without sessions is kept as an empty folder.
+- Stop sessions after one hour without messages or tool calls; selecting or messaging one resumes it.
+- Render the Memory file as a Markdown preview, with an edit mode.
+- Native iOS and Android app (React Native) in `packages/mobile`, with signed Android APKs built in GitHub Actions.
+- Share images from Android and iOS straight into a session, using the same chat list and composer as the app.
+
+### Fixed
+
+- The mobile share picker shows cached Home chats immediately instead of waiting on slow hosts.
+- Horizontal drags on tables take priority over chat scrolling on Android.
+
 ## [0.31.17] — 2026-10-23
 
 ### Added
