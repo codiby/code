@@ -6,6 +6,7 @@
 
 import { memo, useCallback } from 'react';
 import { autolinkHtml } from '../lib/autolink';
+import { copyMarkdownSelection } from '../lib/markdown-clipboard';
 import { highlightCode, normalizeLang } from '../lib/highlight';
 import { detectLanguage } from '../lib/detect-language';
 import { splitBlockSegments } from '../lib/block-fences';
@@ -288,25 +289,27 @@ function renderMarkdown(source: string): string {
     // Checkbox list
     const checkMatch = line.match(/^[\s]*[-*]\s+\[([ xX])\]\s+(.*)/);
     if (checkMatch) {
-      if (!inList || listType !== 'ul') { closeList(); html.push('<ul class="space-y-0.5 my-1">'); inList = true; listType = 'ul'; }
+      if (!inList || listType !== 'ul') { closeList(); html.push('<ul class="space-y-0.5 my-1 list-disc pl-5 marker:text-zinc-600">'); inList = true; listType = 'ul'; }
       const checked = checkMatch[1].toLowerCase() === 'x';
-      html.push(`<li class="flex items-start gap-1.5 list-none"><span class="${checked ? 'text-green-400' : 'text-zinc-700'} mt-0.5">${checked ? '☑' : '☐'}</span><span class="${checked ? 'text-zinc-500 line-through' : ''}">${renderInline(escapeHtml(checkMatch[2]))}</span></li>`);
+      html.push(`<li class="list-none"><span class="${checked ? 'text-zinc-500 line-through' : ''}">${checked ? '☑' : '☐'} ${renderInline(escapeHtml(checkMatch[2]))}</span></li>`);
       continue;
     }
 
+    // Use native list markers: literal markers in flex children are copied as
+    // extra content alongside the list semantics by rich-text editors.
     // Unordered list
     const ulMatch = line.match(/^[\s]*[-*+]\s+(.*)/);
     if (ulMatch) {
-      if (!inList || listType !== 'ul') { closeList(); html.push('<ul class="space-y-0.5 my-1 list-none">'); inList = true; listType = 'ul'; }
-      html.push(`<li class="flex items-start gap-1.5"><span class="text-zinc-600 mt-0.5">•</span><span>${renderInline(escapeHtml(ulMatch[1]))}</span></li>`);
+      if (!inList || listType !== 'ul') { closeList(); html.push('<ul class="space-y-0.5 my-1 list-disc pl-5 marker:text-zinc-600">'); inList = true; listType = 'ul'; }
+      html.push(`<li>${renderInline(escapeHtml(ulMatch[1]))}</li>`);
       continue;
     }
 
     // Ordered list
     const olMatch = line.match(/^[\s]*(\d+)[.)]\s+(.*)/);
     if (olMatch) {
-      if (!inList || listType !== 'ol') { closeList(); html.push('<ol class="space-y-0.5 my-1 list-none">'); inList = true; listType = 'ol'; }
-      html.push(`<li class="flex items-start gap-1.5"><span class="text-zinc-500 shrink-0 w-4 text-right">${olMatch[1]}.</span><span>${renderInline(escapeHtml(olMatch[2]))}</span></li>`);
+      if (!inList || listType !== 'ol') { closeList(); html.push(`<ol start="${Number(olMatch[1])}" class="space-y-0.5 my-1 list-decimal pl-5 marker:text-zinc-500">`); inList = true; listType = 'ol'; }
+      html.push(`<li value="${Number(olMatch[1])}">${renderInline(escapeHtml(olMatch[2]))}</li>`);
       continue;
     }
 
@@ -435,13 +438,13 @@ export const Markdown = memo(function Markdown({
   const segments = splitBlockSegments(text, BLOCK_LANGS);
   if (segments.length === 1 && segments[0].type === 'md') {
     return (
-      <div onClick={handleClick} className={cls} dangerouslySetInnerHTML={{ __html: renderMarkdown(segments[0].text) }} />
+      <div onClick={handleClick} onCopy={copyMarkdownSelection} className={cls} dangerouslySetInnerHTML={{ __html: renderMarkdown(segments[0].text) }} />
     );
   }
 
   let explainIndex = 0;
   return (
-    <div onClick={handleClick} className={cls}>
+    <div onClick={handleClick} onCopy={copyMarkdownSelection} className={cls}>
       {segments.map((segment, i) => {
         if (segment.type === 'block' && segment.lang === 'diffdoc') {
           return <DiffDoc key={i} source={segment.source} />;
