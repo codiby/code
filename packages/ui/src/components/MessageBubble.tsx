@@ -1092,7 +1092,7 @@ export const MessageBubble = memo(function MessageBubble({ message, onReply, onO
   const isToolUse = !!message.toolName;
   const isThinking = !!message.isThinking;
   const replyAction = onReply && canReplyTo(message) ? (
-    <button type="button" aria-label="Responder al mensaje" title="Responder al mensaje"
+    <button type="button" aria-label="Reply to message" title="Reply to message"
       onClick={() => onReply(message)}
       className="absolute right-1 top-1 z-10 rounded-md p-1 text-zinc-500 opacity-0 transition-colors hover:bg-white/10 hover:text-violet-300 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-violet-400 [@media(hover:none)]:opacity-100">
       <Reply size={15} />

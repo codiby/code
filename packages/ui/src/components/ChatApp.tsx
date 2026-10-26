@@ -109,7 +109,8 @@ import {
 import { BookmarkPlus, MessageCircle, MessageSquarePlus } from 'lucide-react';
 import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
-import { readReply, replyFromMessage, withReply } from '../lib/message-reply';
+import { canReplyTo, readReply, replyFromMessage, replyFromSelection, withReply } from '../lib/message-reply';
+import { SelectionReply } from './SelectionReply';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
 import { GroupComposer } from './GroupComposer';
 import { EmptyComposerStage } from './EmptyComposerStage';
@@ -6698,6 +6699,19 @@ export function ChatApp() {
                     onClose={() => setFindOpen(false)}
                     getContainer={() => scrollRef.current}
                   />
+                  {activeId && (
+                    <SelectionReply
+                      getContainer={() => scrollRef.current}
+                      canReply={(id) => {
+                        const m = getState(activeId).messages.find(x => x.id === id);
+                        return !!m && canReplyTo(m);
+                      }}
+                      onReply={(id, text) => {
+                        const m = getState(activeId).messages.find(x => x.id === id);
+                        if (m) updateLocalState(activeId, st => ({ ...st, replyTo: replyFromSelection(m, text) }));
+                      }}
+                    />
+                  )}
                   <div className="flex flex-1 min-h-0">
                   {/* When a group is focused (sidebar click) but no session
                       inside it is selected, render the inline new-session

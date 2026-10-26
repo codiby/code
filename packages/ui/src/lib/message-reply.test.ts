@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ChatMessage } from './claude-client';
-import { canReplyTo, readReply, replyFromMessage, withReply } from './message-reply';
+import { canReplyTo, readReply, replyFromMessage, replyFromSelection, withReply } from './message-reply';
 
 const message = (extra: Partial<ChatMessage> = {}): ChatMessage => ({
   id: 'original', role: 'assistant', content: 'Primera línea\nSegunda línea', timestamp: 1, ...extra,
@@ -28,7 +28,14 @@ describe('message replies shared with Android', () => {
     expect(next.text).toBe('Respuesta anterior');
     expect(next.role).toBe('user');
     expect(replyFromMessage(message({ content: 'a '.repeat(600) })).text).toHaveLength(600);
-    expect(replyFromMessage(message({ content: '', images: [{ media_type: 'image/png', data: 'photo' }] })).text).toBe('Imagen');
+    expect(replyFromMessage(message({ content: '', images: [{ media_type: 'image/png', data: 'photo' }] })).text).toBe('Image');
+  });
+
+  test('a selection reply quotes only the selected text', () => {
+    const m = message({ content: 'First paragraph.\n\nSecond paragraph.' });
+    expect(replyFromSelection(m, '  Second paragraph. ')).toEqual({ ...replyFromMessage(m), text: 'Second paragraph.' });
+    expect(replyFromSelection(m, 'x'.repeat(700)).text).toHaveLength(600);
+    expect(replyFromSelection(m, '   ')).toEqual(replyFromMessage(m));
   });
 
   test.each([

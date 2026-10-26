@@ -11,14 +11,14 @@ describe('reply quote rendering', () => {
     expect(html).toContain('Codiby');
     expect(html).toContain('Primera línea\nSegunda línea');
     expect(html).not.toContain('codiby-reply');
-    expect(html).not.toContain('Cancelar respuesta');
+    expect(html).not.toContain('Cancel reply');
   });
 
   test('quotes are plain text and the composer variant can be cancelled', () => {
     const html = renderToStaticMarkup(<ReplyQuote reply={{ ...reply, role: 'user', text: '<script>alert(1)</script>' }} onCancel={() => {}} />);
-    expect(html).toContain('Tú');
+    expect(html).toContain('You');
     expect(html).toContain('&lt;script&gt;');
     expect(html).not.toContain('<script>');
-    expect(html).toContain('aria-label="Cancelar respuesta"');
+    expect(html).toContain('aria-label="Cancel reply"');
   });
 });

@@ -520,6 +520,29 @@ html.light .thinking-sweep {
   .tool-ticker-in, .tool-ticker-out { animation-duration: 1ms; }
 }
 
+/* Floating "Copy · Reply" bar over a text selection in the thread (SelectionReply). */
+@keyframes selection-reply-in {
+  from { opacity: 0; transform: translateY(4px) scale(.96); }
+  to   { opacity: 1; transform: none; }
+}
+.selection-reply { animation: selection-reply-in 160ms ease-out both; }
+.selection-reply::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  background: inherit;
+  border-right: 1px solid;
+  border-bottom: 1px solid;
+  border-color: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .selection-reply { animation: none; }
+}
+
 /* ---------------------------------------------------------------------------
    Mobile WS connection indicator — indeterminate progress bar that slides a
    gradient sliver across a thin track. Fades in while the WebSocket is

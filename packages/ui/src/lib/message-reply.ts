@@ -47,6 +47,12 @@ export function replyFromMessage(message: ChatMessage): MessageReply {
     id: message.id,
     role: message.role === 'user' ? 'user' : 'assistant',
     text: (message.role === 'user' ? readReply(message.content).text : message.content)
-      .trim().slice(0, 600) || (message.images?.length ? 'Imagen' : 'Mensaje'),
+      .trim().slice(0, 600) || (message.images?.length ? 'Image' : 'Message'),
   };
+}
+
+/** A reply that quotes only the part of `message` the user selected. */
+export function replyFromSelection(message: ChatMessage, selected: string): MessageReply {
+  const text = selected.trim().slice(0, 600);
+  return text ? { ...replyFromMessage(message), text } : replyFromMessage(message);
 }
