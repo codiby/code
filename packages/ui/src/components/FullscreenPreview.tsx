@@ -12,6 +12,8 @@ import {
   LayoutGrid,
   Link2 as LinkIcon,
   X as XIcon,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { Button } from '@heroui/react';
 import {
@@ -25,6 +27,7 @@ import {
   type PreviewItem,
   type PreviewKind,
 } from '../lib/preview';
+import { MIN_SCALE, MAX_SCALE, zoomAt } from '../lib/preview-zoom';
 
 interface Props {
   /** What to show, plus everything the filmstrip can walk. Null when closed. */
@@ -34,8 +37,6 @@ interface Props {
   onClose: () => void;
 }
 
-const MIN_SCALE = 1;
-const MAX_SCALE = 6;
 const DOUBLE_TAP_MS = 280;
 const DOUBLE_TAP_PX = 28;
 /** Height the filmstrip reserves at the bottom, so it never covers the item. */
@@ -142,10 +143,8 @@ export function FullscreenPreview({ gallery, onIndexChange, onClose }: Props) {
       const factor = Math.exp(-e.deltaY * 0.0025);
       setScale((prev) => {
         const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, prev * factor));
-        const ratio = next / prev - 1;
-        const nx = tx - cx * ratio;
-        const ny = ty - cy * ratio;
-        const clamped = clampPan(nx, ny, next);
+        const zoomed = zoomAt({ scale: prev, x: tx, y: ty }, next, { x: cx, y: cy });
+        const clamped = clampPan(zoomed.x, zoomed.y, next);
         setTx(clamped.x);
         setTy(clamped.y);
         return next;
@@ -248,6 +247,8 @@ export function FullscreenPreview({ gallery, onIndexChange, onClose }: Props) {
 
     const pts = [...pointersRef.current.values()];
     if (pts.length === 2) {
+      movedRef.current = true;
+      lastTapRef.current = null;
       const [a, b] = pts;
       const dist = Math.hypot(b.x - a.x, b.y - a.y);
       pinchStartRef.current = {
@@ -284,14 +285,13 @@ export function FullscreenPreview({ gallery, onIndexChange, onClose }: Props) {
       const dx = cxNow - start.cx;
       const dy = cyNow - start.cy;
       const el = containerRef.current;
-      const w = el?.clientWidth ?? 0;
-      const h = el?.clientHeight ?? 0;
+      const rect = el?.getBoundingClientRect();
       // Shift origin so zoom centers on the original midpoint relative to
       // canvas center, then add finger drift.
-      const ox = start.cx - w / 2;
-      const oy = start.cy - h / 2;
-      const factor = nextScale / start.scale - 1;
-      setTransform(start.tx - ox * factor + dx, start.ty - oy * factor + dy, nextScale);
+      const ox = start.cx - (rect?.left ?? 0) - (rect?.width ?? 0) / 2;
+      const oy = start.cy - (rect?.top ?? 0) - (rect?.height ?? 0) / 2;
+      const zoomed = zoomAt({ scale: start.scale, x: start.tx, y: start.ty }, nextScale, { x: ox, y: oy });
+      setTransform(zoomed.x + dx, zoomed.y + dy, zoomed.scale);
       movedRef.current = true;
     } else if (pts.length === 1 && panStartRef.current) {
       const start = panStartRef.current;
@@ -309,7 +309,13 @@ export function FullscreenPreview({ gallery, onIndexChange, onClose }: Props) {
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) pinchStartRef.current = null;
-    if (pointersRef.current.size === 0) panStartRef.current = null;
+    const remaining = [...pointersRef.current.values()][0];
+    panStartRef.current = remaining ? { x: remaining.x, y: remaining.y, tx, ty } : null;
+    if (e.type === 'pointercancel') {
+      movedRef.current = true;
+      lastTapRef.current = null;
+      return;
+    }
 
     // Double-tap detection — only when no pinch happened and the finger
     // didn't move appreciably.
@@ -318,14 +324,13 @@ export function FullscreenPreview({ gallery, onIndexChange, onClose }: Props) {
       const last = lastTapRef.current;
       if (last && now - last.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - last.x, e.clientY - last.y) < DOUBLE_TAP_PX) {
         const el = containerRef.current;
-        const w = el?.clientWidth ?? 0;
-        const h = el?.clientHeight ?? 0;
+        const rect = el?.getBoundingClientRect();
         if (scale > 1.001) {
           setTransform(0, 0, 1);
         } else {
           const next = 2.5;
-          const ox = e.clientX - w / 2;
-          const oy = e.clientY - h / 2;
+          const ox = e.clientX - (rect?.left ?? 0) - (rect?.width ?? 0) / 2;
+          const oy = e.clientY - (rect?.top ?? 0) - (rect?.height ?? 0) / 2;
           setTransform(-ox * (next - 1), -oy * (next - 1), next);
         }
         lastTapRef.current = null;
@@ -461,6 +466,27 @@ export function FullscreenPreview({ gallery, onIndexChange, onClose }: Props) {
           </div>
         )}
       </div>
+
+      {isImage && (
+        <div
+          className="absolute left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 rounded-full bg-zinc-900/85 border border-white/10 p-1 text-zinc-200"
+          style={{ ...glass, bottom: `calc(env(safe-area-inset-bottom) + ${hasStrip ? STRIP_H + 8 : 16}px)` }}
+          onClick={stop}
+        >
+          <button type="button" aria-label="Zoom out" disabled={scale <= MIN_SCALE}
+            className="w-11 h-11 flex items-center justify-center rounded-full active:bg-zinc-700 disabled:opacity-30"
+            onClick={() => { const z = zoomAt({ scale, x: tx, y: ty }, scale / 1.5, { x: 0, y: 0 }); setTransform(z.x, z.y, z.scale); }}>
+            <ZoomOut size={20} />
+          </button>
+          <button type="button" aria-label="Reset zoom" className="h-11 min-w-14 px-2 text-xs tabular-nums rounded-full active:bg-zinc-700"
+            onClick={() => setTransform(0, 0, 1)}>{Math.round(scale * 100)}%</button>
+          <button type="button" aria-label="Zoom in" disabled={scale >= MAX_SCALE}
+            className="w-11 h-11 flex items-center justify-center rounded-full active:bg-zinc-700 disabled:opacity-30"
+            onClick={() => { const z = zoomAt({ scale, x: tx, y: ty }, scale * 1.5, { x: 0, y: 0 }); setTransform(z.x, z.y, z.scale); }}>
+            <ZoomIn size={20} />
+          </button>
+        </div>
+      )}
 
       {hasStrip && (
         <>
