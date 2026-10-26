@@ -4819,19 +4819,11 @@ export function ChatApp() {
     () => sessions.filter(s => s.status === 'archived'),
     [sessions],
   );
-  const sessionStreaming = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => {
-    // "Busy" covers the agent generating a response AND any Bash tool call
-    // that hasn't returned yet — pair tool_use messages with their matching
-    // tool_result via toolUseId and check for stragglers.
-    let bashPending = false;
-    const pending = new Set<string>();
-    for (const m of s.messages) {
-      if (m.toolName === 'Bash') pending.add(m.id);
-      else if (m.isToolResult && m.toolUseId) pending.delete(m.toolUseId);
-    }
-    bashPending = pending.size > 0;
-    return [id, !!s.isStreaming || bashPending];
-  })), [sessionStates]);
+  // A tool still running keeps the turn open, so `isStreaming` already covers
+  // it. Don't infer "busy" from an unpaired Bash tool_use: Codex background
+  // execs never get a result, and loading such a history on open flipped the
+  // session into "Working" without a message being sent.
+  const sessionStreaming = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.isStreaming])), [sessionStates]);
   const sessionInterrupted = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.wasInterrupted])), [sessionStates]);
   const sessionHasPermission = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.permRequest])), [sessionStates]);
   // Per-session "last message at" timestamp — used by the vertical TabBar
