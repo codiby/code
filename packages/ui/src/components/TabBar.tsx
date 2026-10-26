@@ -965,6 +965,10 @@ export const TabBar = memo(function TabBar(props: Props) {
    *  beside the search field. */
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
+  /** Flyout opened from a tab-menu row ("Move to group ›", "Group with ›"),
+   *  anchored to that row's rect. Cleared whenever the tab menu closes. */
+  const [tabSubmenu, setTabSubmenu] = useState<{ kind: 'move' | 'groupWith'; rect: DOMRect } | null>(null);
+  useEffect(() => { if (!tabMenu) setTabSubmenu(null); }, [tabMenu]);
   const shiftRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const restoreSearchRef = useRef<HTMLInputElement>(null);
@@ -1700,7 +1704,8 @@ export const TabBar = memo(function TabBar(props: Props) {
           <>
             <div className="fixed inset-0 z-40" onClick={() => setTabMenu(null)} onContextMenu={e => { e.preventDefault(); setTabMenu(null); }} />
             <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl min-w-[180px] max-w-[260px] py-1 overflow-y-auto"
-              style={{ top: tabMenu.y, left: tabMenu.x, maxHeight: `calc(100vh - ${tabMenu.y}px - 12px)` }}>
+              style={{ top: tabMenu.y, left: tabMenu.x, maxHeight: `calc(100vh - ${tabMenu.y}px - 12px)` }}
+              onMouseOver={e => { if (!(e.target as HTMLElement).closest('[data-submenu-trigger]')) setTabSubmenu(null); }}>
 
               {/* Rename */}
               <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors"
@@ -1824,29 +1829,14 @@ export const TabBar = memo(function TabBar(props: Props) {
                 </Button>
               )}
 
+              {/* Long lists open as flyouts so the menu itself stays short. */}
               {moveTargets.length > 0 && (
-                <>
-                  <div className="px-3 py-1 text-[10px] text-zinc-600 uppercase tracking-wider">Move to group</div>
-                  {moveTargets.map(g => (
-                    <Button key={g.id} variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors truncate"
-                      onPress={() => { onAddToGroup(tabMenu.tabId, g.id); setTabMenu(null); }}>
-                      {g.label}
-                    </Button>
-                  ))}
-                </>
+                <SubmenuTrigger label="Move to group" open={tabSubmenu?.kind === 'move'}
+                  onOpen={rect => setTabSubmenu({ kind: 'move', rect })} />
               )}
-
-              {/* Create group with another tab */}
               {!isGrouped && otherUngroupedTabs.length > 0 && (
-                <>
-                  <div className="px-3 py-1 text-[10px] text-zinc-600 uppercase tracking-wider">Group with</div>
-                  {otherUngroupedTabs.slice(0, 8).map(t => (
-                    <Button key={t.id} variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors truncate"
-                      onPress={() => { onGroupTabs(tabMenu.tabId, t.id); setTabMenu(null); }}>
-                      {t.name}
-                    </Button>
-                  ))}
-                </>
+                <SubmenuTrigger label="Group with" open={tabSubmenu?.kind === 'groupWith'}
+                  onOpen={rect => setTabSubmenu({ kind: 'groupWith', rect })} />
               )}
 
               {/* Destructive — full purge (history + optionally worktree). */}
@@ -1860,9 +1850,58 @@ export const TabBar = memo(function TabBar(props: Props) {
                 </>
               )}
             </div>
+
+            {tabSubmenu && (
+              <SubmenuFlyout rect={tabSubmenu.rect}
+                items={tabSubmenu.kind === 'move'
+                  ? moveTargets.map(g => ({ id: g.id, label: g.label }))
+                  : otherUngroupedTabs.map(t => ({ id: t.id, label: t.name }))}
+                onPick={id => {
+                  if (tabSubmenu.kind === 'move') onAddToGroup(tabMenu.tabId, id);
+                  else onGroupTabs(tabMenu.tabId, id);
+                  setTabMenu(null);
+                }} />
+            )}
           </>
         );
       })()}
     </div>
   );
 });
+
+const MENU_ITEM = 'text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors';
+
+/** Menu row that opens a flyout on hover or click, with the `›` affordance. */
+function SubmenuTrigger({ label, open, onOpen }: { label: string; open: boolean; onOpen: (rect: DOMRect) => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const openHere = () => { if (ref.current) onOpen(ref.current.getBoundingClientRect()); };
+  return (
+    <button ref={ref} type="button" data-submenu-trigger
+      onMouseEnter={openHere} onClick={openHere}
+      className={`w-full flex items-center gap-2 ${MENU_ITEM} ${open ? 'bg-surface-light text-zinc-200' : ''}`}>
+      <span className="flex-1 truncate">{label}</span>
+      <ChevronRight size={12} className="text-zinc-500 shrink-0" />
+    </button>
+  );
+}
+
+/** Second-level menu beside `rect`; flips to the left when there is no room on
+ *  the right, and scrolls instead of running off the bottom of the window.
+ *  Portalled so the parent menu's `overflow-y-auto` can't clip it. */
+function SubmenuFlyout({ rect, items, onPick }: { rect: DOMRect; items: { id: string; label: string }[]; onPick: (id: string) => void }) {
+  const WIDTH = 240;
+  const left = rect.right + WIDTH + 8 <= window.innerWidth ? rect.right - 2 : Math.max(8, rect.left - WIDTH + 2);
+  const top = Math.max(8, rect.top - 4);
+  return createPortal(
+    <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl py-1 overflow-y-auto"
+      style={{ top, left, width: WIDTH, maxHeight: `calc(100vh - ${top}px - 12px)` }}>
+      {items.map(item => (
+        <Button key={item.id} variant="ghost" fullWidth className={`${MENU_ITEM} truncate`}
+          onPress={() => onPick(item.id)}>
+          {item.label}
+        </Button>
+      ))}
+    </div>,
+    document.body,
+  );
+}
