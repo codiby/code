@@ -503,11 +503,17 @@ function maybeAutoGroupSession(sessionId: string, cwd: string, sessionCwd: strin
  *  and `tabGroupMap`: preferences are merged with `Object.assign` at the top
  *  level, so sending only the moved entries would drop every other session's
  *  group. */
-function autoGroupLooseSessions(apply: boolean) {
+/** `remote`: sessions on remotes that are loose in the client's merged
+ *  sidebar. They're filed into this machine's groups — a local placement wins
+ *  over the remote's own map in that view — and their project root comes from
+ *  the path (`<repo>/.worktrees/<branch>` → `<repo>`), since git can't be run
+ *  on another machine's folder from here. */
+function autoGroupLooseSessions(apply: boolean, remote: { id: string; cwd: string }[] = []) {
   const prefs = loadPreferences();
   const groups = (prefs.tabGroups as Record<string, AutoGroup>) || {};
   const map = (prefs.tabGroupMap as Record<string, string>) || {};
   const loose = [...sessions.values()].filter(s => s.status !== 'archived' && s.cwd && !map[s.id]);
+  const remoteLoose = remote.filter(r => r.id && r.cwd && !map[r.id] && !sessions.has(r.id));
 
   // One git call per *distinct* directory: a dozen sessions across three repos
   // costs three, not a dozen. A non-repo directory groups by itself, as before.
@@ -515,7 +521,10 @@ function autoGroupLooseSessions(apply: boolean) {
   for (const s of loose) if (!roots.has(s.cwd)) roots.set(s.cwd, rootRepoOf(s.cwd) ?? s.cwd);
 
   const result = planAutoGroupExisting({
-    sessions: loose.map(s => ({ sessionId: s.id, sessionCwd: s.cwd, projectCwd: roots.get(s.cwd)! })),
+    sessions: [
+      ...loose.map(s => ({ sessionId: s.id, sessionCwd: s.cwd, projectCwd: roots.get(s.cwd)! })),
+      ...remoteLoose.map(r => ({ sessionId: r.id, sessionCwd: r.cwd, projectCwd: WORKTREE_CWD_RE.exec(r.cwd)?.[1] ?? r.cwd })),
+    ],
     groups, map, newId: randomUUID,
   });
   if (apply && result.moved) updatePreferences({ tabGroups: result.groups, tabGroupMap: result.map });
@@ -1457,7 +1466,15 @@ app.post('/sessions/:id/loop/stop', (c) => handleStopLoop(c.req.param('id'), bro
 // Registered ahead of `/sessions/:id` so the literal segment can never be read
 // as a session id.
 app.get('/sessions/auto-group', () => Response.json(autoGroupLooseSessions(false), { headers: corsHeaders }));
-app.post('/sessions/auto-group', () => Response.json(autoGroupLooseSessions(true), { headers: corsHeaders }));
+// Body (optional): `{ dryRun?: boolean, remote?: { id, cwd }[] }`. No body = apply, local sessions only.
+app.post('/sessions/auto-group', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { dryRun?: boolean; remote?: unknown };
+  const remote = Array.isArray(body.remote)
+    ? body.remote.filter((r): r is { id: string; cwd: string } =>
+      !!r && typeof (r as { id?: unknown }).id === 'string' && typeof (r as { cwd?: unknown }).cwd === 'string')
+    : [];
+  return Response.json(autoGroupLooseSessions(body.dryRun !== true, remote), { headers: corsHeaders });
+});
 
 app.get('/sessions', () => {
   return Response.json(buildFullSessionList(), { headers: corsHeaders });

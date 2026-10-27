@@ -3033,12 +3033,16 @@ export class ClaudeClient {
    *  Local-only: the rules need git to resolve each session's repo root, so
    *  this always talks to this machine's bridge. Sessions on a remote bridge
    *  are not part of the plan. */
-  async autoGroupSessions(apply = false): Promise<{
+  /** `remote`: remote sessions that are loose in the merged sidebar, to be
+   *  filed into this machine's groups along with the local ones. */
+  async autoGroupSessions(apply = false, remote: { id: string; cwd: string }[] = []): Promise<{
     groups: { name: string; groupId: string | null; exists: boolean; sessionIds: string[] }[];
     moved: number;
   }> {
     const resp = await authedFetch(`${this.serverUrl}/sessions/auto-group`, {
-      method: apply ? 'POST' : 'GET',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: !apply, remote }),
     });
     if (!resp.ok) {
       let msg = `HTTP ${resp.status}`;

@@ -3472,12 +3472,18 @@ export function ChatApp() {
   /** Ask the bridge what it would do. The rules and the git repo-root
    *  resolution live there, shared with the mobile client — the renderer only
    *  shows the plan and relays the confirmation. */
+  /** Remote sessions with no folder in the merged sidebar. The local bridge
+   *  only knows its own sessions, so the client names these for it. */
+  const looseRemoteSessions = () => orderedOpenSessions
+    .filter(s => s.remoteId && s.cwd && !sidebarGroupMap[s.id])
+    .map(s => ({ id: s.id, cwd: s.cwd }));
+
   const handleAutoGroupSessions = async () => {
     const c = clientRef.current;
     if (!c) return;
     setAutoGroupPrompt({ groups: [], moved: 0, submitting: true });
     try {
-      const plan = await c.autoGroupSessions(false);
+      const plan = await c.autoGroupSessions(false, looseRemoteSessions());
       setAutoGroupPrompt({ ...plan, submitting: false });
     } catch (err) {
       setAutoGroupPrompt({ groups: [], moved: 0, submitting: false, error: String(err) });
@@ -3492,7 +3498,7 @@ export function ChatApp() {
     try {
       // The bridge writes tabGroups + tabGroupMap in one go and broadcasts the
       // result, which is what refreshes the sidebar — no local mirroring here.
-      await c.autoGroupSessions(true);
+      await c.autoGroupSessions(true, looseRemoteSessions());
       setAutoGroupPrompt(null);
     } catch (err) {
       setAutoGroupPrompt({ ...prompt, submitting: false, error: String(err) });
