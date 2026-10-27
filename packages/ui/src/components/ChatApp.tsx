@@ -518,14 +518,66 @@ export function ChatApp() {
     persistPrefs({ tabGroups: newGroups, tabGroupMap: newMap });
   };
 
-  /** Open a draft in this group; creating the session waits for first send. */
-  const handleNewSessionInGroup = (groupId: string) => {
-    if (!sidebarGroups[groupId]) return;
+  /** "New" on a group: create the session on the spot so it shows up in the
+   *  group straight away; while it has no messages it renders the centred
+   *  new-session composer (EmptyComposerStage). A group with no folder, or one
+   *  no host has, falls back to the GroupComposer, which lets the user pick. */
+  const creatingInGroupRef = useRef(false);
+  /** First host in `candidates` (null = this machine) where `dir` exists, or
+   *  undefined if none has it. An unreachable host counts as not having it. */
+  const hostWithFolder = async (dir: string, candidates: (string | null)[]): Promise<string | null | undefined> => {
+    const c = clientRef.current;
+    if (!c) return undefined;
+    const target = dir.replace(/[\\/]+$/, '');
+    for (const host of [...new Set(candidates)]) {
+      try {
+        if ((await c.listDirs(target, host)).some(d => d.replace(/[\\/]+$/, '') === target)) return host;
+      } catch { /* offline remote — try the next host */ }
+    }
+    return undefined;
+  };
+  const handleNewSessionInGroup = async (groupId: string) => {
+    const group = sidebarGroups[groupId];
+    if (!group) return;
     hideStandaloneEditor();
-    setSelectedGroupId(groupId);
     setActiveNavView('sessions');
-    setActiveId(null);
     setExpandedGroupIds(prev => new Set([...prev, groupId]));
+    const members = sessions.filter(s => sidebarGroupMap[s.id] === groupId && s.cwd);
+    // The folder is optional. Without one (a group that mixes repos), or with
+    // one no host has, the composer asks for a folder instead of guessing.
+    const folders = group.cwd ? [group.cwd] : [];
+    const showComposer = () => { setSelectedGroupId(groupId); setActiveId(null); };
+    if (folders.length === 0 || !clientRef.current) { showComposer(); return; }
+    if (creatingInGroupRef.current) return;
+    creatingInGroupRef.current = true;
+    try {
+      // The folder decides the host: a local group can hold a folder that
+      // only exists on a remote (vtb lives on ryzen9). Try the group's own
+      // host, then hosts its sessions in that folder run on, then the rest.
+      let cwd = '';
+      let remoteId: string | null | undefined;
+      for (const folder of folders) {
+        remoteId = await hostWithFolder(folder, [
+          groupRemoteInfo[groupId]?.remoteId ?? null,
+          ...members.filter(s => s.cwd === folder).map(s => s.remoteId ?? null),
+          null,
+          ...remotes.map(r => r.id),
+        ]);
+        if (remoteId !== undefined) { cwd = folder; break; }
+      }
+      if (remoteId === undefined) { showComposer(); return; }
+      const stored = localStorage.getItem('claude-ui-last-provider');
+      const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
+      await handleSpawnInGroup(
+        groupId, cwd, provider, '', undefined,
+        defaultPermissionModeByHost[remoteId || ''] ?? 'default',
+        undefined, remoteId,
+      );
+    } catch {
+      showComposer();
+    } finally {
+      creatingInGroupRef.current = false;
+    }
   };
 
   /** Create an empty subgroup under `parentId`. Nesting is unbounded; the group
