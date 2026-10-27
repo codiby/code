@@ -544,7 +544,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
             <SelectTrigger className="min-h-0 h-auto py-0 px-1.5 bg-transparent border-0 shadow-none hover:bg-white/5 data-[hovered]:bg-white/5 rounded-md text-[22px] text-zinc-100">
               <Bot size={18} className="text-zinc-500 mr-1.5 shrink-0" />
               <SelectValue className="font-semibold text-zinc-100" />
-              <SelectIndicator className="size-4 text-zinc-600 ml-1 shrink-0" />
+              <SelectIndicator className="!static size-4 text-zinc-600 ml-1 shrink-0" />
             </SelectTrigger>
             <SelectPopover>
               <ListBox>

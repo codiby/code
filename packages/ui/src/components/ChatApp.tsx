@@ -150,6 +150,11 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', '
 // Display names for the providers a session can run on. Mirrors the labels in
 // GroupComposer / NewSessionModal so the empty-session headline reads the same
 // as the new-session screen it's modelled on.
+/** Anything said in the session — system notices don't count. */
+function hasConversation(messages: ChatMessage[]): boolean {
+  return messages.some(m => m.role !== 'system');
+}
+
 const PROVIDER_LABELS: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',
@@ -3181,6 +3186,54 @@ export function ChatApp() {
     subscribedRef.current.add(fresh.id);
   };
 
+  /** Switch an empty session to another provider. A provider can't change
+   *  under a live session, so this spawns a fresh one in the same folder,
+   *  group, host and tab slot, then purges the empty original — nothing was
+   *  said in it, so there's nothing to keep. */
+  const [switchingProviderId, setSwitchingProviderId] = useState<string | null>(null);
+  const switchEmptySessionProvider = async (targetId: string, provider: string) => {
+    const c = clientRef.current;
+    const old = sessions.find(s => s.id === targetId);
+    if (!c || !old || (old.provider || 'claude') === provider || switchingProviderId) return;
+    if (hasConversation(sessionStates[targetId]?.messages ?? [])) return;
+    setSwitchingProviderId(targetId);
+    try {
+      const groupId = sidebarGroupMap[targetId];
+      const ownedHere = !!groupId && !isRemoteGroupKey(groupId);
+      const remoteId = old.remoteId ?? (groupId ? remoteOfGroupKey(groupId) : null);
+      const fresh = await c.createSession(getState(targetId).initInfo?.cwd || old.cwd, {
+        name: old.name,
+        provider,
+        permissionMode: old.permission_mode || 'default',
+        groupId: ownedHere && !remoteId ? groupId : undefined,
+        remoteId,
+      });
+      localStorage.setItem('claude-ui-last-provider', provider);
+      setTabOrder(prev => {
+        const idx = prev.indexOf(targetId);
+        const next = idx === -1 ? [...prev, fresh.id] : prev.map(x => (x === targetId ? fresh.id : x));
+        persistPrefs({ tabOrder: next });
+        return next;
+      });
+      if (ownedHere) {
+        setTabGroupMap(prev => {
+          const next = { ...prev, [fresh.id]: groupId };
+          delete next[targetId];
+          persistPrefs({ tabGroupMap: next });
+          return next;
+        });
+      }
+      setActiveId(fresh.id);
+      c.subscribe(fresh.id);
+      subscribedRef.current.add(fresh.id);
+      await handlePurgeSession(targetId, { keepFocus: true });
+    } catch (err) {
+      console.error('[ChatApp] Provider switch failed:', err);
+    } finally {
+      setSwitchingProviderId(null);
+    }
+  };
+
   /** State for the right-click → "Delete…" confirmation modal. Holds the
    *  cwd / worktree flag synchronously and back-fills uncommitted-change
    *  count once `getGitModified` returns. */
@@ -5711,13 +5764,16 @@ export function ChatApp() {
    */
   const seenNonEmptyRef = useRef<Set<string>>(new Set());
   const activeStageState = activeId ? sessionStates[activeId] : undefined;
-  if (activeId && (activeStageState?.messages.length ?? 0) > 0) seenNonEmptyRef.current.add(activeId);
+  // System notices (a provider that failed to launch, say) don't make a
+  // session non-empty: it can still be recreated under another provider.
+  const activeStageEmpty = !activeStageState || !hasConversation(activeStageState.messages);
+  if (activeId && !activeStageEmpty) seenNonEmptyRef.current.add(activeId);
   const composerCentered =
     !!activeId
     && !selectedGroupId
     && layoutMode !== 'focus'
     && !!activeStageState
-    && activeStageState.messages.length === 0
+    && activeStageEmpty
     && !seenNonEmptyRef.current.has(activeId);
   const activeStageSession = activeId ? sessions.find(s => s.id === activeId) : undefined;
   const activeStageCwd = activeStageState?.initInfo?.cwd || activeStageSession?.cwd || '';
@@ -7239,6 +7295,12 @@ export function ChatApp() {
                       centered={composerCentered}
                       folderName={activeStageFolder}
                       providerLabel={activeStageProvider}
+                      provider={activeStageSession?.provider || 'claude'}
+                      providerOptions={Object.entries(PROVIDER_LABELS)
+                        .filter(([key]) => key !== 'opencode' || opencodeInfo?.available)
+                        .map(([key, label]) => ({ key, label }))}
+                      onProviderChange={(provider) => { void switchEmptySessionProvider(activeId, provider); }}
+                      switchingProvider={switchingProviderId === activeId}
                       branch={gitBranch}
                       getThreadEl={() => scrollRef.current}
                       widthClass={chatWidthClass}

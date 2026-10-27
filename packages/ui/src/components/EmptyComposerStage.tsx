@@ -15,6 +15,10 @@
  */
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import gsap from 'gsap';
+import {
+  Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator,
+  ListBox, ListBoxItem,
+} from '@heroui/react';
 import { Bot, FolderClosed, GitBranch } from 'lucide-react';
 
 interface Props {
@@ -27,6 +31,13 @@ interface Props {
   folderName: string;
   /** Human label for the session's provider ("Claude", "Codex", …). */
   providerLabel: string;
+  /** With these, the provider becomes a picker — the session has no messages
+   *  yet, so it can still be recreated under another provider. */
+  provider?: string;
+  providerOptions?: { key: string; label: string }[];
+  onProviderChange?: (provider: string) => void;
+  /** A provider switch is in flight. */
+  switchingProvider?: boolean;
   /** Current git branch of the session's cwd, when known. */
   branch?: string | null;
   /** Chat scroll container — faded up as the composer docks so the first
@@ -43,7 +54,8 @@ const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export function EmptyComposerStage({
-  sessionId, centered, folderName, providerLabel, branch, getThreadEl,
+  sessionId, centered, folderName, providerLabel, provider, providerOptions, onProviderChange,
+  switchingProvider, branch, getThreadEl,
   widthClass = 'max-w-4xl', children,
 }: Props) {
   const stackRef = useRef<HTMLDivElement>(null);
@@ -153,10 +165,40 @@ export function EmptyComposerStage({
               <span className="font-semibold">{folderName}</span>
             </span>
             <span>with</span>
-            <span className="inline-flex items-center gap-1.5 text-zinc-100">
-              <Bot size={18} className="text-zinc-500" />
-              <span className="font-semibold">{providerLabel}</span>
-            </span>
+            {provider && providerOptions && onProviderChange ? (
+              <Select
+                aria-label="Provider"
+                selectedKey={provider}
+                isDisabled={switchingProvider}
+                onSelectionChange={(key) => { if (key != null && key !== provider) onProviderChange(String(key)); }}
+              >
+                <SelectTrigger className="min-h-0 h-auto py-0 px-1.5 bg-transparent border-0 shadow-none hover:bg-white/5 data-[hovered]:bg-white/5 rounded-md text-[22px] text-zinc-100">
+                  <Bot size={18} className="text-zinc-500 mr-1.5 shrink-0" />
+                  <SelectValue className="font-semibold text-zinc-100" />
+                  <SelectIndicator className="!static size-4 text-zinc-600 ml-1 shrink-0" />
+                </SelectTrigger>
+                <SelectPopover>
+                  <ListBox>
+                    {providerOptions.map(opt => (
+                      <ListBoxItem key={opt.key} id={opt.key} textValue={opt.label}>
+                        <span className="text-sm">{opt.label}</span>
+                      </ListBoxItem>
+                    ))}
+                  </ListBox>
+                </SelectPopover>
+              </Select>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-zinc-100">
+                <Bot size={18} className="text-zinc-500" />
+                <span className="font-semibold">{providerLabel}</span>
+              </span>
+            )}
+            {switchingProvider && (
+              <span role="status" className="inline-flex items-center gap-2 text-xs text-zinc-500">
+                <span className="w-3 h-3 rounded-full border-[1.5px] border-zinc-500/25 border-t-teal-400 animate-spin" />
+                Switching provider…
+              </span>
+            )}
           </div>
         </div>
       )}
