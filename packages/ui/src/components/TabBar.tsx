@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -79,6 +79,8 @@ interface Props {
   onAutoGroupSessions?: () => void;
   /** Create an empty subgroup under `parentGroupId`. Nesting is unbounded. */
   onCreateSubgroup?: (parentGroupId: string) => void;
+  /** Set, change or clear the group's optional folder. */
+  onEditGroupFolder?: (groupId: string) => void;
   /** Re-parent a group. `null` moves it back to the sidebar root. The host
    *  rejects moves that would put a group inside its own subtree. */
   onMoveGroup?: (groupId: string, newParentId: string | null) => void;
@@ -892,7 +894,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     pinnedSessionIds, onTogglePin, onKeepSession,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
-    onCreateSubgroup, onMoveGroup, onAutoGroupSessions, onCreateFreeGroup,
+    onCreateSubgroup, onEditGroupFolder, onMoveGroup, onAutoGroupSessions, onCreateFreeGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
     activeNavView = 'sessions', onSelectNavView,
@@ -1579,12 +1581,9 @@ export const TabBar = memo(function TabBar(props: Props) {
       {groupMenu && (() => {
         const grp = tabGroups[groupMenu.groupId];
         if (!grp) return null;
-        // Use the stored cwd, or fall back to the first member's cwd for
-        // legacy groups that pre-date the cwd field. The fallback is what
-        // makes "New session in group" appear for groups created before
-        // this feature shipped.
-        const firstMember = sessions.find(s => tabGroupMap[s.id] === groupMenu.groupId);
-        const grpCwd = grp.cwd || firstMember?.cwd || '';
+        // The folder is optional: a group that mixes repos has none, and
+        // guessing one from a member would start sessions in the wrong place.
+        const grpCwd = grp.cwd || '';
         const parentId = grp.parentId ?? null;
         const subtreeCount = [groupMenu.groupId, ...descendantGroupIds(tabGroups, groupMenu.groupId)]
           .reduce((n, gid) => n + sessions.filter(s => tabGroupMap[s.id] === gid).length, 0);
@@ -1619,6 +1618,13 @@ export const TabBar = memo(function TabBar(props: Props) {
                   onPress={() => { onCreateSubgroup(groupMenu.groupId); setGroupMenu(null); }}>
                   <FolderPlus size={12} className="text-zinc-500" />
                   New subgroup
+                </Button>
+              )}
+              {onEditGroupFolder && (
+                <Button variant="ghost" fullWidth className={`${item} flex items-center gap-2`}
+                  onPress={() => { onEditGroupFolder(groupMenu.groupId); setGroupMenu(null); }}>
+                  <FolderClosed size={12} className="text-zinc-500" />
+                  {grpCwd ? 'Change folder…' : 'Set folder…'}
                 </Button>
               )}
 

@@ -1055,10 +1055,10 @@ function ProjectGeneralPane({ group, onPatch }: { group: TabGroupInfo; onPatch: 
         </TextField>
       </Field>
 
-      <Field label="Working directory" hint="All sessions opened from this group default to this folder.">
+      <Field label="Folder (optional)" hint="New sessions in this group start here. Leave it empty for a group that mixes folders; you'll pick one for each new session.">
         <div className="flex items-center gap-2">
-          <TextField value={cwd} onChange={setCwd} aria-label="cwd" className="flex-1">
-            <Input className="font-mono text-[12px]" onBlur={onCwdBlur} onKeyDown={(e: any) => e.key === 'Enter' && onCwdBlur()} placeholder="/Users/you/src/project" />
+          <TextField value={cwd} onChange={setCwd} aria-label="Folder" className="flex-1">
+            <Input className="font-mono text-[12px]" onBlur={onCwdBlur} onKeyDown={(e: any) => e.key === 'Enter' && onCwdBlur()} placeholder="No folder" />
           </TextField>
           <button
             onClick={async () => {

@@ -111,6 +111,7 @@ import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
 import { canReplyTo, readReply, replyFromMessage, replyFromSelection, withReply } from '../lib/message-reply';
 import { SelectionReply } from './SelectionReply';
+import { GroupFolderDialog } from './GroupFolderDialog';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
 import { GroupComposer } from './GroupComposer';
 import { EmptyComposerStage } from './EmptyComposerStage';
@@ -584,6 +585,22 @@ export function ChatApp() {
       creatingInGroupRef.current = false;
     }
   };
+
+  /** Merge `patch` into a local group. Undefined / empty values delete the
+   *  key, so absence means "inherit" (or, for `cwd`, "no folder"). */
+  const handlePatchGroup = (groupId: string, patch: Partial<TabGroupInfo>) => {
+    const current = tabGroups[groupId];
+    if (!current) return;
+    const next: TabGroupInfo = { ...current, ...patch };
+    for (const k of Object.keys(patch) as (keyof TabGroupInfo)[]) {
+      if (patch[k] === undefined || patch[k] === '') delete (next as unknown as Record<string, unknown>)[k as string];
+    }
+    const newGroups = { ...tabGroups, [groupId]: next };
+    setTabGroups(newGroups);
+    persistPrefs({ tabGroups: newGroups });
+  };
+  /** Group whose folder dialog is open. */
+  const [groupFolderEdit, setGroupFolderEdit] = useState<string | null>(null);
 
   /** Create an empty subgroup under `parentId`. Nesting is unbounded; the group
    *  carries no colour of its own so it inherits the parent's, and `allowEmpty`
@@ -6658,6 +6675,7 @@ export function ChatApp() {
               onUngroupTab={handleUngroupTab}
               onToggleGroup={handleToggleGroup}
               onCreateSubgroup={handleCreateSubgroup}
+              onEditGroupFolder={(groupId) => { if (tabGroups[groupId]) setGroupFolderEdit(groupId); }}
               onMoveGroup={handleMoveGroup}
               onAutoGroupSessions={handleAutoGroupSessions}
               onRenameGroup={handleRenameGroup}
@@ -8207,17 +8225,16 @@ export function ChatApp() {
           client={client}
           claudeModels={claudeModels}
           onDeleteGroup={handleDeleteGroup}
-          onPatchGroup={(groupId, patch) => {
-            const current = tabGroups[groupId];
-            if (!current) return;
-            const next: TabGroupInfo = { ...current, ...patch };
-            // Clean up undefined / empty-string keys so absence = "inherit from global".
-            for (const k of Object.keys(patch) as (keyof TabGroupInfo)[]) {
-              if (patch[k] === undefined || patch[k] === '') delete (next as unknown as Record<string, unknown>)[k as string];
-            }
-            const newGroups = { ...tabGroups, [groupId]: next };
-            setTabGroups(newGroups);
-            persistPrefs({ tabGroups: newGroups });
+          onPatchGroup={handlePatchGroup}
+        />
+        <GroupFolderDialog
+          open={!!groupFolderEdit && !!tabGroups[groupFolderEdit]}
+          groupName={groupFolderEdit ? tabGroups[groupFolderEdit]?.name ?? '' : ''}
+          initialPath={groupFolderEdit ? tabGroups[groupFolderEdit]?.cwd ?? '' : ''}
+          onCancel={() => setGroupFolderEdit(null)}
+          onSave={(path) => {
+            if (groupFolderEdit) handlePatchGroup(groupFolderEdit, { cwd: path || undefined });
+            setGroupFolderEdit(null);
           }}
         />
         <SkillsModal
