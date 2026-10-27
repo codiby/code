@@ -946,14 +946,10 @@ export function ChatApp() {
     persistPrefs({ tabGroups: nextGroups });
   }, [tabGroupMap, tabGroups]);
 
-  /** Click on a group header in the sidebar. Always focuses the group
-   *  (renders GroupComposer in the main pane). Expansion still toggles —
-   *  the user can collapse/expand the tab list without losing focus.
-   *  Previously this auto-selected a member, which created the
-   *  "Waiting for connection…" gap when no member was a fit and left
-   *  a stale active session on the second (collapsing) click. */
+  /** Click on a group header in the sidebar: expand or collapse it, nothing
+   *  else. It doesn't open the group composer or change the active session —
+   *  that's what "New session in group" is for. */
   const handleToggleGroup = (groupId: string) => {
-    setSelectedGroupId(groupId);
     setExpandedGroupIds(prev => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
