@@ -153,6 +153,10 @@ export interface ProviderEvents {
   /** Provider-reported context compaction; never inferred from response latency. */
   onCompaction?(active: boolean): void;
   onInit(info: InitInfo): void;
+  /** Slash commands (skills included) known before the first turn. The SDK
+   *  answers this as soon as the CLI initializes, while `onInit` waits for a
+   *  prompt — without it the `/` picker is empty until the first message. */
+  onSlashCommands?(commands: string[]): void;
   onAssistantDelta(text: string): void;
   onAssistantText(text: string, meta?: { model?: string; usage?: TokenUsage; parentToolUseId?: string | null }): void;
   /**

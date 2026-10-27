@@ -193,6 +193,20 @@ class ClaudeSession extends ProviderSessionBase {
       this.events.onError(err instanceof Error ? err : new Error(String(err)));
     });
     this.fetchSupportedModels();
+    this.fetchSupportedCommands();
+  }
+
+  /** Slash commands and skills, from the SDK's initialize handshake rather
+   *  than `system/init`, which only arrives with the first prompt. */
+  private fetchSupportedCommands(): void {
+    const runtime = this.runtime;
+    if (!runtime) return;
+    runtime.supportedCommands()
+      .then((commands) => {
+        if (this.closed) return;
+        this.events.onSlashCommands?.(commands.map((c) => c.name));
+      })
+      .catch(() => {});
   }
 
   /**

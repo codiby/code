@@ -87,6 +87,10 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   // Throwaway session from the launcher: runs in $HOME, lands in the
   // Disposables folder, and archives itself after this long idle.
   let disposableTtlMs: number | null = null;
+  // Record the session only; its provider spawns with the first message
+  // (`send_message` auto-starts it). The UI asks for this so a new session is
+  // there at once, without a Claude process nobody has talked to yet.
+  let deferStart = false;
   try {
     const body = await req.json() as Record<string, unknown>;
     if (body.cwd && typeof body.cwd === 'string') cwd = body.cwd;
@@ -98,6 +102,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     if (body.group_cwd && typeof body.group_cwd === 'string') groupCwd = body.group_cwd;
     if (body.group_id && typeof body.group_id === 'string') groupId = body.group_id;
     if (body.ungrouped === true) ungrouped = true;
+    if (body.defer_start === true) deferStart = true;
     disposableTtlMs = parseDisposableTtl(body.disposable_ttl_ms);
   } catch {}
   if (disposableTtlMs) cwd = homedir();
@@ -115,7 +120,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     providerSessionGen: 0,
     ready: false,
     status: 'open',
-    runtimeStatus: 'starting',
+    runtimeStatus: deferStart ? 'stopped' : 'starting',
     replayDone: true,
     savedCommands: [],
     model,
@@ -129,9 +134,9 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   };
   sessions.set(session.id, session);
 
-  log(`[${session.id.slice(0,8)}] Creating new session, cwd=${cwd}, provider=${provider}`);
+  log(`[${session.id.slice(0,8)}] Creating new session, cwd=${cwd}, provider=${provider}${deferStart ? ' (provider deferred to first message)' : ''}`);
   try {
-    startProviderSession(session, port);
+    if (!deferStart) startProviderSession(session, port);
   } catch (err) {
     // Failed creation must not leave an orphan visible on the next broadcast.
     try { await session.providerSession?.close(); } catch {}

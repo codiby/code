@@ -1671,6 +1671,9 @@ export class ClaudeClient {
       groupId?: string;
       /** Keep the session loose: the bridge skips its automatic grouping. */
       ungrouped?: boolean;
+      /** Record the session without spawning its provider; the first message
+       *  spawns it. Bridges that predate this ignore it and spawn as before. */
+      deferStart?: boolean;
       /** Start a disposable: the bridge runs it in $HOME, files it under
        *  Disposables and archives it after this long idle. */
       disposableTtlMs?: number;
@@ -1704,6 +1707,7 @@ export class ClaudeClient {
         group_cwd: opts.groupCwd,
         group_id: opts.groupId,
         ungrouped: opts.ungrouped,
+        defer_start: opts.deferStart,
         disposable_ttl_ms: opts.disposableTtlMs,
       }),
     });

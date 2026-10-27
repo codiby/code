@@ -86,6 +86,26 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       log(`[${sid8}] Provider session initialized (${info.providerSessionId})`);
     },
 
+    onSlashCommands(commands) {
+      // Fills the picker before the first turn. A later `onInit` replaces the
+      // whole initInfo, so here we only add to what is already known.
+      const prev = getSessionState(session.id).initInfo;
+      const known = prev?.slashCommands ?? [];
+      const slashCommands = [...known, ...commands.filter(c => !known.includes(c))];
+      const initInfo = prev
+        ? { ...prev, slashCommands }
+        : {
+            tools: [],
+            cwd: session.cwd,
+            version: '',
+            slashCommands,
+            model: session.model || '',
+            permissionMode: session.permissionMode || 'default',
+          };
+      updateSessionState(session.id, s => ({ ...s, initInfo }));
+      deps.broadcastToSession(session.id, { type: 'init_info', sessionId: session.id, info: initInfo });
+    },
+
     onAssistantDelta(text) {
       if (!session.replayDone) return;
       // After a user interrupt the SDK can still flush a few deltas before it

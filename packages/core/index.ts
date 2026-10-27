@@ -106,6 +106,9 @@ import { CodexAdapter } from './provider/adapters/codex';
 import { OpenCodeAdapter } from './provider/adapters/opencode';
 import { registerProvider } from './provider/registry';
 import { setBridgeDeps, startProviderSession } from './provider/lifecycle';
+import { claudeSlashCommands } from './provider/slash-probe';
+import { DEFAULT_PROVIDER } from './provider/registry';
+import type { Session } from './types';
 import { effectiveModel, getDefaultModels } from './provider/default-model';
 import { resolvePermissionDecision, clearPendingDecisionsForSession } from './provider/bridge';
 import { handleBrowserResponse } from './provider/browser-cdp';
@@ -855,7 +858,9 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     // Status first: it's tiny, and it's what the sidebar dot waits on.
     const session = sessions.get(sessionId);
     if (session) {
-      const status = session.ready ? 'connected' : session.runtimeStatus === 'starting' ? 'starting' : 'disconnected';
+      // A fresh session has no provider by design and takes a message as is,
+      // so it reads as ready rather than offline.
+      const status = session.ready || isFreshSession(session) ? 'connected' : session.runtimeStatus === 'starting' ? 'starting' : 'disconnected';
       ws.send(JSON.stringify({ type: 'status', sessionId, status }));
     }
 
@@ -880,6 +885,10 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
   }
 
   // ---- active_tab_change ---------------------------------------------------
+  // Focusing a tab never spawns its provider: a stopped session starts when a
+  // message is sent (`send_message` auto-starts it) or when the user starts
+  // typing (the client resumes it to have it warm). Focus only fills the `/`
+  // picker when nothing has reported commands yet.
   // Frontend tells us which tab is in focus. Boots the session's provider on
   // demand so we don't resume 20 Claude processes at once when the app first
   // connects — the persisted list is shown immediately, but each provider is
@@ -891,13 +900,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     const session = sessions.get(sessionId);
     if (!session) return;
     if (session.providerSession) return;
-    log(`[lazy] Active tab → spawning ${sessionId.slice(0, 8)} (${session.name})`);
-    try {
-      startProviderSession(session, server.port, session.claudeSessionId ?? null);
-      saveSessions();
-    } catch (err) {
-      log(`[lazy] Failed to spawn ${sessionId.slice(0, 8)}: ${err}`);
-    }
+    primeSlashCommands(session);
     return;
   }
 
@@ -1503,6 +1506,8 @@ app.post('/sessions', async (c) => {
     } catch {}
   }
   broadcastSessionList();
+  const createdSession = createdId ? sessions.get(createdId) : undefined;
+  if (createdSession && !createdSession.providerSession) primeSlashCommands(createdSession);
   if (url.searchParams.get('focus') === '1' && createdId) {
     broadcastFocusSession(createdId);
   }
@@ -2939,6 +2944,27 @@ configureAutomationRunner({ port: server.port!, sendMessage: sendMessageToSessio
 startAutomationScheduler();
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);
+
+/** Never talked to and not running: its provider waits for the first message. */
+function isFreshSession(session: Session): boolean {
+  return !session.providerSession && !session.claudeSessionId && getSessionState(session.id).messages.length === 0;
+}
+
+/** Fill a provider-less session's `/` picker from a short-lived probe (Claude
+ *  only). Its own provider reports the real list once it runs. */
+function primeSlashCommands(session: Session): void {
+  if ((session.provider || DEFAULT_PROVIDER) !== 'claude') return;
+  claudeSlashCommands(session.cwd).then(commands => {
+    if (session.providerSession || !sessions.has(session.id)) return;
+    const prev = getSessionState(session.id).initInfo;
+    if (prev?.slashCommands?.length) return;
+    const initInfo = prev
+      ? { ...prev, slashCommands: commands }
+      : { tools: [], cwd: session.cwd, version: '', slashCommands: commands, model: session.model || '', permissionMode: session.permissionMode || 'default' };
+    updateSessionState(session.id, st => ({ ...st, initInfo }));
+    broadcastToSession(session.id, { type: 'init_info', sessionId: session.id, info: initInfo });
+  }).catch(err => log(`[slash-probe] ${session.id.slice(0, 8)}: ${err instanceof Error ? err.message : err}`));
+}
 
 // Lazy spawn: sessions are persisted and shown in the UI immediately, but each
 // provider is only booted (and `claude --resume` is only issued) when the user

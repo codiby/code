@@ -194,11 +194,12 @@ export const isPendingSessionId = (id: string | null | undefined): boolean =>
 
 /** Stand-in tab shown while `POST /sessions` is in flight. Shaped like a real
  *  `SessionInfo` so the sidebar renders it with the ordinary "starting" dot. */
-function makePlaceholderSession(cwd: string, remoteId: string | null): SessionInfo {
+function makePlaceholderSession(cwd: string, remoteId: string | null, name = 'New session', provider?: string): SessionInfo {
   const now = Date.now();
   return {
     id: `${PENDING_SESSION_PREFIX}${crypto.randomUUID()}`,
-    name: cwd.split('/').filter(Boolean).pop() || 'New session',
+    name,
+    provider,
     cwd,
     created_at: now,
     updated_at: now,
@@ -415,6 +416,9 @@ export function ChatApp() {
    *  creator's `finally` — a failed create leaves no ghost behind. */
   const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>([]);
   const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>({});
+  /** Session ids that existed when the in-flight placeholders were added:
+   *  anything newer in the same folder is the create still landing. */
+  const knownBeforePendingRef = useRef<Set<string>>(new Set());
   /** Status changes made here and not yet confirmed by the bridge. A session
    *  list broadcast before the PATCH lands (stopping the provider broadcasts
    *  one) still says `open`, which put a closed tab back for a beat and then
@@ -535,17 +539,18 @@ export function ChatApp() {
    *  no host has, falls back to the GroupComposer, which lets the user pick. */
   const creatingInGroupRef = useRef(false);
   /** First host in `candidates` (null = this machine) where `dir` exists, or
-   *  undefined if none has it. An unreachable host counts as not having it. */
+   *  undefined if none has it. An unreachable host counts as not having it.
+   *  Hosts are asked in parallel; the order only breaks ties. */
   const hostWithFolder = async (dir: string, candidates: (string | null)[]): Promise<string | null | undefined> => {
     const c = clientRef.current;
     if (!c) return undefined;
     const target = dir.replace(/[\\/]+$/, '');
-    for (const host of [...new Set(candidates)]) {
-      try {
-        if ((await c.listDirs(target, host)).some(d => d.replace(/[\\/]+$/, '') === target)) return host;
-      } catch { /* offline remote — try the next host */ }
-    }
-    return undefined;
+    const hosts = [...new Set(candidates)];
+    const found = await Promise.all(hosts.map(host => c.listDirs(target, host)
+      .then(dirs => dirs.some(d => d.replace(/[\\/]+$/, '') === target))
+      .catch(() => false)));
+    const i = found.indexOf(true);
+    return i === -1 ? undefined : hosts[i];
   };
   const handleNewSessionInGroup = async (groupId: string) => {
     const group = sidebarGroups[groupId];
@@ -553,41 +558,59 @@ export function ChatApp() {
     hideStandaloneEditor();
     setActiveNavView('sessions');
     setExpandedGroupIds(prev => new Set([...prev, groupId]));
-    const members = sessions.filter(s => sidebarGroupMap[s.id] === groupId && s.cwd);
     // The folder is optional. Without one (a group that mixes repos), or with
     // one no host has, the composer asks for a folder instead of guessing.
-    const folders = group.cwd ? [group.cwd] : [];
+    const cwd = group.cwd || '';
     const showComposer = () => { setSelectedGroupId(groupId); setActiveId(null); };
-    if (folders.length === 0 || !clientRef.current) { showComposer(); return; }
+    if (!cwd || !clientRef.current) { showComposer(); return; }
     if (creatingInGroupRef.current) return;
     creatingInGroupRef.current = true;
+    // A row in the group on this frame; the real one replaces it once the
+    // bridge answers. Finding the host and booting the session take a while.
+    const stored = localStorage.getItem('claude-ui-last-provider');
+    const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
+    // The final name, picked here so the row never changes name: the bridge
+    // would call it `Session <count + 1>`, which only it can count.
+    const nextNumber = 1 + Math.max(0, ...sessions.map(s => Number(/^Session (\d+)$/.exec(s.name)?.[1] ?? 0)));
+    const name = `Session ${nextNumber}`;
+    const placeholder = makePlaceholderSession(cwd, groupRemoteInfo[groupId]?.remoteId ?? null, name, provider);
+    knownBeforePendingRef.current = new Set(sessions.map(s => s.id));
+    setPendingSessions(prev => [...prev, placeholder]);
+    setPendingGroupMap(prev => ({ ...prev, [placeholder.id]: groupId }));
+    // Focus it now: the empty-session stage renders from local state alone.
+    setSessionStates(prev => ({ ...prev, [placeholder.id]: emptyLocalState() }));
+    setSelectedGroupId(null);
+    setActiveId(placeholder.id);
     try {
       // The folder decides the host: a local group can hold a folder that
-      // only exists on a remote (vtb lives on ryzen9). Try the group's own
+      // only exists on a remote (vtb lives on ryzen9). Prefer the group's own
       // host, then hosts its sessions in that folder run on, then the rest.
-      let cwd = '';
-      let remoteId: string | null | undefined;
-      for (const folder of folders) {
-        remoteId = await hostWithFolder(folder, [
-          groupRemoteInfo[groupId]?.remoteId ?? null,
-          ...members.filter(s => s.cwd === folder).map(s => s.remoteId ?? null),
-          null,
-          ...remotes.map(r => r.id),
-        ]);
-        if (remoteId !== undefined) { cwd = folder; break; }
-      }
+      const members = sessions.filter(s => sidebarGroupMap[s.id] === groupId && s.cwd === cwd);
+      const remoteId = await hostWithFolder(cwd, [
+        groupRemoteInfo[groupId]?.remoteId ?? null,
+        ...members.map(s => s.remoteId ?? null),
+        null,
+        ...remotes.map(r => r.id),
+      ]);
       if (remoteId === undefined) { showComposer(); return; }
-      const stored = localStorage.getItem('claude-ui-last-provider');
-      const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
       await handleSpawnInGroup(
         groupId, cwd, provider, '', undefined,
         defaultPermissionModeByHost[remoteId || ''] ?? 'default',
-        undefined, remoteId,
+        undefined, remoteId, undefined, undefined, name, placeholder.id,
       );
     } catch {
       showComposer();
     } finally {
       creatingInGroupRef.current = false;
+      setPendingSessions(prev => prev.filter(s => s.id !== placeholder.id));
+      setPendingGroupMap(prev => {
+        const next = { ...prev };
+        delete next[placeholder.id];
+        return next;
+      });
+      setSessionStates(prev => { const next = { ...prev }; delete next[placeholder.id]; return next; });
+      // A failed create leaves focus on nothing rather than on a ghost.
+      setActiveId(prev => (prev === placeholder.id ? null : prev));
     }
   };
 
@@ -773,6 +796,10 @@ export function ChatApp() {
     remoteId?: string | null,
     images?: { media_type: string; data: string }[],
     effort?: string,
+    name?: string,
+    /** Optimistic row this create replaces: focus moves from it to the real
+     *  session (only if it still has focus), carrying over any draft. */
+    placeholderId?: string,
   ) => {
     const c = clientRef.current;
     if (!c) throw new Error('Not connected. Please retry.');
@@ -786,7 +813,9 @@ export function ChatApp() {
       // Local: the bridge owns the mapping write. Remote: it never reaches our
       // preferences, so the client persists it below.
       const session = await c.createSession(cwd, {
-        provider, model, permissionMode, effort, groupCwd: worktreeOrigin,
+        name, provider, model, permissionMode, effort, groupCwd: worktreeOrigin,
+        // Nothing to send yet: the provider spawns with the first message.
+        deferStart: !prompt && !images?.length,
         groupId: remoteId || !ownedHere ? undefined : groupId,
         remoteId: remoteId ?? remoteOfGroupKey(groupId),
       });
@@ -802,8 +831,23 @@ export function ChatApp() {
       setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
-      setSelectedGroupId(null);
-      setActiveId(session.id);
+      if (placeholderId) {
+        // Read the draft from the latest state: it was typed after this
+        // closure was created.
+        // Seed its local state from the placeholder's, so the empty-session
+        // stage stays up through the swap instead of waiting a frame for
+        // `session_state` (a new session has no history to wait for).
+        setSessionStates(prev => {
+          const draft = prev[placeholderId]?.input ?? '';
+          if (draft) clientRef.current?.updateUIState(session.id, { input: draft });
+          const base = prev[session.id] || emptyLocalState();
+          return { ...prev, [session.id]: draft ? { ...base, input: draft } : base };
+        });
+        setActiveId(prev => (prev === placeholderId ? session.id : prev));
+      } else {
+        setSelectedGroupId(null);
+        setActiveId(session.id);
+      }
       persistPrefs({
         ...(remoteId && ownedHere ? { tabGroupMap: newMap } : {}),
         ...(group.cwd || !ownedHere ? {} : { tabGroups: nextGroups }),
@@ -1445,7 +1489,19 @@ export function ChatApp() {
       ...prev,
       [sid]: { ...(prev[sid] || emptyLocalState()), input: newVal },
     }));
-    clientRef.current.updateUIState(sid, { input: newVal });
+    if (!isPendingSessionId(sid)) clientRef.current.updateUIState(sid, { input: newVal });
+    // Typing into a stopped session boots its provider, so the message goes
+    // out the moment it's sent instead of waiting for the spawn.
+    if (newVal.trim() && !current.trim()) warmSession(sid);
+  };
+
+  /** Ids with a warm-up resume in flight, so a burst of keystrokes asks once. */
+  const warmingRef = useRef<Set<string>>(new Set());
+  const warmSession = (sid: string) => {
+    if (isPendingSessionId(sid) || warmingRef.current.has(sid)) return;
+    if (sessions.find(s => s.id === sid)?.runtime_status !== 'stopped') return;
+    warmingRef.current.add(sid);
+    void reviveSession(sid).finally(() => warmingRef.current.delete(sid));
   };
 
   // Per-session paste buffer setter — symmetric with setInputForSession.
@@ -2444,7 +2500,7 @@ export function ChatApp() {
   // Claude process if it hasn't been resumed yet. Idempotent — the server
   // ignores the message when the provider is already running.
   useEffect(() => {
-    if (!activeId) return;
+    if (!activeId || isPendingSessionId(activeId)) return;
     clientRef.current?.notifyActiveTab(activeId);
     // First open of a tab subscribed without its history: load it now.
     if (clientRef.current && liteSubscribedRef.current.delete(activeId)) clientRef.current.hydrate(activeId);
@@ -2953,18 +3009,10 @@ export function ChatApp() {
       });
     }
 
+    // Selecting never boots a stopped provider: it starts when the user starts
+    // typing (setInputForSession) or sends. History loads without it.
     const status = statuses[id];
-    if (session.runtime_status === 'stopped' && (!status || status === 'disconnected')) {
-      try {
-        const updated = await c.resumeSession(id);
-        setSessions(prev => prev.map(s => s.id === id ? updated : s));
-        c.subscribe(updated.id);
-        subscribedRef.current.add(updated.id);
-        c.getSessionState(id);
-      } catch (e) {
-        console.error(`[select] Resume failed:`, e);
-      }
-    } else if (!status || status === 'disconnected') {
+    if (!status || status === 'disconnected') {
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
       c.getSessionState(id);
@@ -3235,6 +3283,7 @@ export function ChatApp() {
         permissionMode: old.permission_mode || 'default',
         groupId: ownedHere && !remoteId ? groupId : undefined,
         remoteId,
+        deferStart: true,
       });
       localStorage.setItem('claude-ui-last-provider', provider);
       setTabOrder(prev => {
@@ -3614,7 +3663,8 @@ export function ChatApp() {
   };
 
   const handleSend = (sid: string | null = activeId) => {
-    if (!sid || !clientRef.current) return;
+    // The draft stays put and moves to the real session once it exists.
+    if (!sid || !clientRef.current || isPendingSessionId(sid)) return;
     const state = getState(sid);
     let text = state.input.trim();
     // Swap any file-backed code blocks (large pastes) for their reference badge:
@@ -4864,10 +4914,20 @@ export function ChatApp() {
    *  same frame. Only the sidebar sees these — every other consumer keeps
    *  working off `orderedOpenSessions`, which holds server-confirmed sessions
    *  only. */
-  const sidebarSessions = useMemo(
-    () => (pendingSessions.length ? [...orderedOpenSessions, ...pendingSessions] : orderedOpenSessions),
-    [orderedOpenSessions, pendingSessions],
-  );
+  const sidebarSessions = useMemo(() => {
+    if (!pendingSessions.length) return orderedOpenSessions;
+    // The bridge announces a new session before `createSession` returns and
+    // before its group is written, so it would flash ungrouped. Keep it hidden
+    // behind its placeholder until it has a group, then swap the two in the
+    // same render.
+    const known = knownBeforePendingRef.current;
+    const landing = (s: SessionInfo) => !known.has(s.id) && pendingSessions.some(p => p.cwd === s.cwd);
+    const arrived = new Set(orderedOpenSessions.filter(s => landing(s) && tabGroupMap[s.id]).map(s => s.cwd));
+    return [
+      ...orderedOpenSessions.filter(s => !landing(s) || tabGroupMap[s.id]),
+      ...pendingSessions.filter(p => !arrived.has(p.cwd)),
+    ];
+  }, [orderedOpenSessions, pendingSessions, tabGroupMap]);
   /** Session ids this machine's own bridge owns. Used to spot an id that also
    *  exists on a remote (`main-session` is on every machine) so the remote's
    *  grouping can't drag the local tab away. */
@@ -5694,7 +5754,9 @@ export function ChatApp() {
     const s = sessionStates[sid];
     if (!s) return null;
     const sess = sessions.find(x => x.id === sid);
-    const status: ConnectionStatus = statuses[sid] || 'disconnected';
+    // A stopped provider isn't "offline": sending (or typing) starts it.
+    const rawStatus: ConnectionStatus = statuses[sid] || (isPendingSessionId(sid) ? 'connecting' : 'disconnected');
+    const status: ConnectionStatus = rawStatus === 'disconnected' && sess?.runtime_status === 'stopped' ? 'connected' : rawStatus;
     const BUILTINS = ['restart', 'default', 'terminal', 't'];
     const sdkCommands = s.initInfo?.slashCommands || [];
     const sessionSlashCommands = [
@@ -5803,7 +5865,9 @@ export function ChatApp() {
     && !!activeStageState
     && activeStageEmpty
     && !seenNonEmptyRef.current.has(activeId);
-  const activeStageSession = activeId ? sessions.find(s => s.id === activeId) : undefined;
+  const activeStageSession = activeId
+    ? sessions.find(s => s.id === activeId) ?? pendingSessions.find(s => s.id === activeId)
+    : undefined;
   const activeStageCwd = activeStageState?.initInfo?.cwd || activeStageSession?.cwd || '';
   const activeStageFolder = activeStageCwd.split('/').filter(Boolean).pop() || activeStageCwd || 'this folder';
   const activeStageProvider = PROVIDER_LABELS[activeStageSession?.provider ?? 'claude']
@@ -6248,7 +6312,7 @@ export function ChatApp() {
                     : activeSession.provider}
                 </span>
               )}
-              {active.initInfo && (
+              {active.initInfo?.version && (
                 <span className="text-xs text-zinc-600">
                   v{active.initInfo.version} · {active.initInfo.tools.length} tools
                 </span>
@@ -6422,7 +6486,7 @@ export function ChatApp() {
               >
                 <Search className="w-3.5 h-3.5 shrink-0 text-zinc-500 group-hover:text-zinc-400" />
                 <span className="flex-1 min-w-0 text-center text-[12px] font-medium text-zinc-200 truncate">
-                  {activeSession?.name ?? 'No active session'}
+                  {(activeSession ?? pendingSessions.find(s => s.id === activeId))?.name ?? 'No active session'}
                 </span>
                 <span className="flex items-center gap-0.5 shrink-0 text-[10px] text-zinc-500 group-hover:text-zinc-400 font-mono">
                   <kbd className="px-1 py-px bg-surface-lighter border border-border rounded">⌘</kbd>
