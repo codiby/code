@@ -415,6 +415,11 @@ export function ChatApp() {
    *  creator's `finally` — a failed create leaves no ghost behind. */
   const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>([]);
   const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>({});
+  /** Status changes made here and not yet confirmed by the bridge. A session
+   *  list broadcast before the PATCH lands (stopping the provider broadcasts
+   *  one) still says `open`, which put a closed tab back for a beat and then
+   *  closed it again. Lists are corrected until they agree or this expires. */
+  const statusOverridesRef = useRef(new Map<string, { status: 'open' | 'archived'; until: number }>());
 
   /** Each remote's own tab groups, as it reported them over its direct
    *  connection. Kept apart from `tabGroups` (which is this machine's, and the
@@ -1609,7 +1614,15 @@ export function ChatApp() {
       // which tabs to subscribe to.
 
       const c = new ClaudeClient(serverUrl, {
-        onSessions: (list) => {
+        onSessions: (incoming) => {
+          const overrides = statusOverridesRef.current;
+          const now = Date.now();
+          const list = overrides.size === 0 ? incoming : incoming.map(s => {
+            const o = overrides.get(s.id);
+            if (!o) return s;
+            if (s.status === o.status || now > o.until) { overrides.delete(s.id); return s; }
+            return { ...s, status: o.status };
+          });
           setSessions(list);
           // Subscribe to open sessions that aren't already subscribed
           const toSubscribe: string[] = [];
@@ -2969,6 +2982,7 @@ export function ChatApp() {
    *  away instead of waiting for the server roundtrip. */
   const setSessionStatusLocal = (id: string, status: 'open' | 'archived') => {
     const now = Date.now();
+    statusOverridesRef.current.set(id, { status, until: now + 10_000 });
     setSessions(prev => prev.map(s => s.id === id ? { ...s, status, updated_at: now } : s));
   };
 
@@ -3012,6 +3026,7 @@ export function ChatApp() {
       c?.archiveAndStopSession(id).catch(() => {});
     }
     const now = Date.now();
+    for (const id of ids) statusOverridesRef.current.set(id, { status: 'archived', until: now + 10_000 });
     setSessionStates(prev => {
       const next = { ...prev };
       for (const id of ids) delete next[id];

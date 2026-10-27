@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.31.41",
+  "version": "0.31.42",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "electron-dist/main.js",
