@@ -93,7 +93,7 @@ export function Panel({ node, tabs, focused, renderTab, onActivate, onClose, onF
 
   // The focus outline is blue always, brighter when this panel holds focus and
   // fainter when it doesn't — so it reads as "active" without going invisible.
-  const edge = focused ? 'border-blue-500/60' : 'border-blue-500/25';
+  const edge = focused ? 'workspace-panel is-focused border-blue-500/60' : 'workspace-panel border-blue-500/25';
 
   // Split / Resources controls shared by both layouts (pill-less chat panel and
   // the Chrome/Edge tabbed panel).

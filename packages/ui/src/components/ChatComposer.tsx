@@ -19,7 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { MessageReply } from '../lib/message-reply';
 import { ReplyQuote } from './ReplyQuote';
 import { useCodexModels, codexEfforts } from '../lib/codex-models';
-import { File as FileIcon, Folder as FolderIcon, Send as SendIcon } from 'lucide-react';
+import { File as FileIcon, Folder as FolderIcon, Plus as PlusIcon, Send as SendIcon } from 'lucide-react';
 import { CompactionIndicator } from './CompactionIndicator';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import { SlashCommandList, useSlashCommands } from './SlashCommandPicker';
@@ -139,6 +139,51 @@ const PERMISSION_MODE_ITEMS = [
  *  in, instead of switching this session's mode. */
 const SET_DEFAULT_MODE_KEY = '__set-default-mode__';
 
+/** Bars lit on the effort chip, so the level reads at a glance without the
+ *  label. Unknown/provider-specific ids fall back to none. */
+const EFFORT_BARS: Record<string, number> = { minimal: 1, low: 1, medium: 2, high: 3, xhigh: 4, max: 4 };
+
+function EffortBars({ level }: { level: number }) {
+  return (
+    <span aria-hidden className="inline-flex items-end gap-[2px] h-[11px] shrink-0">
+      {[4, 6, 9, 11].map((h, i) => (
+        <i key={i} style={{ height: h }} className={`w-[3px] rounded-[1px] ${i < level ? 'bg-violet-400' : 'bg-zinc-700'}`} />
+      ))}
+    </span>
+  );
+}
+
+/** Mark beside the model name: the provider's brand colour. */
+const PROVIDER_MARK: Record<string, string> = { claude: '#d97757', codex: '#10a37f', opencode: '#8b8b94' };
+
+/** Streaming indicator for the light theme: a comet that orbits the composer
+ *  outline at constant speed. The tail is TAIL short segments running the same
+ *  animation a few ms behind the head, each fainter and thinner, so it fades
+ *  out along the path (SVG strokes can't take a gradient along their length). */
+const COMET_TAIL = 15;
+function ComposerComet() {
+  return (
+    <svg aria-hidden className="composer-comet">
+      {Array.from({ length: COMET_TAIL }, (_, i) => COMET_TAIL - 1 - i).map(i => {
+        const k = i / (COMET_TAIL - 1);
+        return (
+          <rect
+            key={i}
+            pathLength={100}
+            style={{
+              opacity: Math.pow(1 - k, 1.6),
+              strokeWidth: 2.2 - 1.2 * k,
+              stroke: i === 0 ? undefined : k < 0.5 ? '#7c5ce6' : '#a78bfa',
+              // Negative delay = already i*45ms behind the head on first paint.
+              animationDelay: i === 0 ? '0s' : `${i * 0.045 - 3.2}s`,
+            }}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
 function permissionModeLabel(mode: string): string {
   return PERMISSION_MODE_ITEMS.find(m => m.id === mode)?.label ?? mode;
 }
@@ -240,6 +285,7 @@ export function ChatComposer(props: Props) {
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
   const dropDepthRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragKind, setDragKind] = useState<'file-reference' | 'files' | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
 
@@ -591,7 +637,14 @@ export function ChatComposer(props: Props) {
     : !input.trim() && pastedImages.length === 0 && attachedFiles.length === 0);
   const currentPermissionMode = activeSession?.permission_mode || 'default';
   const triggerCls =
-    'min-h-0 h-[26px] py-0 px-2.5 rounded-full bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
+    'min-h-0 h-7 py-0 pl-2.5 pr-7 gap-1.5 items-center rounded-[9px] bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5 text-[12px] font-medium text-zinc-400 hover:text-zinc-200 border-0 shadow-none transition-colors whitespace-nowrap overflow-hidden';
+  // Bypass skips every approval, so its chip carries a warning tint.
+  const permTriggerCls = currentPermissionMode === 'bypassPermissions'
+    ? triggerCls.replace('bg-transparent hover:bg-white/5 data-[hovered]:bg-white/5', 'bg-red-500/10 hover:bg-red-500/15 data-[hovered]:bg-red-500/15')
+        .replace('text-zinc-400 hover:text-zinc-200', 'text-red-300 hover:text-red-200')
+    : triggerCls;
+  const effortBars = EFFORT_BARS[activeSession?.effort ?? ''] ?? 0;
+  const providerMark = PROVIDER_MARK[activeSession?.provider ?? 'claude'];
 
   return (
     <div className="p-3 shrink-0 relative">
@@ -775,6 +828,30 @@ export function ChatComposer(props: Props) {
 
             {isCodex && (codex.loading || codex.info?.error) && <p role={codex.info?.error ? 'alert' : 'status'} className="px-3 text-xs text-zinc-400">{codex.loading ? 'Loading Codex models…' : codex.info?.error}</p>}
             <div className="flex items-center gap-1 px-2 pb-2 pt-1.5">
+              {!isTerminalMode && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    aria-label="Attach files"
+                    title="Attach files"
+                    className="w-7 h-7 mr-0.5 shrink-0 rounded-full border border-border-light flex items-center justify-center text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={e => {
+                      const picked = Array.from(e.target.files ?? []);
+                      e.target.value = '';
+                      if (picked.length) void addDroppedFiles(picked.map(file => ({ file, isDir: false })));
+                    }}
+                  />
+                </>
+              )}
               <Select
                 aria-label="Model"
                 selectedKey={activeSession?.model || 'default'}
@@ -782,10 +859,11 @@ export function ChatComposer(props: Props) {
                   const modelId = key === 'default' ? '' : String(key);
                   onSelectModel(modelId);
                 }}
-                className={isOpenCode ? 'w-56' : 'w-40'}
+                className={`w-auto ${isOpenCode ? 'max-w-56' : 'max-w-48'}`}
                 isDisabled={ocLoading || codex.loading}
               >
                 <SelectTrigger className={triggerCls}>
+                  {providerMark && <span aria-hidden className="w-3 h-3 rounded-[4px] shrink-0" style={{ background: providerMark }} />}
                   <SelectValue className="min-w-0 flex-1 truncate" />
                   <SelectIndicator className="size-3.5 shrink-0" />
                 </SelectTrigger>
@@ -817,9 +895,10 @@ export function ChatComposer(props: Props) {
                   onSelectionChange={(key) => {
                     onSelectEffort(key === 'default' ? '' : String(key));
                   }}
-                  className="w-28"
+                  className="w-auto"
                 >
                   <SelectTrigger className={triggerCls}>
+                    {effortBars > 0 && <EffortBars level={effortBars} />}
                     <SelectValue className="min-w-0 flex-1 truncate" />
                     <SelectIndicator className="size-3.5 shrink-0" />
                   </SelectTrigger>
@@ -848,9 +927,9 @@ export function ChatComposer(props: Props) {
                   }
                   onSelectPermissionMode(String(key));
                 }}
-                className="w-36"
+                className="w-auto"
               >
-                <SelectTrigger className={triggerCls}>
+                <SelectTrigger className={permTriggerCls}>
                   <SelectValue className="min-w-0 flex-1 truncate" />
                   <SelectIndicator className="size-3.5 shrink-0" />
                 </SelectTrigger>
@@ -885,9 +964,11 @@ export function ChatComposer(props: Props) {
                 <button
                   type="button"
                   onClick={onInterrupt}
-                  className="text-amber-400 hover:text-amber-300 text-[12px] h-[26px] px-2.5 rounded-full hover:bg-white/5 transition-colors"
+                  aria-label="Stop"
+                  title="Stop (Esc Esc)"
+                  className="w-[30px] h-[30px] shrink-0 rounded-full bg-zinc-100 hover:bg-zinc-300 flex items-center justify-center transition-colors"
                 >
-                  Stop
+                  <span aria-hidden className="w-[9px] h-[9px] rounded-[2px] bg-zinc-900" />
                 </button>
               )}
 
@@ -899,13 +980,16 @@ export function ChatComposer(props: Props) {
                 className={`rounded-full w-[30px] h-[30px] min-w-[30px] min-h-0 p-0 flex items-center justify-center transition-colors disabled:bg-surface-light disabled:text-zinc-600 ${
                   isTerminalMode
                     ? 'bg-green-600 hover:bg-green-500 text-white'
-                    : 'bg-[#ececef] text-[#07070a] hover:bg-white'
+                    : 'composer-send bg-[#ececef] text-[#07070a] hover:bg-white'
                 }`}
               >
                 <SendIcon className="w-4 h-4" />
               </Button>
             </div>
           </div>
+          {/* Painted over the frame (the light theme's frame is opaque white,
+              which would hide anything layered behind it like the spots). */}
+          {active.isStreaming && !active.permRequest && !isTerminalMode && <ComposerComet />}
         </div>
       </div>
     </div>

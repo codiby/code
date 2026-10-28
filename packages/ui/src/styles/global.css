@@ -49,25 +49,26 @@ html {
      1. redefining the semantic tokens for a light surface hierarchy, and
      2. inverting the zinc/neutral ramp so text-zinc-200 (light-on-dark)
         becomes dark-on-light, bg-zinc-900 becomes a light surface, etc.
-   Accent colors (emerald/blue/amber) are intentionally left alone: they read
-   well on both backgrounds. Toggled via the light class on <html> (see the
+   Accent colors keep their 500+ shades; only the pale 200-400 text tier is
+   darkened (see the accent ramp remap below). Toggled via the light class on <html> (see the
    ChatApp theme effect and the boot script in index.html). */
 html.light {
   color-scheme: light;
 
-  /* Semantic surface hierarchy (variant C — "soft"): the app read too stark
-     with everything on pure #fff, so content sits on a warm off-white and
-     chrome/wells step down through greys, giving depth without hard contrast.
-       base            = recessed wells / inputs / page gutter (darkest light)
-       surface         = main content surface (chat, panels, cards)
+  /* Semantic surface hierarchy ("Mist"): the chrome (titlebar, sidebar,
+     status bar) is a stone grey with a whisper of violet, and the main area
+     floats on it as a near-white rounded panel (see `.app-main` below). Plain
+     grey everywhere read as dated; pure white read as empty.
+       base            = chrome / recessed wells / inputs
+       surface         = main content panel (chat, panels, cards)
        surface-light   = hover / subtle raise
        surface-lighter = active / selected raise */
-  --color-base: #e9eaee;            /* mockup C: page */
-  --color-surface: #fcfcfd;         /* mockup C: content */
-  --color-surface-light: #eceef3;   /* mockup C: hover */
-  --color-surface-lighter: #e0e2e8; /* mockup C: border/active raise */
-  --color-border: #e0e2e8;          /* mockup C: border */
-  --color-border-light: #eaecf0;    /* mockup C: border-soft */
+  --color-base: #e9e8ee;
+  --color-surface: #fbfbfd;
+  --color-surface-light: #f0eff5;
+  --color-surface-lighter: #e4e2ec;
+  --color-border: #dddbe5;
+  --color-border-light: #e6e4ed;
 
   /* Zinc ramp remap, calibrated by actual usage rather than a naive symmetric
      inversion: in this app zinc-300..600 are almost entirely TEXT (160/221/404/
@@ -76,17 +77,17 @@ html.light {
      pushed zinc-600 to ~#a1a1aa, which washed out 243 muted-text spots), and
      only the 700+ shades go light. Brighter dark-mode text = more prominent →
      darker here; dimmer → lighter but still legible. */
-  --color-zinc-50: #18181b;
-  --color-zinc-100: #272a31;  /* mockup C: txt (primary) */
-  --color-zinc-200: #383b42;
-  --color-zinc-300: #474b53;
-  --color-zinc-400: #545861;  /* mockup C: txt2 (secondary) */
-  --color-zinc-500: #62666e;
-  --color-zinc-600: #787c84;  /* mockup C: txt3 (muted) */
-  --color-zinc-700: #c9cbd1;  /* bg/border tier begins */
-  --color-zinc-800: #e2e4e8;
-  --color-zinc-900: #eff1f4;
-  --color-zinc-950: #f6f7f9;
+  --color-zinc-50: #16151c;
+  --color-zinc-100: #1d1c24;  /* primary text */
+  --color-zinc-200: #2f2e38;
+  --color-zinc-300: #3f3e49;
+  --color-zinc-400: #4a4955;  /* secondary text */
+  --color-zinc-500: #5f5e6a;
+  --color-zinc-600: #7a7986;  /* muted text */
+  --color-zinc-700: #cfcdd8;  /* bg/border tier begins */
+  --color-zinc-800: #e4e2ea;
+  --color-zinc-900: #f0eff4;
+  --color-zinc-950: #f7f6fa;
 
   --color-neutral-50: #171717;
   --color-neutral-100: #262626;
@@ -105,6 +106,31 @@ html.light {
      overlays are re-tinted to dark films below so hover/selected feedback still
      shows on light surfaces. */
   --color-white: #ffffff;
+
+  /* Accent ramp remap. Dark mode writes accent text in the pale 200/300/400
+     shades (text-violet-300, text-amber-400, …) because they glow on a dark
+     canvas; on a light one the same shades look washed out and pastel. Shift
+     them down three steps (400→600, 300→700, 200→800) so accents keep their
+     hue but read as ink. Solid bg-*-400 status dots and the /N tints follow
+     along, which only makes them a touch richer on light. 500+ are untouched:
+     they already carry the white-on-colour buttons. */
+  --color-red-200: #991b1b;     --color-red-300: #b91c1c;     --color-red-400: #dc2626;
+  --color-orange-200: #9a3412;  --color-orange-300: #c2410c;  --color-orange-400: #ea580c;
+  --color-amber-200: #92400e;   --color-amber-300: #b45309;   --color-amber-400: #d97706;
+  --color-yellow-200: #854d0e;  --color-yellow-300: #a16207;  --color-yellow-400: #ca8a04;
+  --color-lime-200: #3f6212;    --color-lime-300: #4d7c0f;    --color-lime-400: #65a30d;
+  --color-green-200: #166534;   --color-green-300: #15803d;   --color-green-400: #16a34a;
+  --color-emerald-200: #065f46; --color-emerald-300: #047857; --color-emerald-400: #059669;
+  --color-teal-200: #115e59;    --color-teal-300: #0f766e;    --color-teal-400: #0d9488;
+  --color-cyan-200: #155e75;    --color-cyan-300: #0e7490;    --color-cyan-400: #0891b2;
+  --color-sky-200: #075985;     --color-sky-300: #0369a1;     --color-sky-400: #0284c7;
+  --color-blue-200: #1e40af;    --color-blue-300: #1d4ed8;    --color-blue-400: #2563eb;
+  --color-indigo-200: #3730a3;  --color-indigo-300: #4338ca;  --color-indigo-400: #4f46e5;
+  --color-violet-200: #5b21b6;  --color-violet-300: #6d28d9;  --color-violet-400: #7c3aed;
+  --color-purple-200: #6b21a8;  --color-purple-300: #7e22ce;  --color-purple-400: #9333ea;
+  --color-fuchsia-200: #86198f; --color-fuchsia-300: #a21caf; --color-fuchsia-400: #c026d3;
+  --color-pink-200: #9d174d;    --color-pink-300: #be185d;    --color-pink-400: #db2777;
+  --color-rose-200: #9f1239;    --color-rose-300: #be123c;    --color-rose-400: #e11d48;
 }
 
 /* The page background is painted directly (see `body` below) — keep it in
@@ -121,12 +147,83 @@ html.light body {
    specificity, so no !important is needed. */
 html.light .composer-glass-frame {
   background: #ffffff;  /* solid white card — pops on the off-white content */
+  box-shadow: 0 0 0 1px #e0dee8, 0 12px 30px -12px rgba(40, 30, 80, 0.18);
 }
-html.light .composer-spot {
-  opacity: 0.22;
-  mix-blend-mode: normal;
-  filter: blur(10px) saturate(1.2);
+html.light .composer-glass-frame:focus-within {
+  box-shadow: 0 0 0 1px #cfc6f1, 0 0 0 4px rgba(109, 79, 216, 0.10), 0 12px 30px -12px rgba(40, 30, 80, 0.22);
 }
+/* The LED spots only work additively on a dark fill; light uses the comet. */
+html.light .composer-spot { display: none; }
+html.light .composer-send:not(:disabled) {
+  background: #6d4fd8;
+  color: #fff;
+  box-shadow: 0 2px 6px -1px rgba(109, 79, 216, 0.5);
+}
+html.light .composer-send:not(:disabled):hover { background: #5b3fc4; }
+
+/* Streaming comet (ComposerComet in ChatComposer.tsx): one constant-speed lap
+   of the composer outline every 3.2s. Only shown on light; the rects are sized
+   in CSS because SVG attributes can't take calc(). */
+.composer-comet { display: none; }
+html.light .composer-comet {
+  display: block;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 10;
+}
+.composer-comet rect {
+  x: 0.75px;
+  y: 0.75px;
+  width: calc(100% - 1.5px);
+  height: calc(100% - 1.5px);
+  rx: 17.25px;
+  fill: none;
+  stroke: #6d4fd8;
+  stroke-linecap: round;
+  stroke-dasharray: 3 97;
+  animation: composer-orbit 3.2s linear infinite;
+}
+.composer-comet rect:last-child { filter: drop-shadow(0 0 4px rgba(124, 58, 237, 0.75)); }
+@keyframes composer-orbit {
+  from { stroke-dashoffset: 0; }
+  to   { stroke-dashoffset: -100; }
+}
+
+/* Chrome vs. content: the titlebar, sidebar and status bar sit straight on
+   the base tone with no dividers, and the main area floats on it as a rounded
+   near-white panel. `body` outranks the bg-[#131418] remap further down. */
+html.light body .app-titlebar,
+html.light body .tab-bar,
+html.light body .app-statusbar {
+  background: var(--color-base);
+  border-color: transparent;
+}
+/* Session workspaces already split into rounded panels (panels/Panel.tsx);
+   those become the floating cards. A plain blue edge marked the focused one
+   on dark — here it's the violet focus ring instead. */
+html.light .workspace-panel {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  border-radius: 14px;
+  box-shadow: 0 2px 10px -4px rgba(0, 0, 0, 0.06);
+}
+html.light .workspace-panel.is-focused {
+  border-color: #d6cff2;
+}
+/* Views with no panels (new-session composer, sessions board, automations)
+   get the card on the main area itself. */
+html.light .app-main:not(:has(.workspace-panel)) {
+  margin: 0 8px 8px 0;
+  border-radius: 14px;
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-border), 0 2px 10px -4px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+html.light .app-main:not(:has(.workspace-panel)):first-child { margin-left: 8px; }
 
 /* Chrome surfaces painted with arbitrary dark-hex utilities (bg-[#…]) that
    neither the semantic tokens nor the ramp inversion can reach: the sessions
@@ -139,7 +236,7 @@ html.light .composer-spot {
 html.light .bg-\[\#0d0e12\],
 html.light .bg-\[\#0e0f12\],
 html.light .bg-\[\#101116\] {
-  background-color: #e9eaee;  /* recessed toolbars / inset wells — mockup C page */
+  background-color: #e9e8ee;  /* recessed toolbars / inset wells — chrome tone */
 }
 html.light .bg-\[\#131418\],
 html.light .bg-\[\#141414\],
@@ -155,11 +252,11 @@ html.light .bg-\[\#1f1f1f\],
 html.light .bg-\[\#1f2025\],
 html.light .bg-\[\#202023\],
 html.light .bg-\[\#26272d\] {
-  background-color: #f6f7f9;  /* chrome (sidebar, file/search panels) — grey, not stark white */
+  background-color: #f7f6fa;  /* side panels (file/search) and cards — a step off the content white */
 }
 html.light .bg-\[\#2a2a2a\],
 html.light .bg-\[\#2a2b30\] {
-  background-color: #e0e2e8;
+  background-color: #e4e2ec;
 }
 /* Dark navy accent surface (slate-900) → a light slate tint. */
 html.light .bg-\[\#0f172a\] {
@@ -177,7 +274,14 @@ html.light .border-\[\#2a2b30\],
 html.light .border-\[\#131418\],
 html.light .border-\[\#26272d\],
 html.light .border-\[\#3a3b40\] {
-  border-color: #e5e7eb;
+  border-color: #e2e0e9;
+}
+
+/* Explorer section dividers: a dark hairline faded at both ends, written as a
+   bg-[linear-gradient(...#26272d...)] utility — matched by substring since
+   escaping the full class name is unreadable. */
+html.light [class*="#26272d_12%"] {
+  background-image: linear-gradient(90deg, transparent, #e2e0e9 12%, #e2e0e9 88%, transparent);
 }
 
 /* Arbitrary light-grey TEXT hexes (bright/muted text authored for a dark
@@ -187,16 +291,16 @@ html.light .border-\[\#3a3b40\] {
    matching coloured chip where it still reads. */
 html.light .text-\[\#e6e7ea\],
 html.light .text-\[\#eef0f2\] {
-  color: #272a31;  /* mockup C: txt (primary), matches zinc-100 */
+  color: #1d1c24;  /* primary, matches zinc-100 */
 }
 html.light .text-\[\#c4c6cc\] {
-  color: #474b53;  /* prominent secondary, matches zinc-300 */
+  color: #3f3e49;  /* prominent secondary, matches zinc-300 */
 }
 html.light .text-\[\#9aa0a8\] {
-  color: #62666e;  /* muted, matches zinc-500 */
+  color: #5f5e6a;  /* muted, matches zinc-500 */
 }
 html.light .text-\[\#8a8c93\] {
-  color: #787c84;  /* mockup C: txt3, matches zinc-600 */
+  color: #7a7986;  /* matches zinc-600 */
 }
 
 /* bg-white/N overlays are dark-first hover/selected highlights (a faint light

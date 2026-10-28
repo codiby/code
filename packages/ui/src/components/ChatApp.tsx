@@ -6260,7 +6260,7 @@ export function ChatApp() {
          *  The whole strip is a drag region, except for interactive controls
          *  (layout-mode pill) which opt out with `app-region: no-drag`. */}
         <div
-          className={`fixed top-0 left-0 right-0 z-[9999] flex items-center select-none border-b ${
+          className={`app-titlebar fixed top-0 left-0 right-0 z-[9999] flex items-center select-none border-b ${
             layoutMode === 'horizontal'
               ? 'h-10 bg-[#131418] border-[#2a2b30]'
               : 'h-9 bg-base border-border'
@@ -6781,7 +6781,7 @@ export function ChatApp() {
           {/* Side Panel (Explorer) is rendered on the RIGHT, after the chat
               content — see below. */}
 
-          <div className="flex-1 flex flex-col min-w-0">
+          <div className="app-main flex-1 flex flex-col min-w-0">
             {standaloneVisible ? (
               <StandaloneEditor client={client} onOpenPaths={(paths) => routeOpenFilesRef.current(paths)} />
             ) : activeNavView === 'sessions-board' ? (
@@ -8128,7 +8128,7 @@ export function ChatApp() {
         )}
 
         {/* Status bar */}
-        <div className="flex items-center justify-between px-3 h-[22px] bg-[#131418] border-t border-border text-[11px] shrink-0 select-none">
+        <div className="app-statusbar flex items-center justify-between px-3 h-[22px] bg-[#131418] border-t border-border text-[11px] shrink-0 select-none">
           <div className="flex items-center gap-3">
             {gitBranch && (
               <button ref={branchBtnRef} className="flex items-center gap-1 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer z-10" onClick={(e) => { e.stopPropagation(); openBranchMenu(); }}>
