@@ -1,6 +1,6 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const WEEKDAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'] as const;
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 function isSameDay(a: Date, b: Date): boolean {
   return (
@@ -30,7 +30,7 @@ export function formatChatTimestamp(
 
   const yesterday = new Date(now.getTime() - DAY_MS);
   if (isSameDay(date, yesterday)) {
-    return 'Ayer';
+    return 'Yesterday';
   }
 
   if (now.getTime() - timestamp < 7 * DAY_MS) {
@@ -63,7 +63,7 @@ export function formatFullTimestamp(
 
   const yesterday = new Date(now.getTime() - DAY_MS);
   if (isSameDay(date, yesterday)) {
-    return `ayer ${time}`;
+    return `yesterday ${time}`;
   }
 
   const year = String(date.getFullYear()).slice(-2);

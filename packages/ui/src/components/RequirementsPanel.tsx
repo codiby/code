@@ -51,10 +51,10 @@ const STATE_CHIP: Record<string, string> = {
 };
 
 const STATE_LABEL: Record<string, string> = {
-  locked: '🔒 aprobado',
-  draft: 'borrador',
+  locked: '🔒 approved',
+  draft: 'draft',
   waived: 'waived',
-  tampered: '⚠ alterado',
+  tampered: '⚠ tampered',
 };
 
 const ACTOR_COLOR: Record<string, string> = {
@@ -111,7 +111,7 @@ export function RequirementsPanel({
         className="flex items-center gap-2 px-3 py-2 border-b border-border flex-shrink-0"
         onDoubleClick={onToggleFullWidth}
       >
-        <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Requerimientos</span>
+        <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Requirements</span>
         {progress && (
           <span className="text-[11px] text-zinc-400">{progressLabel(progress)}</span>
         )}
@@ -122,13 +122,13 @@ export function RequirementsPanel({
           className="text-[11px] h-auto px-2 py-1 rounded border border-cyan-400/45 text-cyan-300 bg-transparent hover:bg-cyan-400/10 disabled:opacity-40"
           onPress={() => onRun()}
         >
-          ▶ Correr todo
+          ▶ Run all
         </Button>
         <Button
           isIconOnly size="sm" variant="ghost"
           className="text-zinc-500 hover:text-zinc-200 text-sm px-1 h-auto min-w-0"
           onPress={onClose}
-          aria-label="Cerrar requerimientos"
+          aria-label="Close requirements"
         >
           ✕
         </Button>
@@ -138,25 +138,25 @@ export function RequirementsPanel({
         {/* Target */}
         <section className="border-b border-border">
           <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-1">
-            <span className="text-[10px] uppercase tracking-[0.09em] text-zinc-500 font-semibold">Objetivo</span>
+            <span className="text-[10px] uppercase tracking-[0.09em] text-zinc-500 font-semibold">Target</span>
             <div className="flex-1" />
             {!editingTarget && (
               <button
                 className="text-[11px] text-zinc-500 hover:text-zinc-200 px-1.5 py-0.5 rounded hover:bg-surface-lighter"
                 onClick={() => { setTargetDraft(snapshot?.target ?? ''); setEditingTarget(true); }}
               >
-                editar
+                edit
               </button>
             )}
           </div>
           {editingTarget ? (
             <div className="px-3.5 pb-3 flex flex-col gap-2">
-              <TextField value={targetDraft} onChange={setTargetDraft} aria-label="Objetivo de la sesión">
+              <TextField value={targetDraft} onChange={setTargetDraft} aria-label="Session target">
                 <TextArea
                   autoFocus
                   rows={3}
                   className="block w-full text-[13px] bg-base border border-border-light rounded p-2 text-zinc-200 resize-y placeholder:text-zinc-600"
-                  placeholder="Qué se busca construir en esta sesión, en lenguaje llano."
+                  placeholder="What this session aims to build, in plain language."
                   onKeyDown={(e) => {
                     if (e.key === 'Escape') { e.preventDefault(); setEditingTarget(false); }
                     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveTarget(); }
@@ -165,16 +165,16 @@ export function RequirementsPanel({
               </TextField>
               <div className="flex gap-2">
                 <Button size="sm" className="text-[11px] h-auto px-2 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white" onPress={saveTarget}>
-                  Guardar
+                  Save
                 </Button>
                 <Button size="sm" variant="ghost" className="text-[11px] h-auto px-2 py-1 text-zinc-400" onPress={() => setEditingTarget(false)}>
-                  Cancelar
+                  Cancel
                 </Button>
               </div>
             </div>
           ) : (
             <p className={`px-3.5 pb-3.5 text-[13px] leading-relaxed ${snapshot?.target ? 'text-zinc-200' : 'text-zinc-500 italic'}`}>
-              {snapshot?.target || 'Sin objetivo todavía — el agente lo define con set_target, o lo escribes tú.'}
+              {snapshot?.target || 'No target yet — the agent sets it with set_target, or you write it.'}
             </p>
           )}
         </section>
@@ -183,7 +183,7 @@ export function RequirementsPanel({
         {proposals.length > 0 && (
           <section className="border-b border-border pb-1">
             <div className="px-3.5 pt-2.5 pb-1.5 text-[10px] uppercase tracking-[0.09em] text-zinc-500 font-semibold">
-              Pendientes de aprobación <span className="text-amber-400">{proposals.length}</span>
+              Pending approval <span className="text-amber-400">{proposals.length}</span>
             </div>
             {proposals.map(p => (
               <ProposalCard
@@ -217,8 +217,8 @@ export function RequirementsPanel({
         {/* List */}
         {requirements.length === 0 ? (
           <p className="px-3.5 py-6 text-[12px] text-zinc-500 leading-relaxed">
-            Todavía no hay requerimientos. Pídele al agente que los defina — solo puede agregarlos,
-            y no cuentan hasta que los apruebes aquí.
+            No requirements yet. Ask the agent to define them — it can only add them,
+            and they don't count until you approve them here.
           </p>
         ) : (
           requirements.map(r => (
@@ -241,13 +241,13 @@ export function RequirementsPanel({
             className="w-full flex items-center gap-2 px-3.5 py-2.5 text-[10px] uppercase tracking-[0.09em] text-zinc-500 font-semibold hover:text-zinc-300"
             onClick={() => setHistoryOpen(o => !o)}
           >
-            Historial
+            History
             <span className={`transition-transform ${historyOpen ? 'rotate-90' : ''}`}>▸</span>
           </button>
           {historyOpen && (
             <div className="px-3.5 pb-4 flex flex-col gap-0.5">
-              {events === null && <span className="text-[11px] text-zinc-600">cargando…</span>}
-              {events?.length === 0 && <span className="text-[11px] text-zinc-600">sin eventos</span>}
+              {events === null && <span className="text-[11px] text-zinc-600">loading…</span>}
+              {events?.length === 0 && <span className="text-[11px] text-zinc-600">no events</span>}
               {events?.map(e => (
                 <div key={e.id} className="flex gap-2.5 text-[11px] items-baseline">
                   <span className="w-10 flex-shrink-0 text-zinc-600 tabular-nums">{timeLabel(e.createdAt)}</span>
@@ -277,7 +277,7 @@ function ProposalCard({
   requirement?: Requirement;
   onResolve: (pid: string, decision: 'approve' | 'reject') => void;
 }) {
-  const verb = proposal.action === 'waive' ? 'saltarse' : proposal.action === 'delete' ? 'borrar' : 'editar';
+  const verb = proposal.action === 'waive' ? 'waive' : proposal.action === 'delete' ? 'delete' : 'edit';
   return (
     <div className="mx-3.5 mb-3 px-3 py-2.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06]">
       <div className="text-[12px] text-zinc-200 mb-1">
@@ -287,7 +287,7 @@ function ProposalCard({
         {requirement?.title ?? proposal.requirementId}
       </div>
       <p className="text-[11.5px] text-zinc-400 leading-relaxed mb-2">
-        El agente pide {verb} este requerimiento: <q className="text-zinc-200 italic">{proposal.reason}</q>
+        The agent asks to {verb} this requirement: <q className="text-zinc-200 italic">{proposal.reason}</q>
       </p>
       <div className="flex gap-2">
         <Button
@@ -295,14 +295,14 @@ function ProposalCard({
           className="text-[11px] h-auto px-2 py-1 rounded border border-emerald-400/45 text-emerald-300 bg-transparent hover:bg-emerald-400/10"
           onPress={() => onResolve(proposal.id, 'approve')}
         >
-          Aprobar
+          Approve
         </Button>
         <Button
           size="sm"
           className="text-[11px] h-auto px-2 py-1 rounded border border-border-light text-zinc-300 bg-surface-light hover:bg-surface-lighter"
           onPress={() => onResolve(proposal.id, 'reject')}
         >
-          Rechazar
+          Reject
         </Button>
       </div>
     </div>
@@ -365,7 +365,7 @@ function RequirementRow({
         <div className="flex gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
           {(r.state === 'draft' || r.state === 'locked') && (
             <button
-              title="Correr este requerimiento"
+              title="Run this requirement"
               className="w-[22px] h-[22px] grid place-items-center rounded text-zinc-500 hover:bg-surface-lighter hover:text-zinc-200 text-[11px]"
               onClick={() => onRun([r.id])}
             >
@@ -374,7 +374,7 @@ function RequirementRow({
           )}
           <div className="relative" ref={menuRef}>
             <button
-              title="Más"
+              title="More"
               className="w-[22px] h-[22px] grid place-items-center rounded text-zinc-500 hover:bg-surface-lighter hover:text-zinc-200 text-[11px]"
               onClick={() => setMenuOpen(o => !o)}
             >
@@ -383,24 +383,24 @@ function RequirementRow({
             {menuOpen && (
               <div className="absolute right-0 top-full mt-1 z-20 min-w-[170px] bg-[#1f1f1f] border border-border-light rounded-md shadow-xl overflow-hidden text-[11.5px]">
                 {r.state === 'draft' && (
-                  <MenuItem label="Aprobar" onClick={() => { onSetState(r.id, 'lock'); setMenuOpen(false); }} />
+                  <MenuItem label="Approve" onClick={() => { onSetState(r.id, 'lock'); setMenuOpen(false); }} />
                 )}
                 {r.state === 'locked' && (
-                  <MenuItem label="Devolver a borrador" onClick={() => { onSetState(r.id, 'unlock'); setMenuOpen(false); }} />
+                  <MenuItem label="Back to draft" onClick={() => { onSetState(r.id, 'unlock'); setMenuOpen(false); }} />
                 )}
                 {r.state !== 'waived' && r.state !== 'tampered' && (
                   <MenuItem
                     label="Waive…"
                     onClick={() => {
-                      const reason = window.prompt('¿Por qué se salta este requerimiento?');
+                      const reason = window.prompt('Why is this requirement being waived?');
                       if (reason?.trim()) onSetState(r.id, 'waive', reason.trim());
                       setMenuOpen(false);
                     }}
                   />
                 )}
-                <MenuItem label="Editar" onClick={() => { setEditing(true); setMenuOpen(false); }} />
+                <MenuItem label="Edit" onClick={() => { setEditing(true); setMenuOpen(false); }} />
                 <MenuItem
-                  label="Borrar"
+                  label="Delete"
                   danger
                   onClick={() => { onDelete(r.id); setMenuOpen(false); }}
                 />
@@ -413,20 +413,20 @@ function RequirementRow({
       <div className="mt-1.5 ml-[17px]">
         {editing ? (
           <div className="flex flex-col gap-2 pr-2">
-            <TextField value={titleDraft} onChange={setTitleDraft} aria-label="Título del requerimiento">
+            <TextField value={titleDraft} onChange={setTitleDraft} aria-label="Requirement title">
               <Input className="block w-full text-[12px] bg-base border border-border-light rounded px-2 py-1 text-zinc-200" />
             </TextField>
             {isCommand && (
-              <TextField value={commandDraft} onChange={setCommandDraft} aria-label="Comando de verificación">
+              <TextField value={commandDraft} onChange={setCommandDraft} aria-label="Verification command">
                 <Input className="block w-full text-[11px] font-mono bg-base border border-border-light rounded px-2 py-1 text-zinc-300" />
               </TextField>
             )}
             <div className="flex gap-2">
               <Button size="sm" className="text-[11px] h-auto px-2 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white" onPress={saveEdit}>
-                Guardar
+                Save
               </Button>
               <Button size="sm" variant="ghost" className="text-[11px] h-auto px-2 py-1 text-zinc-400" onPress={() => setEditing(false)}>
-                Cancelar
+                Cancel
               </Button>
             </div>
           </div>
@@ -446,17 +446,17 @@ function RequirementRow({
         )}
 
         {r.state === 'waived' && r.waiverReason && (
-          <p className="mt-1.5 text-[11.5px] text-zinc-600">Aceptaste saltarlo: “{r.waiverReason}”</p>
+          <p className="mt-1.5 text-[11.5px] text-zinc-600">You agreed to waive it: “{r.waiverReason}”</p>
         )}
 
         {/* Visual evidence */}
         {r.kind === 'visual' && (r.imagePath || r.lastImagePath) && (
           <div className="flex gap-2.5 mt-2.5">
             {r.imagePath && (
-              <Thumb path={r.imagePath} caption="referencia" onLoadImage={onLoadImage} />
+              <Thumb path={r.imagePath} caption="reference" onLoadImage={onLoadImage} />
             )}
             {r.lastImagePath && (
-              <Thumb path={r.lastImagePath} caption="captura de esta corrida" failed={failed} onLoadImage={onLoadImage} />
+              <Thumb path={r.lastImagePath} caption="capture from this run" failed={failed} onLoadImage={onLoadImage} />
             )}
           </div>
         )}
@@ -477,7 +477,7 @@ function RequirementRow({
               onClick={() => setOutputOpen(o => !o)}
             >
               <span className={`inline-block transition-transform ${outputOpen || failed ? 'rotate-90' : ''}`}>▸</span>
-              salida
+              output
             </button>
             {(outputOpen || failed) && (
               <pre className="mt-1.5 bg-base border border-border rounded px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-zinc-400 overflow-x-auto whitespace-pre">
@@ -502,9 +502,9 @@ function RequirementRow({
               className="text-[11px] h-auto px-2 py-1 rounded border border-emerald-400/45 text-emerald-300 bg-transparent hover:bg-emerald-400/10"
               onPress={() => onSetState(r.id, 'lock')}
             >
-              Aprobar requerimiento
+              Approve requirement
             </Button>
-            <span className="text-[10.5px] text-zinc-600">no cuenta hasta que lo apruebes</span>
+            <span className="text-[10.5px] text-zinc-600">doesn't count until you approve it</span>
           </div>
         )}
       </div>
@@ -554,7 +554,7 @@ function Thumb({
         >
           {src
             ? <img src={src} alt={caption} className="w-full h-full object-cover object-top" />
-            : <span className="text-[10px] text-zinc-600">sin imagen</span>}
+            : <span className="text-[10px] text-zinc-600">no image</span>}
         </div>
         <div className="text-[10px] text-zinc-600 mt-1 text-center">{caption}</div>
       </div>

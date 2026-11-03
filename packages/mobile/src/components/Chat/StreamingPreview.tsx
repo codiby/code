@@ -70,7 +70,7 @@ export function StreamingPreview({
     return isStreaming ? (
       <View className="flex-row items-center gap-1.5 px-4 py-1.5">
         <Pulse />
-        <Text className="text-[11px] text-slate-400">trabajando…</Text>
+        <Text className="text-[11px] text-slate-400">working…</Text>
       </View>
     ) : null;
   }
@@ -89,7 +89,7 @@ export function StreamingPreview({
             </Text>
             <View className="mt-1 flex-row items-center gap-1.5">
               <Pulse />
-              <Text className="text-[10px] text-slate-400">escribiendo</Text>
+              <Text className="text-[10px] text-slate-400">typing</Text>
             </View>
           </View>
         </View>

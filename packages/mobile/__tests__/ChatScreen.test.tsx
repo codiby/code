@@ -54,7 +54,7 @@ const temporary: SessionSummary = {
   id: 'temp',
   key: 'a:temp',
   serverId: 'a',
-  name: 'Chat directo',
+  name: 'Direct chat',
   cwd: '/a',
   folder: 'a',
   updatedAt: 0,

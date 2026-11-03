@@ -11,7 +11,7 @@ class ShareTargetsModule(private val context: ReactApplicationContext) : ReactCo
     @ReactMethod
     fun read(requestId: String, promise: Promise) {
         val activity = ShareImageActivity.receiver(requestId)
-        if (activity == null) promise.reject("SHARE_ACTIVITY", "No hay imágenes compartidas")
+        if (activity == null) promise.reject("SHARE_ACTIVITY", "No shared images")
         else activity.readIncoming(promise)
     }
 
@@ -38,7 +38,7 @@ class ShareTargetsModule(private val context: ReactApplicationContext) : ReactCo
             check(context.getSharedPreferences("share-targets", 0).edit().putString("config", config).commit())
             promise.resolve(null)
         } catch (error: Exception) {
-            promise.reject("SHARE_CONFIG", "No se pudo guardar la configuración para compartir", error)
+            promise.reject("SHARE_CONFIG", "Could not save the sharing settings", error)
         }
     }
 }

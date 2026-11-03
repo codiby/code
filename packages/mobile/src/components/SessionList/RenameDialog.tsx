@@ -72,7 +72,7 @@ export function RenameDialog({
       <Animated.View style={scrimStyle} className="absolute inset-0 bg-black">
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Cerrar"
+          accessibilityLabel="Close"
           onPress={onCancel}
           className="flex-1"
         />
@@ -83,7 +83,7 @@ export function RenameDialog({
         className="w-full rounded-2xl bg-white p-5 shadow-lg shadow-black/40"
       >
         <Text className="text-base font-semibold text-slate-900">
-          Renombrar sesión
+          Rename session
         </Text>
 
         <TextInput
@@ -110,7 +110,7 @@ export function RenameDialog({
             className="rounded-xl px-4 py-2.5 active:bg-slate-100"
           >
             <Text className="text-sm font-semibold text-slate-600">
-              Cancelar
+              Cancel
             </Text>
           </Pressable>
 
@@ -123,7 +123,7 @@ export function RenameDialog({
               canSubmit ? 'bg-slate-900 active:opacity-70' : 'bg-slate-300'
             }`}
           >
-            <Text className="text-sm font-semibold text-white">Guardar</Text>
+            <Text className="text-sm font-semibold text-white">Save</Text>
           </Pressable>
         </View>
       </Animated.View>

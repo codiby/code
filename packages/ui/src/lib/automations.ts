@@ -20,8 +20,8 @@ import type {
 // ---------------------------------------------------------------------------
 
 export const TRIGGER_TYPE_META: Record<AutomationTriggerType, { label: string; hint: string }> = {
-  cron: { label: 'Horario', hint: 'Corre sola en el horario que definas.' },
-  webhook: { label: 'Webhook', hint: 'Solo corre cuando algo llama a su URL.' },
+  cron: { label: 'Schedule', hint: 'Runs on its own on the schedule you set.' },
+  webhook: { label: 'Webhook', hint: 'Only runs when something calls its URL.' },
 };
 
 /**
@@ -44,12 +44,12 @@ export function webhookCurl(origin: string, automationId: string): string {
 
 /** The presets offered by the create form, in the order they are shown. */
 export const CRON_PRESETS: { id: string; label: string; cron: string }[] = [
-  { id: 'hourly', label: 'Cada hora', cron: '0 * * * *' },
-  { id: 'daily', label: 'Diario', cron: '0 9 * * *' },
-  { id: 'weekly', label: 'Semanal', cron: '0 9 * * 1' },
+  { id: 'hourly', label: 'Hourly', cron: '0 * * * *' },
+  { id: 'daily', label: 'Daily', cron: '0 9 * * *' },
+  { id: 'weekly', label: 'Weekly', cron: '0 9 * * 1' },
 ];
 
-const DAY_NAMES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 function hhmm(hour: number, minute: number): string {
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
@@ -67,27 +67,27 @@ export function humanizeCron(expression: string): string {
 
   const everyMinutes = /^\*\/(\d+)$/.exec(min);
   if (everyMinutes && hour === '*' && dom === '*' && month === '*' && dow === '*') {
-    return `Cada ${everyMinutes[1]} minutos`;
+    return `Every ${everyMinutes[1]} minutes`;
   }
   const everyHours = /^\*\/(\d+)$/.exec(hour);
   if (/^\d+$/.test(min) && everyHours && dom === '*' && month === '*' && dow === '*') {
-    return `Cada ${everyHours[1]} horas, en el minuto ${min}`;
+    return `Every ${everyHours[1]} hours, at minute ${min}`;
   }
   if (min === '*' && hour === '*' && dom === '*' && month === '*' && dow === '*') {
-    return 'Cada minuto';
+    return 'Every minute';
   }
   if (!/^\d+$/.test(min)) return expression;
 
   const minute = Number(min);
   if (hour === '*' && dom === '*' && month === '*' && dow === '*') {
-    return minute === 0 ? 'Cada hora, en punto' : `Cada hora, al minuto ${minute}`;
+    return minute === 0 ? 'Every hour, on the hour' : `Every hour, at minute ${minute}`;
   }
   if (!/^\d+$/.test(hour) || month !== '*') return expression;
 
   const at = hhmm(Number(hour), minute);
-  if (dom === '*' && dow === '*') return `Cada día a las ${at}`;
-  if (dom === '*' && /^[0-6]$/.test(dow)) return `Cada ${DAY_NAMES[Number(dow)]} a las ${at}`;
-  if (/^\d+$/.test(dom) && dow === '*') return `El día ${dom} de cada mes a las ${at}`;
+  if (dom === '*' && dow === '*') return `Every day at ${at}`;
+  if (dom === '*' && /^[0-6]$/.test(dow)) return `Every ${DAY_NAMES[Number(dow)]} at ${at}`;
+  if (/^\d+$/.test(dom) && dow === '*') return `Day ${dom} of every month at ${at}`;
   return expression;
 }
 
@@ -181,24 +181,24 @@ export interface RunStatusMeta {
 }
 
 export const RUN_STATUS_META: Record<AutomationRunStatus, RunStatusMeta> = {
-  scheduled: { label: 'En cola', tone: 'text-blue-400', tick: 'bg-blue-400/60' },
-  running: { label: 'Corriendo', tone: 'text-indigo-400', tick: 'bg-indigo-400' },
-  succeeded: { label: 'Correcta', tone: 'text-green-400', tick: 'bg-green-400/60' },
-  failed: { label: 'Falló', tone: 'text-red-400', tick: 'bg-red-400' },
+  scheduled: { label: 'Queued', tone: 'text-blue-400', tick: 'bg-blue-400/60' },
+  running: { label: 'Running', tone: 'text-indigo-400', tick: 'bg-indigo-400' },
+  succeeded: { label: 'Succeeded', tone: 'text-green-400', tick: 'bg-green-400/60' },
+  failed: { label: 'Failed', tone: 'text-red-400', tick: 'bg-red-400' },
   timed_out: {
-    label: 'Se pasó',
+    label: 'Timed out',
     tone: 'text-amber-400',
     tick: 'bg-amber-400',
-    hint: 'Cortada al llegar al tiempo máximo configurado.',
+    hint: 'Stopped on reaching the configured time limit.',
   },
-  cancelled: { label: 'Cancelada', tone: 'text-zinc-400', tick: 'bg-zinc-600', hint: 'Cancelada a mano.' },
+  cancelled: { label: 'Cancelled', tone: 'text-zinc-400', tick: 'bg-zinc-600', hint: 'Cancelled manually.' },
   skipped: {
-    label: 'Saltada',
+    label: 'Skipped',
     tone: 'text-zinc-400',
     tick: 'bg-surface-lighter',
     // Without this the run looks like it silently vanished — it is the
     // `concurrencyPolicy: 'skip'` behaviour, not a failure.
-    hint: 'La ejecución anterior seguía corriendo cuando tocaba esta, así que no se lanzó.',
+    hint: 'The previous run was still going when this one was due, so it was not started.',
   },
 };
 
@@ -207,7 +207,7 @@ export const FAILING_STATUSES: AutomationRunStatus[] = ['failed', 'timed_out'];
 
 /** What set a given run off, as shown on each history row. */
 export const RUN_TRIGGER_LABEL: Record<AutomationRunTrigger, string> = {
-  scheduled: 'programada',
+  scheduled: 'scheduled',
   manual: 'manual',
   webhook: 'webhook',
 };
@@ -217,26 +217,26 @@ export const RUN_TRIGGER_LABEL: Record<AutomationRunTrigger, string> = {
 // ---------------------------------------------------------------------------
 
 export const PERMISSION_MODE_META: Record<AutomationPermissionMode, { label: string; hint: string }> = {
-  default: { label: 'Preguntar', hint: 'Se detiene ante cualquier acción que requiera permiso.' },
-  acceptEdits: { label: 'Aplicar ediciones', hint: 'Edita archivos sin preguntar; el resto se detiene.' },
-  bypassPermissions: { label: 'Sin límites', hint: 'Hace cualquier cosa sin preguntar, incluidos comandos.' },
-  plan: { label: 'Solo plan', hint: 'Solo redacta un plan; no toca nada.' },
+  default: { label: 'Ask', hint: 'Stops at any action that needs permission.' },
+  acceptEdits: { label: 'Accept edits', hint: 'Edits files without asking; anything else stops.' },
+  bypassPermissions: { label: 'No limits', hint: 'Does anything without asking, including commands.' },
+  plan: { label: 'Plan only', hint: 'Only drafts a plan; touches nothing.' },
 };
 
 export const EFFORT_LABEL: Record<AutomationEffort, string> = {
-  low: 'bajo',
-  medium: 'medio',
-  high: 'alto',
-  xhigh: 'muy alto',
-  max: 'máximo',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'very high',
+  max: 'max',
 };
 
 export const RUNTIME_PRESETS: { label: string; ms: number | null }[] = [
-  { label: '2 minutos', ms: 2 * 60_000 },
-  { label: '10 minutos', ms: 10 * 60_000 },
-  { label: '30 minutos', ms: 30 * 60_000 },
-  { label: '1 hora', ms: 60 * 60_000 },
-  { label: 'Sin límite', ms: null },
+  { label: '2 minutes', ms: 2 * 60_000 },
+  { label: '10 minutes', ms: 10 * 60_000 },
+  { label: '30 minutes', ms: 30 * 60_000 },
+  { label: '1 hour', ms: 60 * 60_000 },
+  { label: 'No limit', ms: null },
 ];
 
 // ---------------------------------------------------------------------------
@@ -247,25 +247,25 @@ export const RUNTIME_PRESETS: { label: string; ms: number | null }[] = [
 export function relativePast(ts: number | null | undefined, now: number = Date.now()): string {
   if (!ts) return '';
   const mins = Math.round((now - ts) / 60_000);
-  if (mins < 1) return 'ahora';
-  if (mins < 60) return `hace ${mins}m`;
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m ago`;
   const hours = Math.round(mins / 60);
-  if (hours < 24) return `hace ${hours}h`;
-  return `hace ${Math.round(hours / 24)}d`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
 }
 
 /** "en 6m" / "en 3h 12m" / "en 4d" — for `nextRunAt`. */
 export function relativeFuture(ts: number | null | undefined, now: number = Date.now()): string {
   if (!ts) return '—';
   const mins = Math.round((ts - now) / 60_000);
-  if (mins <= 0) return 'ahora mismo';
-  if (mins < 60) return `en ${mins}m`;
+  if (mins <= 0) return 'right now';
+  if (mins < 60) return `in ${mins}m`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) {
     const rest = mins % 60;
-    return rest ? `en ${hours}h ${rest}m` : `en ${hours}h`;
+    return rest ? `in ${hours}h ${rest}m` : `in ${hours}h`;
   }
-  return `en ${Math.round(hours / 24)}d`;
+  return `in ${Math.round(hours / 24)}d`;
 }
 
 /** Short wall-clock stamp, e.g. "hoy 09:00" / "mar 09:00" / "12 mar 09:00". */
@@ -276,11 +276,11 @@ export function shortStamp(ts: number | null | undefined, now: number = Date.now
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
   const days = Math.floor((d.getTime() - startOfToday.getTime()) / 86_400_000);
-  if (days === 0) return `hoy ${time}`;
-  if (days === 1) return `mañana ${time}`;
-  if (days === -1) return `ayer ${time}`;
+  if (days === 0) return `today ${time}`;
+  if (days === 1) return `tomorrow ${time}`;
+  if (days === -1) return `yesterday ${time}`;
   if (days > 1 && days < 7) return `${DAY_NAMES[d.getDay()].slice(0, 3)} ${time}`;
-  return `${d.getDate()} ${d.toLocaleString('es', { month: 'short' })} ${time}`;
+  return `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()} ${time}`;
 }
 
 /** "1m 42s" / "34s" — from `durationMs`. */

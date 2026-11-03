@@ -62,7 +62,7 @@ export function ClaudeUpdateDialog({ client }: { client: ClaudeClient | null }) 
       if (res.ok) {
         setPhase('done');
       } else {
-        setError(lastLines(res.output) || 'claude update no instaló la nueva versión.');
+        setError(lastLines(res.output) || 'claude update did not install the new version.');
         setPhase('error');
       }
     } catch (err) {
@@ -87,24 +87,24 @@ export function ClaudeUpdateDialog({ client }: { client: ClaudeClient | null }) 
         </div>
         <div className="min-w-0 flex-1">
           <div id="claude-update-title" className="text-[13px] font-semibold text-[#eef0f2]">
-            {phase === 'done' ? 'Claude Code actualizado'
-              : phase === 'error' ? 'No se pudo actualizar Claude Code'
-              : 'Nueva versión de Claude Code'}
+            {phase === 'done' ? 'Claude Code updated'
+              : phase === 'error' ? 'Could not update Claude Code'
+              : 'New Claude Code version'}
           </div>
           <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9aa0a8]">
             {phase === 'done' ? (
-              <>Ahora tienes la v{status.installed}. Las sesiones nuevas ya la usan; las abiertas siguen con la anterior hasta que las reinicies.</>
+              <>You now have v{status.installed}. New sessions use it already; open ones keep the previous version until you restart them.</>
             ) : phase === 'error' ? (
               <span className="whitespace-pre-wrap break-words font-mono text-[10.5px] text-[#ef8a96]">{error}</span>
             ) : (
-              <>Hay una versión nueva del CLI que usa la app para hablar con Claude. Actualizar trae los modelos y correcciones más recientes.</>
+              <>There is a new version of the CLI the app uses to talk to Claude. Updating brings the latest models and fixes.</>
             )}
           </div>
         </div>
         <button
           onClick={phase === 'done' ? () => setPhase('hidden') : later}
           disabled={busy}
-          aria-label="Cerrar"
+          aria-label="Close"
           className={`ml-auto flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-[#6b6e76] hover:bg-[#26272d] hover:text-[#e6e7ea] ${busy ? 'invisible' : ''}`}
         >
           <X className="h-[15px] w-[15px]" />
@@ -126,7 +126,7 @@ export function ClaudeUpdateDialog({ client }: { client: ClaudeClient | null }) 
             onClick={() => setPhase('hidden')}
             className="ml-auto rounded-[9px] bg-[#2dd4bf] px-[14px] py-[7px] text-[12px] font-bold text-[#04201c] hover:brightness-110"
           >
-            Listo
+            Done
           </button>
         ) : (
           <>
@@ -135,14 +135,14 @@ export function ClaudeUpdateDialog({ client }: { client: ClaudeClient | null }) 
               disabled={busy}
               className="rounded-[7px] px-[6px] py-[7px] text-[11px] font-medium text-[#6b6e76] hover:text-[#c4c6cc] disabled:opacity-40"
             >
-              Omitir esta versión
+              Skip this version
             </button>
             <button
               onClick={later}
               disabled={busy}
               className="ml-auto rounded-[9px] px-[11px] py-[7px] text-[12px] font-semibold text-[#6b6e76] hover:bg-[#1f2025] hover:text-[#c4c6cc] disabled:opacity-40"
             >
-              Después
+              Later
             </button>
             {/* Fixed width so the label swap to "Actualizando…" doesn't reflow the row. */}
             <button
@@ -151,7 +151,7 @@ export function ClaudeUpdateDialog({ client }: { client: ClaudeClient | null }) 
               className="flex w-[124px] items-center justify-center gap-1.5 rounded-[9px] bg-[#2dd4bf] py-[7px] text-[12px] font-bold text-[#04201c] transition-[filter] hover:brightness-110 disabled:opacity-50"
             >
               <RefreshCw className={`h-[13px] w-[13px] shrink-0 ${busy ? 'animate-spin' : ''}`} />
-              {busy ? 'Actualizando…' : phase === 'error' ? 'Reintentar' : 'Actualizar'}
+              {busy ? 'Updating…' : phase === 'error' ? 'Retry' : 'Update'}
             </button>
           </>
         )}

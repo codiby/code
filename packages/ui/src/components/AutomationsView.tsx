@@ -145,12 +145,12 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
 
   const handleRunNow = (a: Automation) => mutate(a.id, async () => {
     const res = await client?.runAutomation(a.id);
-    if (res?.skipped) setNotice(`"${a.name}" ya tenía una ejecución en curso, así que esta se saltó.`);
+    if (res?.skipped) setNotice(`"${a.name}" already had a run in progress, so this one was skipped.`);
     else if (res?.error) setNotice(res.error);
   });
 
   const handleDelete = (a: Automation) => {
-    if (!window.confirm(`¿Eliminar “${a.name}”? Su historial de ejecuciones deja de mostrarse.`)) return;
+    if (!window.confirm(`Delete “${a.name}”? Its run history will no longer be shown.`)) return;
     if (selectedId === a.id) setSelectedId(null);
     return mutate(a.id, async () => { await client?.deleteAutomation(a.id); });
   };
@@ -168,14 +168,14 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
       <div className="h-12 border-b border-border flex items-center justify-between px-5 shrink-0">
         <h1 className="text-[15px] font-semibold text-zinc-200 flex items-center gap-2">
           <Zap size={16} strokeWidth={2} className="text-indigo-400" />
-          Automatizaciones
-          <span className="text-[11px] text-zinc-600 font-normal ml-1">prompts que corren solos en un horario</span>
+          Automations
+          <span className="text-[11px] text-zinc-600 font-normal ml-1">prompts that run on their own on a schedule</span>
         </h1>
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => void load(true)}
-            title="Recargar"
+            title="Reload"
             className="w-7 h-7 grid place-items-center rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface-light transition-colors"
           >
             <RotateCw size={13} strokeWidth={2} className={loading ? 'animate-spin' : undefined} />
@@ -186,7 +186,7 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
             className="inline-flex items-center gap-1.5 h-[30px] px-3 rounded-md text-[12px] font-medium bg-indigo-400 text-[#0f1012] hover:brightness-110"
           >
             <Plus size={13} strokeWidth={2.4} />
-            Nueva automatización
+            New automation
           </button>
         </div>
       </div>
@@ -201,14 +201,14 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
       <div className="flex-1 overflow-y-auto px-5 py-[18px]">
         {error ? (
           <div className="max-w-[520px] mx-auto mt-[10vh] text-center">
-            <p className="text-[13px] text-zinc-300">No se pudo leer las automatizaciones</p>
+            <p className="text-[13px] text-zinc-300">Couldn't load automations</p>
             <p className="text-[11.5px] text-zinc-500 mt-1.5 font-mono">{error}</p>
             <button
               type="button"
               onClick={() => void load(true)}
               className="mt-4 text-[12px] px-3 py-1.5 rounded-md border border-border text-zinc-300 hover:bg-surface-light"
             >
-              Reintentar
+              Retry
             </button>
           </div>
         ) : loading && items.length === 0 ? (
@@ -220,10 +220,10 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
         ) : (
           <>
             <div className="flex gap-2.5 mb-[18px]">
-              <Stat n={stats.active} label="Activas" tone={stats.active ? 'text-green-400' : undefined} />
-              <Stat n={stats.paused} label="Pausadas" />
-              <Stat n={stats.running} label="Corriendo ahora" tone={stats.running ? 'text-indigo-400' : undefined} />
-              <Stat n={stats.failing} label="Con fallos (24h)" tone={stats.failing ? 'text-red-400' : undefined} />
+              <Stat n={stats.active} label="Active" tone={stats.active ? 'text-green-400' : undefined} />
+              <Stat n={stats.paused} label="Paused" />
+              <Stat n={stats.running} label="Running now" tone={stats.running ? 'text-indigo-400' : undefined} />
+              <Stat n={stats.failing} label="Failing (24h)" tone={stats.failing ? 'text-red-400' : undefined} />
             </div>
             <div className="flex flex-col gap-2">
               {items.map(a => (
@@ -289,16 +289,16 @@ function Stat({ n, label, tone }: { n: number; label: string; tone?: string }) {
 function StatusPill({ automation, runs }: { automation: Automation; runs: AutomationRun[] }) {
   const base = 'text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border whitespace-nowrap';
   if (runs.some(r => r.status === 'running')) {
-    return <span className={`${base} text-indigo-400 bg-indigo-500/12 border-indigo-400/35`}>Corriendo</span>;
+    return <span className={`${base} text-indigo-400 bg-indigo-500/12 border-indigo-400/35`}>Running</span>;
   }
   if (!automation.enabled) {
-    return <span className={`${base} text-zinc-500 bg-zinc-500/10 border-zinc-500/30`}>Pausada</span>;
+    return <span className={`${base} text-zinc-500 bg-zinc-500/10 border-zinc-500/30`}>Paused</span>;
   }
   const last = runs.find(r => r.status !== 'scheduled');
   if (last && FAILING_STATUSES.includes(last.status)) {
     return <span className={`${base} text-red-400 bg-red-500/10 border-red-400/30`}>{RUN_STATUS_META[last.status].label}</span>;
   }
-  return <span className={`${base} text-green-400 bg-green-500/10 border-green-400/30`}>Activa</span>;
+  return <span className={`${base} text-green-400 bg-green-500/10 border-green-400/30`}>Active</span>;
 }
 
 /**
@@ -307,9 +307,9 @@ function StatusPill({ automation, runs }: { automation: Automation; runs: Automa
  * request per row.
  */
 function RunStrip({ runs }: { runs: AutomationRun[] }) {
-  if (!runs.length) return <span className="text-[11px] text-zinc-600">sin historial</span>;
+  if (!runs.length) return <span className="text-[11px] text-zinc-600">no history</span>;
   return (
-    <div className="flex gap-[2px] items-end" title={runs.length === 1 ? '1 ejecución reciente' : `${runs.length} ejecuciones recientes`}>
+    <div className="flex gap-[2px] items-end" title={runs.length === 1 ? '1 recent run' : `${runs.length} recent runs`}>
       {[...runs].reverse().map(r => (
         <span
           key={r.id}
@@ -326,8 +326,8 @@ function Toggle({ on, onClick, disabled }: { on: boolean; onClick: () => void; d
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={on ? 'Pausar' : 'Activar'}
-      aria-label={on ? 'Pausar automatización' : 'Activar automatización'}
+      title={on ? 'Pause' : 'Enable'}
+      aria-label={on ? 'Pause automation' : 'Enable automation'}
       className={`relative w-[34px] h-[19px] rounded-full shrink-0 border transition-colors disabled:opacity-50 ${
         on ? 'bg-indigo-400/40 border-transparent' : 'bg-surface-lighter border-border-light'
       }`}
@@ -369,7 +369,7 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-zinc-500 mt-1">
           {isWebhook ? (
-            <span>Al llamar su webhook</span>
+            <span>When its webhook is called</span>
           ) : (
             <>
               {/* `humanizeCron` echoes the expression back when it can't read it —
@@ -394,10 +394,10 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
         <RunStrip runs={runs} />
         <div className={`text-[11px] mt-1 ${running ? 'text-indigo-400' : last ? RUN_STATUS_META[last.status].tone : 'text-zinc-600'}`}>
           {running
-            ? 'corriendo…'
+            ? 'running…'
             : last
               ? `${RUN_STATUS_META[last.status].label.toLowerCase()} · ${relativePast(last.createdAt)}`
-              : 'sin ejecuciones'}
+              : 'no runs'}
         </div>
       </div>
 
@@ -407,16 +407,16 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
         {isWebhook ? (
           <>
             <b className="block text-zinc-400 font-medium">
-              {automation.enabled ? 'A la espera' : '—'}
+              {automation.enabled ? 'Waiting' : '—'}
             </b>
-            {automation.enabled ? 'de su webhook' : 'pausada'}
+            {automation.enabled ? 'for its webhook' : 'paused'}
           </>
         ) : (
           <>
             <b className="block text-zinc-400 font-medium">
               {automation.enabled ? relativeFuture(automation.nextRunAt) : '—'}
             </b>
-            {automation.enabled ? shortStamp(automation.nextRunAt) : 'pausada'}
+            {automation.enabled ? shortStamp(automation.nextRunAt) : 'paused'}
           </>
         )}
       </div>
@@ -426,8 +426,8 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
           type="button"
           onClick={onRunNow}
           disabled={busy}
-          title="Ejecutar ahora"
-          aria-label="Ejecutar ahora"
+          title="Run now"
+          aria-label="Run now"
           className="w-[26px] h-[26px] grid place-items-center rounded-md text-zinc-600 hover:text-zinc-100 hover:bg-surface-lighter disabled:opacity-40 transition-colors"
         >
           {busy ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} strokeWidth={2} fill="currentColor" />}
@@ -444,9 +444,9 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
       <div className="w-12 h-12 rounded-xl bg-indigo-500/12 grid place-items-center mx-auto mb-4">
         <Zap size={22} className="text-indigo-400" />
       </div>
-      <h2 className="text-[15px] font-semibold text-zinc-200">Sin automatizaciones todavía</h2>
+      <h2 className="text-[15px] font-semibold text-zinc-200">No automations yet</h2>
       <p className="text-[12px] text-zinc-500 mt-1.5 mb-6">
-        Una automatización corre un prompt en tu carpeta, en el horario que le pongas, sin que abras una sesión.
+        An automation runs a prompt in your folder on the schedule you set, without you opening a session.
       </p>
       <button
         type="button"
@@ -454,7 +454,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
         className="inline-flex items-center gap-1.5 h-[30px] px-3.5 rounded-md text-[12px] font-medium bg-indigo-400 text-[#0f1012] hover:brightness-110"
       >
         <Plus size={13} strokeWidth={2.4} />
-        Crear la primera
+        Create the first one
       </button>
     </div>
   );
@@ -588,7 +588,7 @@ function AutomationDrawer({
             <button
               type="button"
               onClick={onClose}
-              aria-label="Cerrar"
+              aria-label="Close"
               className="w-[26px] h-[26px] grid place-items-center rounded-md text-zinc-600 hover:text-zinc-100 hover:bg-surface-lighter"
             >
               <X size={15} />
@@ -603,16 +603,16 @@ function AutomationDrawer({
               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[12px] font-medium bg-indigo-400 text-[#0f1012] hover:brightness-110 disabled:opacity-50"
             >
               {busy ? <Loader2 size={12} className="animate-spin" /> : <Play size={11} fill="currentColor" />}
-              Ejecutar ahora
+              Run now
             </button>
-            <DrawerAction icon={Pencil} label="Editar" onClick={onEdit} />
-            <DrawerAction icon={Copy} label="Duplicar" onClick={onDuplicate} />
+            <DrawerAction icon={Pencil} label="Edit" onClick={onEdit} />
+            <DrawerAction icon={Copy} label="Duplicate" onClick={onDuplicate} />
             <div className="flex-1" />
             <button
               type="button"
               onClick={onDelete}
-              aria-label="Eliminar"
-              title="Eliminar"
+              aria-label="Delete"
+              title="Delete"
               className="w-[26px] h-[26px] grid place-items-center rounded-md text-zinc-600 hover:text-red-400 hover:bg-red-500/10"
             >
               <Trash2 size={14} />
@@ -624,34 +624,34 @@ function AutomationDrawer({
           <div className="grid grid-cols-4 gap-2 mb-4">
             {isWebhook ? (
               <Kpi
-                label="Disparador"
-                value={automation.enabled ? 'Webhook' : 'Pausada'}
-                sub={automation.enabled ? 'a la espera de la llamada' : 'no responde llamadas'}
+                label="Trigger"
+                value={automation.enabled ? 'Webhook' : 'Paused'}
+                sub={automation.enabled ? 'waiting for a call' : 'not answering calls'}
               />
             ) : (
-              <Kpi label="Próxima" value={automation.enabled ? relativeFuture(automation.nextRunAt) : 'Pausada'}
-                sub={automation.enabled ? shortStamp(automation.nextRunAt) : 'no está programada'} />
+              <Kpi label="Next" value={automation.enabled ? relativeFuture(automation.nextRunAt) : 'Paused'}
+                sub={automation.enabled ? shortStamp(automation.nextRunAt) : 'not scheduled'} />
             )}
             <Kpi
-              label="Última"
+              label="Last"
               value={kpis.last ? RUN_STATUS_META[kpis.last.status].label : '—'}
               valueTone={kpis.last ? RUN_STATUS_META[kpis.last.status].tone : undefined}
-              sub={kpis.last ? `${relativePast(kpis.last.createdAt)} · ${formatDuration(kpis.last.durationMs)}` : 'sin ejecuciones'}
+              sub={kpis.last ? `${relativePast(kpis.last.createdAt)} · ${formatDuration(kpis.last.durationMs)}` : 'no runs'}
             />
             <Kpi
-              label={`Éxito (${kpis.total})`}
+              label={`Success (${kpis.total})`}
               value={kpis.total ? `${kpis.ok}/${kpis.total}` : '—'}
-              sub={kpis.total ? `${Math.round((kpis.ok / kpis.total) * 100)}%` : 'sin datos'}
+              sub={kpis.total ? `${Math.round((kpis.ok / kpis.total) * 100)}%` : 'no data'}
             />
             <Kpi
-              label="Coste"
+              label="Cost"
               value={kpis.total ? formatCost(kpis.cost) : '—'}
-              sub={kpis.total ? `~${formatCost(kpis.perRun)} / run` : 'sin datos'}
+              sub={kpis.total ? `~${formatCost(kpis.perRun)} / run` : 'no data'}
             />
           </div>
 
           {isWebhook && client && (
-            <Section title="URL del webhook">
+            <Section title="Webhook URL">
               <WebhookUrlBox origin={client.localServerUrl} automationId={automation.id} />
             </Section>
           )}
@@ -659,7 +659,7 @@ function AutomationDrawer({
           <Section
             title="Prompt"
             action={<button type="button" className="text-[11px] text-indigo-400 hover:underline" onClick={() => setPromptOpen(o => !o)}>
-              {promptOpen ? 'contraer' : 'expandir'}
+              {promptOpen ? 'collapse' : 'expand'}
             </button>}
           >
             <div className="bg-base border border-border rounded-md px-3 py-2.5">
@@ -669,12 +669,12 @@ function AutomationDrawer({
             </div>
           </Section>
 
-          <Section title="Configuración">
+          <Section title="Settings">
             <dl className="bg-base border border-border rounded-md px-3 py-2.5 grid grid-cols-[auto_1fr] gap-x-3.5 gap-y-2 text-[12px]">
-              <dt className="text-zinc-600 whitespace-nowrap">Disparador</dt>
+              <dt className="text-zinc-600 whitespace-nowrap">Trigger</dt>
               <dd className="text-zinc-400">
                 {isWebhook ? (
-                  'Webhook — solo corre cuando algo llama a su URL'
+                  'Webhook — only runs when something calls its URL'
                 ) : (
                   <>
                     {humanized !== automation.cronExpression && `${humanized} · `}
@@ -682,36 +682,36 @@ function AutomationDrawer({
                   </>
                 )}
               </dd>
-              <dt className="text-zinc-600 whitespace-nowrap">Carpeta</dt>
+              <dt className="text-zinc-600 whitespace-nowrap">Folder</dt>
               <dd className="text-zinc-400 font-mono text-[11px] truncate">{automation.cwd}</dd>
-              <dt className="text-zinc-600 whitespace-nowrap">Agente</dt>
+              <dt className="text-zinc-600 whitespace-nowrap">Agent</dt>
               <dd className="text-zinc-400">
                 {automation.provider}
                 {automation.model ? ` · ${automation.model}` : ''}
-                {automation.effort ? ` · esfuerzo ${EFFORT_LABEL[automation.effort]}` : ''}
+                {automation.effort ? ` · effort ${EFFORT_LABEL[automation.effort]}` : ''}
               </dd>
-              <dt className="text-zinc-600 whitespace-nowrap">Permisos</dt>
+              <dt className="text-zinc-600 whitespace-nowrap">Permissions</dt>
               <dd className="text-zinc-400">
                 {PERMISSION_MODE_META[automation.permissionMode].label}
                 <span className="text-zinc-600"> — {PERMISSION_MODE_META[automation.permissionMode].hint}</span>
               </dd>
-              <dt className="text-zinc-600 whitespace-nowrap">Límites</dt>
+              <dt className="text-zinc-600 whitespace-nowrap">Limits</dt>
               <dd className="text-zinc-400">
                 {automation.maxRuntimeMs
                   // Prefer the preset's own wording ("10 minutos") over the
                   // run-duration format, which reads oddly as a limit ("10m 00s").
-                  ? `corta a los ${RUNTIME_PRESETS.find(p => p.ms === automation.maxRuntimeMs)?.label ?? formatDuration(automation.maxRuntimeMs)}`
-                  : 'sin tiempo máximo'}
-                {' · si ya hay una corriendo, '}<b className="font-medium text-zinc-300">se salta</b>
+                  ? `stops after ${RUNTIME_PRESETS.find(p => p.ms === automation.maxRuntimeMs)?.label ?? formatDuration(automation.maxRuntimeMs)}`
+                  : 'no time limit'}
+                {' · if one is already running, '}<b className="font-medium text-zinc-300">it is skipped</b>
               </dd>
             </dl>
           </Section>
 
           <Section
-            title="Ejecuciones"
+            title="Runs"
             action={
               <div className="flex gap-1">
-                {([['all', 'Todas'], ['failed', 'Fallidas'], ['skipped', 'Saltadas']] as [RunFilter, string][]).map(([id, label]) => (
+                {([['all', 'All'], ['failed', 'Failed'], ['skipped', 'Skipped']] as [RunFilter, string][]).map(([id, label]) => (
                   <button
                     key={id}
                     type="button"
@@ -730,7 +730,7 @@ function AutomationDrawer({
               <div className="flex justify-center py-6 text-zinc-600"><Loader2 size={16} className="animate-spin" /></div>
             ) : runs.length === 0 ? (
               <div className="text-center py-6 text-[12px] text-zinc-600">
-                {filter === 'all' ? 'Todavía no ha corrido ninguna vez.' : 'Ninguna ejecución con este estado.'}
+                {filter === 'all' ? 'It has not run yet.' : 'No runs with this status.'}
               </div>
             ) : (
               <div className="flex flex-col gap-px bg-border border border-border rounded-md overflow-hidden">
@@ -752,7 +752,7 @@ function AutomationDrawer({
                 onClick={() => void fetchRuns(true)}
                 className="mt-2.5 text-[11px] text-indigo-400 hover:underline"
               >
-                Cargar más ↓
+                Load more ↓
               </button>
             )}
           </Section>
@@ -788,18 +788,18 @@ function WebhookUrlBox({ origin, automationId }: { origin: string; automationId:
         <code className="font-mono text-[11px] text-zinc-300 flex-1 min-w-0 truncate select-all" title={url}>
           {url}
         </code>
-        <CopyButton label="Copiar URL" done={copied === 'url'} onClick={() => void copy('url')} />
+        <CopyButton label="Copy URL" done={copied === 'url'} onClick={() => void copy('url')} />
       </div>
       <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-border">
         <span className="text-[11px] text-zinc-600">
-          Llámala desde tu watcher cuando ocurra el evento.
+          Call it from your watcher when the event happens.
         </span>
         <button
           type="button"
           onClick={() => void copy('curl')}
           className="text-[11px] text-indigo-400 hover:underline shrink-0"
         >
-          {copied === 'curl' ? 'curl copiado' : 'copiar curl'}
+          {copied === 'curl' ? 'curl copied' : 'copy curl'}
         </button>
       </div>
     </div>
@@ -880,7 +880,7 @@ function RunRow({ run, open, onToggle, onCancel, onOpenSession }: {
             {RUN_TRIGGER_LABEL[run.trigger]}
           </span>
           <span className="flex-1 min-w-0 text-[11px] text-zinc-500 truncate">
-            {active && run.startedAt ? `empezó ${relativePast(run.startedAt)}` : shortStamp(run.createdAt)}
+            {active && run.startedAt ? `started ${relativePast(run.startedAt)}` : shortStamp(run.createdAt)}
           </span>
           <span className="text-[11px] text-zinc-500 tabular-nums w-[56px] text-right shrink-0">{formatDuration(run.durationMs)}</span>
           <span className="text-[11px] text-zinc-500 tabular-nums w-[64px] text-right shrink-0">{formatCost(run.costUsd)}</span>
@@ -901,11 +901,11 @@ function RunRow({ run, open, onToggle, onCancel, onOpenSession }: {
             )}
             <div className="flex items-center gap-3 mt-2 text-[11px] text-zinc-600">
               {tokens && <span className="tabular-nums">{tokens}</span>}
-              {run.stopReason && <span>parada: {run.stopReason}</span>}
+              {run.stopReason && <span>stop: {run.stopReason}</span>}
               <div className="flex-1" />
               {active && (
                 <button type="button" onClick={onCancel} className="text-zinc-400 hover:text-red-400">
-                  Cancelar ejecución
+                  Cancel run
                 </button>
               )}
               {run.sessionId && onOpenSession && (
@@ -914,7 +914,7 @@ function RunRow({ run, open, onToggle, onCancel, onOpenSession }: {
                   onClick={() => onOpenSession(run.sessionId!)}
                   className="inline-flex items-center gap-1 text-indigo-400 hover:underline"
                 >
-                  Abrir sesión <ArrowUpRight size={11} />
+                  Open session <ArrowUpRight size={11} />
                 </button>
               )}
             </div>
@@ -961,7 +961,7 @@ function draftFrom(source: Automation | undefined, mode: 'create' | 'edit', defa
   if (source) {
     return {
       // Duplicating keeps every setting but must not collide by name.
-      name: mode === 'create' ? `${source.name} (copia)` : source.name,
+      name: mode === 'create' ? `${source.name} (copy)` : source.name,
       description: source.description ?? '',
       triggerType: source.triggerType,
       // Keep a usable default so flipping a webhook automation over to cron
@@ -1058,27 +1058,27 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
       >
         <div className="flex items-center justify-between px-[18px] pt-4 pb-3 border-b border-border">
           <h2 className="text-[14px] font-semibold text-zinc-200">
-            {mode === 'edit' ? 'Editar automatización' : 'Nueva automatización'}
+            {mode === 'edit' ? 'Edit automation' : 'New automation'}
           </h2>
           <button type="button" onClick={onCancel} className="text-zinc-500 hover:text-zinc-200"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-[18px] py-4">
           <div className="mb-3">
-            <label className={LABEL_CLASS}>Nombre</label>
+            <label className={LABEL_CLASS}>Name</label>
             <input ref={nameRef} className={INPUT_CLASS} value={draft.name}
-              placeholder="Resumen diario de PRs" onChange={e => set('name', e.target.value)} />
+              placeholder="Daily PR summary" onChange={e => set('name', e.target.value)} />
           </div>
           <div className="mb-3">
-            <label className={LABEL_CLASS}>Descripción <span className="normal-case tracking-normal text-zinc-600">— opcional</span></label>
+            <label className={LABEL_CLASS}>Description <span className="normal-case tracking-normal text-zinc-600">— optional</span></label>
             <input className={INPUT_CLASS} value={draft.description}
-              placeholder="Para qué sirve, en una línea" onChange={e => set('description', e.target.value)} />
+              placeholder="What it is for, in one line" onChange={e => set('description', e.target.value)} />
           </div>
 
-          <GroupDivider title="Cuándo corre" />
+          <GroupDivider title="When it runs" />
 
           <div className="mb-3">
-            <label className={LABEL_CLASS}>Tipo de invocación</label>
+            <label className={LABEL_CLASS}>Trigger type</label>
             <div className="flex gap-1.5">
               {(['cron', 'webhook'] as AutomationTriggerType[]).map(t => (
                 <button
@@ -1101,21 +1101,21 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
 
           {isWebhook ? (
             <div className="mb-3">
-              <label className={LABEL_CLASS}>URL a la que debe llamar tu watcher</label>
+              <label className={LABEL_CLASS}>URL your watcher should call</label>
               {mode === 'edit' && source && client ? (
                 <WebhookUrlBox origin={client.localServerUrl} automationId={source.id} />
               ) : (
                 // The id is minted by the server, so there is no URL to show yet.
                 <div className="bg-base border border-dashed border-border rounded-md px-3 py-2.5 text-[11px] text-zinc-500">
-                  La URL se genera al guardar — lleva el id de la automatización y la
-                  verás aquí y en su detalle, lista para copiar.
+                  The URL is generated on save — it carries the automation id, and
+                  you will see it here and in its details, ready to copy.
                 </div>
               )}
             </div>
           ) : (
           <>
           <div className="mb-3">
-            <label className={LABEL_CLASS}>Cadencia</label>
+            <label className={LABEL_CLASS}>Frequency</label>
             <div className="flex gap-1.5">
               {CRON_PRESETS.map(p => (
                 <button
@@ -1139,19 +1139,19 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
                     : 'border-border text-zinc-500 hover:text-zinc-200'
                 }`}
               >
-                Personalizado
+                Custom
               </button>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2.5 mb-1">
             <div>
-              <label className={LABEL_CLASS}>Expresión cron</label>
+              <label className={LABEL_CLASS}>Cron expression</label>
               <input className={`${INPUT_CLASS} font-mono`} value={draft.cronExpression}
                 onChange={e => set('cronExpression', e.target.value)} />
             </div>
             <div>
-              <label className={LABEL_CLASS}>Zona horaria</label>
+              <label className={LABEL_CLASS}>Timezone</label>
               <select className={INPUT_CLASS} value={draft.timezone} onChange={e => set('timezone', e.target.value)}>
                 {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
               </select>
@@ -1168,69 +1168,69 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
                 </div>
                 {preview.map((ts, i) => (
                   <div key={ts} className="flex justify-between text-[11px] text-zinc-400 py-px">
-                    <span>{i === 0 ? 'Siguiente' : 'Luego'}</span>
+                    <span>{i === 0 ? 'Next' : 'Then'}</span>
                     <span className="text-zinc-600">{shortStamp(ts)}</span>
                   </div>
                 ))}
                 {draft.timezone !== LOCAL_TZ && (
                   <div className="text-[10px] text-zinc-600 mt-1.5">
-                    Horas en tu zona ({LOCAL_TZ}); el servidor programa en {draft.timezone}.
+                    Times in your zone ({LOCAL_TZ}); the server schedules in {draft.timezone}.
                   </div>
                 )}
               </>
             ) : (
               <div className="text-[11px] text-amber-400 flex items-start gap-1.5">
                 <AlertTriangle size={12} className="shrink-0 mt-px" />
-                No se pudo interpretar la expresión. El servidor la validará al guardar.
+                Couldn't parse the expression. The server will validate it on save.
               </div>
             )}
           </div>
           </>
           )}
 
-          <GroupDivider title="Qué hace" />
+          <GroupDivider title="What it does" />
 
           <div className="mb-3">
-            <label className={LABEL_CLASS}>Carpeta de trabajo</label>
+            <label className={LABEL_CLASS}>Working directory</label>
             <input className={`${INPUT_CLASS} font-mono`} value={draft.cwd}
-              placeholder="/ruta/al/proyecto" onChange={e => set('cwd', e.target.value)} />
+              placeholder="/path/to/project" onChange={e => set('cwd', e.target.value)} />
           </div>
           <div className="mb-3">
             <label className={LABEL_CLASS}>Prompt</label>
             <textarea
               className={`${INPUT_CLASS} min-h-[76px] resize-y leading-[1.55]`}
               value={draft.prompt}
-              placeholder="Describe exactamente qué debe hacer el agente. Corre sin nadie mirando: sé explícito sobre qué NO debe tocar."
+              placeholder="Describe exactly what the agent should do. It runs with nobody watching: be explicit about what it must NOT touch."
               onChange={e => set('prompt', e.target.value)}
             />
           </div>
 
-          <GroupDivider title="Con qué agente" />
+          <GroupDivider title="Which agent" />
 
           <div className="grid grid-cols-3 gap-2 mb-3">
             <div>
-              <label className={LABEL_CLASS}>Proveedor</label>
+              <label className={LABEL_CLASS}>Provider</label>
               <select className={INPUT_CLASS} value={draft.provider} onChange={e => set('provider', e.target.value)}>
                 {PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             </div>
             <div>
-              <label className={LABEL_CLASS}>Modelo</label>
+              <label className={LABEL_CLASS}>Model</label>
               <input className={INPUT_CLASS} value={draft.model}
-                placeholder="por defecto" onChange={e => set('model', e.target.value)} />
+                placeholder="default" onChange={e => set('model', e.target.value)} />
             </div>
             <div>
-              <label className={LABEL_CLASS}>Esfuerzo</label>
+              <label className={LABEL_CLASS}>Effort</label>
               <select className={INPUT_CLASS} value={draft.effort}
                 onChange={e => set('effort', e.target.value as AutomationEffort | '')}>
-                <option value="">por defecto</option>
+                <option value="">default</option>
                 {EFFORTS.map(e => <option key={e} value={e}>{EFFORT_LABEL[e]}</option>)}
               </select>
             </div>
           </div>
 
           <div className="mb-3">
-            <label className={LABEL_CLASS}>Permisos</label>
+            <label className={LABEL_CLASS}>Permissions</label>
             <div className="flex gap-1.5">
               {PERMISSION_MODES.map(m => (
                 <button
@@ -1251,14 +1251,14 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
               <AlertTriangle size={12} className="shrink-0 mt-px" />
               <span>
                 {PERMISSION_MODE_META[draft.permissionMode].hint}{' '}
-                Nadie va a aprobar nada mientras corre.
+                Nobody will approve anything while it runs.
               </span>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2.5">
             <div>
-              <label className={LABEL_CLASS}>Tiempo máximo</label>
+              <label className={LABEL_CLASS}>Time limit</label>
               <select
                 className={INPUT_CLASS}
                 value={String(draft.maxRuntimeMs)}
@@ -1270,8 +1270,8 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
               </select>
             </div>
             <div>
-              <label className={LABEL_CLASS}>Si ya hay una corriendo</label>
-              <input className={`${INPUT_CLASS} text-zinc-500`} value="Saltar esta ejecución" disabled />
+              <label className={LABEL_CLASS}>If one is already running</label>
+              <input className={`${INPUT_CLASS} text-zinc-500`} value="Skip this run" disabled />
             </div>
           </div>
 
@@ -1286,11 +1286,11 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
         <div className="flex items-center justify-between gap-2 px-[18px] py-3 border-t border-border">
           <label className="flex items-center gap-2 text-[12px] text-zinc-500 cursor-pointer">
             <Toggle on={draft.enabled} onClick={() => set('enabled', !draft.enabled)} />
-            {mode === 'edit' ? 'Activa' : 'Activar al guardar'}
+            {mode === 'edit' ? 'Enabled' : 'Enable on save'}
           </label>
           <div className="flex gap-2">
             <button type="button" onClick={onCancel} className="text-[12px] px-3 py-1.5 rounded-md text-zinc-400 hover:text-zinc-200">
-              Cancelar
+              Cancel
             </button>
             <button
               type="button"
@@ -1299,7 +1299,7 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
               className="inline-flex items-center gap-1.5 text-[12px] font-medium px-3.5 py-1.5 rounded-md bg-indigo-400 text-[#0f1012] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {saving && <Loader2 size={12} className="animate-spin" />}
-              Guardar
+              Save
             </button>
           </div>
         </div>

@@ -54,7 +54,7 @@ export function SettingsScreen() {
       setEditing(null);
       refreshRoutes();
     } catch {
-      setError('No se pudo guardar la configuración. Vuelve a intentarlo.');
+      setError('Could not save the settings. Try again.');
     } finally {
       busy.current = false;
       setIsBusy(false);
@@ -67,14 +67,14 @@ export function SettingsScreen() {
     }
     const server = editing;
     Alert.alert(
-      'Quitar host',
+      'Remove host',
       `${
-        server.name || 'Este host'
-      } desaparece de la app. Sus conversaciones siguen en el equipo.`,
+        server.name || 'This host'
+      } will be removed from the app. Its conversations stay on the machine.`,
       [
-        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Quitar',
+          text: 'Remove',
           style: 'destructive',
           onPress: async () => {
             if (busy.current) {
@@ -88,7 +88,7 @@ export function SettingsScreen() {
               await removeServer(server.id);
               setEditing(null);
             } catch {
-              setError('No se pudo quitar el host. Vuelve a intentarlo.');
+              setError('Could not remove the host. Try again.');
             } finally {
               busy.current = false;
               setIsBusy(false);
@@ -101,17 +101,17 @@ export function SettingsScreen() {
 
   return (
     <>
-      <ScreenLayout title="Ajustes">
+      <ScreenLayout title="Settings">
         <Text className="mb-4 text-xs leading-5 text-slate-500">
-          Todos tus equipos, en un solo lugar. Toca un host para configurar su
-          conexión.
+          All your machines in one place. Tap a host to configure its
+          connection.
         </Text>
         <View className="mb-2 flex-row items-center justify-between">
           <Text className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">
             Hosts
           </Text>
           <Text className="text-[11px] text-slate-400">
-            {connected} de {servers.length} conectados
+            {connected} of {servers.length} connected
           </Text>
         </View>
         {servers.map(server => (
@@ -124,12 +124,12 @@ export function SettingsScreen() {
         ))}
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Añadir host"
+          accessibilityLabel="Add host"
           onPress={() => openEditor(emptyServer(servers.length))}
           className="mb-3 min-h-11 items-center justify-center rounded-[14px] border border-dashed border-slate-300 bg-white px-3 py-2.5 active:bg-slate-50"
         >
           <Text className="text-xs font-semibold text-slate-600">
-            ＋ Añadir host
+            ＋ Add host
           </Text>
         </Pressable>
         <Pressable
@@ -138,7 +138,7 @@ export function SettingsScreen() {
           className="min-h-11 items-center justify-center rounded-xl border border-slate-200 px-3 py-2.5 active:bg-slate-50"
         >
           <Text className="text-xs font-semibold text-slate-600">
-            Probar conexiones
+            Test connections
           </Text>
         </Pressable>
       </ScreenLayout>

@@ -72,7 +72,7 @@ export function Composer({
   sendDisabled = false,
   initialImages = [],
   allowAttachments = true,
-  placeholder = 'Escribe un mensaje…',
+  placeholder = 'Write a message…',
   context,
   replyTo,
   onCancelReply,
@@ -135,7 +135,7 @@ export function Composer({
           }));
         setImages(current => [...current, ...picked].slice(0, 4));
       })
-      .catch(() => setError('No se pudo abrir la galería'));
+      .catch(() => setError('Could not open the gallery'));
   };
 
   const removeImage = (index: number) => {
@@ -162,7 +162,7 @@ export function Composer({
         setText(trimmed);
         onTextChange?.(trimmed);
         setImages(queued);
-        setError(cause instanceof Error ? cause.message : 'No se pudo enviar');
+        setError(cause instanceof Error ? cause.message : 'Could not send');
       })
       .finally(() => {
         sendingRef.current = false;
@@ -198,7 +198,7 @@ export function Composer({
               />
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Quitar adjunto"
+                accessibilityLabel="Remove attachment"
                 onPress={() => removeImage(index)}
                 className="absolute -right-1.5 -top-1.5 h-5 w-5 items-center justify-center rounded-full bg-slate-900 active:opacity-70"
               >
@@ -227,7 +227,7 @@ export function Composer({
             onTextChange?.(next);
           }}
           placeholder={placeholder}
-          accessibilityLabel="Mensaje"
+          accessibilityLabel="Message"
           placeholderTextColor="#94a3b8"
           multiline
           maxLength={8000}
@@ -238,7 +238,7 @@ export function Composer({
           {allowAttachments ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Adjuntar imagen"
+              accessibilityLabel="Attach image"
               onPress={pickImages}
               disabled={disabled || isSending}
               className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
@@ -249,7 +249,7 @@ export function Composer({
           <View className="flex-1">{context}</View>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Enviar"
+            accessibilityLabel="Send"
             accessibilityState={{ disabled: !canSend }}
             onPress={submit}
             disabled={!canSend}

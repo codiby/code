@@ -95,10 +95,10 @@ function Destination({
             <SparkIcon size={14} color="#475569" />
             <Text className="flex-1 text-[11px] font-semibold text-slate-600">
               {recommendation.kind === 'continue'
-                ? 'Continuar conversación'
-                : 'Nueva conversación'}
+                ? 'Continue conversation'
+                : 'New conversation'}
             </Text>
-            <Text className="text-[10px] text-slate-400">Recomendado</Text>
+            <Text className="text-[10px] text-slate-400">Recommended</Text>
           </View>
           <View className="p-[13px]">
             <Text className="text-[13px] font-semibold text-slate-900">
@@ -126,8 +126,8 @@ function Destination({
               {busy ? <ActivityIndicator size="small" color="#ffffff" /> : null}
               <Text className="text-[12px] font-semibold text-white">
                 {recommendation.kind === 'continue'
-                  ? 'Continuar aquí →'
-                  : `Crear en ${host?.name ?? 'este host'} →`}
+                  ? 'Continue here →'
+                  : `Create on ${host?.name ?? 'this host'} →`}
               </Text>
             </Pressable>
             {recommendation.kind === 'continue' ? (
@@ -138,7 +138,7 @@ function Destination({
                 className="mt-2 min-h-11 items-center justify-center rounded-xl border border-slate-200 p-3"
               >
                 <Text className="text-[12px] font-medium text-slate-600">
-                  ＋ Crear una conversación nueva
+                  ＋ Create a new conversation
                 </Text>
               </Pressable>
             ) : null}
@@ -152,7 +152,7 @@ function Destination({
           className="rounded-xl border border-slate-200 bg-white p-3"
         >
           <Text className="text-center text-[12px] font-medium text-slate-600">
-            Crear una conversación con esta petición
+            Create a conversation with this request
           </Text>
         </Pressable>
       )}
@@ -162,7 +162,7 @@ function Destination({
         className="min-h-11 items-center justify-center p-3"
       >
         <Text className="text-[11px] text-slate-500">
-          {showOthers ? 'Ocultar conversaciones' : 'Elegir otra conversación'}
+          {showOthers ? 'Hide conversations' : 'Choose another conversation'}
         </Text>
       </Pressable>
       {showOthers ? (
@@ -170,9 +170,9 @@ function Destination({
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Buscar conversación o proyecto"
+            placeholder="Search conversations or projects"
             placeholderTextColor="#94a3b8"
-            accessibilityLabel="Buscar otra conversación"
+            accessibilityLabel="Search for another conversation"
             className="mb-2 rounded-xl bg-slate-100 px-3 py-2 text-[12px] text-slate-900"
           />
           {context.sessions
@@ -200,8 +200,8 @@ function Destination({
         </View>
       ) : null}
       <Text className="mt-2 text-center text-[10px] leading-4 text-slate-400">
-        Este chat es temporal. Tu petición se llevará a la conversación que
-        elijas.
+        This chat is temporary. Your request will be taken to the conversation
+        you choose.
       </Text>
     </View>
   );
@@ -225,11 +225,11 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
 
   const start = async (text: string, images: MessageImage[]) => {
     if (busyRef.current) {
-      throw new Error('Espera a que termine el envío');
+      throw new Error('Wait for the current send to finish');
     }
     if (!selected) {
       throw new Error(
-        'Ningún host responde. Revisa las conexiones en Ajustes.',
+        'No host is responding. Check the connections in Settings.',
       );
     }
     busyRef.current = true;
@@ -237,7 +237,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
     try {
       let pending = started.current;
       if (!pending) {
-        setStage('Buscando contexto en tus hosts…');
+        setStage('Searching your hosts for context…');
         const targets = reachable.map(s => ({
           id: s.id,
           name: s.name,
@@ -248,17 +248,17 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
         const host = context.hosts.find(h => h.id === selected.id);
         if (!host?.home) {
           throw new Error(
-            'No se pudo consultar la carpeta del host. Vuelve a intentarlo.',
+            "Could not read the host's folder. Try again.",
           );
         }
         const saved = await AsyncStorage.getItem(
           'codiby.new-session-provider',
         ).catch(() => null);
         const provider = PROVIDERS.find(p => p === saved) ?? 'claude';
-        setStage('Abriendo tu agente temporal…');
+        setStage('Opening your temporary agent…');
         const session = await createSession(host.baseUrl, host.token, host.id, {
           cwd: host.home,
-          name: 'Chat directo',
+          name: 'Direct chat',
           provider,
           model: null,
           disposableTtlMs: DIRECT_TTL_MS,
@@ -269,9 +269,9 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
       }
       const route = routes[pending.session.serverId];
       if (!route?.baseUrl) {
-        throw new Error('El host del chat temporal no responde');
+        throw new Error("The temporary chat's host isn't responding");
       }
-      setStage('Enviando tu petición…');
+      setStage('Sending your request…');
       await sendMessage(
         route.baseUrl,
         pending.session.id,
@@ -320,7 +320,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
     try {
       const route = routes[session.serverId];
       if (!route?.baseUrl) {
-        throw new Error('El host de la conversación no responde');
+        throw new Error("The conversation's host isn't responding");
       }
       const handoff = directHandoff(messages);
       if (!session.isOpen) {
@@ -336,8 +336,8 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
       finish({ ...session, isOpen: true });
     } catch (error) {
       Alert.alert(
-        'No se pudo continuar',
-        error instanceof Error ? error.message : 'Inténtalo de nuevo',
+        'Could not continue',
+        error instanceof Error ? error.message : 'Try again',
       );
     } finally {
       busyRef.current = false;
@@ -375,7 +375,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
   const hostControl = (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Elegir host del chat temporal"
+      accessibilityLabel="Choose the temporary chat's host"
       disabled={busy || !!started.current}
       onPress={() => setShowHosts(true)}
       className="min-h-10 flex-row items-center gap-1"
@@ -389,7 +389,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
           ? hostName
           : serverId
           ? selected?.name
-          : `Automático · ${reachable.length} hosts`}{' '}
+          : `Automatic · ${reachable.length} hosts`}{' '}
         {chat ? '' : '⌄'}
       </Text>
     </Pressable>
@@ -402,7 +402,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Volver a conversaciones"
+        accessibilityLabel="Back to conversations"
         onPress={onBack}
         className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
       >
@@ -413,10 +413,10 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
       </View>
       <View className="flex-1">
         <Text className="text-[14px] font-semibold text-slate-900">
-          Chat directo
+          Direct chat
         </Text>
         <Text className="mt-1 text-[11px] text-slate-500">
-          Agente temporal · 1 h sin actividad
+          Temporary agent · ends after 1 h idle
         </Text>
       </View>
     </View>
@@ -461,15 +461,15 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
                   <SparkIcon size={21} color="#475569" />
                 </View>
                 <Text className="text-[26px] font-bold leading-8 tracking-tight text-slate-900">
-                  ¿Qué hacemos hoy?
+                  What are we doing today?
                 </Text>
                 <Text className="mt-3 text-[13px] leading-[22px] text-slate-500">
-                  Cuéntame tu idea. Buscaré si ya hay una conversación donde
-                  convenga seguir y en qué host.
+                  Tell me your idea. I'll check whether there's already a
+                  conversation worth continuing, and on which host.
                 </Text>
                 <Text className="mt-[18px] text-[11px] leading-[18px] text-slate-400">
-                  Las conversaciones que abras o crees se guardan en su host.
-                  Este chat es desechable.
+                  Conversations you open or create are saved on their host.
+                  This chat is disposable.
                 </Text>
                 {busy ? (
                   <View className="mt-7 flex-row items-center gap-3">
@@ -481,14 +481,14 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
                 ) : null}
                 {isLoaded && !reachable.length ? (
                   <Text className="mt-6 text-[12px] leading-5 text-amber-700">
-                    Ningún host responde. Revisa las conexiones en Ajustes.
+                    No host is responding. Check the connections in Settings.
                   </Text>
                 ) : null}
               </ScrollView>
               <Composer
                 onSend={start}
                 disabled={busy || !isLoaded || !reachable.length}
-                placeholder="¿Qué quieres hacer?"
+                placeholder="What do you want to do?"
                 context={hostControl}
               />
             </KeyboardAvoidingView>
@@ -503,7 +503,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Cerrar selector de host"
+          accessibilityLabel="Close host picker"
           onPress={() => setShowHosts(false)}
           className="flex-1 bg-slate-900/40"
         />
@@ -512,13 +512,13 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
           className="rounded-t-3xl bg-white p-5"
         >
           <Text className="mb-4 text-lg font-bold text-slate-900">
-            Host del agente temporal
+            Temporary agent host
           </Text>
           <Text className="mb-4 text-[12px] leading-5 text-slate-500">
-            Se buscará contexto en todos los hosts disponibles. El destino de tu
-            trabajo se elige después.
+            Context will be gathered from every available host. Where your work
+            goes is decided afterwards.
           </Text>
-          {[{ id: '', name: 'Automático' }, ...reachable].map(s => (
+          {[{ id: '', name: 'Automatic' }, ...reachable].map(s => (
             <Pressable
               key={s.id}
               accessibilityRole="button"

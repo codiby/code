@@ -86,7 +86,7 @@ export function MoveToGroupSheet({
       byServer.set(session.serverId, (byServer.get(session.serverId) ?? 0) + 1);
     }
     return [...byServer.entries()]
-      .map(([id, count]) => `${count} de ${serverNames[id] ?? 'servidor'}`)
+      .map(([id, count]) => `${count} from ${serverNames[id] ?? 'server'}`)
       .join(', ');
   }, [sessions, serverNames]);
 
@@ -101,14 +101,14 @@ export function MoveToGroupSheet({
     ? newName.trim().length > 0
     : choice !== undefined;
   const confirmLabel = isNew
-    ? `Crear y mover ${sessions.length}`
-    : `Mover ${sessions.length}`;
+    ? `Create and move ${sessions.length}`
+    : `Move ${sessions.length}`;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Cancelar"
+        accessibilityLabel="Cancel"
         onPress={close}
         className="flex-1 bg-slate-900/40"
       />
@@ -118,14 +118,14 @@ export function MoveToGroupSheet({
       >
         <View className="mx-auto mb-4 h-1 w-9 rounded-full bg-slate-200" />
         <Text className="px-5 text-[17px] font-bold text-slate-900">
-          Mover a un grupo
+          Move to a group
         </Text>
         <Text className="px-5 pt-1 text-[12px] leading-5 text-slate-500">
-          {`${sessions.length} ${sessions.length === 1 ? 'sesión' : 'sesiones'} · ${origin}`}
+          {`${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'} · ${origin}`}
         </Text>
 
         <Text className="px-5 pb-1.5 pt-4 text-[9.5px] font-bold uppercase tracking-widest text-slate-400">
-          Grupos
+          Groups
         </Text>
 
         <ScrollView className="max-h-64" keyboardShouldPersistTaps="handled">
@@ -158,7 +158,7 @@ export function MoveToGroupSheet({
                   </Text>
                   <Text className="mt-0.5 text-[10.5px] text-slate-400">
                     {`${counts[group.id] ?? 0} ${
-                      (counts[group.id] ?? 0) === 1 ? 'sesión' : 'sesiones'
+                      (counts[group.id] ?? 0) === 1 ? 'session' : 'sessions'
                     }`}
                   </Text>
                 </View>
@@ -193,10 +193,10 @@ export function MoveToGroupSheet({
           </View>
           <View className="flex-1">
             <Text className="text-[14.5px] font-semibold text-slate-900">
-              Sin grupo
+              No group
             </Text>
             <Text className="mt-0.5 text-[10.5px] text-slate-400">
-              Las saca de donde estén
+              Removes them from their current group
             </Text>
           </View>
           {!isNew && choice === null ? (
@@ -236,7 +236,7 @@ export function MoveToGroupSheet({
               setNewName(text);
             }}
             onFocus={() => setIsNew(true)}
-            placeholder="Nuevo grupo…"
+            placeholder="New group…"
             placeholderTextColor="#a3aec0"
             className={`flex-1 rounded-xl px-3 py-2 text-[14px] text-slate-900 ${
               isNew
@@ -268,8 +268,8 @@ export function MoveToGroupSheet({
         ) : null}
 
         <Text className="px-5 pt-3 text-[11px] leading-[17px] text-slate-400">
-          Cada máquina guarda sus grupos aparte. Si el elegido no existe en
-          alguna, se crea ahí con el mismo nombre.
+          Each machine stores its own groups. If the chosen one doesn't exist on
+          a machine, it is created there with the same name.
         </Text>
 
         <View className="flex-row gap-2.5 px-5 pt-4">
@@ -280,7 +280,7 @@ export function MoveToGroupSheet({
             className="flex-1 items-center rounded-2xl py-3 active:bg-slate-50"
           >
             <Text className="text-[14.5px] font-semibold text-slate-500">
-              Cancelar
+              Cancel
             </Text>
           </Pressable>
           <Pressable

@@ -120,7 +120,7 @@ test('un fallo de guardado conserva los campos y permite reintentar', async () =
     await sheet().props.onSave();
   });
   expect(sheet().props.server.name).toBe('Mi host');
-  expect(sheet().props.error).toContain('No se pudo guardar');
+  expect(sheet().props.error).toContain('Could not save');
   expect(sheet().props.isBusy).toBe(false);
   await act(async () => {
     await sheet().props.onSave();

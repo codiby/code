@@ -123,7 +123,7 @@ export function UsagePopover() {
         type="button"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
-        title="Uso del plan"
+        title="Plan usage"
         className={`flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium transition-colors group ${
           open ? 'bg-surface-light text-zinc-100' : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
         }`}
@@ -161,12 +161,12 @@ export function UsagePopover() {
           <div className="px-3.5 py-2.5 flex items-start justify-between border-b border-border">
             <div>
               <div className="text-[12px] font-semibold text-zinc-100">Usage</div>
-              <div className="text-[10px] text-zinc-600 mt-px">Límites de tu plan, por proveedor</div>
+              <div className="text-[10px] text-zinc-600 mt-px">Your plan limits, by provider</div>
             </div>
             <button
               type="button"
               onClick={() => setOpen(false)}
-              aria-label="Cerrar"
+              aria-label="Close"
               className="w-[22px] h-[22px] rounded-[5px] grid place-items-center text-zinc-600 hover:bg-surface-light hover:text-zinc-300 transition-colors"
             >
               <X size={12} />
@@ -179,11 +179,11 @@ export function UsagePopover() {
             {error && providers.length === 0 ? (
               <div className="flex items-start gap-2 px-3.5 py-3 text-[11px] text-amber-400/90">
                 <AlertTriangle size={13} className="mt-px shrink-0" />
-                <span>No se pudo leer el uso: {error}</span>
+                <span>Couldn't read usage: {error}</span>
               </div>
             ) : providers.length === 0 ? (
               <div className="px-3.5 py-4 text-[11px] text-zinc-600">
-                {loading ? 'Cargando…' : 'Ningún proveedor con sesión iniciada.'}
+                {loading ? 'Loading…' : 'No provider is signed in.'}
               </div>
             ) : (
               providers.map(p => <ProviderSection key={p.provider} usage={p} />)
@@ -192,7 +192,7 @@ export function UsagePopover() {
 
           <div className="px-3.5 py-2 flex items-center justify-between border-t border-border">
             <span className="text-[10px] text-zinc-600">
-              {snapshot ? `Actualizado ${formatAgo(snapshot.fetchedAt)}` : '—'}
+              {snapshot ? `Updated ${formatAgo(snapshot.fetchedAt)}` : '—'}
             </span>
             <button
               type="button"
@@ -201,7 +201,7 @@ export function UsagePopover() {
               className="flex items-center gap-1.5 px-1.5 py-[3px] rounded-[5px] text-[10px] text-zinc-500 hover:bg-surface-light hover:text-zinc-300 transition-colors disabled:opacity-50"
             >
               <RefreshCw size={11} className={loading ? 'animate-spin' : undefined} />
-              Actualizar
+              Refresh
             </button>
           </div>
         </div>,
@@ -236,17 +236,17 @@ function ProviderSection({ usage }: { usage: ProviderUsage }) {
       {usage.status === 'error' ? (
         <div className="flex items-start gap-2 text-[11px] text-amber-400/90">
           <AlertTriangle size={13} className="mt-px shrink-0" />
-          <span>{usage.error || 'No se pudo leer el uso'}</span>
+          <span>{usage.error || "Couldn't read usage"}</span>
         </div>
       ) : usage.windows.length === 0 ? (
-        <div className="text-[11px] text-zinc-600">Sin límites reportados.</div>
+        <div className="text-[11px] text-zinc-600">No limits reported.</div>
       ) : (
         usage.windows.map(w => <Meter key={w.id} window={w} />)
       )}
 
       {usage.breakdown && usage.breakdown.length > 0 && (
         <div className="mt-2.5 pt-2 border-t border-dashed border-border">
-          <div className="text-[10px] uppercase tracking-wider text-zinc-600 mb-1.5">Semana por superficie</div>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-600 mb-1.5">Week by surface</div>
           {usage.breakdown.map(row => (
             <div key={row.key} className="flex items-center gap-[7px] mb-1 text-[11px] text-zinc-400">
               <span className={`w-1.5 h-1.5 rounded-sm shrink-0 ${row.percent > 0 ? 'bg-violet-400' : 'bg-zinc-700'}`} />
@@ -287,8 +287,8 @@ function Meter({ window: w }: { window: UsageWindow }) {
       </div>
       <div className="flex justify-between mt-1 text-[10px] text-zinc-600">
         <span className={w.percent >= 100 ? 'text-red-400' : undefined}>
-          {w.percent >= 100 ? 'límite alcanzado' : formatResetIn(w.resetsAt)}
-          {w.isActive ? ' · activo ahora' : ''}
+          {w.percent >= 100 ? 'limit reached' : formatResetIn(w.resetsAt)}
+          {w.isActive ? ' · active now' : ''}
         </span>
         <span>{formatResetAt(w.resetsAt)}</span>
       </div>
@@ -297,37 +297,37 @@ function Meter({ window: w }: { window: UsageWindow }) {
 }
 
 function windowLabel(w: UsageWindow): string {
-  if (w.kind === 'session') return 'Sesión';
-  if (w.kind === 'weekly') return 'Semanal';
-  return w.label || 'Límite';
+  if (w.kind === 'session') return 'Session';
+  if (w.kind === 'weekly') return 'Weekly';
+  return w.label || 'Limit';
 }
 
 /** Scope wins over window length — "· Fable" says more than "· 7 d". */
 function windowDetail(w: UsageWindow): string | null {
   if (w.scope) return w.scope;
   if (w.windowMinutes) return formatWindowLength(w.windowMinutes);
-  if (w.kind === 'weekly') return 'todos los modelos';
+  if (w.kind === 'weekly') return 'all models';
   return null;
 }
 
 function formatWindowLength(minutes: number): string {
-  if (minutes % 10080 === 0) return `${minutes / 10080} sem`;
+  if (minutes % 10080 === 0) return `${minutes / 10080} wk`;
   if (minutes % 1440 === 0) return `${minutes / 1440} d`;
   if (minutes % 60 === 0) return `${minutes / 60} h`;
   return `${minutes} min`;
 }
 
 function formatResetIn(iso?: string | null): string {
-  if (!iso) return 'sin reinicio';
+  if (!iso) return 'no reset';
   const ms = new Date(iso).getTime() - Date.now();
   if (!Number.isFinite(ms)) return '';
-  if (ms <= 0) return 'reiniciando…';
+  if (ms <= 0) return 'resetting…';
   const minutes = Math.floor(ms / 60_000);
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
-  if (days > 0) return `se reinicia en ${days} d ${hours} h`;
-  if (hours > 0) return `se reinicia en ${hours} h ${minutes % 60} m`;
-  return `se reinicia en ${minutes} m`;
+  if (days > 0) return `resets in ${days} d ${hours} h`;
+  if (hours > 0) return `resets in ${hours} h ${minutes % 60} m`;
+  return `resets in ${minutes} m`;
 }
 
 function formatResetAt(iso?: string | null): string {
@@ -335,17 +335,17 @@ function formatResetAt(iso?: string | null): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
   const sameDay = date.toDateString() === new Date().toDateString();
-  return date.toLocaleString(undefined, sameDay
+  return date.toLocaleString('en-US', sameDay
     ? { hour: 'numeric', minute: '2-digit' }
     : { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
 function formatAgo(iso: string): string {
   const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-  if (seconds < 60) return `hace ${seconds} s`;
+  if (seconds < 60) return `${seconds} s ago`;
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `hace ${minutes} min`;
-  return `hace ${Math.round(minutes / 60)} h`;
+  if (minutes < 60) return `${minutes} min ago`;
+  return `${Math.round(minutes / 60)} h ago`;
 }
 
 function formatCredits(credits: NonNullable<ProviderUsage['credits']>): string | null {

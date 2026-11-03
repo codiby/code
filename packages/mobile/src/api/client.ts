@@ -87,10 +87,10 @@ export async function requestJson<T>(
     });
 
     if (response.status === 401) {
-      throw new ServerError('Token inválido o ausente');
+      throw new ServerError('Invalid or missing token');
     }
     if (!response.ok) {
-      throw new ServerError(`El servidor respondió HTTP ${response.status}`);
+      throw new ServerError(`The server responded with HTTP ${response.status}`);
     }
 
     return parse(await response.json());
@@ -99,9 +99,9 @@ export async function requestJson<T>(
       throw error;
     }
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new ServerError(`Sin respuesta en ${timeoutMs / 1000} s`);
+      throw new ServerError(`No response after ${timeoutMs / 1000} s`);
     }
-    throw new ServerError('No se pudo alcanzar el servidor');
+    throw new ServerError('Could not reach the server');
   } finally {
     clearTimeout(timeout);
   }

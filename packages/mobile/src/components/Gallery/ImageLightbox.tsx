@@ -260,7 +260,7 @@ export function ImageLightbox({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Cerrar"
+          accessibilityLabel="Close"
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-white/15"
         >

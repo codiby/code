@@ -355,7 +355,7 @@ export function NewSessionSheet({
       if (text.length > 0 || (initial?.images.length ?? 0) > 0) {
         const destination = routes[session.serverId];
         if (!destination?.baseUrl) {
-          throw new ServerError('El host de la sesión no responde');
+          throw new ServerError("The session's host isn't responding");
         }
         await sendMessage(
           destination.baseUrl,
@@ -377,11 +377,11 @@ export function NewSessionSheet({
       const detail =
         problem instanceof ServerError
           ? problem.message
-          : 'No se pudo crear la sesión';
+          : 'Could not create the session';
       setError(
         created.current === null
           ? detail
-          : `La sesión ya está abierta, pero el primer mensaje no salió: ${detail}`,
+          : `The session is open, but the first message wasn't sent: ${detail}`,
       );
     } finally {
       setIsCreating(false);
@@ -399,7 +399,7 @@ export function NewSessionSheet({
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Cancelar"
+        accessibilityLabel="Cancel"
         onPress={close}
         className="flex-1 bg-slate-900/40"
       />
@@ -409,12 +409,12 @@ export function NewSessionSheet({
       >
         <View className="mx-auto mb-4 h-1 w-9 rounded-full bg-slate-200" />
         <Text className="px-5 text-[17px] font-bold text-slate-900">
-          Nueva sesión
+          New session
         </Text>
         <Text className="px-5 pt-1 text-[12px] leading-5 text-slate-500">
           {reachable.length === 0
-            ? 'Ningún servidor responde: no hay dónde abrirla.'
-            : 'El agente arranca en cuanto la creas.'}
+            ? 'No server is responding: nowhere to open it.'
+            : 'The agent starts as soon as you create it.'}
         </Text>
 
         <ScrollView
@@ -422,7 +422,7 @@ export function NewSessionSheet({
           style={{ maxHeight: height * 0.5 }}
           keyboardShouldPersistTaps="handled"
         >
-          <Label>Servidor</Label>
+          <Label>Server</Label>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -439,7 +439,7 @@ export function NewSessionSheet({
               return (
                 <Option
                   key={server.id}
-                  label={server.name.length > 0 ? server.name : 'Sin nombre'}
+                  label={server.name.length > 0 ? server.name : 'Untitled'}
                   isActive={server.id === serverId}
                   onPress={() => setServerId(server.id)}
                   dotColor={ROUTE_DOT[info.dot].backgroundColor}
@@ -449,7 +449,7 @@ export function NewSessionSheet({
             })}
           </ScrollView>
 
-          <Label>Carpeta</Label>
+          <Label>Folder</Label>
           {recents.length > 0 ? (
             <ScrollView
               horizontal
@@ -470,7 +470,7 @@ export function NewSessionSheet({
           <TextInput
             value={cwd}
             onChangeText={setCwd}
-            placeholder="/ruta/del/proyecto"
+            placeholder="/path/to/project"
             placeholderTextColor="#94a3b8"
             autoCapitalize="none"
             autoCorrect={false}
@@ -482,7 +482,7 @@ export function NewSessionSheet({
 
           <View className="mt-2 h-8 flex-row items-center">
             {isListing ? (
-              <Text className="px-5 text-[11px] text-slate-400">Leyendo…</Text>
+              <Text className="px-5 text-[11px] text-slate-400">Reading…</Text>
             ) : (
               <ScrollView
                 horizontal
@@ -490,7 +490,7 @@ export function NewSessionSheet({
                 contentContainerClassName="items-center gap-2 px-5"
               >
                 <Option
-                  label="↑ Subir"
+                  label="↑ Up"
                   isActive={false}
                   onPress={() => setCwd(parentOf(cwd))}
                   disabled={cwd.trim().replace(/\/+$/, '').length === 0}
@@ -505,14 +505,14 @@ export function NewSessionSheet({
                 ))}
                 {dirs.length === 0 ? (
                   <Text className="text-[11px] text-slate-400">
-                    Sin subcarpetas
+                    No subfolders
                   </Text>
                 ) : null}
               </ScrollView>
             )}
           </View>
 
-          <Label>Agente</Label>
+          <Label>Agent</Label>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -530,14 +530,14 @@ export function NewSessionSheet({
 
           {models.length > 0 ? (
             <>
-              <Label>Modelo</Label>
+              <Label>Model</Label>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerClassName="gap-2 px-5"
               >
                 <Option
-                  label="Por defecto"
+                  label="Default"
                   isActive={model === null}
                   onPress={() => setModel(null)}
                 />
@@ -553,20 +553,20 @@ export function NewSessionSheet({
             </>
           ) : null}
 
-          <Label>Nombre</Label>
+          <Label>Name</Label>
           <TextInput
             value={name}
             onChangeText={setName}
-            placeholder="Opcional — el bridge la numera si lo dejas vacío"
+            placeholder="Optional — the bridge numbers it if left empty"
             placeholderTextColor="#94a3b8"
             className="mx-5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[14px] leading-5 text-slate-900"
           />
 
-          <Label>Primer mensaje</Label>
+          <Label>First message</Label>
           <TextInput
             value={prompt}
             onChangeText={setPrompt}
-            placeholder="Opcional. Si lo escribes, la sesión nace trabajando."
+            placeholder="Optional. If you write one, the session starts working right away."
             placeholderTextColor="#94a3b8"
             multiline
             className="mx-5 mb-4 h-[76px] rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[14px] leading-5 text-slate-900"
@@ -587,7 +587,7 @@ export function NewSessionSheet({
             className="rounded-full px-4 py-3 active:bg-slate-100"
           >
             <Text className="text-[14px] font-semibold text-slate-500">
-              Cancelar
+              Cancel
             </Text>
           </Pressable>
           <Pressable
@@ -607,7 +607,7 @@ export function NewSessionSheet({
                 canCreate ? 'text-white' : 'text-slate-400'
               }`}
             >
-              {prompt.trim().length > 0 ? 'Crear y enviar' : 'Crear sesión'}
+              {prompt.trim().length > 0 ? 'Create and send' : 'Create session'}
             </Text>
           </Pressable>
         </View>

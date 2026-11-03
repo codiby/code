@@ -139,7 +139,7 @@ export function ServerConfigProvider({ children }: { children: ReactNode }) {
 export function useServers(): ServersValue {
   const value = useContext(ServersContext);
   if (value === null) {
-    throw new Error('useServers requiere un <ServerConfigProvider>');
+    throw new Error('useServers requires a <ServerConfigProvider>');
   }
   return value;
 }

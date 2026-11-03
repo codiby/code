@@ -176,9 +176,9 @@ const SESSION_ACCENT_PALETTE = [
 /** Chat column widths offered by the segmented control in the chat panel's
  *  tab strip, next to the Resources chip. Order = left-to-right. */
 const CHAT_WIDTH_OPTIONS: { value: ChatWidth; label: string; hint: string; Icon: typeof FoldHorizontal }[] = [
-  { value: 'compact', label: 'Compacto', hint: '896px', Icon: FoldHorizontal },
-  { value: 'standard', label: 'Estándar', hint: '1152px', Icon: RectangleHorizontal },
-  { value: 'full', label: 'Ancho completo', hint: 'sin límite', Icon: UnfoldHorizontal },
+  { value: 'compact', label: 'Compact', hint: '896px', Icon: FoldHorizontal },
+  { value: 'standard', label: 'Standard', hint: '1152px', Icon: RectangleHorizontal },
+  { value: 'full', label: 'Full width', hint: 'no limit', Icon: UnfoldHorizontal },
 ];
 
 /** How long a ctrl/⌘-click delete stays undoable. Long enough to read the
@@ -2890,10 +2890,10 @@ export function ChatApp() {
       const client = clientRef.current;
       const done = (ok: boolean, error?: string) =>
         window.dispatchEvent(new CustomEvent('session_restart_done', { detail: { sessionId: sid ?? null, ok, error } }));
-      if (!sid || !client) { done(false, 'Sesión no disponible'); return; }
+      if (!sid || !client) { done(false, 'Session not available'); return; }
       client.restartSession(sid)
         .then(() => done(true))
-        .catch(err => done(false, err instanceof Error ? err.message : 'No se pudo reiniciar'));
+        .catch(err => done(false, err instanceof Error ? err.message : "Couldn't restart"));
     };
     window.addEventListener('request_session_restart', handler);
     return () => window.removeEventListener('request_session_restart', handler);
@@ -4516,7 +4516,7 @@ export function ChatApp() {
     const session = activeId ? sessions.find(s => s.id === activeId) : undefined;
     if (!session || session.remoteId || layoutMode === 'focus' || selectedGroupId) {
       const host = session?.remoteId ? (remotes.find(r => r.id === session.remoteId)?.name || session.remoteId) : null;
-      const notice = host ? `Abierto aparte: la sesión «${session!.name}» corre en ${host} y este archivo está en esta Mac.` : null;
+      const notice = host ? `Opened separately: session “${session!.name}” runs on ${host} and this file is on this Mac.` : null;
       await openStandaloneFiles(c, paths, notice);
       return;
     }
@@ -8013,7 +8013,7 @@ export function ChatApp() {
                             <button
                               type="button"
                               onClick={() => updateLocalState(activeId, s => ({ ...s, requirementsOpen: !s.requirementsOpen }))}
-                              title="Requerimientos de la sesión"
+                              title="Session requirements"
                               className={`inline-flex items-center gap-1.5 h-[22px] pl-1.5 pr-2 rounded-md border text-[11px] font-semibold transition-colors ${
                                 active.requirementsOpen
                                   ? 'bg-surface-lighter border-emerald-500 text-zinc-100'
@@ -8021,7 +8021,7 @@ export function ChatApp() {
                               }`}
                             >
                               <span className="text-emerald-300">✓</span>
-                              <span>Requerimientos</span>
+                              <span>Requirements</span>
                               {rp && rp.locked > 0 && (
                                 <span className={`text-[9.5px] font-bold rounded-full px-1.5 py-px leading-none ${
                                   rp.complete ? 'text-emerald-300 bg-emerald-500/18' : 'text-zinc-300 bg-white/10'
@@ -8040,8 +8040,8 @@ export function ChatApp() {
                                 key={value}
                                 type="button"
                                 onClick={() => setChatWidth(value)}
-                                title={`Ancho del chat: ${label} (${hint})`}
-                                aria-label={`Ancho del chat: ${label}`}
+                                title={`Chat width: ${label} (${hint})`}
+                                aria-label={`Chat width: ${label}`}
                                 aria-pressed={chatWidth === value}
                                 className={`inline-flex items-center justify-center h-5 w-6 rounded transition-colors ${
                                   chatWidth === value

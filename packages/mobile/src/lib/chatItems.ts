@@ -213,7 +213,7 @@ export function mockupNameOf(call: ChatMessage): string | null {
 
 export function summarizeTool(call: ChatMessage): ToolSummary {
   const input = call.toolInput;
-  const name = shortToolName(call.toolName ?? 'Herramienta');
+  const name = shortToolName(call.toolName ?? 'Tool');
 
   const description = stringField(input, 'description');
   const command = stringField(input, 'command');
@@ -289,7 +289,7 @@ export function summarizeResult(
 }
 
 /** Etiqueta con la que se identifica al razonamiento dentro del resumen. */
-export const THINKING_LABEL = 'pensó';
+export const THINKING_LABEL = 'thought';
 
 export interface GroupSummary {
   /** `Bash ×2 · Edit · pensó`, en orden de aparición. */
@@ -313,7 +313,7 @@ export function summarizeGroup(entries: GroupEntry[]): GroupSummary {
     const name =
       entry.kind === 'thinking'
         ? THINKING_LABEL
-        : shortToolName(entry.call.toolName ?? 'Herramienta');
+        : shortToolName(entry.call.toolName ?? 'Tool');
 
     if (!counts.has(name)) {
       order.push(name);

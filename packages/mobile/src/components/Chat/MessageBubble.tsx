@@ -102,12 +102,12 @@ export function MessageBubble({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={
-            isSelected ? 'Ocultar la hora' : 'Mostrar la hora del mensaje'
+            isSelected ? 'Hide the time' : 'Show the message time'
           }
-          accessibilityHint="Desliza a la derecha para responder. Mantén pulsado para copiar"
+          accessibilityHint="Swipe right to reply. Long-press to copy"
           accessibilityActions={
             canReply
-              ? [{ name: 'reply', label: 'Responder al mensaje' }]
+              ? [{ name: 'reply', label: 'Reply to message' }]
               : undefined
           }
           onAccessibilityAction={event => {
@@ -145,7 +145,7 @@ export function MessageBubble({
 
           {isClipped ? (
             <Text className="mt-1 text-[11px] italic text-slate-400">
-              … recortado
+              … truncated
             </Text>
           ) : null}
           {hasGroup ? <ToolGroup entries={group} variant="footer" /> : null}
@@ -153,18 +153,18 @@ export function MessageBubble({
 
         {message.sendState === 'sending' ? (
           <Text className="mt-0.5 px-1 text-[10px] text-slate-400">
-            enviando…
+            sending…
           </Text>
         ) : message.sendState === 'failed' ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Reintentar el envío"
+            accessibilityLabel="Retry sending"
             onPress={() => onRetry?.(message)}
             hitSlop={8}
             className="mt-0.5 px-1 active:opacity-60"
           >
             <Text className="text-[11px] font-semibold text-rose-600">
-              No se envió · Reintentar
+              Not sent · Retry
             </Text>
           </Pressable>
         ) : null}
@@ -178,7 +178,7 @@ export function MessageBubble({
             </Text>
             {justCopied ? (
               <Text className="text-[10px] font-semibold text-emerald-600">
-                Copiado
+                Copied
               </Text>
             ) : null}
           </View>

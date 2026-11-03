@@ -30,7 +30,7 @@ export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Cerrar"
+        accessibilityLabel="Close"
         onPress={onClose}
         className="flex-1 bg-slate-900/45"
       />
@@ -40,11 +40,11 @@ export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
       >
         <View className="mx-auto mb-3 h-1 w-9 rounded-full bg-slate-300" />
         <Text className="px-5 text-[15px] font-bold text-slate-900">
-          Servidores
+          Servers
         </Text>
         <Text className="px-5 pb-3 pt-1 text-[11.5px] leading-4 text-slate-500">
-          Todos se consultan a la vez. Aquí solo se ve por dónde entra cada uno;
-          la lista no se filtra.
+          All of them are queried at once. This only shows how each one is
+          reached; the list is not filtered.
         </Text>
 
         {servers.map(server => {
@@ -53,7 +53,7 @@ export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
           const state = routeState(isUp, route?.path ?? null, route?.isProbing ?? false);
           // En la hoja se dice «respaldo» en vez de «internet»: aquí se está
           // hablando de la configuración, no de por dónde sale el tráfico.
-          const label = state.dot === 'remote' ? 'respaldo' : state.label;
+          const label = state.dot === 'remote' ? 'fallback' : state.label;
           return (
             <View
               key={server.id}
@@ -65,14 +65,14 @@ export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
                   style={{ color: colorHex(server.color) }}
                   className="text-sm font-semibold"
                 >
-                  {server.name.length > 0 ? server.name : 'Sin nombre'}
+                  {server.name.length > 0 ? server.name : 'Untitled'}
                 </Text>
                 <Text numberOfLines={1} className="mt-0.5 text-[10.5px] text-slate-400">
                   {isUp
                     ? `${shortUrl(route!.baseUrl)}${
                         route!.latencyMs !== null ? ` · ${route!.latencyMs} ms` : ''
                       }`
-                    : 'ninguna ruta responde'}
+                    : 'no route responds'}
                 </Text>
               </View>
               <Text
@@ -96,7 +96,7 @@ export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
           className="mt-1 border-t border-slate-100 px-5 py-3 active:bg-slate-50"
         >
           <Text className="text-[13px] font-semibold text-slate-600">
-            Volver a probar todas las rutas
+            Retry all routes
           </Text>
         </Pressable>
       </View>

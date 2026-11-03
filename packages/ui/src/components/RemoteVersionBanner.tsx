@@ -114,20 +114,20 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
   const runWslReinstall = async (distro: string) => {
     if (!client) return;
     updating.current = true;
-    setPhase({ kind: 'updating', step: `Reinstalando en ${distro}…` });
+    setPhase({ kind: 'updating', step: `Reinstalling in ${distro}…` });
     try {
       const result = await client.reinstallWslRemote(distro);
       if (!result.ok) { setPhase({ kind: 'error', message: result.error }); return; }
       // The bridge restarted; the desktop keepalive has to run start.sh again.
       await getNative()?.invoke('remote_tunnel_disconnect', { remoteId: s.remoteId }).catch(() => {});
-      setPhase({ kind: 'updating', step: 'Esperando al servidor…' });
+      setPhase({ kind: 'updating', step: 'Waiting for the server…' });
       const deadline = Date.now() + RESTART_TIMEOUT_MS;
       while (Date.now() < deadline) {
         const host = await client.getHostInfo(s.remoteId).catch(() => null);
         if (host && !isOutdated(host.appVersion ?? null, s.appVersion)) { drop(s.remoteId); return; }
         await sleep(POLL_MS);
       }
-      setPhase({ kind: 'error', message: `${s.name} no respondió con v${s.appVersion}. Revisa ~/.codiby/wsl-bridge/bridge.log dentro de ${distro}.` });
+      setPhase({ kind: 'error', message: `${s.name} did not come back on v${s.appVersion}. Check ~/.codiby/wsl-bridge/bridge.log inside ${distro}.` });
     } catch (err) {
       setPhase({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -139,15 +139,15 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
     if (!client) return;
     if (s.wslDistro) return runWslReinstall(s.wslDistro);
     updating.current = true;
-    setPhase({ kind: 'updating', step: 'Descargando cambios…' });
+    setPhase({ kind: 'updating', step: 'Downloading changes…' });
     try {
       const result = await client.selfUpdate(s.remoteId);
       if (!result.ok) { setPhase({ kind: 'error', message: result.error }); return; }
       if (!result.restarting) {
-        setPhase({ kind: 'error', message: `${s.name} ya está en lo último de ${result.branch} (v${result.version}), que todavía no tiene v${s.appVersion}.` });
+        setPhase({ kind: 'error', message: `${s.name} is already on the latest ${result.branch} (v${result.version}), which doesn't have v${s.appVersion} yet.` });
         return;
       }
-      setPhase({ kind: 'updating', step: `Reiniciando en v${result.version}…` });
+      setPhase({ kind: 'updating', step: `Restarting on v${result.version}…` });
       const deadline = Date.now() + RESTART_TIMEOUT_MS;
       while (Date.now() < deadline) {
         await sleep(POLL_MS);
@@ -156,13 +156,13 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
         const remoteVersion = host.appVersion ?? null;
         if (isOutdated(remoteVersion, s.appVersion)) {
           setStale(prev => prev.map(x => x.remoteId === s.remoteId ? { ...x, remoteVersion } : x));
-          setPhase({ kind: 'error', message: `Se actualizó a v${remoteVersion} (lo último de ${result.branch}), pero esta app es v${s.appVersion}.` });
+          setPhase({ kind: 'error', message: `Updated to v${remoteVersion} (the latest ${result.branch}), but this app is v${s.appVersion}.` });
         } else {
           drop(s.remoteId);
         }
         return;
       }
-      setPhase({ kind: 'error', message: `${s.name} no volvió en 5 min. Revisa: journalctl --user -u codiby-code.service` });
+      setPhase({ kind: 'error', message: `${s.name} did not come back within 5 min. Check: journalctl --user -u codiby-code.service` });
     } catch (err) {
       setPhase({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -179,21 +179,21 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
           <AlertTriangle className="h-4 w-4 text-amber-400" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-zinc-100">{s.name} está desactualizado</div>
+          <div className="text-sm font-medium text-zinc-100">{s.name} is out of date</div>
           <div className="mt-0.5 text-xs text-zinc-400">
-            Su servidor corre {s.remoteVersion ? <span className="font-mono">v{s.remoteVersion}</span> : 'una versión que no reporta la suya'}
-            {' '}y esta app es <span className="font-mono">v{s.appVersion}</span>. Algunas funciones pueden fallar.
+            Its server runs {s.remoteVersion ? <span className="font-mono">v{s.remoteVersion}</span> : 'a version that does not report itself'}
+            {' '}and this app is <span className="font-mono">v{s.appVersion}</span>. Some features may fail.
           </div>
 
           {phase.kind === 'confirm' ? (
             <div className="mt-2.5 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-zinc-300">
-              Se reinicia el servidor de {s.name} y se cortan las sesiones que estén corriendo ahí.
+              This restarts the server on {s.name} and cuts off any sessions running there.
               <div className="mt-2 flex gap-2">
                 <button type="button" onClick={runUpdate} className="rounded-md bg-zinc-100 px-2.5 py-1 font-medium text-zinc-900 hover:bg-white">
-                  {s.wslDistro ? 'Reinstalar y reiniciar' : 'Actualizar y reiniciar'}
+                  {s.wslDistro ? 'Reinstall and restart' : 'Update and restart'}
                 </button>
                 <button type="button" onClick={() => setPhase({ kind: 'idle' })} className="rounded-md px-2.5 py-1 text-zinc-400 hover:text-zinc-200">
-                  Cancelar
+                  Cancel
                 </button>
               </div>
             </div>
@@ -213,23 +213,23 @@ export function RemoteVersionBanner({ client, remotes, remoteStatuses }: Props) 
                   onClick={() => setPhase({ kind: 'confirm' })}
                   className="mt-2.5 rounded-md bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-900 hover:bg-white"
                 >
-                  {phase.kind === 'error' ? 'Reintentar' : 'Actualizar'}
+                  {phase.kind === 'error' ? 'Retry' : 'Update'}
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={copy}
-                  title="Copiar"
+                  title="Copy"
                   className="mt-2 block w-full truncate rounded-md bg-black/40 px-2 py-1.5 text-left font-mono text-[11px] text-zinc-300 hover:bg-black/60"
                 >
-                  {copied ? 'Copiado ✓' : DEPLOY_CMD}
+                  {copied ? 'Copied ✓' : DEPLOY_CMD}
                 </button>
               )}
             </>
           )}
-          {stale.length > 1 && <div className="mt-1.5 text-[11px] text-zinc-500">+{stale.length - 1} remoto(s) más</div>}
+          {stale.length > 1 && <div className="mt-1.5 text-[11px] text-zinc-500">+{stale.length - 1} more {stale.length - 1 === 1 ? 'remote' : 'remotes'}</div>}
         </div>
-        <button type="button" onClick={dismiss} disabled={busy} aria-label="Descartar" className="text-zinc-500 hover:text-zinc-300 disabled:opacity-30">
+        <button type="button" onClick={dismiss} disabled={busy} aria-label="Dismiss" className="text-zinc-500 hover:text-zinc-300 disabled:opacity-30">
           <X className="h-4 w-4" />
         </button>
       </div>

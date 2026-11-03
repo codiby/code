@@ -41,17 +41,17 @@ export function ThinkingBlock({
   const [isOpen, setIsOpen] = useState(false);
 
   const label = streaming
-    ? 'Pensando'
+    ? 'Thinking'
     : redacted
-      ? 'Pensamiento cifrado'
-      : 'Pensó';
+      ? 'Encrypted thinking'
+      : 'Thought';
   const preview = previewOf(text, streaming);
 
   return (
     <View className={compact ? 'py-0.5' : 'px-3 py-1'}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${label}. ${isOpen ? 'Contraer' : 'Expandir'}`}
+        accessibilityLabel={`${label}. ${isOpen ? 'Collapse' : 'Expand'}`}
         accessibilityState={{ expanded: isOpen }}
         onPress={() => setIsOpen(current => !current)}
         className="flex-row items-start gap-1.5 py-0.5 active:opacity-60"

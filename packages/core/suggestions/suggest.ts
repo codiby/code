@@ -42,57 +42,72 @@ export type SuggestionKind = (typeof SUGGESTION_KINDS)[number];
 
 export type Suggestion = { kind: SuggestionKind; text: string };
 
+/**
+ * The prompt speaks English; the wire keeps the kinds the mobile client
+ * already matches on, so older builds keep working.
+ */
+const PROMPT_KINDS: Record<string, SuggestionKind> = {
+  continue: 'continuar',
+  challenge: 'cuestionar',
+  redirect: 'redirigir',
+};
+
 const SYSTEM_PROMPT = [
-  'Eres el USUARIO de una sesión de programación con un agente, no el agente.',
+  'You are the USER of a coding session with an agent, not the agent.',
   '',
-  'Te doy el último mensaje del agente. Escribe TRES respuestas que el usuario',
-  'podría enviar con un solo toque. Una de cada tipo, siempre en este orden:',
+  'I give you the agent\'s last message. Write THREE replies the user could',
+  'send with a single tap. One of each type, always in this order:',
   '',
-  '1. continuar — Acepta lo hecho y empuja al siguiente paso concreto.',
-  '   Nunca "ok", "gracias" ni "perfecto": nombra la acción que sigue.',
-  '2. cuestionar — Pon en duda una afirmación o decisión específica del mensaje.',
-  '   Si el agente no afirmó nada discutible, pregunta por lo que NO dijo.',
-  '3. redirigir — Cambia el rumbo sin tirar el trabajo: acota el alcance, quita',
-  '   una parte o sustituye el enfoque. No es rechazar; es corregir.',
+  '1. continue — Accept what was done and push to the next concrete step.',
+  '   Never "ok", "thanks" or "perfect": name the action that comes next.',
+  '2. challenge — Question a specific claim or decision in the message.',
+  '   If the agent claimed nothing debatable, ask about what it did NOT say.',
+  '3. redirect — Change course without throwing the work away: narrow the',
+  '   scope, drop a part or swap the approach. It is not rejecting; it is correcting.',
   '',
-  'VOZ',
-  'Escribe como escribe el usuario, no como escribiría un asistente:',
-  '- español, minúsculas, sin signos de apertura, sin cortesías',
-  '- imperativo y directo: "quita el anillo", no "¿podrías quitar el anillo?"',
-  `- máximo ${MAX_CHARS} caracteres. Es un chip, no una frase. Apunta a menos de 22.`,
+  'LANGUAGE',
+  'Write the three replies in the same language as the agent\'s message (and the',
+  'conversation): if it is in Spanish, write them in Spanish. Only the "type"',
+  'values stay in English, exactly as given.',
   '',
-  'ANCLAJE',
-  'Cada respuesta debe agarrarse de algo LITERAL del mensaje: un nombre de',
-  'archivo, una decisión, un número, un pendiente que el agente mencionó.',
-  'Si las tres funcionarían igual pegadas en cualquier otra conversación,',
-  'están mal.',
+  'VOICE',
+  'Write the way the user writes, not the way an assistant would:',
+  '- lowercase, no pleasantries; in Spanish, no opening ¿ or ¡',
+  '- imperative and direct: "remove the ring", not "could you remove the ring?"',
+  `- at most ${MAX_CHARS} characters. It is a chip, not a sentence. Aim for under 22.`,
   '',
-  'PROHIBIDO',
-  '- Pedir algo que el agente ya hizo en ese mismo mensaje.',
-  '- Repetir la misma idea en dos de las tres.',
-  '- Preguntas de cortesía ("¿algo más?") o de relleno ("¿está listo?").',
-  '- Inventar archivos, comandos o hechos que no aparecen en el mensaje.',
+  'ANCHORING',
+  'Each reply must grab onto something LITERAL in the message: a file name,',
+  'a decision, a number, a pending item the agent mentioned.',
+  'If all three would work just as well pasted into any other conversation,',
+  'they are wrong.',
   '',
-  'SALIDA',
-  'Solo JSON, sin texto alrededor:',
-  '[{"tipo":"continuar","texto":"..."},',
-  ' {"tipo":"cuestionar","texto":"..."},',
-  ' {"tipo":"redirigir","texto":"..."}]',
+  'FORBIDDEN',
+  '- Asking for something the agent already did in that same message.',
+  '- Repeating the same idea in two of the three.',
+  '- Courtesy questions ("anything else?") or filler ("is it ready?").',
+  '- Making up files, commands or facts that don\'t appear in the message.',
   '',
-  'EJEMPLO',
-  'Mensaje del agente:',
-  '"Listo. Dejé el cutoff fijo en constants.ts en vez de calcularlo por tenant:',
-  'el cálculo dependía de billingDay, un campo que no existe en staging.',
-  'Las 14 pruebas pasan."',
+  'OUTPUT',
+  'JSON only, no text around it:',
+  '[{"type":"continue","text":"..."},',
+  ' {"type":"challenge","text":"..."},',
+  ' {"type":"redirect","text":"..."}]',
   '',
-  'Respuesta:',
-  '[{"tipo":"continuar","texto":"sigue con el deploy"},',
-  ' {"tipo":"cuestionar","texto":"y en prod sí existe?"},',
-  ' {"tipo":"redirigir","texto":"mejor no lo fijes"}]',
+  'EXAMPLE',
+  'Agent message:',
+  '"Done. I hardcoded the cutoff in constants.ts instead of computing it per',
+  'tenant: the computation depended on billingDay, a field that doesn\'t exist',
+  'in staging. All 14 tests pass."',
   '',
-  `Fíjate en el largo: 19, 20 y 17 caracteres. Ese es el tamaño correcto.`,
-  `Antes de responder, cuenta los caracteres de cada texto. Si alguno pasa de`,
-  `${MAX_CHARS}, reescríbelo más corto. Una sugerencia larga no cabe y se descarta.`,
+  'Reply:',
+  '[{"type":"continue","text":"go on with the deploy"},',
+  ' {"type":"challenge","text":"does prod have it?"},',
+  ' {"type":"redirect","text":"don\'t hardcode it"}]',
+  '',
+  `Notice the length: 21, 18 and 17 characters. That is the right size.`,
+  `Before answering, count the characters of each text. If any goes over`,
+  `${MAX_CHARS}, rewrite it shorter. A long suggestion doesn't fit and gets dropped.`,
 ].join('\n');
 
 /**
@@ -117,9 +132,9 @@ function parseSuggestions(text: string): Suggestion[] {
   const out: Suggestion[] = [];
   for (const item of parsed) {
     if (typeof item !== 'object' || item === null) continue;
-    const raw = item as { tipo?: unknown; texto?: unknown };
-    const kind = SUGGESTION_KINDS.find((k) => k === raw.tipo);
-    const text = typeof raw.texto === 'string' ? raw.texto.trim() : '';
+    const raw = item as { type?: unknown; text?: unknown };
+    const kind = typeof raw.type === 'string' ? PROMPT_KINDS[raw.type.trim().toLowerCase()] : undefined;
+    const text = typeof raw.text === 'string' ? raw.text.trim() : '';
     if (kind && text.length > 0) {
       // Se degrada en vez de descartar. Descartar las que se pasaban dejaba la
       // fila vacía en dos de cada tres mensajes: el modelo escribía sugerencias
@@ -155,7 +170,7 @@ export async function suggestReplies(opts: {
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'text' as const, text: `MENSAJE DEL AGENTE:\n${excerpt}` }] as any,
+      content: [{ type: 'text' as const, text: `AGENT MESSAGE:\n${excerpt}` }] as any,
     },
     parent_tool_use_id: null,
     session_id: undefined,

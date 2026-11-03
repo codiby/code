@@ -27,7 +27,7 @@ enum ShareConfig {
           guard let url = URL(string: value) else { return false }
           return ["http", "https"].contains(url.scheme ?? "") && url.host != nil
         }
-      }) else { throw ShareError.message("Configuración de hosts inválida.") }
+      }) else { throw ShareError.message("Invalid host configuration.") }
     return config
   }
 
@@ -48,7 +48,7 @@ enum ShareConfig {
 
   static func readData() throws -> Data {
     guard let file, let data = try? Data(contentsOf: file) else {
-      throw ShareError.message("Abre Codiby Code y configura tus hosts antes de compartir.")
+      throw ShareError.message("Open Codiby Code and set up your hosts before sharing.")
     }
     _ = try validate(data)
     return data
@@ -56,7 +56,7 @@ enum ShareConfig {
 
   static func write(_ data: Data) throws {
     _ = try validate(data)
-    guard let file else { throw ShareError.message("El App Group para compartir no está disponible.") }
+    guard let file else { throw ShareError.message("The sharing App Group is not available.") }
     try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
   }
 }

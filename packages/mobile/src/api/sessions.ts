@@ -52,7 +52,7 @@ export function fetchHealth(baseUrl: string): Promise<HealthResponse> {
       typeof raw.status !== 'string' ||
       typeof raw.sessions !== 'number'
     ) {
-      throw new ServerError('Respuesta inesperada en /health');
+      throw new ServerError('Unexpected response from /health');
     }
     return { status: raw.status, sessions: raw.sessions };
   });
@@ -88,7 +88,7 @@ export function createSession(
     body => {
       const session = toSessionSummary(body, serverId);
       if (session === null) {
-        throw new ServerError('El servidor no devolvió la sesión creada');
+        throw new ServerError('The server did not return the created session');
       }
       return session;
     },
@@ -182,7 +182,7 @@ export function parseSessionList(
   serverId: string,
 ): SessionSummary[] {
   if (!Array.isArray(body)) {
-    throw new ServerError('Respuesta inesperada en /sessions');
+    throw new ServerError('Unexpected response from /sessions');
   }
   // Una sesión malformada se descarta sin tumbar la lista entera.
   return body

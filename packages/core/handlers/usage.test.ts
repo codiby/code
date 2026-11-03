@@ -75,7 +75,7 @@ describe('normalizeCodexUsage', () => {
     const withCredits = normalizeCodexUsage(account, {
       rateLimits: { ...limits.rateLimits, credits: { hasCredits: true, unlimited: false, balance: '12.50' } },
     });
-    expect(withCredits.credits).toMatchObject({ enabled: true, label: 'Créditos', limitMinor: 1250 });
+    expect(withCredits.credits).toMatchObject({ enabled: true, label: 'Credits', limitMinor: 1250 });
   });
 });
 

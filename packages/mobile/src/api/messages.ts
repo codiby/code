@@ -62,7 +62,7 @@ function normalizeContent(raw: string): string {
   if (longestRunWithoutSpace(raw.slice(0, 4000)) > UNBREAKABLE_RUN) {
     const isImage =
       raw.includes('"type":"image"') || raw.includes('data:image');
-    return isImage ? `[imagen · ${kb} KB]` : `[datos · ${kb} KB]`;
+    return isImage ? `[image · ${kb} KB]` : `[data · ${kb} KB]`;
   }
 
   const clean = stripAnsi(raw);
@@ -70,7 +70,7 @@ function normalizeContent(raw: string): string {
   const body = readReply(clean);
   const limit = MAX_STORED_CHARS + clean.length - body.text.length;
   return clean.length > limit
-    ? `${clean.slice(0, limit)}\n\n… (+${kb} KB recortados)`
+    ? `${clean.slice(0, limit)}\n\n… (+${kb} KB truncated)`
     : clean;
 }
 
@@ -240,11 +240,11 @@ export function fetchMessages(
     path,
     body => {
       if (typeof body !== 'object' || body === null) {
-        throw new ServerError('Respuesta inesperada en /messages');
+        throw new ServerError('Unexpected response from /messages');
       }
       const raw = body as Record<string, unknown>;
       if (!Array.isArray(raw.messages)) {
-        throw new ServerError('Respuesta inesperada en /messages');
+        throw new ServerError('Unexpected response from /messages');
       }
       const messages = raw.messages
         .map(toChatMessage)
@@ -295,11 +295,11 @@ export function fetchNewerMessages(
     path,
     body => {
       if (typeof body !== 'object' || body === null) {
-        throw new ServerError('Respuesta inesperada en /messages');
+        throw new ServerError('Unexpected response from /messages');
       }
       const raw = body as Record<string, unknown>;
       if (!Array.isArray(raw.messages)) {
-        throw new ServerError('Respuesta inesperada en /messages');
+        throw new ServerError('Unexpected response from /messages');
       }
       const messages = raw.messages
         .map(toChatMessage)

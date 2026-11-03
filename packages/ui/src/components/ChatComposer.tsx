@@ -362,7 +362,7 @@ export function ChatComposer(props: Props) {
     if (!res) return; // save failed → block stays inline (full code is sent)
     const kb = (text.length / 1024).toFixed(1);
     const name = `snippet-${res.uuid.slice(0, 6)}${ext ? '.' + ext : ''}`;
-    const sub = `${lang ? displayLang(lang) + ' · ' : ''}${lineCount} líneas · ${kb} KB`;
+    const sub = `${lang ? displayLang(lang) + ' · ' : ''}${lineCount} lines · ${kb} KB`;
     onRegisterSnippet?.(block, `[${name} · ${sub}](codiby-snippet:${res.path})`);
   };
 
@@ -714,7 +714,7 @@ export function ChatComposer(props: Props) {
               </div>
             )}
             {!isTerminalMode && props.replyTo && (
-              <div className="px-3 pt-3" aria-label="Respondiendo a un mensaje">
+              <div className="px-3 pt-3" aria-label="Replying to a message">
                 <ReplyQuote reply={props.replyTo} onCancel={props.onCancelReply} />
               </div>
             )}

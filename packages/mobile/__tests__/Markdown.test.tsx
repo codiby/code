@@ -26,11 +26,11 @@ test('la tabla no añade botones ni instrucciones para desplazarse', async () =>
   });
   expect(
     tree.root.findAll(node =>
-      String(node.props.accessibilityLabel ?? '').startsWith('Desplazar tabla'),
+      String(node.props.accessibilityLabel ?? '').startsWith('Scroll table'),
     ),
   ).toHaveLength(0);
   expect(JSON.stringify(tree.toJSON())).not.toContain(
-    'Desliza o usa las flechas',
+    'Swipe or use the arrows',
   );
   await act(async () => tree.unmount());
 });

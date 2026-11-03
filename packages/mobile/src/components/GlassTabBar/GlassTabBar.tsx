@@ -7,9 +7,9 @@ import { NewChatIcon, ConversationsIcon, SettingsIcon } from './icons';
 import type { GlassTabBarProps, TabItem } from './types';
 
 export const DEFAULT_TAB_ITEMS: readonly TabItem[] = [
-  { key: 'chat', label: 'Nuevo chat', Icon: NewChatIcon },
-  { key: 'home', label: 'Conversaciones', Icon: ConversationsIcon },
-  { key: 'settings', label: 'Ajustes', Icon: SettingsIcon },
+  { key: 'chat', label: 'New chat', Icon: NewChatIcon },
+  { key: 'home', label: 'Conversations', Icon: ConversationsIcon },
+  { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
 /**

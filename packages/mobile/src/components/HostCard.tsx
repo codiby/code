@@ -15,8 +15,8 @@ export function HostCard({
 }) {
   const isUp = Boolean(route?.baseUrl);
   const isProbing = !isUp && route?.isProbing;
-  const name = server.name.trim() || 'Sin nombre';
-  const status = isUp ? 'En línea' : isProbing ? 'Conectando' : 'Sin conexión';
+  const name = server.name.trim() || 'Untitled';
+  const status = isUp ? 'Online' : isProbing ? 'Connecting' : 'Offline';
   const address = isUp ? route!.baseUrl : server.localUrl || server.remoteUrl;
   const path = isUp
     ? route?.path === 'remote'
@@ -27,8 +27,8 @@ export function HostCard({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Configurar host ${name}`}
-      accessibilityHint={`${status}. Abrir configuración`}
+      accessibilityLabel={`Configure host ${name}`}
+      accessibilityHint={`${status}. Open settings`}
       onPress={onPress}
       className="mb-2 flex-row items-center gap-2.5 rounded-[14px] border border-slate-200 bg-white p-3 active:opacity-70"
     >
@@ -61,7 +61,7 @@ export function HostCard({
         <Text numberOfLines={1} className="mt-[5px] text-[10px] text-slate-400">
           {address
             ? `${path} · ${shortUrl(address)}`
-            : 'Sin dirección configurada'}
+            : 'No address configured'}
         </Text>
       </View>
       <View className="items-end gap-1">

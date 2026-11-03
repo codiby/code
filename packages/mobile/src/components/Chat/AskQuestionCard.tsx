@@ -225,7 +225,7 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
       <View className="mb-2 flex-row items-center gap-1.5">
         <View className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
         <Text className="text-[8.5px] font-bold uppercase tracking-[0.9px] text-indigo-500">
-          Pregunta
+          Question
         </Text>
         {single ? null : (
           <Text className="ml-auto text-[9px] font-bold text-indigo-300">
@@ -324,7 +324,7 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
                     />
                   ))}
                   <OptionRow
-                    label="Otra… (escribir)"
+                    label="Other… (type your own)"
                     isDashed
                     isMulti={false}
                     isPicked={chosen.includes(OTHER)}
@@ -334,7 +334,7 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
                     <TextInput
                       value={custom[index] ?? ''}
                       onChangeText={text => setCustom({ ...custom, [index]: text })}
-                      placeholder="Tu respuesta…"
+                      placeholder="Your answer…"
                       placeholderTextColor="#94a3b8"
                       autoFocus
                       multiline
@@ -359,11 +359,7 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
                           answered ? 'text-white' : 'text-slate-400'
                         }`}
                       >
-                        {`Listo · ${chosen.filter(l => l !== OTHER).length} ${
-                          chosen.filter(l => l !== OTHER).length === 1
-                            ? 'elegida'
-                            : 'elegidas'
-                        }`}
+                        {`Done · ${chosen.filter(l => l !== OTHER).length} selected`}
                       </Text>
                     </Pressable>
                   ) : null}
@@ -399,15 +395,15 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
                   allAnswered ? 'text-white' : 'text-slate-400'
                 }`}
               >
-                Enviar respuestas
+                Send answers
               </Text>
             )}
           </Pressable>
           {single ? null : (
             <Text className="mt-1.5 text-center text-[9.5px] text-slate-400">
               {allAnswered
-                ? 'Puedes tocar cualquiera para cambiarla'
-                : `Faltan ${questions.filter((_, i) => !isAnswered(i)).length}`}
+                ? 'Tap any question to change its answer'
+                : `${questions.filter((_, i) => !isAnswered(i)).length} left`}
             </Text>
           )}
         </>

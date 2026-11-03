@@ -73,7 +73,7 @@ class PredictiveBackModule(reactContext: ReactApplicationContext) :
                     backCallback.isEnabled = false
                     if (activity != null) setReactCallbackEnabled(activity, true)
                 }
-                else -> Log.w(NAME, "Modo de back desconocido: $mode")
+                else -> Log.w(NAME, "Unknown back mode: $mode")
             }
         }
     }
@@ -128,14 +128,14 @@ class PredictiveBackModule(reactContext: ReactApplicationContext) :
                             return found
                         }
                     } catch (e: Exception) {
-                        Log.w(NAME, "No se pudo leer el callback de React Native", e)
+                        Log.w(NAME, "Could not read the React Native callback", e)
                         return null
                     }
                 }
             }
             cls = cls.superclass
         }
-        Log.w(NAME, "No se encontró el callback de React Native")
+        Log.w(NAME, "React Native callback not found")
         return null
     }
 

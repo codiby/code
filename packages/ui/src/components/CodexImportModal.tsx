@@ -18,13 +18,13 @@ const folderName = (cwd: string) => cwd.split(/[\\/]/).filter(Boolean).pop() || 
 
 function ago(ms: number): string {
   const s = Math.max(0, (Date.now() - ms) / 1000);
-  if (s < 60) return 'ahora';
-  if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
-  if (s < 86400) return `hace ${Math.floor(s / 3600)} h`;
-  return `hace ${Math.floor(s / 86400)} d`;
+  if (s < 60) return 'now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
 }
 
-const ORIGIN_LABEL: Record<string, string> = { 'codex-tui': 'terminal', codex_exec: 'exec', 'Codex Desktop': 'desktop', codiby_code: 'esta app' };
+const ORIGIN_LABEL: Record<string, string> = { 'codex-tui': 'terminal', codex_exec: 'exec', 'Codex Desktop': 'desktop', codiby_code: 'this app' };
 
 export function CodexImportModal({
   open,
@@ -110,12 +110,12 @@ export function CodexImportModal({
             <Terminal className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div id="codex-import-title" className="text-[13px] font-semibold text-zinc-100">Importar sesión de Codex</div>
+            <div id="codex-import-title" className="text-[13px] font-semibold text-zinc-100">Import Codex session</div>
             <div className="mt-0.5 text-[12px] leading-relaxed text-zinc-400">
-              Trae una conversación que empezaste con <code className="font-mono">codex</code> en la terminal y continúala aquí. Si ya la importaste, se agregan los turnos nuevos.
+              Bring in a conversation you started with <code className="font-mono">codex</code> in the terminal and continue it here. If you already imported it, the new turns are added.
             </div>
           </div>
-          <button onClick={onClose} aria-label="Cerrar" className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-surface-light hover:text-zinc-200">
+          <button onClick={onClose} aria-label="Close" className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-surface-light hover:text-zinc-200">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -146,7 +146,7 @@ export function CodexImportModal({
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && visible[0]) void pick(visible[0]); }}
-            placeholder="Buscar por nombre o carpeta"
+            placeholder="Search by name or folder"
             className="min-w-0 flex-1 bg-transparent text-[12.5px] text-zinc-100 outline-none placeholder:text-zinc-500"
           />
         </div>
@@ -155,7 +155,7 @@ export function CodexImportModal({
           {threads === null ? (
             <div className="flex h-[120px] items-center justify-center text-zinc-500"><Loader2 className="h-4 w-4 animate-spin" /></div>
           ) : visible.length === 0 ? (
-            <div className="flex h-[120px] items-center justify-center text-[12px] text-zinc-500">No hay sesiones de Codex para importar.</div>
+            <div className="flex h-[120px] items-center justify-center text-[12px] text-zinc-500">No Codex sessions to import.</div>
           ) : visible.map(t => (
             <button
               key={t.id}
@@ -171,7 +171,7 @@ export function CodexImportModal({
                   <span className="shrink-0">{ago(t.updatedAt)}</span>
                   <span>·</span>
                   <span className="shrink-0">{ORIGIN_LABEL[t.originator] || t.originator || 'codex'}</span>
-                  {t.sessionId && <span className="shrink-0 rounded bg-zinc-500/15 px-1 text-zinc-400">importada</span>}
+                  {t.sessionId && <span className="shrink-0 rounded bg-zinc-500/15 px-1 text-zinc-400">imported</span>}
                 </div>
               </div>
               {busyId === t.id

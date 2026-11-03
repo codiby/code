@@ -45,7 +45,7 @@ export function RestartSuggestionBanner() {
       if (!d) return;
       setRestarting(false);
       if (d.ok) { setAdded([]); setRemoved([]); setError(null); }
-      else setError(d.error || 'No se pudo reiniciar');
+      else setError(d.error || "Couldn't restart");
     };
     window.addEventListener('mcp_changed', onChange);
     window.addEventListener('session_restart_done', onDone);
@@ -73,16 +73,16 @@ export function RestartSuggestionBanner() {
           <RefreshCw className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold text-[#eef0f2]">Reinicia la sesión</div>
+          <div className="text-[13px] font-semibold text-[#eef0f2]">Restart the session</div>
           <div className="mt-0.5 text-[11.5px] leading-[1.5] text-[#9aa0a8]">
             {error
               ? <span className="text-[#ef8a96]">{error}</span>
-              : 'Los cambios en los servidores MCP solo se aplican al reiniciar el proveedor. Tu conversación se conserva.'}
+              : 'MCP server changes only apply after restarting the provider. Your conversation is kept.'}
           </div>
         </div>
         <button
           onClick={dismiss}
-          aria-label="Descartar"
+          aria-label="Dismiss"
           className="ml-auto flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-[#6b6e76] hover:bg-[#26272d] hover:text-[#e6e7ea]"
         >
           <X className="h-[15px] w-[15px]" />
@@ -104,7 +104,7 @@ export function RestartSuggestionBanner() {
           disabled={restarting}
           className="rounded-[9px] px-[13px] py-[7px] text-[12px] font-semibold text-[#6b6e76] hover:bg-[#1f2025] hover:text-[#c4c6cc] disabled:opacity-40"
         >
-          Más tarde
+          Later
         </button>
         <button
           onClick={restart}
@@ -112,7 +112,7 @@ export function RestartSuggestionBanner() {
           className="flex items-center gap-1.5 rounded-[9px] bg-[#2dd4bf] px-[14px] py-[7px] text-[12px] font-bold text-[#04201c] transition-[filter] hover:brightness-110 disabled:opacity-50"
         >
           <RefreshCw className={`h-[13px] w-[13px] ${restarting ? 'animate-spin' : ''}`} />
-          {restarting ? 'Reiniciando…' : 'Reiniciar sesión'}
+          {restarting ? 'Restarting…' : 'Restart session'}
         </button>
       </div>
     </div>

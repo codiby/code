@@ -223,7 +223,7 @@ const PLAYBACK_SLACK_MS = 400;
 const ECHO_TAIL_MS = 2_000;
 
 const MAX_FINAL_INPUT_CHARS = 6_000;
-const FINAL_FALLBACK = 'Ya terminé, te dejé la respuesta en el chat.';
+const FINAL_FALLBACK = 'Done, I left the answer in the chat.';
 const ACK_TIMEOUT_MS = 5_000;
 /** How long an utterance waits on Haiku's call before going to the session
  *  as heard. */
@@ -461,7 +461,7 @@ class VoiceBridge {
     if (!this.agent) { this.sendToSession(text); return; }
 
     this.heardSinceSend.push(text);
-    this.remember('usuario', text);
+    this.remember('user', text);
     void this.decide(text, busy, stopWords);
   }
 
@@ -478,13 +478,13 @@ class VoiceBridge {
     if (this.disposed) return;
     const decision = raw ? parseFront(raw) : null;
 
-    if (decision?.action === 'esperar') {
+    if (decision?.action === 'wait') {
       if (noMore) {
         // Told it can't wait again and waited anyway: ask rather than guess.
-        decision.action = 'preguntar';
-        decision.say = decision.say || '¿Me lo terminas de decir?';
+        decision.action = 'ask';
+        decision.say = decision.say || 'Could you finish what you were saying?';
       } else {
-        log(`${this.tag} front: esperar`);
+        log(`${this.tag} front: wait`);
         // A cut sentence the user never finishes mustn't sit here forever:
         // after a while, decide again on what was said, waiting ruled out.
         this.waitTimer = setTimeout(() => {
@@ -506,31 +506,31 @@ class VoiceBridge {
 
     let { action } = decision;
     // Interrupting or stopping only means something while the session works.
-    if (!busy && action === 'interrumpir') action = 'enviar';
-    if (!busy && action === 'detener') action = 'responder';
+    if (!busy && action === 'interrupt') action = 'send';
+    if (!busy && action === 'stop') action = 'respond';
     // Stop words over a reply never become a new request.
-    if (stopWords && (action === 'enviar' || action === 'interrumpir')) action = 'detener';
+    if (stopWords && (action === 'send' || action === 'interrupt')) action = 'stop';
     // Stopping the work takes an explicit order, whatever Haiku concluded.
     // "Oye, Codin" once came back as interrumpir with a made-up "cancela la
     // revisión": a redirect says what to do instead, so three words or fewer
     // with no stop order can't be one either.
     const heard = this.heardSinceSend.join(' ');
     const tooThinToStop = !hasStopIntent(heard)
-      && (action === 'detener' || (action === 'interrumpir' && words(heard).length <= 3));
+      && (action === 'stop' || (action === 'interrupt' && words(heard).length <= 3));
     if (busy && tooThinToStop) {
-      log(`${this.tag} front: ${action} without a stop order in "${heard}", treated as responder`);
-      action = 'responder';
-      decision.say = '¿Sí?';
+      log(`${this.tag} front: ${action} without a stop order in "${heard}", treated as respond`);
+      action = 'respond';
+      decision.say = 'Yes?';
     }
     log(`${this.tag} front: ${action}${decision.instruction ? ` → ${decision.instruction.slice(0, 120)}` : ''}`);
 
-    if (action === 'interrumpir' || action === 'detener') {
+    if (action === 'interrupt' || action === 'stop') {
       this.sendClient({ type: 'agent_action', action });
       await deps!.interruptSession(this.sessionId);
     }
-    if (action === 'enviar' || action === 'interrumpir') {
+    if (action === 'send' || action === 'interrupt') {
       this.sendToSession(decision.instruction, this.heardSinceSend);
-    } else if (action === 'responder' || action === 'detener') {
+    } else if (action === 'respond' || action === 'stop') {
       // Answered or dropped: nothing heard so far is pending anymore. Asking
       // and waiting keep it, so the next utterance completes the request.
       this.heardSinceSend = [];
@@ -538,7 +538,7 @@ class VoiceBridge {
     }
 
     if (decision.say) {
-      this.remember('voz', decision.say);
+      this.remember('voice', decision.say);
       this.say(decision.say, 'ack');
     }
   }
@@ -573,7 +573,7 @@ class VoiceBridge {
   private remember(who: VoiceLine['who'], text: string) {
     this.voiceLog.push({ who, text });
     if (this.voiceLog.length > MAX_VOICE_LOG) this.voiceLog.splice(0, this.voiceLog.length - MAX_VOICE_LOG);
-    if (who === 'voz') this.saidThisTurn.push(text);
+    if (who === 'voice') this.saidThisTurn.push(text);
   }
 
   private recentMessages() {
@@ -643,7 +643,7 @@ class VoiceBridge {
     // Judged here rather than by asking Haiku to stay quiet: told it could
     // answer "(nada)", it went silent even on answers full of new results.
     if (repeats(summary, alreadySaid)) { log(`${this.tag} turn summary repeats what was said, skipped`); return; }
-    this.remember('voz', summary);
+    this.remember('voice', summary);
     if (cuttingIn()) this.cutOff();
     this.say(summary, 'final');
   }
@@ -705,7 +705,7 @@ class VoiceBridge {
       this.progressInFlight = false;
       if (!said || this.turn !== turn || this.answeredTurn === turn) return;
       this.progressNotes.push(said);
-      this.remember('voz', said);
+      this.remember('voice', said);
       this.say(said, 'progress');
     });
   }

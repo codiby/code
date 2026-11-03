@@ -66,13 +66,13 @@ export function UpdateBanner() {
         <div className="min-w-0 flex-1">
           {phase === 'error' ? (
             <>
-              <div className="text-sm font-medium text-zinc-100">No se pudo actualizar</div>
+              <div className="text-sm font-medium text-zinc-100">Update failed</div>
               <div className="mt-1 break-words text-xs text-zinc-400">{error}</div>
             </>
           ) : (
             <>
               <div className="text-sm font-medium text-zinc-100">
-                Nueva versión disponible
+                New version available
               </div>
               <div className="mt-0.5 text-xs text-zinc-400">
                 Codiby Code v{info.version}
@@ -84,7 +84,7 @@ export function UpdateBanner() {
           <button
             onClick={() => setPhase('hidden')}
             className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-            aria-label="Descartar"
+            aria-label="Dismiss"
           >
             <X className="h-4 w-4" />
           </button>
@@ -99,14 +99,14 @@ export function UpdateBanner() {
               style={{ width: `${pct}%` }}
             />
           </div>
-          <div className="mt-1 text-right text-[11px] text-zinc-500">Descargando… {pct}%</div>
+          <div className="mt-1 text-right text-[11px] text-zinc-500">Downloading… {pct}%</div>
         </div>
       )}
 
       {phase === 'installing' && (
         <div className="mt-3 flex items-center gap-2 text-xs text-zinc-400">
           <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-          Instalando — la app se reiniciará…
+          Installing — the app will restart…
         </div>
       )}
 
@@ -117,14 +117,14 @@ export function UpdateBanner() {
               onClick={() => setPhase('hidden')}
               className="rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
             >
-              Después
+              Later
             </button>
           )}
           <button
             onClick={startUpdate}
             className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-white"
           >
-            {phase === 'error' ? 'Reintentar' : 'Actualizar ahora'}
+            {phase === 'error' ? 'Retry' : 'Update now'}
           </button>
         </div>
       )}

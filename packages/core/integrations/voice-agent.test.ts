@@ -4,43 +4,43 @@ import type { ChatMessage } from '../session/state';
 
 describe('parseFront', () => {
   test('reads action, speech and a multi-line instruction', () => {
-    expect(parseFront('ACCION: enviar\nDECIR: Va, lo reviso.\nINSTRUCCION: Revisa el log de voz.\nBusca errores 402.')).toEqual({
-      action: 'enviar',
+    expect(parseFront('ACTION: send\nSAY: Va, lo reviso.\nINSTRUCTION: Revisa el log de voz.\nBusca errores 402.')).toEqual({
+      action: 'send',
       say: 'Va, lo reviso.',
       instruction: 'Revisa el log de voz.\nBusca errores 402.',
     });
   });
 
-  test('accents and case in labels are accepted', () => {
-    expect(parseFront('ACCIÓN: Preguntar\nDECIR: ¿Cuál log?')?.action).toBe('preguntar');
+  test('case in labels and actions is accepted', () => {
+    expect(parseFront('Action: Ask\nSay: ¿Cuál log?')?.action).toBe('ask');
   });
 
   test('placeholder values count as empty, never as speech', () => {
-    expect(parseFront('ACCION: responder\nDECIR: Onda, ¿qué se te ofrece?\nINSTRUCCION: (vacío)')?.instruction).toBe('');
-    expect(parseFront('ACCION: esperar\nDECIR: (vacío)\nINSTRUCCION: -')).toEqual({ action: 'esperar', say: '', instruction: '' });
+    expect(parseFront('ACTION: respond\nSAY: Onda, ¿qué se te ofrece?\nINSTRUCTION: (vacío)')?.instruction).toBe('');
+    expect(parseFront('ACTION: wait\nSAY: (empty)\nINSTRUCTION: -')).toEqual({ action: 'wait', say: '', instruction: '' });
   });
 
   test('waiting has nothing to say', () => {
-    expect(parseFront('ACCION: esperar\nDECIR:')).toEqual({ action: 'esperar', say: '', instruction: '' });
+    expect(parseFront('ACTION: wait\nSAY:')).toEqual({ action: 'wait', say: '', instruction: '' });
   });
 
   test('no recognizable action is no decision — the caller sends as heard', () => {
     expect(parseFront('Entendido, lo reviso.')).toBeNull();
-    expect(parseFront('ACCION: borrar todo\nDECIR: ok')).toBeNull();
+    expect(parseFront('ACTION: delete everything\nSAY: ok')).toBeNull();
   });
 
   test('sending without an instruction is no decision either', () => {
-    expect(parseFront('ACCION: enviar\nDECIR: Va.')).toBeNull();
+    expect(parseFront('ACTION: send\nSAY: Va.')).toBeNull();
   });
 });
 
 describe('stripActionLines', () => {
-  test('control lines go, a labelled DECIR keeps its words', () => {
-    expect(stripActionLines('ACCION: responder\nDECIR: Hola.\nINSTRUCCION: nada')).toBe('Hola.');
+  test('control lines go, a labelled SAY keeps its words', () => {
+    expect(stripActionLines('ACTION: respond\nSAY: Hola.\nINSTRUCTION: nothing')).toBe('Hola.');
   });
 
   test('a multi-line instruction is never read aloud', () => {
-    expect(stripActionLines('ACCION: enviar\nDECIR: Va.\nINSTRUCCION: Revisa el log.\nY luego el bridge.')).toBe('Va.');
+    expect(stripActionLines('ACTION: send\nSAY: Va.\nINSTRUCTION: Revisa el log.\nY luego el bridge.')).toBe('Va.');
   });
 
   test('plain speech passes through', () => {
@@ -60,15 +60,15 @@ describe('buildContext', () => {
       msg({ isToolResult: true, content: 'mil líneas' }),
       msg({ content: 'El log muestra un error 402.' }),
     ]);
-    expect(ctx).toBe('Usuario: revisa el log\n[agente usó Bash: Read server log]\nAgente: El log muestra un error 402.');
+    expect(ctx).toBe('User: revisa el log\n[agent used Bash: Read server log]\nAgent: El log muestra un error 402.');
   });
 
   test('keeps only the most recent messages', () => {
     const many = Array.from({ length: 30 }, (_, i) => msg({ role: 'user', content: `m${i}` }));
     const lines = buildContext(many, 20).split('\n');
     expect(lines).toHaveLength(20);
-    expect(lines[0]).toBe('Usuario: m10');
-    expect(lines[lines.length - 1]).toBe('Usuario: m29');
+    expect(lines[0]).toBe('User: m10');
+    expect(lines[lines.length - 1]).toBe('User: m29');
   });
 
   test('clips long messages', () => {
@@ -79,18 +79,18 @@ describe('buildContext', () => {
 
 describe('buildPrompt', () => {
   test('names the mode and carries the payload', () => {
-    const p = buildPrompt('front', 'Usuario: hola', 'cambia la voz');
-    expect(p).toContain('MODO front');
+    const p = buildPrompt('front', 'User: hola', 'cambia la voz');
+    expect(p).toContain('MODE front');
     expect(p).toContain('"cambia la voz"');
-    expect(p).toContain('<conversacion>\nUsuario: hola\n</conversacion>');
+    expect(p).toContain('<conversation>\nUser: hola\n</conversation>');
   });
 
   test('carries the voice dialogue and flags a busy session', () => {
     const p = buildPrompt('front', '', 'el de voz', {
       busy: true,
-      voiceLog: [{ who: 'usuario', text: 'revisa el log' }, { who: 'voz', text: '¿Cuál log?' }],
+      voiceLog: [{ who: 'user', text: 'revisa el log' }, { who: 'voice', text: '¿Cuál log?' }],
     });
-    expect(p).toContain('<voz>\nUsuario: revisa el log\nTú: ¿Cuál log?\n</voz>');
-    expect(p).toContain('EN CURSO');
+    expect(p).toContain('<voice>\nUser: revisa el log\nYou: ¿Cuál log?\n</voice>');
+    expect(p).toContain('IN PROGRESS');
   });
 });

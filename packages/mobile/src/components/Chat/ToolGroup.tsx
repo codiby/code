@@ -112,7 +112,7 @@ export function ToolGroup({ entries, variant = 'standalone' }: ToolGroupProps) {
   const [isOpen, setIsOpen] = useState(false);
   const { label, kinds, elapsed, failures } = summarizeGroup(entries);
 
-  const meta = [elapsed, failures > 0 ? `${failures} falló` : null].filter(
+  const meta = [elapsed, failures > 0 ? `${failures} failed` : null].filter(
     (part): part is string => part !== null,
   );
 

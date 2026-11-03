@@ -68,7 +68,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
   // Local bridge: once per client.
   useEffect(() => {
     if (!client) return;
-    void client.getClaudeAuth(null).catch(() => null).then(s => enqueue({ remoteId: null, name: 'este equipo' }, s));
+    void client.getClaudeAuth(null).catch(() => null).then(s => enqueue({ remoteId: null, name: 'this computer' }, s));
   }, [client, enqueue]);
 
   // Remotes: each time one comes online, like RemoteVersionBanner.
@@ -94,7 +94,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
       const flow = await client.getClaudeLoginFlow(host.remoteId).catch(() => null);
       if (stopped || !flow || flow.id !== waitingId) return;
       if (flow.state === 'done') setPhase({ kind: 'done', status: flow.status });
-      else if (flow.state === 'error') setPhase({ kind: 'error', message: flow.error || 'No se pudo iniciar sesión.' });
+      else if (flow.state === 'error') setPhase({ kind: 'error', message: flow.error || 'Could not sign in.' });
       else if (flow.state === 'cancelled') setPhase({ kind: 'prompt' });
     };
     const t = setInterval(() => void tick(), POLL_MS);
@@ -140,7 +140,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
     if (!client || phase.kind !== 'waiting' || !code.trim()) return;
     // The page shows `code#state`; a pasted redirect URL carries both too.
     if (!code.includes('#') && !/^\s*https?:\/\//i.test(code)) {
-      setInlineError('Pega el código completo que muestra la página (incluye un "#").');
+      setInlineError('Paste the full code shown on the page (it includes a "#").');
       return;
     }
     const flow = phase.flow;
@@ -149,7 +149,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
       const res = await client.submitClaudeLoginCode(code, host.remoteId);
       if (res.state === 'done') setPhase({ kind: 'done', status: res.status });
       // The CLI ends the flow on a bad code; a new one is needed either way.
-      else if (res.state === 'error') setPhase({ kind: 'error', message: 'El código no fue aceptado. Vuelve a iniciar sesión.' });
+      else if (res.state === 'error') setPhase({ kind: 'error', message: 'The code was not accepted. Sign in again.' });
       else setPhase({ kind: 'waiting', flow });
     } catch (err) {
       // Malformed paste: the flow is still alive, let them fix it.
@@ -160,7 +160,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
 
   const busy = phase.kind === 'starting' || phase.kind === 'submitting';
   const flow = phase.kind === 'waiting' || phase.kind === 'submitting' ? phase.flow : null;
-  const where = host.remoteId ? <> en <span className="font-medium text-zinc-200">{host.name}</span></> : null;
+  const where = host.remoteId ? <> on <span className="font-medium text-zinc-200">{host.name}</span></> : null;
 
   const ghostBtn = 'rounded-lg px-2.5 py-1.5 text-[12px] font-medium text-zinc-400 transition-colors hover:bg-surface-light hover:text-zinc-100 disabled:opacity-40';
   const primaryBtn = 'flex items-center justify-center gap-1.5 rounded-lg bg-zinc-100 py-1.5 text-[12px] font-semibold text-zinc-900 transition-opacity hover:opacity-90 disabled:opacity-40';
@@ -185,33 +185,33 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
         </div>
         <div className="min-w-0 flex-1">
           <div id="claude-login-title" className="text-[13px] font-semibold text-zinc-100">
-            {phase.kind === 'done' ? 'Sesión iniciada'
-              : phase.kind === 'error' ? 'No se pudo iniciar sesión'
-              : 'Inicia sesión en Claude Code'}
+            {phase.kind === 'done' ? 'Signed in'
+              : phase.kind === 'error' ? 'Could not sign in'
+              : 'Sign in to Claude Code'}
           </div>
           <div className="mt-0.5 text-[12px] leading-relaxed text-zinc-400">
             {phase.kind === 'done' ? (
               <>
-                {phase.status?.email ? <>Conectado como <span className="font-medium text-zinc-200">{phase.status.email}</span>{phase.status.subscriptionType ? ` (${phase.status.subscriptionType})` : ''}</> : 'Claude Code ya tiene cuenta'}
-                {where}. Las sesiones nuevas ya la usan; reinicia las que estaban abiertas.
+                {phase.status?.email ? <>Signed in as <span className="font-medium text-zinc-200">{phase.status.email}</span>{phase.status.subscriptionType ? ` (${phase.status.subscriptionType})` : ''}</> : 'Claude Code has an account'}
+                {where}. New sessions use it already; restart the ones that were open.
               </>
             ) : phase.kind === 'error' ? (
               <span className="break-words">{phase.message}</span>
             ) : flow ? (
               flow.automaticReachable && !showManual ? (
-                <>Se abrió el navegador. Al autorizar, esto se completa solo.</>
+                <>The browser opened. Once you authorize, this finishes on its own.</>
               ) : (
-                <>Autoriza en el navegador y pega aquí el código que te muestra la página.</>
+                <>Authorize in the browser and paste the code the page shows you here.</>
               )
             ) : (
-              <>El CLI de Claude Code{where} no tiene una cuenta. Sin ella, las sesiones de Claude no pueden responder.</>
+              <>The Claude Code CLI{where} has no account. Without one, Claude sessions can't reply.</>
             )}
           </div>
         </div>
         <button
           onClick={phase.kind === 'done' ? next : later}
           disabled={busy}
-          aria-label="Cerrar"
+          aria-label="Close"
           className={`-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-surface-light hover:text-zinc-200 ${busy ? 'invisible' : ''}`}
         >
           <X className="h-4 w-4" />
@@ -230,7 +230,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
                   autoFocus
                   value={code}
                   onChange={(e) => { setCode(e.target.value); setInlineError(''); }}
-                  placeholder="Pega el código"
+                  placeholder="Paste the code"
                   spellCheck={false}
                   disabled={phase.kind === 'submitting'}
                   className="min-w-0 flex-1 rounded-lg border border-border bg-base px-2.5 py-1.5 font-mono text-[11.5px] text-zinc-100 placeholder:font-sans placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
@@ -240,7 +240,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
                   disabled={!code.trim() || phase.kind === 'submitting'}
                   className={`${primaryBtn} w-[72px]`}
                 >
-                  {phase.kind === 'submitting' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Enviar'}
+                  {phase.kind === 'submitting' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Submit'}
                 </button>
               </form>
               {inlineError && <div className="text-[11px] text-red-400">{inlineError}</div>}
@@ -250,15 +250,15 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
                 rel="noopener"
                 className="inline-flex items-center gap-1 text-[11.5px] text-zinc-400 transition-colors hover:text-zinc-100"
               >
-                <ExternalLink className="h-3 w-3" /> Abrir la página para obtener el código
+                <ExternalLink className="h-3 w-3" /> Open the page to get the code
               </a>
             </>
           ) : (
             <div className="flex items-center gap-2 whitespace-nowrap text-[11.5px] text-zinc-500">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#d97757]" />
-              <span>Esperando autorización…</span>
+              <span>Waiting for authorization…</span>
               <a href={flow.automaticUrl} target="_blank" rel="noopener" className="ml-auto text-zinc-400 transition-colors hover:text-zinc-100">
-                Abrir de nuevo
+                Open again
               </a>
             </div>
           )}
@@ -268,7 +268,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
       <div className="mt-3.5 flex items-center gap-1.5 whitespace-nowrap">
         {phase.kind === 'done' ? (
           <button onClick={next} className={`${primaryBtn} ml-auto px-4`}>
-            Listo
+            Done
           </button>
         ) : flow ? (
           <>
@@ -277,7 +277,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
                 onClick={() => setShowManual(true)}
                 className="rounded-lg px-1.5 py-1.5 text-[11.5px] text-zinc-500 transition-colors hover:text-zinc-200"
               >
-                Pegar un código
+                Paste a code
               </button>
             )}
             <button
@@ -285,7 +285,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
               disabled={busy}
               className={`${ghostBtn} ml-auto`}
             >
-              Cancelar
+              Cancel
             </button>
           </>
         ) : (
@@ -293,13 +293,13 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
             <button
               onClick={() => void start('console')}
               disabled={busy}
-              title="Facturación por uso de la API en lugar de la suscripción"
+              title="Pay-as-you-go API billing instead of the subscription"
               className="rounded-lg px-1.5 py-1.5 text-[11.5px] text-zinc-500 transition-colors hover:text-zinc-200 disabled:opacity-40"
             >
-              Usar Console
+              Use Console
             </button>
             <button onClick={later} disabled={busy} className={`${ghostBtn} ml-auto`}>
-              Después
+              Later
             </button>
             {/* Fixed width so the label swap to "Abriendo…" doesn't reflow the row. */}
             <button
@@ -308,7 +308,7 @@ export function ClaudeLoginDialog({ client, remotes, remoteStatuses }: Props) {
               className={`${primaryBtn} w-[118px]`}
             >
               {busy && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
-              {busy ? 'Abriendo…' : phase.kind === 'error' ? 'Reintentar' : 'Iniciar sesión'}
+              {busy ? 'Opening…' : phase.kind === 'error' ? 'Retry' : 'Sign in'}
             </button>
           </>
         )}

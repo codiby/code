@@ -39,7 +39,7 @@ export function MockupCard({ name, onOpen }: MockupCardProps) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Abrir el mockup ${name}`}
+      accessibilityLabel={`Open mockup ${name}`}
       onPress={() => onOpen?.(name)}
       disabled={onOpen === undefined}
       className="my-1 flex-row items-center gap-2.5 self-start rounded-2xl border border-slate-200 bg-white px-3 py-2 active:bg-slate-50"
@@ -53,7 +53,7 @@ export function MockupCard({ name, onOpen }: MockupCardProps) {
       </View>
       {onOpen !== undefined ? (
         <View className="ml-1 rounded-full bg-slate-900 px-2.5 py-1">
-          <Text className="text-[10px] font-bold text-white">Ver</Text>
+          <Text className="text-[10px] font-bold text-white">View</Text>
         </View>
       ) : null}
     </Pressable>

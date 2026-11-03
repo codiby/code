@@ -50,7 +50,7 @@ export function fetchResources(
           ? ((body as Record<string, unknown>).resources ?? [])
           : [];
       if (!Array.isArray(list)) {
-        throw new ServerError('Respuesta inesperada en /resources');
+        throw new ServerError('Unexpected response from /resources');
       }
       return list
         .map(toResource)

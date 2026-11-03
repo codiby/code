@@ -14,7 +14,7 @@ class ShareTargets: NSObject {
   @objc(read:resolver:rejecter:)
   func read(_ requestId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     DispatchQueue.main.async {
-      guard requestId == Self.requestId, let receiver = Self.receiver else { reject("SHARE_CONTEXT", "No hay imágenes compartidas", nil); return }
+      guard requestId == Self.requestId, let receiver = Self.receiver else { reject("SHARE_CONTEXT", "No shared images", nil); return }
       receiver.readShared(resolve: resolve, reject: reject)
     }
   }
@@ -31,7 +31,7 @@ class ShareTargets: NSObject {
     do {
       try ShareConfig.writeSessions(Data(snapshot.utf8))
       resolve(nil)
-    } catch { reject("SHARE_SESSIONS", "No se pudo guardar la lista de chats", error) }
+    } catch { reject("SHARE_SESSIONS", "Could not save the chat list", error) }
   }
 
   @objc(configure:resolver:rejecter:)
@@ -40,7 +40,7 @@ class ShareTargets: NSObject {
       try ShareConfig.write(Data(config.utf8))
       resolve(nil)
     } catch {
-      reject("SHARE_CONFIG", "No se pudo guardar la configuración para compartir", error)
+      reject("SHARE_CONFIG", "Could not save the sharing settings", error)
     }
   }
 }

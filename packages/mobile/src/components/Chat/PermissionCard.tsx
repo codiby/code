@@ -40,7 +40,7 @@ export function PermissionCard({
         <View className="flex-row items-center gap-1.5">
           <View className="h-1.5 w-1.5 rounded-full bg-amber-500" />
           <Text className="text-[9.5px] font-bold uppercase tracking-wide text-amber-700">
-            Pide permiso
+            Needs permission
           </Text>
         </View>
 
@@ -83,19 +83,19 @@ export function PermissionCard({
         <View className="mt-3 flex-row items-center justify-end gap-1">
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Denegar"
+            accessibilityLabel="Deny"
             onPress={() => onRespond(false)}
             disabled={isBusy}
             className="rounded-lg px-3.5 py-2 active:bg-slate-100"
           >
             <Text className="text-[12.5px] font-semibold text-slate-600">
-              Denegar
+              Deny
             </Text>
           </Pressable>
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Permitir"
+            accessibilityLabel="Allow"
             onPress={() => onRespond(true)}
             disabled={isBusy}
             className={`rounded-lg px-3.5 py-2 ${
@@ -103,14 +103,14 @@ export function PermissionCard({
             }`}
           >
             <Text className="text-[12.5px] font-semibold text-white">
-              Permitir
+              Allow
             </Text>
           </Pressable>
         </View>
 
         {/* No es «salta esta herramienta»: el bridge llama a interrupt(). */}
         <Text className="mt-1 text-right text-[9.5px] text-slate-300">
-          denegar interrumpe el turno
+          denying interrupts the turn
         </Text>
       </View>
     </View>

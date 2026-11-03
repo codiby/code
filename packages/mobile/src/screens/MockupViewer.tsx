@@ -53,13 +53,13 @@ export function MockupViewer({
           resources.find(item => item.name === `${name}.html`) ??
           resources.find(item => item.name.startsWith(name));
         if (match === undefined) {
-          setError(`No encontré el mockup «${name}» en esta sesión.`);
+          setError(`Couldn't find the mockup "${name}" in this session.`);
           return;
         }
         setUri(resourceUrl(baseUrl, match, token));
       })
       .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : 'Error desconocido'),
+        setError(cause instanceof Error ? cause.message : 'Unknown error'),
       );
     return () => {
       cancelled = true;
@@ -74,7 +74,7 @@ export function MockupViewer({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Cerrar el mockup"
+          accessibilityLabel="Close mockup"
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
         >

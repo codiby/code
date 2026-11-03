@@ -38,7 +38,7 @@ jest.mock('../src/screens', () => {
   const { Text } = require('react-native');
   return {
     ChatScreen: () =>
-      R.createElement(Text, { testID: 'direct-screen' }, 'Chat directo'),
+      R.createElement(Text, { testID: 'direct-screen' }, 'Direct chat'),
     HomeScreen: () =>
       R.createElement(
         Text,
@@ -46,7 +46,7 @@ jest.mock('../src/screens', () => {
         'Conversaciones',
       ),
     SettingsScreen: () =>
-      R.createElement(Text, { testID: 'settings-screen' }, 'Ajustes'),
+      R.createElement(Text, { testID: 'settings-screen' }, 'Settings'),
   };
 });
 
@@ -56,9 +56,9 @@ import { DEFAULT_TAB_ITEMS } from '../src/components/GlassTabBar/GlassTabBar';
 
 test('volver abre conversaciones y el primer icono abre un chat directo nuevo', async () => {
   expect(DEFAULT_TAB_ITEMS.map(t => t.label)).toEqual([
-    'Nuevo chat',
-    'Conversaciones',
-    'Ajustes',
+    'New chat',
+    'Conversations',
+    'Settings',
   ]);
   let tree!: ReactTestRenderer.ReactTestRenderer;
   await act(async () => {

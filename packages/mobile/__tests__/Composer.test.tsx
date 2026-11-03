@@ -29,9 +29,9 @@ test('cancelar una cita conserva el texto del borrador', async () => {
       />,
     );
   });
-  await act(async () => button(tree, 'Cancelar respuesta').props.onPress());
+  await act(async () => button(tree, 'Cancel reply').props.onPress());
   expect(onCancelReply).toHaveBeenCalledTimes(1);
-  expect(button(tree, 'Mensaje').props.value).toBe('Mi respuesta');
+  expect(button(tree, 'Message').props.value).toBe('Mi respuesta');
   await act(async () => tree.unmount());
 });
 
@@ -44,23 +44,23 @@ test('envía texto multilínea y adjuntos desde el mismo compositor', async () =
   await act(async () => {
     tree = ReactTestRenderer.create(<Composer onSend={onSend} />);
   });
-  expect(button(tree, 'Enviar').props.disabled).toBe(true);
+  expect(button(tree, 'Send').props.disabled).toBe(true);
   await act(async () => {
     tree.root
-      .findAllByProps({ accessibilityLabel: 'Mensaje' })[0]!
+      .findAllByProps({ accessibilityLabel: 'Message' })[0]!
       .props.onChangeText('Primera línea\nSegunda línea');
   });
   await act(async () => {
-    button(tree, 'Adjuntar imagen').props.onPress();
+    button(tree, 'Attach image').props.onPress();
   });
   await act(async () => {
-    button(tree, 'Enviar').props.onPress();
+    button(tree, 'Send').props.onPress();
   });
   expect(onSend).toHaveBeenCalledWith('Primera línea\nSegunda línea', [
     { mediaType: 'image/png', data: 'image-data' },
   ]);
   expect(
-    tree.root.findAllByProps({ accessibilityLabel: 'Mensaje' })[0]!.props.value,
+    tree.root.findAllByProps({ accessibilityLabel: 'Message' })[0]!.props.value,
   ).toBe('');
   await act(async () => {
     tree.unmount();
@@ -86,7 +86,7 @@ test('un envío fallido restaura el borrador y no permite doble envío simultán
       />,
     );
   });
-  const send = button(tree, 'Enviar').props.onPress;
+  const send = button(tree, 'Send').props.onPress;
   await act(async () => {
     send();
     send();
@@ -96,17 +96,17 @@ test('un envío fallido restaura el borrador y no permite doble envío simultán
     reject(new Error('Sin conexión'));
   });
   expect(
-    tree.root.findAllByProps({ accessibilityLabel: 'Mensaje' })[0]!.props.value,
+    tree.root.findAllByProps({ accessibilityLabel: 'Message' })[0]!.props.value,
   ).toBe('Mi petición');
   expect(onTextChange).toHaveBeenLastCalledWith('Mi petición');
-  expect(button(tree, 'Enviar').props.disabled).toBe(false);
+  expect(button(tree, 'Send').props.disabled).toBe(false);
   onSend.mockResolvedValueOnce(undefined);
   await act(async () => {
-    button(tree, 'Enviar').props.onPress();
+    button(tree, 'Send').props.onPress();
   });
   expect(onSend).toHaveBeenCalledTimes(2);
   expect(
-    tree.root.findAllByProps({ accessibilityLabel: 'Mensaje' })[0]!.props.value,
+    tree.root.findAllByProps({ accessibilityLabel: 'Message' })[0]!.props.value,
   ).toBe('');
   await act(async () => {
     tree.unmount();

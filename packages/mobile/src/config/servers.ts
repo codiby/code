@@ -69,7 +69,7 @@ export function routeState(
   isProbing: boolean,
 ): { readonly dot: RouteDotKey; readonly label: string } {
   if (!hasUrl) {
-    return { dot: 'down', label: isProbing ? 'probando' : 'caído' };
+    return { dot: 'down', label: isProbing ? 'probing' : 'down' };
   }
   return path === 'remote'
     ? { dot: 'remote', label: 'internet' }
@@ -197,7 +197,7 @@ export function migrateLegacy(raw: string | null): ServerEntry[] | null {
     return [
       {
         id: newServerId(),
-        name: host.replace(/^https?:\/\//, '').split(/[.:]/)[0] || 'Servidor',
+        name: host.replace(/^https?:\/\//, '').split(/[.:]/)[0] || 'Server',
         localUrl: normalizeUrl(host, resolvedPort),
         remoteUrl: '',
         token: typeof token === 'string' ? token : '',

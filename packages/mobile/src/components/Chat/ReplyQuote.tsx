@@ -13,7 +13,7 @@ export function ReplyQuote({
     <View className="flex-row items-center rounded-lg border-l-[3px] border-emerald-600 bg-slate-100 px-2.5 py-2">
       <View className="flex-1">
         <Text className="text-[11px] font-semibold text-emerald-700">
-          {reply.role === 'user' ? 'Tú' : 'Codiby'}
+          {reply.role === 'user' ? 'You' : 'Codiby'}
         </Text>
         <Text
           numberOfLines={2}
@@ -25,7 +25,7 @@ export function ReplyQuote({
       {onCancel ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Cancelar respuesta"
+          accessibilityLabel="Cancel reply"
           onPress={onCancel}
           className="h-11 w-11 items-center justify-center"
         >

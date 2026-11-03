@@ -82,14 +82,14 @@ export function ResourceGallery({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Volver"
+          accessibilityLabel="Back"
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
         >
           <CloseIcon size={20} color="#0f172a" />
         </Pressable>
         <Text className="flex-1 text-base font-semibold text-slate-900">
-          {`Recursos · ${images.length + mockups.length}`}
+          {`Resources · ${images.length + mockups.length}`}
         </Text>
       </View>
 
@@ -110,7 +110,7 @@ export function ResourceGallery({
               }`}
             >
               {value === 'image'
-                ? `Imágenes ${images.length}`
+                ? `Images ${images.length}`
                 : `Mockups ${mockups.length}`}
             </Text>
           </Pressable>
@@ -152,7 +152,7 @@ export function ResourceGallery({
           renderItem={({ item }) => (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Abrir ${mockupName(item)}`}
+              accessibilityLabel={`Open ${mockupName(item)}`}
               onPress={() => onOpenMockup(mockupName(item))}
               className="flex-row items-center gap-3 border-b border-slate-100 px-4 py-3 active:bg-slate-50"
             >

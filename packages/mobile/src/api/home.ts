@@ -65,10 +65,10 @@ async function fetchCompact(
       return null;
     }
     if (response.status === 401) {
-      throw new ServerError('Token inválido o ausente');
+      throw new ServerError('Invalid or missing token');
     }
     if (!response.ok) {
-      throw new ServerError(`El servidor respondió HTTP ${response.status}`);
+      throw new ServerError(`The server responded with HTTP ${response.status}`);
     }
     const body = (await response.json()) as {
       sessions?: unknown;
@@ -87,7 +87,7 @@ async function fetchCompact(
     if (error instanceof ServerError) {
       throw error;
     }
-    throw new ServerError('No se pudo alcanzar el servidor');
+    throw new ServerError('Could not reach the server');
   } finally {
     clearTimeout(timer);
   }

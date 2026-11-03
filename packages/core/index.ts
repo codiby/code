@@ -1793,7 +1793,7 @@ app.post('/sessions/:id/messages', async (c) => {
 // Sessions the previous run left mid-turn (see session/interrupted.ts). The
 // UI asks once on launch; restoring sends a plain "continue", which also
 // respawns the provider with its resume id.
-const RESUME_PROMPT = 'Continúa.';
+const RESUME_PROMPT = 'Continue.';
 
 app.get('/interrupted-sessions', () => {
   const list = getInterruptedTurns().flatMap(({ sessionId, at }) => {

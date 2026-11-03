@@ -48,9 +48,9 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
     <>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Uso del plan${
-          headline ? `, ${headline.percent}% utilizado` : ''
-        }${hasError ? ', datos incompletos' : ''}`}
+        accessibilityLabel={`Plan usage${
+          headline ? `, ${headline.percent}% used` : ''
+        }${hasError ? ', incomplete data' : ''}`}
         accessibilityState={{ expanded: open, disabled }}
         disabled={disabled}
         onPress={() => setOpen(true)}
@@ -84,7 +84,7 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
         <View className="flex-1 justify-end bg-slate-900/45">
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Cerrar uso del plan"
+            accessibilityLabel="Close plan usage"
             onPress={() => setOpen(false)}
             className="flex-1"
           />
@@ -96,15 +96,15 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
             <View className="flex-row items-center px-5 pb-3">
               <View className="flex-1">
                 <Text className="text-base font-bold text-slate-900">
-                  Uso del plan
+                  Plan usage
                 </Text>
                 <Text className="mt-0.5 text-xs text-slate-500">
-                  Límites por servidor y proveedor
+                  Limits by server and provider
                 </Text>
               </View>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Actualizar uso"
+                accessibilityLabel="Refresh usage"
                 accessibilityState={{ disabled: loading }}
                 disabled={loading}
                 onPress={refresh}
@@ -114,17 +114,17 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
                   <ActivityIndicator size="small" color="#7c3aed" />
                 ) : (
                   <Text className="text-xs font-semibold text-violet-700">
-                    Actualizar
+                    Refresh
                   </Text>
                 )}
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Cerrar detalle de uso"
+                accessibilityLabel="Close usage details"
                 onPress={() => setOpen(false)}
                 className="min-h-11 justify-center pl-2"
               >
-                <Text className="text-sm text-slate-500">Cerrar</Text>
+                <Text className="text-sm text-slate-500">Close</Text>
               </Pressable>
             </View>
             <ScrollView contentContainerClassName="px-5 pb-3">
@@ -140,7 +140,7 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
                     className="border-t border-slate-100 py-4"
                   >
                     <Text className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-500">
-                      {server.name || 'Sin nombre'}
+                      {server.name || 'Untitled'}
                     </Text>
                     {result?.error ? (
                       <Text
@@ -149,18 +149,18 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
                       >
                         {result.error}
                         {result.snapshot
-                          ? ' · Se muestran los últimos datos disponibles.'
+                          ? ' · Showing the latest available data.'
                           : ''}
                       </Text>
                     ) : null}
                     {!result || (result.loading && !result.snapshot) ? (
                       <Text className="text-xs text-slate-500">
-                        Cargando uso…
+                        Loading usage…
                       </Text>
                     ) : null}
                     {result?.snapshot && providers.length === 0 ? (
                       <Text className="text-xs text-slate-500">
-                        No hay proveedores con sesión iniciada.
+                        No providers are signed in.
                       </Text>
                     ) : null}
                     {providers.map(provider => (
@@ -171,9 +171,9 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
                     ))}
                     {result?.snapshot ? (
                       <Text className="mt-2 text-[10px] text-slate-400">
-                        Actualizado:{' '}
+                        Updated:{' '}
                         {new Date(result.snapshot.fetchedAt).toLocaleString(
-                          'es-MX',
+                          'en-US',
                         )}
                       </Text>
                     ) : null}
@@ -208,10 +208,10 @@ function ProviderDetails({ usage }: { usage: ProviderUsage }) {
       ) : null}
       {usage.status === 'error' ? (
         <Text className="text-xs text-amber-700">
-          {usage.error || 'No se pudo leer el uso'}
+          {usage.error || 'Could not read usage'}
         </Text>
       ) : usage.windows.length === 0 ? (
-        <Text className="text-xs text-slate-500">Sin límites disponibles</Text>
+        <Text className="text-xs text-slate-500">No limits available</Text>
       ) : (
         usage.windows.map(window => <Meter key={window.id} window={window} />)
       )}
@@ -234,16 +234,16 @@ function ProviderDetails({ usage }: { usage: ProviderUsage }) {
 function Meter({ window: w }: { window: UsageWindow }) {
   const label =
     w.kind === 'session'
-      ? 'Sesión'
+      ? 'Session'
       : w.kind === 'weekly'
-      ? 'Semanal'
-      : w.label || 'Límite';
+      ? 'Weekly'
+      : w.label || 'Limit';
   const detail =
     w.scope ||
     (w.windowMinutes
       ? formatDuration(w.windowMinutes)
       : w.kind === 'weekly'
-      ? 'todos los modelos'
+      ? 'all models'
       : null);
   return (
     <View className="mb-3">
@@ -266,7 +266,7 @@ function Meter({ window: w }: { window: UsageWindow }) {
           min: 0,
           max: 100,
           now: Math.max(0, Math.min(100, w.percent)),
-          text: `${w.percent}% utilizado`,
+          text: `${w.percent}% used`,
         }}
         className="h-1.5 overflow-hidden rounded-full bg-slate-200"
       >
@@ -279,9 +279,9 @@ function Meter({ window: w }: { window: UsageWindow }) {
         />
       </View>
       <Text className="mt-1 text-[10px] text-slate-500">
-        {w.percent >= 100 ? 'Límite alcanzado · ' : ''}
+        {w.percent >= 100 ? 'Limit reached · ' : ''}
         {formatReset(w.resetsAt)}
-        {w.isActive ? ' · activo ahora' : ''}
+        {w.isActive ? ' · active now' : ''}
       </Text>
     </View>
   );
@@ -289,7 +289,7 @@ function Meter({ window: w }: { window: UsageWindow }) {
 
 function formatDuration(minutes: number) {
   if (minutes % 10080 === 0) {
-    return `${minutes / 10080} sem`;
+    return `${minutes / 10080} wk`;
   }
   if (minutes % 1440 === 0) {
     return `${minutes / 1440} d`;
@@ -302,15 +302,15 @@ function formatDuration(minutes: number) {
 
 function formatReset(iso?: string | null) {
   if (!iso) {
-    return 'Sin reinicio';
+    return 'No reset';
   }
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) {
-    return 'Sin reinicio';
+    return 'No reset';
   }
   const minutes = Math.ceil((date.getTime() - Date.now()) / 60_000);
   if (minutes <= 0) {
-    return 'Reiniciando…';
+    return 'Resetting…';
   }
   const remaining =
     minutes >= 1440
@@ -318,7 +318,7 @@ function formatReset(iso?: string | null) {
       : minutes >= 60
       ? `${Math.floor(minutes / 60)} h ${minutes % 60} min`
       : `${minutes} min`;
-  return `Se reinicia en ${remaining} · ${date.toLocaleString('es-MX', {
+  return `Resets in ${remaining} · ${date.toLocaleString('en-US', {
     weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
@@ -327,7 +327,7 @@ function formatReset(iso?: string | null) {
 
 function formatCredits(credits: NonNullable<ProviderUsage['credits']>) {
   const money = (minor: number) =>
-    (minor / 100).toLocaleString('es-MX', {
+    (minor / 100).toLocaleString('en-US', {
       style: 'currency',
       currency: credits.currency || 'USD',
     });

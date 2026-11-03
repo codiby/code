@@ -38,7 +38,7 @@ test('responder a una respuesta cita solo su cuerpo y permite fotos sin texto', 
       content: '',
       images: [{ mediaType: 'image/png', data: 'photo' }],
     }).text,
-  ).toBe('Imagen');
+  ).toBe('Image');
   expect(
     replyFromMessage({ ...original, content: 'palabra '.repeat(300) }).text,
   ).toHaveLength(600);

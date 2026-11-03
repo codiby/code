@@ -28,7 +28,7 @@ export interface ShareChats {
 export function parseShareChats(payload: IncomingShare): ShareChats {
   const config = JSON.parse(payload.config);
   if (config.version !== 1 || !Array.isArray(config.servers)) {
-    throw new Error('Abre Codiby Code para sincronizar tus hosts.');
+    throw new Error('Open Codiby Code to sync your hosts.');
   }
   const hosts: ShareHost[] = config.servers.filter(
     (host: ShareHost) =>
@@ -110,13 +110,13 @@ export async function sendIncomingShare(
 ): Promise<void> {
   const live = await fetchShareHost(host);
   if (!live.sessions.some(item => item.id === session.id && item.isOpen)) {
-    throw new Error('El chat ya no está activo. Actualiza la lista.');
+    throw new Error('This chat is no longer active. Refresh the list.');
   }
   try {
     await sendMessage(live.baseUrl, session.id, host.token, text, images);
   } catch {
     throw new Error(
-      'No se confirmó el envío. Revisa el chat antes de reintentar para evitar duplicarlo.',
+      'Sending was not confirmed. Check the chat before retrying to avoid a duplicate.',
     );
   }
 }

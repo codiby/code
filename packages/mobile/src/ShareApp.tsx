@@ -65,7 +65,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
     if (!busy.current) {
       incomingShare
         .finish(requestId, false)
-        .catch(() => setError('No se pudo cerrar. Vuelve a intentarlo.'));
+        .catch(() => setError('Could not close. Try again.'));
     }
   }, [requestId]);
   useEffect(() => {
@@ -122,7 +122,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
         }
         const saved = parseShareChats(value);
         if (value.images.length < 1 || value.images.length > 4) {
-          throw new Error('Comparte entre 1 y 4 imágenes.');
+          throw new Error('Share between 1 and 4 images.');
         }
         setPayload(value);
         setChats(saved);
@@ -133,7 +133,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
           setError(
             cause instanceof Error
               ? cause.message
-              : 'No se pudieron leer las imágenes.',
+              : 'Could not read the images.',
           );
         }
       });
@@ -156,7 +156,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
     }
     const host = chats.hosts.find(item => item.id === chosen.serverId);
     if (!host) {
-      throw new Error('El host ya no está configurado.');
+      throw new Error('This host is no longer configured.');
     }
     busy.current = true;
     setSending(true);
@@ -179,7 +179,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
         <View className="flex-row items-center gap-2">
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Cancelar"
+            accessibilityLabel="Cancel"
             onPress={close}
             disabled={sending}
             className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
@@ -187,12 +187,12 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
             <BackIcon size={20} color="#475569" />
           </Pressable>
           <Text className="flex-1 text-[23px] font-bold tracking-tight text-slate-900">
-            Enviar a…
+            Send to…
           </Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
-              searching ? 'Cerrar búsqueda' : 'Buscar sesiones'
+              searching ? 'Close search' : 'Search sessions'
             }
             disabled={sending}
             onPress={() => {
@@ -212,8 +212,8 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Buscar…"
-            accessibilityLabel="Buscar chats"
+            placeholder="Search…"
+            accessibilityLabel="Search chats"
             placeholderTextColor="#94a3b8"
             autoFocus
             autoCapitalize="none"
@@ -222,7 +222,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
           />
         ) : null}
         <Text className="mt-1 text-[11px] text-slate-500">
-          {chosen ? chosen.name : 'Selecciona una conversación del inicio'}
+          {chosen ? chosen.name : 'Select a conversation from Home'}
         </Text>
       </View>
       {error ? (
@@ -232,12 +232,12 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
       ) : null}
       {sent ? (
         <View className="flex-1 items-center justify-center gap-3">
-          <Text className="text-slate-900">Imagen enviada</Text>
+          <Text className="text-slate-900">Image sent</Text>
           <Pressable
             accessibilityRole="button"
             onPress={() => incomingShare.finish(requestId, true)}
           >
-            <Text className="font-semibold text-slate-700">Cerrar</Text>
+            <Text className="font-semibold text-slate-700">Close</Text>
           </Pressable>
         </View>
       ) : (
@@ -281,24 +281,23 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
                 ) : null}
                 <Text className="text-center text-sm text-slate-500">
                   {error
-                    ? 'Vuelve a compartir la imagen para intentarlo de nuevo.'
+                    ? 'Share the image again to retry.'
                     : !payload
-                    ? 'Preparando imágenes…'
+                    ? 'Preparing images…'
                     : !chats?.hosts.length
-                    ? 'Abre el inicio de Codiby Code para sincronizar tus chats.'
+                    ? 'Open Codiby Code Home to sync your chats.'
                     : refreshing
-                    ? 'Cargando conversaciones…'
+                    ? 'Loading conversations…'
                     : query
-                    ? 'No hay conversaciones que coincidan.'
-                    : 'No hay chats disponibles. Desliza hacia abajo para actualizar.'}
+                    ? 'No matching conversations.'
+                    : 'No chats available. Pull down to refresh.'}
                 </Text>
               </View>
             }
           />
           {failed.length ? (
             <Text className="px-[18px] py-2 text-[11px] text-slate-500">
-              Sin conexión: {failed.join(', ')}. Se conservan tus chats
-              recientes.
+              Offline: {failed.join(', ')}. Your recent chats are kept.
             </Text>
           ) : null}
           <View style={{ paddingBottom: insets.bottom }}>
@@ -310,13 +309,13 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
                 sendDisabled={!chosen}
                 disabled={sending}
                 allowAttachments={false}
-                placeholder="Añade un mensaje…"
+                placeholder="Add a message…"
                 context={
                   <Text
                     numberOfLines={1}
                     className="text-[11px] text-slate-500"
                   >
-                    {chosen?.name ?? 'Elige un chat para enviar'}
+                    {chosen?.name ?? 'Choose a chat to send to'}
                   </Text>
                 }
               />

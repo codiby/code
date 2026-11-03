@@ -56,7 +56,7 @@ export function ResumeInterruptedDialog({
       void client.dismissInterruptedSessions().catch(() => {});
       const failed = results.filter(r => !r.ok);
       if (failed.length) {
-        setError(`No se pudieron restaurar ${failed.length}: ${failed.map(f => f.error).filter(Boolean).join('; ')}`);
+        setError(`Couldn't restore ${failed.length}: ${failed.map(f => f.error).filter(Boolean).join('; ')}`);
         setList(list.filter(s => failed.some(f => f.id === s.id)));
         setPicked(new Set());
       } else {
@@ -86,16 +86,16 @@ export function ResumeInterruptedDialog({
         </div>
         <div className="min-w-0 flex-1">
           <div id="resume-interrupted-title" className="text-[13px] font-semibold text-zinc-100">
-            {n === 1 ? '¿Restaurar la sesión?' : `¿Restaurar ${n} sesiones?`}
+            {n === 1 ? 'Restore the session?' : `Restore ${n} sessions?`}
           </div>
           <div className="mt-0.5 text-[12px] leading-relaxed text-zinc-400">
-            La app se cerró mientras {n === 1 ? 'esta sesión trabajaba' : 'estas sesiones trabajaban'}. Al restaurar{n === 1 ? 'la' : 'las'}, {n === 1 ? 'continúa' : 'continúan'} donde se {n === 1 ? 'quedó' : 'quedaron'}.
+            The app closed while {n === 1 ? 'this session was working' : 'these sessions were working'}. Restore {n === 1 ? 'it' : 'them'} to continue where {n === 1 ? 'it' : 'they'} left off.
           </div>
         </div>
         <button
           onClick={dismiss}
           disabled={busy}
-          aria-label="Cerrar"
+          aria-label="Close"
           className={`-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-surface-light hover:text-zinc-200 ${busy ? 'invisible' : ''}`}
         >
           <X className="h-4 w-4" />
@@ -115,7 +115,7 @@ export function ResumeInterruptedDialog({
             >
               {picked.has(s.id) && <Check className="h-2.5 w-2.5" strokeWidth={3.5} />}
             </span>
-            <span className="min-w-0 flex-1 truncate text-[12px] text-zinc-200">{s.name || 'Sin nombre'}</span>
+            <span className="min-w-0 flex-1 truncate text-[12px] text-zinc-200">{s.name || 'Untitled'}</span>
             <span className="shrink-0 truncate font-mono text-[10.5px] text-zinc-500">{folderName(s.cwd)}</span>
           </label>
         ))}
@@ -125,11 +125,11 @@ export function ResumeInterruptedDialog({
 
       <div className="mt-3.5 flex items-center gap-1.5 whitespace-nowrap">
         <button onClick={dismiss} disabled={busy} className={`${ghostBtn} ml-auto`}>
-          Descartar
+          Dismiss
         </button>
         <button onClick={() => void resume()} disabled={busy || picked.size === 0} className={`${primaryBtn} w-[118px]`}>
           {busy && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
-          {busy ? 'Restaurando…' : picked.size === n ? 'Restaurar' : `Restaurar (${picked.size})`}
+          {busy ? 'Restoring…' : picked.size === n ? 'Restore' : `Restore (${picked.size})`}
         </button>
       </div>
     </div>

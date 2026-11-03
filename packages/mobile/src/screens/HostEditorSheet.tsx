@@ -23,9 +23,9 @@ import {
 const MONO = { fontFamily: 'monospace' } as const;
 
 const MODES: { readonly value: RouteMode; readonly label: string }[] = [
-  { value: 'auto', label: 'Automático' },
-  { value: 'local', label: 'Solo local' },
-  { value: 'remote', label: 'Solo respaldo' },
+  { value: 'auto', label: 'Automatic' },
+  { value: 'local', label: 'Local only' },
+  { value: 'remote', label: 'Fallback only' },
 ];
 
 interface FieldProps {
@@ -103,9 +103,9 @@ function ServerEditor({
         />
         <TextInput
           value={server.name}
-          accessibilityLabel="Nombre del host"
+          accessibilityLabel="Host name"
           onChangeText={name => onChange({ ...server, name })}
-          placeholder="Nombre"
+          placeholder="Name"
           placeholderTextColor="#cbd5e1"
           className="flex-1 text-[14px] font-semibold text-slate-900"
         />
@@ -118,25 +118,25 @@ function ServerEditor({
               : 'bg-emerald-50 text-emerald-700'
           }`}
         >
-          {state.dot === 'remote' ? 'respaldo' : state.label}
+          {state.dot === 'remote' ? 'fallback' : state.label}
         </Text>
       </View>
 
       <Field
-        label="Dirección local"
+        label="Local address"
         value={server.localUrl}
         onChange={localUrl => onChange({ ...server, localUrl })}
         placeholder="192.168.3.40:3111"
-        hint="Se prueba primero. Es la rápida y no sale de tu red."
+        hint="Tried first. It's the fast one and stays on your network."
         mono
       />
 
       <Field
-        label="Dirección de respaldo"
+        label="Fallback address"
         value={server.remoteUrl}
         onChange={remoteUrl => onChange({ ...server, remoteUrl })}
-        placeholder="https://algo.ts.net:10000"
-        hint="Se usa solo si la local falla. Funciona desde datos móviles."
+        placeholder="https://example.ts.net:10000"
+        hint="Used only if the local one fails. Works over mobile data."
         mono
       />
 
@@ -145,13 +145,13 @@ function ServerEditor({
         secure
         value={server.token}
         onChange={token => onChange({ ...server, token })}
-        placeholder="64 caracteres hexadecimales"
-        hint="El mismo para las dos direcciones: es del bridge, no de la ruta."
+        placeholder="64 hexadecimal characters"
+        hint="Same for both addresses: it belongs to the bridge, not the route."
         mono
       />
 
       <Text className="mb-1.5 mt-3.5 text-[10.5px] font-semibold uppercase tracking-wide text-slate-500">
-        Cuándo cambiar de ruta
+        When to switch routes
       </Text>
       <View className="flex-row rounded-xl bg-slate-200 p-0.5">
         {MODES.map(mode => (
@@ -176,7 +176,7 @@ function ServerEditor({
       </View>
       {server.mode === 'auto' ? (
         <Text className="mt-1 text-[10px] leading-4 text-slate-400">
-          Reintenta la local cada 30 s y vuelve a ella en cuanto responda.
+          Retries the local address every 30 s and switches back as soon as it responds.
         </Text>
       ) : null}
 
@@ -202,12 +202,12 @@ function ServerEditor({
         {canRemove ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Quitar servidor"
+            accessibilityLabel="Remove server"
             onPress={onRemove}
             className="rounded-lg px-2 py-1 active:bg-rose-50"
           >
             <Text className="text-[12px] font-semibold text-rose-600">
-              Quitar
+              Remove
             </Text>
           </Pressable>
         ) : null}
@@ -258,7 +258,7 @@ export function HostEditorSheet({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Cerrar configuración del host"
+          accessibilityLabel="Close host settings"
           disabled={isBusy}
           onPress={onClose}
           className="absolute inset-0"
@@ -272,12 +272,12 @@ export function HostEditorSheet({
         >
           <View className="mx-auto mb-[18px] h-1 w-9 rounded-full bg-slate-200" />
           <Text className="px-[18px] text-[17px] font-bold text-slate-900">
-            {isNew ? 'Añadir host' : 'Configurar host'}
+            {isNew ? 'Add host' : 'Configure host'}
           </Text>
           <Text className="px-[18px] pb-4 pt-1 text-xs leading-5 text-slate-500">
             {isNew
-              ? 'Conecta otro equipo a tu espacio.'
-              : 'Los cambios se aplican al guardar.'}
+              ? 'Connect another machine to your workspace.'
+              : 'Changes apply when you save.'}
           </Text>
           <ScrollView
             keyboardShouldPersistTaps="handled"
@@ -308,12 +308,12 @@ export function HostEditorSheet({
               className="min-h-11 flex-1 items-center justify-center rounded-xl border border-slate-200 px-4"
             >
               <Text className="text-[13px] font-semibold text-slate-500">
-                Cancelar
+                Cancel
               </Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Guardar host"
+              accessibilityLabel="Save host"
               accessibilityState={{ disabled: !canSave }}
               disabled={!canSave}
               onPress={onSave}
@@ -329,7 +329,7 @@ export function HostEditorSheet({
                   canSave || isBusy ? 'text-white' : 'text-slate-400'
                 }`}
               >
-                {isBusy ? 'Guardando…' : 'Guardar'}
+                {isBusy ? 'Saving…' : 'Save'}
               </Text>
             </Pressable>
           </View>

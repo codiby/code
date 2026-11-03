@@ -1210,10 +1210,10 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
   const submitAdd = useCallback(async () => {
     if (!client) return;
     const name = fName.trim();
-    if (!name) { setError('Nombre requerido'); return; }
-    if (fScope === 'project' && !rootPath) { setError('Sin carpeta de proyecto'); return; }
-    if (fType === 'stdio' && !fCommand.trim()) { setError('Comando requerido'); return; }
-    if ((fType === 'http' || fType === 'sse') && !fUrl.trim()) { setError('URL requerida'); return; }
+    if (!name) { setError('Name is required'); return; }
+    if (fScope === 'project' && !rootPath) { setError('No project folder'); return; }
+    if (fType === 'stdio' && !fCommand.trim()) { setError('Command is required'); return; }
+    if ((fType === 'http' || fType === 'sse') && !fUrl.trim()) { setError('URL is required'); return; }
 
     setBusy(true); setError(null);
     const res = await client.addMcpServer({
@@ -1224,10 +1224,10 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
       args: fType === 'stdio' ? fArgs.trim().split(/\s+/).filter(Boolean) : undefined,
       url: fType !== 'stdio' ? fUrl.trim() : undefined,
       cwd: fScope === 'project' ? rootPath ?? undefined : undefined,
-    }).catch(() => ({ ok: false, error: 'Error de red' }));
+    }).catch(() => ({ ok: false, error: 'Network error' }));
     setBusy(false);
 
-    if (!res.ok) { setError(res.error || 'No se pudo añadir'); return; }
+    if (!res.ok) { setError(res.error || "Couldn't add"); return; }
     emitMcpChanged('added', name, sessionId);
     closeForm();
     refresh();
@@ -1238,9 +1238,9 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
     const scope: McpServerScope = srv.source === 'project' ? 'project' : 'user';
     setBusy(true);
     const res = await client.removeMcpServer(srv.name, scope, scope === 'project' ? rootPath : undefined)
-      .catch(() => ({ ok: false, error: 'Error de red' }));
+      .catch(() => ({ ok: false, error: 'Network error' }));
     setBusy(false);
-    if (!res.ok) { setError(res.error || 'No se pudo eliminar'); return; }
+    if (!res.ok) { setError(res.error || "Couldn't remove"); return; }
     emitMcpChanged('removed', srv.name, sessionId);
     refresh();
   }, [client, rootPath, sessionId, refresh]);
@@ -1286,13 +1286,13 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
                       <button
                         onClick={() => removeServer(srv)}
                         disabled={busy}
-                        title="Eliminar servidor"
+                        title="Remove server"
                         className="w-[24px] h-[24px] rounded-[6px] flex items-center justify-center text-[#6b6e76] hover:bg-[#ef5b6b22] hover:text-[#ef8a96] transition-colors disabled:opacity-40"
                       >
                         <Trash2 size={13} />
                       </button>
                     ) : (
-                      <span title="Servidor del sistema — no editable" className="w-[24px] h-[24px] flex items-center justify-center text-[#4f525a]">
+                      <span title="System server — not editable" className="w-[24px] h-[24px] flex items-center justify-center text-[#4f525a]">
                         <Lock size={12} />
                       </span>
                     )}
@@ -1301,7 +1301,7 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
               );
             })}
             {loaded && servers.length === 0 && (
-              <div className="px-[11px] py-2 text-[11px] text-[#5e6068]">No hay servidores MCP configurados.</div>
+              <div className="px-[11px] py-2 text-[11px] text-[#5e6068]">No MCP servers configured.</div>
             )}
           </div>
           <ResizeGrip onMouseDown={onResizeStart} />
@@ -1314,7 +1314,7 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
               style={{ color: MCP_COLOR }}
             >
               <Plus size={13} strokeWidth={2.2} />
-              Añadir servidor MCP
+              Add MCP server
             </button>
           ) : (
             <div className="px-[11px] py-[9px] border-t border-[#1e1f24] bg-[#101116] flex flex-col gap-[7px]">
@@ -1331,16 +1331,16 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
                 ))}
               </div>
 
-              <McpField label="Nombre">
+              <McpField label="Name">
                 <McpInput value={fName} onChange={setFName} placeholder="my-server" autoFocus />
               </McpField>
 
               {fType === 'stdio' ? (
                 <>
-                  <McpField label="Comando">
+                  <McpField label="Command">
                     <McpInput value={fCommand} onChange={setFCommand} placeholder="npx" />
                   </McpField>
-                  <McpField label="Argumentos" hint="(separados por espacio)">
+                  <McpField label="Arguments" hint="(space-separated)">
                     <McpInput value={fArgs} onChange={setFArgs} placeholder="-y @scope/mcp-server" />
                   </McpField>
                 </>
@@ -1350,7 +1350,7 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
                 </McpField>
               )}
 
-              <McpField label="Alcance">
+              <McpField label="Scope">
                 <div className="flex bg-[#101116] border border-[#1e1f24] rounded-[9px] p-[3px] mt-px">
                   {(['user', 'project'] as const).map(s => {
                     const disabled = s === 'project' && !rootPath;
@@ -1359,10 +1359,10 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
                         key={s}
                         disabled={disabled}
                         onClick={() => setFScope(s)}
-                        title={disabled ? 'Abre una carpeta de proyecto para usar este alcance' : undefined}
+                        title={disabled ? 'Open a project folder to use this scope' : undefined}
                         className={`flex-1 text-[10.5px] font-semibold py-[5px] rounded-md transition-colors ${fScope === s ? 'bg-[#1e1f24] text-[#e6e7ea] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]' : 'text-[#6b6e76] hover:text-[#9aa0a8]'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
                       >
-                        {s === 'user' ? 'Global' : 'Proyecto'}
+                        {s === 'user' ? 'Global' : 'Project'}
                       </button>
                     );
                   })}
@@ -1373,10 +1373,10 @@ function McpServersSection({ client, rootPath, sessionId }: { client: ClaudeClie
 
               <div className="flex justify-end gap-[7px] mt-px">
                 <button onClick={closeForm} disabled={busy} className="px-[11px] py-[6px] rounded-[8px] text-[11px] font-semibold text-[#6b6e76] hover:bg-[#1f2025] hover:text-[#c4c6cc] transition-colors disabled:opacity-40">
-                  Cancelar
+                  Cancel
                 </button>
                 <button onClick={submitAdd} disabled={busy} className="px-[12px] py-[6px] rounded-[8px] text-[11px] font-bold text-[#04201c] transition-[filter] hover:brightness-110 disabled:opacity-50" style={{ background: MCP_COLOR }}>
-                  {busy ? 'Añadiendo…' : 'Añadir servidor'}
+                  {busy ? 'Adding…' : 'Add server'}
                 </button>
               </div>
             </div>

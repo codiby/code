@@ -20,11 +20,11 @@ test('abre las fotos del chat en el visor con zoom dentro de una raíz de gestos
     );
   });
   expect(tree.root.findAllByType(ImageLightbox)).toHaveLength(0);
-  const open = () => tree.root.findAllByProps({ accessibilityLabel: 'Abrir imagen' })[0]!;
+  const open = () => tree.root.findAllByProps({ accessibilityLabel: 'Open image' })[0]!;
   await act(async () => open().props.onPress());
   const viewer = tree.root.findByType(ImageLightbox);
   expect(viewer.props.items).toEqual([
-    { id: 'chat-image', uri: 'data:image/png;base64,photo-base64', name: 'Imagen' },
+    { id: 'chat-image', uri: 'data:image/png;base64,photo-base64', name: 'Image' },
   ]);
   expect(tree.root.findAllByType(GestureHandlerRootView).some(root =>
     root.findAllByType(ImageLightbox).length === 1,

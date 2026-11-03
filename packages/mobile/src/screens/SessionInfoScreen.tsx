@@ -105,12 +105,12 @@ export function SessionInfoScreen({
 
   const confirmDelete = useCallback(() => {
     Alert.alert(
-      'Borrar la sesión',
-      'Se elimina del bridge. El historial en disco se conserva.',
+      'Delete session',
+      'It is removed from the bridge. The history on disk is kept.',
       [
-        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Borrar',
+          text: 'Delete',
           style: 'destructive',
           onPress: () => {
             setIsWorking(true);
@@ -146,14 +146,14 @@ export function SessionInfoScreen({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Cerrar"
+          accessibilityLabel="Close"
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
         >
           <CloseIcon size={20} color="#0f172a" />
         </Pressable>
         <Text className="flex-1 text-base font-semibold text-slate-900">
-          Info de la sesión
+          Session info
         </Text>
         {isWorking ? <ActivityIndicator size="small" color="#64748b" /> : null}
       </View>
@@ -171,7 +171,7 @@ export function SessionInfoScreen({
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Renombrar la sesión"
+            accessibilityLabel="Rename session"
             onPress={() => setIsRenaming(true)}
             className="mt-2.5 flex-row items-center gap-1.5 active:opacity-60"
           >
@@ -191,7 +191,7 @@ export function SessionInfoScreen({
                 }`}
               />
               <Text className="text-[10.5px] font-semibold text-slate-600">
-                {session.isOpen ? 'activa' : 'archivada'}
+                {session.isOpen ? 'active' : 'archived'}
               </Text>
             </View>
             {session.provider !== null ? (
@@ -218,7 +218,7 @@ export function SessionInfoScreen({
                   className="flex-row items-center px-4 pb-2 pt-3 active:opacity-60"
                 >
                   <Text className="text-[12.5px] font-semibold text-slate-700">
-                    Imágenes
+                    Images
                   </Text>
                   <Text className="ml-auto text-[11.5px] text-slate-400">
                     {`${images.length} ›`}
@@ -283,12 +283,12 @@ export function SessionInfoScreen({
                     </View>
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel={`Abrir ${mockupName(item)}`}
+                      accessibilityLabel={`Open ${mockupName(item)}`}
                       onPress={() => onOpenMockup(mockupName(item))}
                       className="rounded-full bg-slate-900 px-3 py-1 active:opacity-70"
                     >
                       <Text className="text-[11px] font-bold text-white">
-                        Ver
+                        View
                       </Text>
                     </Pressable>
                   </View>
@@ -300,12 +300,12 @@ export function SessionInfoScreen({
 
         <View className="mt-2 border-y border-slate-200 bg-white">
           {[
-            ['Carpeta', session.cwd],
-            ['Proveedor', session.provider ?? '—'],
-            ['Actualizada', formatFullTimestamp(session.updatedAt)],
+            ['Folder', session.cwd],
+            ['Provider', session.provider ?? '—'],
+            ['Updated', formatFullTimestamp(session.updatedAt)],
             // `totalMessages` viene del `session_state` del chat: pedirlo solo
             // para esta ficha significaría abrir otro socket.
-            ['Mensajes', totalMessages === null ? '—' : String(totalMessages)],
+            ['Messages', totalMessages === null ? '—' : String(totalMessages)],
           ].map(([key, value], index) => (
             <View
               key={key}
@@ -317,7 +317,7 @@ export function SessionInfoScreen({
               <Text
                 numberOfLines={1}
                 className={`flex-1 text-[12.5px] text-slate-700 ${
-                  key === 'Carpeta' ? 'font-mono text-[11px]' : ''
+                  key === 'Folder' ? 'font-mono text-[11px]' : ''
                 }`}
               >
                 {value}
@@ -334,7 +334,7 @@ export function SessionInfoScreen({
           >
             <PinIcon size={18} color={isPinned ? '#0f172a' : '#475569'} />
             <Text className="text-[13.5px] text-slate-700">
-              {isPinned ? 'Quitar de arriba' : 'Anclar arriba'}
+              {isPinned ? 'Unpin from top' : 'Pin to top'}
             </Text>
           </Pressable>
 
@@ -345,7 +345,7 @@ export function SessionInfoScreen({
           >
             <ArchiveIcon size={18} color="#475569" />
             <Text className="text-[13.5px] text-slate-700">
-              {session.isOpen ? 'Archivar' : 'Desarchivar'}
+              {session.isOpen ? 'Archive' : 'Unarchive'}
             </Text>
           </Pressable>
 
@@ -356,7 +356,7 @@ export function SessionInfoScreen({
           >
             <TrashIcon size={18} color="#be123c" />
             <Text className="text-[13.5px] text-rose-700">
-              Borrar la sesión
+              Delete session
             </Text>
           </Pressable>
         </View>

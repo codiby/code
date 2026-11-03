@@ -33,7 +33,7 @@ class ShareViewController: UIViewController, ShareReceiving {
       let items = extensionContext?.inputItems as? [NSExtensionItem] ?? []
       preparation = Task {
         let providers = items.flatMap { $0.attachments ?? [] }.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
-        guard (1...4).contains(providers.count) else { throw ShareError.message("Comparte entre 1 y 4 imágenes.") }
+        guard (1...4).contains(providers.count) else { throw ShareError.message("Share between 1 and 4 images.") }
         var images: [[String: String]] = []
         for provider in providers { images.append(try await Self.loadImage(provider)) }
         let config = try ShareConfig.readData()
@@ -59,7 +59,7 @@ class ShareViewController: UIViewController, ShareReceiving {
       kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1920,
       kCGImageSourceShouldCacheImmediately: true]
     guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-      throw ShareError.message("Imagen inválida")
+      throw ShareError.message("Invalid image")
     }
     let original = UIImage(cgImage: cgImage)
     let image: UIImage
@@ -75,7 +75,7 @@ class ShareViewController: UIViewController, ShareReceiving {
       }
     }
     guard let data = image.jpegData(compressionQuality: 0.8), data.count <= 2_250_000 else {
-      throw ShareError.message("Imagen demasiado grande")
+      throw ShareError.message("Image too large")
     }
     return ["mediaType": "image/jpeg", "data": data.base64EncodedString()]
   }
@@ -96,7 +96,7 @@ class ShareViewController: UIViewController, ShareReceiving {
       provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
         guard let data, data.count <= 40_000_000,
           let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
-          continuation.resume(throwing: ShareError.message("Imagen no disponible")); return
+          continuation.resume(throwing: ShareError.message("Image not available")); return
         }
         do { continuation.resume(returning: try image(source)) } catch { continuation.resume(throwing: error) }
       }

@@ -137,7 +137,7 @@ async function readClaudeUsage(): Promise<ProviderUsage> {
       signal: AbortSignal.timeout(10_000),
     });
     if (resp.status === 401 || resp.status === 403) {
-      return { provider: 'claude', status: 'logged_out', windows: [], error: 'La sesión de Claude expiró' };
+      return { provider: 'claude', status: 'logged_out', windows: [], error: 'Your Claude session expired' };
     }
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return normalizeClaudeUsage(await resp.json(), creds.subscriptionType ?? null, creds.rateLimitTier ?? null);
@@ -182,7 +182,7 @@ export function normalizeClaudeUsage(payload: any, subscriptionType: string | nu
   const credits: UsageCredits | null = spend
     ? {
         enabled: Boolean(spend.enabled),
-        label: spend.enabled ? 'Créditos extra' : 'Créditos extra desactivados',
+        label: spend.enabled ? 'Extra credits' : 'Extra credits disabled',
         usedMinor: spend.used?.amount_minor ?? null,
         limitMinor: spend.limit?.amount_minor ?? null,
         currency: spend.used?.currency || 'USD',
@@ -266,7 +266,7 @@ export function normalizeCodexUsage(account: any, limits: any): ProviderUsage {
   const credits: UsageCredits | null = c && (c.hasCredits || c.unlimited)
     ? {
         enabled: Boolean(c.hasCredits) || Boolean(c.unlimited),
-        label: c.unlimited ? 'Créditos ilimitados' : c.hasCredits ? 'Créditos' : 'Sin créditos',
+        label: c.unlimited ? 'Unlimited credits' : c.hasCredits ? 'Credits' : 'No credits',
         // `balance` is a decimal string of currency units; the UI works in minor units.
         usedMinor: null,
         limitMinor: c.unlimited ? null : toMinorUnits(c.balance),

@@ -41,7 +41,7 @@ export function LoopBanner({ loop, progress, onOpenRequirements, onPause, onResu
       {loop.phase === 'looping' && (
         <>
           <span className="text-zinc-400">
-            <b className="text-zinc-200 font-semibold">Loop</b> · iteración{' '}
+            <b className="text-zinc-200 font-semibold">Loop</b> · iteration{' '}
             <b className="text-zinc-200 font-semibold">{loop.iteration}</b>/{loop.maxIterations}
           </span>
           <span className="text-border-light">·</span>
@@ -53,21 +53,21 @@ export function LoopBanner({ loop, progress, onOpenRequirements, onPause, onResu
 
       {loop.phase === 'bootstrap' && (
         <span className="text-zinc-400">
-          <b className="text-zinc-200 font-semibold">Loop armado</b> — esperando que apruebes al menos un requerimiento.
+          <b className="text-zinc-200 font-semibold">Loop armed</b> — waiting for you to approve at least one requirement.
         </span>
       )}
 
       {loop.phase === 'paused' && (
         <span className="text-zinc-400">
-          <b className="text-zinc-200 font-semibold">Loop pausado</b>
+          <b className="text-zinc-200 font-semibold">Loop paused</b>
           {loop.pauseReason ? ` — ${LOOP_PAUSE_LABEL[loop.pauseReason]}.` : '.'}
         </span>
       )}
 
       {loop.phase === 'done' && (
         <span className="text-zinc-400">
-          <b className="text-zinc-200 font-semibold">Loop completo</b> — {passing}/{locked} passing
-          {loop.iteration > 0 ? ` en ${loop.iteration} iteracion${loop.iteration === 1 ? '' : 'es'}` : ''}
+          <b className="text-zinc-200 font-semibold">Loop complete</b> — {passing}/{locked} passing
+          {loop.iteration > 0 ? ` in ${loop.iteration} iteration${loop.iteration === 1 ? '' : 's'}` : ''}
           {loop.costUsd > 0 ? ` · $${loop.costUsd.toFixed(2)}` : ''}
         </span>
       )}
@@ -79,7 +79,7 @@ export function LoopBanner({ loop, progress, onOpenRequirements, onPause, onResu
         className="text-[11px] h-auto px-2 py-1 rounded border border-border-light text-zinc-300 bg-surface-light hover:bg-surface-lighter"
         onPress={onOpenRequirements}
       >
-        Ver requerimientos
+        View requirements
       </Button>
 
       {loop.phase === 'looping' && (
@@ -89,14 +89,14 @@ export function LoopBanner({ loop, progress, onOpenRequirements, onPause, onResu
             className="text-[11px] h-auto px-2 py-1 rounded border border-border-light text-zinc-300 bg-surface-light hover:bg-surface-lighter"
             onPress={onPause}
           >
-            Pausar
+            Pause
           </Button>
           <Button
             size="sm"
             className="text-[11px] h-auto px-2 py-1 rounded border border-red-400/40 text-red-300 bg-transparent hover:bg-red-400/10"
             onPress={onStop}
           >
-            Detener
+            Stop
           </Button>
         </>
       )}
@@ -108,7 +108,7 @@ export function LoopBanner({ loop, progress, onOpenRequirements, onPause, onResu
             className="text-[11px] h-auto px-2 py-1 rounded border border-cyan-400/45 text-cyan-300 bg-transparent hover:bg-cyan-400/10"
             onPress={onResume}
           >
-            Continuar loop
+            Resume loop
           </Button>
           {/* Stop clears the loop entirely — this is also what dismisses the
               banner, so a paused loop is never stuck on screen. */}
@@ -117,7 +117,7 @@ export function LoopBanner({ loop, progress, onOpenRequirements, onPause, onResu
             className="text-[11px] h-auto px-2 py-1 rounded border border-red-400/40 text-red-300 bg-transparent hover:bg-red-400/10"
             onPress={onStop}
           >
-            Salir de Loop
+            Exit loop
           </Button>
         </>
       )}
@@ -128,7 +128,7 @@ export function LoopBanner({ loop, progress, onOpenRequirements, onPause, onResu
           className="text-[11px] h-auto px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 bg-transparent"
           onPress={onStop}
         >
-          Cerrar
+          Close
         </Button>
       )}
     </div>

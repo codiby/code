@@ -31,7 +31,7 @@ export function HomeMenu({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Cerrar menú"
+        accessibilityLabel="Close menu"
         onPress={onClose}
         className="flex-1"
       />
@@ -54,14 +54,14 @@ export function HomeMenu({
                 enabled ? 'text-slate-900' : 'text-slate-400'
               }`}
             >
-              Auto agrupar
+              Auto-group
             </Text>
             <Text className="mt-0.5 text-[11.5px] leading-4 text-slate-400">
               {loose === 0
-                ? 'No hay sesiones sueltas'
-                : `Ordena ${loose} ${
-                    loose === 1 ? 'sesión suelta' : 'sesiones sueltas'
-                  } por su carpeta`}
+                ? 'No ungrouped sessions'
+                : `Sort ${loose} ungrouped ${
+                    loose === 1 ? 'session' : 'sessions'
+                  } by folder`}
             </Text>
           </View>
           {isWorking ? <ActivityIndicator size="small" color="#64748b" /> : null}

@@ -167,12 +167,12 @@ export function parseDiffDoc(source: string): DiffDocBlock {
     i += 1;
   }
   if (i >= lines.length) {
-    return empty('bloque vacío');
+    return empty('empty block');
   }
 
   const head = FILE_RE.exec(lines[i]!.trim());
   if (!head) {
-    return empty('la primera línea debe ser `file <ruta>`');
+    return empty('the first line must be `file <path>`');
   }
   const path = head[1]!;
   const lang = langFor(path, head[2]);
@@ -236,7 +236,7 @@ export function parseDiffDoc(source: string): DiffDocBlock {
   }
 
   if (!rows.some(row => row.kind === 'add' || row.kind === 'del')) {
-    return empty('sin líneas + ni -');
+    return empty('no + or - lines');
   }
 
   markRuns(rows);

@@ -68,7 +68,7 @@ function InlineCode({ value }: { readonly value: string }) {
   return (
     <Text
       accessibilityRole="button"
-      accessibilityLabel={`Copiar ${value}`}
+      accessibilityLabel={`Copy ${value}`}
       onPress={copy}
       suppressHighlighting
       className={`rounded px-1 font-mono text-[11px] ${
@@ -139,7 +139,7 @@ function Inline({ nodes }: { readonly nodes: InlineNode[] }) {
           case 'image':
             return (
               <Text key={key} className="text-[12px] italic text-slate-400">
-                {`\u{1F5BC} ${node.alt || 'imagen'}`}
+                {`\u{1F5BC} ${node.alt || 'image'}`}
               </Text>
             );
           default:
@@ -191,11 +191,11 @@ function CodeBlock({ lang, value }: { readonly lang: string; readonly value: str
           un sitio fijo donde vivir sin taparle la primera línea al código. */}
       <View className="flex-row items-center justify-between border-b border-slate-800 bg-slate-800/60 py-1 pl-2.5 pr-1">
         <Text className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-          {lang.length > 0 ? lang : 'código'}
+          {lang.length > 0 ? lang : 'code'}
         </Text>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Copiar código"
+          accessibilityLabel="Copy code"
           onPress={copy}
           // El área táctil se agranda sin agrandar el dibujo: el botón mide
           // menos que los 44 px que pide una diana cómoda.
@@ -212,7 +212,7 @@ function CodeBlock({ lang, value }: { readonly lang: string; readonly value: str
               isCopied ? 'text-green-400' : 'text-slate-400'
             }`}
           >
-            {isCopied ? 'Copiado' : 'Copiar'}
+            {isCopied ? 'Copied' : 'Copy'}
           </Text>
         </Pressable>
       </View>
@@ -228,7 +228,7 @@ function CodeBlock({ lang, value }: { readonly lang: string; readonly value: str
           className="border-t border-slate-800 px-2.5 py-1.5 active:bg-slate-800"
         >
           <Text className="text-[10px] text-slate-400">
-            {`▾ Ver ${lines.length - MAX_CODE_LINES} líneas más`}
+            {`▾ Show ${lines.length - MAX_CODE_LINES} more lines`}
           </Text>
         </Pressable>
       ) : null}

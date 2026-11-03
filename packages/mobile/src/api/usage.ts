@@ -57,7 +57,7 @@ export function fetchUsage(baseUrl: string, token: string, refresh = false) {
             ),
         )
       ) {
-        throw new Error('Respuesta de uso inválida');
+        throw new Error('Invalid usage response');
       }
       return snapshot;
     },

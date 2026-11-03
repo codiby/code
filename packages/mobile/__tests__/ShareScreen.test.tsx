@@ -80,10 +80,10 @@ test('usa la fila real del inicio y el compositor del chat sin esperar a la red'
   expect(row.props.preview).toBe('Último mensaje');
   expect(row.props.serverColor).toBe('#7c3aed');
   expect(tree.root.findByType(Composer).props.initialImages).toEqual([image]);
-  expect(button(tree, 'Enviar').props.disabled).toBe(true);
+  expect(button(tree, 'Send').props.disabled).toBe(true);
   expect(sendIncomingShare).not.toHaveBeenCalled();
   await act(async () => row.props.onPress(row.props.session));
-  expect(button(tree, 'Enviar').props.disabled).toBe(false);
+  expect(button(tree, 'Send').props.disabled).toBe(false);
   await act(async () => {
     tree.unmount();
   });
@@ -99,11 +99,11 @@ test('restaura imágenes y texto al fallar; solo cierra después de enviar', asy
   });
   const row = tree.root.findByType(SessionRow);
   await act(async () => row.props.onPress(row.props.session));
-  await act(async () => button(tree, 'Enviar').props.onPress());
-  expect(button(tree, 'Mensaje').props.value).toBe('Desde la galería');
-  expect(button(tree, 'Enviar').props.disabled).toBe(false);
+  await act(async () => button(tree, 'Send').props.onPress());
+  expect(button(tree, 'Message').props.value).toBe('Desde la galería');
+  expect(button(tree, 'Send').props.disabled).toBe(false);
   expect(NativeModules.ShareTargets.finish).not.toHaveBeenCalled();
-  await act(async () => button(tree, 'Enviar').props.onPress());
+  await act(async () => button(tree, 'Send').props.onPress());
   expect(sendIncomingShare).toHaveBeenLastCalledWith(
     expect.objectContaining({ id: 'host' }),
     expect.objectContaining({ id: 'chat' }),
@@ -125,7 +125,7 @@ test('cancelar termina únicamente el compartir actual sin enviar', async () => 
     tree = ReactTestRenderer.create(<ShareScreen requestId="incoming-2" />);
   });
   expect(NativeModules.ShareTargets.read).toHaveBeenCalledWith('incoming-2');
-  await act(async () => button(tree, 'Cancelar').props.onPress());
+  await act(async () => button(tree, 'Cancel').props.onPress());
   expect(NativeModules.ShareTargets.finish).toHaveBeenCalledWith(
     'incoming-2',
     false,

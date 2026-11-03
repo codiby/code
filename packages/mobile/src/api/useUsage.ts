@@ -51,7 +51,7 @@ export function useUsage(open: boolean) {
                   ? previous.entries[target.id]?.snapshot ?? null
                   : null,
               loading: !!target.baseUrl,
-              error: target.baseUrl ? null : 'Servidor sin conexión',
+              error: target.baseUrl ? null : 'Server offline',
             },
           ]),
         ),
@@ -65,7 +65,7 @@ export function useUsage(open: boolean) {
             try {
               snapshot = await fetchUsage(target.baseUrl, target.token, open);
             } catch (e) {
-              error = e instanceof Error ? e.message : 'No se pudo leer el uso';
+              error = e instanceof Error ? e.message : 'Could not read usage';
             }
             if (!cancelled) {
               setState(previous => ({

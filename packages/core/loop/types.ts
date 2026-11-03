@@ -45,10 +45,10 @@ export function emptyLoopState(maxIterations: number): LoopState {
 
 /** User-facing copy: these land in the chat as system notes. */
 export const LOOP_PAUSE_MESSAGES: Record<LoopPauseReason, string> = {
-  max_iterations: 'Loop pausado: llegó al tope de iteraciones.',
-  max_cost: 'Loop pausado: llegó al tope de costo.',
-  max_runtime: 'Loop pausado: llegó al tope de tiempo.',
-  stalled: 'Loop pausado: los mismos requerimientos fallaron sin que cambiara nada en disco. Necesita que intervengas.',
-  awaiting_approval: 'Loop esperando: todavía no hay ningún requerimiento aprobado.',
-  user: 'Loop detenido.',
+  max_iterations: 'Loop paused: hit the iteration limit.',
+  max_cost: 'Loop paused: hit the cost limit.',
+  max_runtime: 'Loop paused: hit the time limit.',
+  stalled: 'Loop paused: the same requirements kept failing with no changes on disk. It needs your input.',
+  awaiting_approval: 'Loop waiting: no requirement has been approved yet.',
+  user: 'Loop stopped.',
 };

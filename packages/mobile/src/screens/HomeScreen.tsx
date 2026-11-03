@@ -133,7 +133,7 @@ function NewSessionButton({ onPress }: { readonly onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Nueva sesión"
+      accessibilityLabel="New session"
       onPress={onPress}
       className="h-[34px] w-[34px] items-center justify-center rounded-full bg-slate-900 active:opacity-80"
     >
@@ -191,15 +191,15 @@ function GroupChipButton({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${chip.title}, ${chip.count} sesiones${
-        chip.isPinned ? ', anclado' : ''
+      accessibilityLabel={`${chip.title}, ${chip.count} ${chip.count === 1 ? 'session' : 'sessions'}${
+        chip.isPinned ? ', pinned' : ''
       }`}
       accessibilityHint={
         onLongPress === null
           ? undefined
           : chip.isPinned
-            ? 'Mantén pulsado para desanclar'
-            : 'Mantén pulsado para anclar'
+            ? 'Long-press to unpin'
+            : 'Long-press to pin'
       }
       accessibilityState={{ selected: isActive }}
       onPress={onPress}
@@ -940,8 +940,8 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
             .map(id => servers.find(server => server.id === id)?.name ?? id)
             .join(', ');
           Alert.alert(
-            'Se movieron a medias',
-            `No se pudo escribir en ${names}. Sus sesiones se quedaron donde estaban.`,
+            'Only some sessions were moved',
+            `Could not write to ${names}. Their sessions stayed where they were.`,
           );
         }
       });
@@ -1011,8 +1011,8 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           .map(id => servers.find(server => server.id === id)?.name ?? id)
           .join(', ');
         Alert.alert(
-          'Se agrupó a medias',
-          `No se pudo escribir en ${names}. Sus sesiones se quedaron sueltas.`,
+          'Only some sessions were grouped',
+          `Could not write to ${names}. Their sessions stayed ungrouped.`,
         );
       }
     });
@@ -1027,17 +1027,17 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
       .slice(0, 6)
       .map(
         group =>
-          `${group.name} · ${group.sessions.length}${group.exists ? '' : ' (nuevo)'}`,
+          `${group.name} · ${group.sessions.length}${group.exists ? '' : ' (new)'}`,
       );
     if (plan.groups.length > 6) {
-      lines.push(`y ${plan.groups.length - 6} más`);
+      lines.push(`and ${plan.groups.length - 6} more`);
     }
     Alert.alert(
-      `Agrupar ${plan.moved} ${plan.moved === 1 ? 'sesión' : 'sesiones'}`,
+      `Group ${plan.moved} ${plan.moved === 1 ? 'session' : 'sessions'}`,
       lines.join('\n'),
       [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Agrupar', onPress: applyAutoGroup },
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Group', onPress: applyAutoGroup },
       ],
     );
   }, [plan, applyAutoGroup]);
@@ -1047,12 +1047,14 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
     // Borrar no se deshace: siempre pasa por confirmación, y el botón
     // destructivo nunca es el que queda bajo el pulgar por defecto.
     Alert.alert(
-      count === 1 ? 'Borrar la sesión' : `Borrar ${count} sesiones`,
-      'Se eliminan del bridge. El historial en disco se conserva.',
+      count === 1 ? 'Delete session' : `Delete ${count} sessions`,
+      count === 1
+        ? 'It is removed from the bridge. The history on disk is kept.'
+        : 'They are removed from the bridge. The history on disk is kept.',
       [
-        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Borrar',
+          text: 'Delete',
           style: 'destructive',
           onPress: () => {
             setIsWorking(true);
@@ -1210,7 +1212,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
     if (loose.length > 0 || selectedGroups.includes(UNGROUPED_KEY)) {
       top.push({
         key: UNGROUPED_KEY,
-        title: 'Sin grupo',
+        title: 'No group',
         color: null,
         count: loose.length,
         working: loose.filter(isBusy).length,
@@ -1272,7 +1274,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           <View className="flex-row items-center gap-1">
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Cancelar selección"
+              accessibilityLabel="Cancel selection"
               onPress={() => setSelectedIds([])}
               className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
             >
@@ -1284,8 +1286,8 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
               className="ml-2 flex-1 text-base font-semibold text-slate-900"
             >
               {selectedIds.length === 1
-                ? selectedSessions[0]?.name ?? '1 seleccionada'
-                : `${selectedIds.length} seleccionadas`}
+                ? selectedSessions[0]?.name ?? '1 selected'
+                : `${selectedIds.length} selected`}
             </Text>
 
             {isWorking ? (
@@ -1298,7 +1300,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   <>
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel="Renombrar"
+                      accessibilityLabel="Rename"
                       onPress={() => setIsRenaming(true)}
                       className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
                     >
@@ -1309,8 +1311,8 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                       accessibilityRole="button"
                       accessibilityLabel={
                         pinnedIds.includes(selectedIds[0]!)
-                          ? 'Desanclar'
-                          : 'Anclar arriba'
+                          ? 'Unpin'
+                          : 'Pin to top'
                       }
                       onPress={togglePin}
                       className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
@@ -1329,7 +1331,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
 
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Mover a un grupo"
+                  accessibilityLabel="Move to a group"
                   onPress={() => setIsMoving(true)}
                   className="h-9 w-9 items-center justify-center rounded-full bg-slate-100 active:bg-slate-200"
                 >
@@ -1338,7 +1340,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
 
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={allArchived ? 'Desarchivar' : 'Archivar'}
+                  accessibilityLabel={allArchived ? 'Unarchive' : 'Archive'}
                   onPress={applyArchive}
                   className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
                 >
@@ -1350,7 +1352,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
 
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Borrar"
+                  accessibilityLabel="Delete"
                   onPress={confirmDelete}
                   className="h-9 w-9 items-center justify-center rounded-full active:bg-rose-50"
                 >
@@ -1361,14 +1363,14 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           </View>
         ) : (
           <View className="flex-row items-center gap-2">
-            <Text className="text-[23px] font-bold tracking-tight text-slate-900">Conversaciones</Text>
+            <Text className="text-[23px] font-bold tracking-tight text-slate-900">Conversations</Text>
 
             {isSearching ? (
               <>
                 <TextInput
                   value={query}
                   onChangeText={setQuery}
-                  placeholder="Buscar…"
+                  placeholder="Search…"
                   placeholderTextColor="#94a3b8"
                   autoFocus
                   autoCapitalize="none"
@@ -1381,7 +1383,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                 />
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Cerrar búsqueda"
+                  accessibilityLabel="Close search"
                   onPress={() => {
                     setIsSearching(false);
                     setQuery('');
@@ -1396,7 +1398,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
               <>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Buscar sesiones"
+                  accessibilityLabel="Search sessions"
                   onPress={() => setIsSearching(true)}
                   // `ml-auto` lo empuja al extremo; al abrirse, el campo ocupa
                   // ese hueco y el título se queda donde estaba.
@@ -1407,7 +1409,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                 <NewSessionButton onPress={() => setIsCreating(true)} />
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Más opciones"
+                  accessibilityLabel="More options"
                   onPress={() => setIsMenuOpen(true)}
                   className="-mr-1.5 h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
                 >
@@ -1427,7 +1429,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
         <View className="mt-1 flex-row items-center gap-2">
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Ver servidores"
+            accessibilityLabel="View servers"
             onPress={() => setShowServers(true)}
             disabled={isSelectionMode}
             className={`min-h-11 flex-1 flex-row items-center ${
@@ -1453,7 +1455,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                       className="h-2 w-2 rounded-full"
                     />
                     <Text className="text-[11px] font-medium text-slate-600">
-                      {server.name.length > 0 ? server.name : 'Sin nombre'}
+                      {server.name.length > 0 ? server.name : 'Untitled'}
                     </Text>
                     <Text className="text-[9.5px] text-slate-400">
                       {routeInfo.label}
@@ -1478,13 +1480,13 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           contentContainerClassName="items-center gap-2 pr-4"
         >
           <Chip
-            label={`Todas${activeCount > 0 ? ` · ${activeCount}` : ''}`}
+            label={`All${activeCount > 0 ? ` · ${activeCount}` : ''}`}
             isActive={filter.kind === 'active'}
             onPress={() => setFilter(ACTIVE_FILTER)}
           />
 
           <Chip
-            label={`Archivadas${
+            label={`Archived${
               archivedCount > 0 ? ` · ${archivedCount}` : ''
             }`}
             isActive={filter.kind === 'archived'}
@@ -1496,7 +1498,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           {selectedGroups.length > 0 ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Quitar filtro de grupos"
+              accessibilityLabel="Clear group filter"
               onPress={clearGroupFilter}
               className="h-[30px] w-[30px] items-center justify-center rounded-full bg-slate-200 active:bg-slate-300"
             >
@@ -1524,11 +1526,11 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
         <View className="flex-row items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5">
           <Text className="flex-1 text-xs text-amber-800">
             {failedIds
-              .map(id => servers.find(s => s.id === id)?.name ?? 'Un servidor')
+              .map(id => servers.find(s => s.id === id)?.name ?? 'A server')
               .join(', ')}
             {failedIds.length === 1
-              ? ' no responde por ninguna ruta'
-              : ' no responden por ninguna ruta'}
+              ? ' is not responding on any route'
+              : ' are not responding on any route'}
           </Text>
           <Pressable
             accessibilityRole="button"
@@ -1539,7 +1541,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
             className="rounded-full bg-amber-100 px-3 py-1 active:opacity-70"
           >
             <Text className="text-[11px] font-semibold text-amber-800">
-              Reintentar
+              Retry
             </Text>
           </Pressable>
         </View>
@@ -1607,14 +1609,14 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
             <View className="items-center px-6 py-16">
               <Text className="text-center text-sm text-slate-500">
                 {reachable.length === 0
-                  ? 'Ningún servidor responde. Revisa las direcciones en Ajustes.'
+                  ? 'No server is responding. Check the addresses in Settings.'
                   : query.trim().length > 0
-                  ? `Nada coincide con «${query.trim()}».`
+                  ? `Nothing matches "${query.trim()}".`
                   : visibleGroups.length > 0
-                  ? 'No hay sesiones en los grupos elegidos.'
+                  ? 'No sessions in the selected groups.'
                   : filter.kind === 'archived'
-                  ? 'No hay sesiones archivadas.'
-                  : 'No hay sesiones activas.'}
+                  ? 'No archived sessions.'
+                  : 'No active sessions.'}
               </Text>
             </View>
           }

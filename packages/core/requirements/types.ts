@@ -106,13 +106,13 @@ export function degenerateCheckWarning(
 ): string | null {
   if (kind === 'command') {
     const cmd = (command || '').trim();
-    if (!cmd) return 'Comando vacío — nunca puede fallar.';
+    if (!cmd) return 'Empty command — it can never fail.';
     if (DEGENERATE_COMMANDS.some(re => re.test(cmd))) {
-      return 'Este comando siempre sale con 0, así que el requerimiento nunca puede fallar.';
+      return 'This command always exits 0, so the requirement can never fail.';
     }
     return null;
   }
   const prompt = (judgePrompt || '').trim();
-  if (prompt.length < 20) return 'El prompt del juez es demasiado vago para calificar algo verificable.';
+  if (prompt.length < 20) return 'The judge prompt is too vague to grade anything verifiable.';
   return null;
 }

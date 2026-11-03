@@ -88,8 +88,8 @@ export function startLoop(sessionId: string): { ok: true; loop: LoopState } | { 
   broadcastLoop(sessionId);
 
   systemNote(sessionId, state.phase === 'looping'
-    ? `🔁 Loop iniciado — ${progress.locked} requerimiento(s) aprobado(s). La sesión seguirá corriendo hasta que todos pasen o la detengas.`
-    : '🔁 Loop armado — esperando que apruebes al menos un requerimiento antes de arrancar.');
+    ? `🔁 Loop started — ${progress.locked} approved requirement(s). The session will keep running until they all pass or you stop it.`
+    : '🔁 Loop armed — waiting for you to approve at least one requirement before it starts.');
 
   log(`[loop:${sessionId.slice(0, 8)}] started (${state.phase})`);
   return { ok: true, loop: state };
@@ -228,9 +228,9 @@ async function continueLoop(sessionId: string): Promise<void> {
   if (before.locked === 0) {
     const state = setState(sessionId, { phase: 'bootstrap', pauseReason: 'awaiting_approval' });
     if (state && before.total === 0) {
-      systemNote(sessionId, '🔁 Loop en espera — todavía no hay requerimientos. Pídele al agente que los defina y aprueba los que cuentan.');
+      systemNote(sessionId, '🔁 Loop on hold — there are no requirements yet. Ask the agent to define them and approve the ones that matter.');
     } else if (state) {
-      systemNote(sessionId, `🔁 Loop en espera — ${before.draft} requerimiento(s) en borrador esperando tu aprobación.`);
+      systemNote(sessionId, `🔁 Loop on hold — ${before.draft} draft requirement(s) waiting for your approval.`);
     }
     return;
   }
@@ -288,7 +288,7 @@ async function continueLoop(sessionId: string): Promise<void> {
   const sent = await deps.sendMessage(sessionId, prompt);
   if (!sent.ok) {
     pauseLoop(sessionId, 'user');
-    systemNote(sessionId, `🔁 Loop no pudo continuar: ${sent.error ?? 'falló el envío del prompt de continuación'}.`);
+    systemNote(sessionId, `🔁 Loop couldn't continue: ${sent.error ?? 'failed to send the continuation prompt'}.`);
   }
 }
 

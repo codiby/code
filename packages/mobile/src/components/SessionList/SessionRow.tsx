@@ -67,10 +67,10 @@ export function SessionRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Sesión ${session.name}`}
+      accessibilityLabel={`Session ${session.name}`}
       accessibilityState={{ selected: isSelected }}
       accessibilityHint={
-        onLongPress ? 'Mantén pulsado para más acciones' : undefined
+        onLongPress ? 'Long-press for more actions' : undefined
       }
       onPress={() => onPress?.(session)}
       onLongPress={() => onLongPress?.(session)}
@@ -122,14 +122,14 @@ export function SessionRow({
               numberOfLines={1}
               className="mr-2 flex-1 text-[12px] leading-[18px] text-slate-300"
             >
-              {`Sin conexión con ${serverName ?? 'el servidor'}`}
+              {`Can't reach ${serverName ?? 'the server'}`}
             </Text>
           ) : isWaiting ? (
             <Text
               numberOfLines={1}
               className="mr-2 flex-1 text-[12px] leading-[18px] font-semibold text-amber-700"
             >
-              {`Pide permiso · ${pendingTool}`}
+              {`Needs permission · ${pendingTool}`}
             </Text>
           ) : isStreaming ? (
             // Lo que está pasando ahora pesa más que un borrador tuyo o que
@@ -138,14 +138,14 @@ export function SessionRow({
               numberOfLines={1}
               className="mr-2 flex-1 text-[12px] leading-[18px] font-semibold text-emerald-700"
             >
-              {activity !== null ? `Trabajando · ${activity}` : 'Trabajando…'}
+              {activity !== null ? `Working · ${activity}` : 'Working…'}
             </Text>
           ) : hasDraft ? (
             <Text
               numberOfLines={1}
               className="mr-2 flex-1 text-[12px] leading-[18px]"
             >
-              <Text className="text-rose-500">Borrador: </Text>
+              <Text className="text-rose-500">Draft: </Text>
               <Text className="text-slate-500">
                 {draft.replace(/\n/g, ' ')}
               </Text>
@@ -182,7 +182,7 @@ export function SessionRow({
             </Text>
           ) : session.isOpen ? null : (
             <Text className="text-[10px] uppercase tracking-wide text-slate-400">
-              archivada
+              archived
             </Text>
           )}
         </View>

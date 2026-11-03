@@ -305,7 +305,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 export function useSockets(): SocketApi {
   const value = useContext(SocketContext);
   if (value === null) {
-    throw new Error('useSockets requiere un <SocketProvider>');
+    throw new Error('useSockets requires a <SocketProvider>');
   }
   return value;
 }

@@ -69,7 +69,7 @@ function Row({ row }: { readonly row: DiffDocRow }) {
       <View className="flex-row items-center gap-2 py-1 pl-2 pr-2">
         <View className="h-px flex-1 bg-slate-200" />
         <Text className="text-[9.5px] text-slate-400">
-          {`${row.count} ${row.count === 1 ? 'línea' : 'líneas'}`}
+          {`${row.count} ${row.count === 1 ? 'line' : 'lines'}`}
         </Text>
         <View className="h-px flex-1 bg-slate-200" />
       </View>

@@ -100,7 +100,7 @@ export function savePinned(
     '/preferences',
     body => {
       if (asRecord(body).ok !== true) {
-        throw new ServerError('El servidor rechazó el cambio');
+        throw new ServerError('The server rejected the change');
       }
       return undefined;
     },
@@ -123,7 +123,7 @@ export function savePinnedGroups(
     '/preferences',
     body => {
       if (asRecord(body).ok !== true) {
-        throw new ServerError('El servidor rechazó el cambio');
+        throw new ServerError('The server rejected the change');
       }
       return undefined;
     },
@@ -234,7 +234,7 @@ export async function applyGrouping(
     '/preferences',
     body => {
       if (asRecord(body).ok !== true) {
-        throw new ServerError('El servidor rechazó el cambio');
+        throw new ServerError('The server rejected the change');
       }
       return undefined;
     },
@@ -304,7 +304,7 @@ export async function moveSessionsToGroup(
     '/preferences',
     body => {
       if (asRecord(body).ok !== true) {
-        throw new ServerError('El servidor rechazó el cambio');
+        throw new ServerError('The server rejected the change');
       }
       return undefined;
     },

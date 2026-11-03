@@ -54,7 +54,7 @@ export async function openFileDialog(
 /** Close with a confirm when there are unsaved edits. */
 export function confirmCloseStandaloneFile(path: string) {
   const tab = useStandaloneFiles.getState().tabs.find(t => t.path === path);
-  if (tab?.dirty && !window.confirm(`${baseName(path)} tiene cambios sin guardar. ¿Cerrar de todos modos?`)) return;
+  if (tab?.dirty && !window.confirm(`${baseName(path)} has unsaved changes. Close anyway?`)) return;
   closeStandaloneFile(path);
 }
 
@@ -62,7 +62,7 @@ export function confirmCloseStandaloneFile(path: string) {
 function confirmCloseAll() {
   const { tabs } = useStandaloneFiles.getState();
   const dirty = tabs.filter(t => t.dirty).length;
-  if (dirty && !window.confirm(dirty === 1 ? 'Hay un archivo con cambios sin guardar. ¿Cerrar de todos modos?' : `Hay ${dirty} archivos con cambios sin guardar. ¿Cerrar de todos modos?`)) return;
+  if (dirty && !window.confirm(dirty === 1 ? 'A file has unsaved changes. Close anyway?' : `${dirty} files have unsaved changes. Close anyway?`)) return;
   for (const t of tabs) closeStandaloneFile(t.path);
   dismissStandalonePath();
 }
@@ -89,7 +89,7 @@ export function StandaloneEditor({ client, onOpenPaths }: { client: ClaudeClient
   const save = async (path: string) => {
     if (!client) return;
     setSaveError('');
-    if (!(await saveStandaloneFile(client, path))) setSaveError(`No se pudo guardar ${baseName(path)}.`);
+    if (!(await saveStandaloneFile(client, path))) setSaveError(`Couldn't save ${baseName(path)}.`);
   };
 
   return (
@@ -111,16 +111,16 @@ export function StandaloneEditor({ client, onOpenPaths }: { client: ClaudeClient
         </div>
         <button
           onClick={() => void openFileDialog(client, openPaths)}
-          title={`Abrir archivo… (${mod}O)`}
+          title={`Open file… (${mod}O)`}
           className="flex shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-zinc-500 transition-colors hover:text-zinc-100"
         >
           <FolderOpen size={13} />
-          <span>Abrir</span>
+          <span>Open</span>
         </button>
         <button
           onClick={confirmCloseAll}
-          title="Cerrar el editor"
-          aria-label="Cerrar el editor"
+          title="Close the editor"
+          aria-label="Close the editor"
           className="flex w-8 shrink-0 items-center justify-center text-zinc-500 transition-colors hover:text-zinc-100"
         >
           <X size={14} />
@@ -143,11 +143,11 @@ export function StandaloneEditor({ client, onOpenPaths }: { client: ClaudeClient
             value={pathInput}
             onChange={(e) => setPathInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') dismissStandalonePath(); }}
-            placeholder="Ruta absoluta del archivo en esta máquina"
+            placeholder="Absolute path of the file on this machine"
             spellCheck={false}
             className="min-w-0 flex-1 rounded-md border border-border bg-base px-2.5 py-1 font-mono text-[12px] text-zinc-100 placeholder:font-sans placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
           />
-          <button type="submit" className="rounded-md bg-zinc-100 px-3 py-1 text-[12px] font-medium text-zinc-900 hover:opacity-90">Abrir</button>
+          <button type="submit" className="rounded-md bg-zinc-100 px-3 py-1 text-[12px] font-medium text-zinc-900 hover:opacity-90">Open</button>
         </form>
       )}
 
@@ -157,7 +157,7 @@ export function StandaloneEditor({ client, onOpenPaths }: { client: ClaudeClient
           {saveError && <span className="shrink-0 text-red-400">{saveError}</span>}
           {active.dirty && (
             <button onClick={() => void save(active.path)} className="ml-auto shrink-0 text-zinc-400 hover:text-zinc-100">
-              Guardar ({mod}S)
+              Save ({mod}S)
             </button>
           )}
         </div>

@@ -54,8 +54,8 @@ export function bufferFor(tab: StandaloneTab): string {
 async function load(client: ClaudeClient, path: string): Promise<StandaloneTab> {
   try {
     const file = await client.readFile(path, null);
-    if (!file) return { path, content: '', dirty: false, error: 'No se pudo leer el archivo (no existe, es una carpeta o es demasiado grande).' };
-    if (file.content.includes('\u0000')) return { path, content: '', dirty: false, error: 'Es un archivo binario; solo se abren archivos de texto.' };
+    if (!file) return { path, content: '', dirty: false, error: "Couldn't read the file (it doesn't exist, is a folder, or is too large)." };
+    if (file.content.includes('\u0000')) return { path, content: '', dirty: false, error: 'This is a binary file; only text files can be opened.' };
     return { path, content: file.content, dirty: false, error: null };
   } catch (err) {
     return { path, content: '', dirty: false, error: err instanceof Error ? err.message : String(err) };

@@ -39,68 +39,74 @@ const MAX_TOOL_CHARS = 140;
 const RECYCLE_AFTER = 4;
 
 const SYSTEM_PROMPT = [
-  'Eres la voz de un asistente de programación: el usuario habla contigo. Otro',
-  'modelo, más lento, hace el trabajo real en el repositorio; tú decides qué le',
-  'pides y le cuentas al usuario lo que hace. Para el usuario ambos son UN SOLO',
-  'asistente: habla en primera persona ("voy a revisar", "encontré") y nunca',
-  'menciones a otro agente o modelo.',
-  'Lo que va en DECIR se convierte en voz: sin markdown, sin listas, sin bloques',
-  'de código, sin rutas largas ni URLs. Frases cortas, naturales, como hablando.',
-  'Responde en el idioma del usuario; en español, de México: tú, nunca vos.',
-  'No sabes nada fuera de la conversación: nunca inventes resultados, causas,',
-  'archivos, horas, fechas, cifras ni cuánto falta.',
+  'You are the voice of a coding assistant: the user talks to you. Another,',
+  'slower model does the real work in the repository; you decide what to ask it',
+  'for and tell the user what it is doing. To the user you are both ONE single',
+  'assistant: speak in the first person ("I\'ll take a look", "I found") and never',
+  'mention another agent or model.',
+  'Whatever goes in SAY is turned into speech: no markdown, no lists, no code',
+  'blocks, no long paths or URLs. Short, natural sentences, as if talking.',
+  'LANGUAGE: everything you SAY, and every spoken answer in the progress and',
+  'final modes, must be in the language the user speaks to you, even though',
+  'these instructions are in English. If the user speaks Spanish, use Mexican',
+  'Spanish: tú, never vos. Field labels, action names and (nothing) stay exactly',
+  'as written here.',
+  'You know nothing outside the conversation: never make up results, causes,',
+  'files, times, dates, figures or how much is left.',
   '',
-  'Recibes <conversacion> (el trabajo: lo que se le pidió y lo que respondió),',
-  '<voz> (lo que el usuario y tú se han dicho) y un MODO.',
+  'You receive <conversation> (the work: what was asked and what it answered),',
+  '<voice> (what the user and you have said to each other) and a MODE.',
   '',
-  'MODO front — el usuario acaba de hablar. Responde exactamente en este formato:',
-  'ACCION: <una acción>',
-  'DECIR: <lo que dices en voz alta, una o dos frases; puede ir vacío>',
-  'INSTRUCCION: <solo con enviar o interrumpir>',
-  'Acciones:',
-  '- responder: saludos, plática, o algo que ya responde la conversación. Lo',
-  '  contestas tú en DECIR; no se le pide nada al trabajo. A un saludo, saluda',
-  '  y ya: no recites el estado del trabajo si no te lo preguntan.',
-  '  Una llamada de atención sola ("oye", "oye Codin", "hey", "Codiby") es',
-  '  responder con DECIR "¿Sí?": el usuario va a seguir hablando. Nunca es',
-  '  detener ni interrumpir.',
-  '- enviar: hay algo que hacer, revisar o averiguar. En INSTRUCCION redactas el',
-  '  pedido claro y completo, como lo escribiría el usuario: junta las partes que',
-  '  dijo en <voz>, corrige errores de transcripción obvios, no agregues nada que',
-  '  no pidió. En DECIR, una frase corta de qué vas a hacer.',
-  '- preguntar: si tienes duda de QUÉ quiere —no sabes a qué se refiere, o cabe',
-  '  entenderlo de dos formas que llevarían a trabajos distintos— no adivines:',
-  '  pregúntale en DECIR, una sola pregunta concreta. Ante esa duda, siempre',
-  '  pregunta. Lo técnico (dónde está el error, qué archivo, cuál es la causa) no',
-  '  se pregunta: eso lo averigua el trabajo.',
-  '- esperar: la frase TERMINA cortada, sin su complemento ("ahora necesito que",',
-  '  "la sesión de"). Empezar con "y", "y también que" o "además" no la corta: si',
-  '  se entiende qué pide, no es esperar. DECIR vacío: el usuario va a seguir',
-  '  hablando y tú juntas las partes.',
-  'Solo si te indico que el trabajo está EN CURSO, también puedes:',
-  '- interrumpir: cambia lo que quiere o corrige el rumbo, y seguir sería trabajo',
-  '  perdido. Se detiene el trabajo y se envía tu INSTRUCCION.',
-  '- detener: solo con una orden clara de parar ("para", "detente", "cancela",',
-  '  "basta", "olvídalo"), sin pedir nada más. Un saludo, una llamada de atención',
-  '  o una pregunta nunca detienen el trabajo.',
-  '  Detener trabajo tiene costo: si solo agrega información, es enviar.',
+  'MODE front — the user just spoke. Answer in exactly this format:',
+  'ACTION: <one action>',
+  'SAY: <what you say out loud, one or two sentences; may be empty>',
+  'INSTRUCTION: <only with send or interrupt>',
+  'Actions:',
+  '- respond: greetings, small talk, or something the conversation already',
+  '  answers. You answer it yourself in SAY; nothing is asked of the work. To a',
+  '  greeting, just greet back: don\'t recite the state of the work unless asked.',
+  '  A bare call for attention ("hey", "oye", "hey Codin", "Codiby") is respond',
+  '  with SAY "Yes?" (in the user\'s language): the user is about to keep',
+  '  talking. It is never stop or interrupt.',
+  '- send: there is something to do, check or find out. In INSTRUCTION write the',
+  '  request clearly and completely, as the user would write it: join the parts',
+  '  they said in <voice>, fix obvious transcription errors, add nothing they',
+  '  didn\'t ask for. Write it in the user\'s language. In SAY, one short sentence',
+  '  on what you are going to do.',
+  '- ask: if you are unsure WHAT they want —you don\'t know what they mean, or it',
+  '  could be read two ways that would lead to different work— don\'t guess: ask',
+  '  in SAY, a single concrete question. When in that doubt, always ask.',
+  '  Technical matters (where the bug is, which file, what the cause is) are not',
+  '  asked: the work finds those out.',
+  '- wait: the sentence ENDS cut off, missing its complement ("now I need you',
+  '  to", "the session of"). Starting with "and", "and also" or "plus" doesn\'t',
+  '  cut it: if it\'s clear what they want, it isn\'t wait. Empty SAY: the user is',
+  '  going to keep talking and you join the parts.',
+  'Only if I tell you the work is IN PROGRESS, you may also:',
+  '- interrupt: they change what they want or correct the course, and carrying',
+  '  on would be wasted work. The work is stopped and your INSTRUCTION is sent.',
+  '- stop: only with a clear order to stop ("stop", "para", "detente", "cancel",',
+  '  "enough", "forget it"), without asking for anything else. A greeting, a call',
+  '  for attention or a question never stops the work.',
+  '  Stopping the work has a cost: if they only add information, it\'s send.',
   '',
-  'MODO progress — el trabajo sigue en curso. Una frase: qué estás haciendo ahora',
-  'según los últimos pasos. No repitas avisos anteriores. Sin formato: solo la',
-  'frase. Si no hay nada nuevo que contar, responde exactamente: (nada)',
+  'MODE progress — the work is still in progress. One sentence: what you are',
+  'doing now, based on the latest steps. Don\'t repeat earlier updates. No',
+  'format: just the sentence. If there is nothing new to tell, answer exactly:',
+  '(nothing)',
   '',
-  'MODO final — llegó un mensaje nuevo del trabajo: un avance o la respuesta',
-  'final. Sin formato: una a tres frases habladas, en primera persona, con lo',
-  'esencial, cifras y decisiones importantes. Si hace una pregunta, termina con',
-  'esa MISMA pregunta, como pregunta: "¿lo corrijo?" nunca se vuelve "lo',
-  'corrijo". No agregues nada que no esté en el mensaje: si solo dice lo que se',
-  'va a hacer, dilo como intención ("estoy revisando…"), nunca como hallazgo, y',
-  'nunca tomes resultados de la conversación anterior como si fueran nuevos.',
-  'Si te indico que estabas diciendo otra cosa, te estás cortando a ti mismo:',
-  'empieza con una transición corta y natural ("espera, te actualizo"). Si no',
-  'te lo indico, no uses ninguna transición: ve directo a la respuesta.',
-  'Si te indico lo que ya dijiste en este turno, el usuario ya lo escuchó: no lo',
-  'repitas ni lo parafrasees; empieza directo con lo que el mensaje agrega.',
+  'MODE final — a new message arrived from the work: an update or the final',
+  'answer. No format: one to three spoken sentences, in the first person, with',
+  'the essentials, figures and important decisions. If it asks a question, end',
+  'with that SAME question, as a question: "should I fix it?" never becomes',
+  '"I\'ll fix it". Add nothing that isn\'t in the message: if it only says what',
+  'is going to be done, say it as an intention ("I\'m checking…"), never as a',
+  'finding, and never take results from the earlier conversation as new.',
+  'If I tell you that you were saying something else, you are cutting yourself',
+  'off: open with a short, natural transition ("hold on, here\'s an update"). If',
+  'I don\'t tell you, use no transition at all: go straight to the answer.',
+  'If I tell you what you already said this turn, the user already heard it:',
+  'don\'t repeat or paraphrase it; start straight with what the message adds.',
 ].join('\n');
 
 /**
@@ -133,16 +139,16 @@ export function buildContext(messages: ChatMessage[], limit = CONTEXT_MESSAGES):
     if (m.isThinking || m.isToolResult || m.isTerminal || m.role === 'system') continue;
     if (m.toolName) {
       const detail = describeToolInput(m.toolInput);
-      lines.push(`[agente usó ${m.toolName}${detail ? `: ${clip(detail, MAX_TOOL_CHARS)}` : ''}]`);
+      lines.push(`[agent used ${m.toolName}${detail ? `: ${clip(detail, MAX_TOOL_CHARS)}` : ''}]`);
     } else if (m.content?.trim()) {
-      lines.push(`${m.role === 'user' ? 'Usuario' : 'Agente'}: ${clip(m.content, MAX_MESSAGE_CHARS)}`);
+      lines.push(`${m.role === 'user' ? 'User' : 'Agent'}: ${clip(m.content, MAX_MESSAGE_CHARS)}`);
     }
   }
   return lines.slice(-limit).join('\n');
 }
 
 /** One line of what the user and the voice said to each other. */
-export interface VoiceLine { who: 'usuario' | 'voz'; text: string }
+export interface VoiceLine { who: 'user' | 'voice'; text: string }
 
 export interface AskOptions {
   /** The user↔voice dialogue so far — the voice's memory across streams. */
@@ -159,17 +165,17 @@ export interface AskOptions {
 
 export function buildPrompt(mode: VoiceAgentMode, context: string, payload: string, opts: AskOptions = {}): string {
   const { voiceLog = [], alreadySaid = [], busy = false, interrupting = false, noMore = false } = opts;
-  const voz = voiceLog.slice(-VOICE_LOG_LINES).map((l) => `${l.who === 'usuario' ? 'Usuario' : 'Tú'}: ${l.text}`).join('\n');
-  const said = alreadySaid.length ? `Ya dijiste en este turno: ${alreadySaid.map((s) => `"${s}"`).join(' ')}\n\n` : '';
+  const voice = voiceLog.slice(-VOICE_LOG_LINES).map((l) => `${l.who === 'user' ? 'User' : 'You'}: ${l.text}`).join('\n');
+  const said = alreadySaid.length ? `You already said this turn: ${alreadySaid.map((s) => `"${s}"`).join(' ')}\n\n` : '';
   const task = mode === 'front'
-    ? `${busy ? 'El trabajo está EN CURSO.\n' : ''}${noMore ? 'Esperaste y el usuario ya no siguió hablando: no elijas esperar. Si no se entiende, pregunta.\n' : ''}El usuario acaba de decir: "${payload}"`
+    ? `${busy ? 'The work is IN PROGRESS.\n' : ''}${noMore ? 'You waited and the user didn\'t say anything more: don\'t choose wait. If it isn\'t clear, ask.\n' : ''}The user just said: "${payload}"`
     : mode === 'progress'
-      ? `Avisos que ya diste: ${payload || '(ninguno)'}`
-      : `${said}${interrupting ? 'Estabas diciendo otra cosa y te vas a cortar.\n\n' : ''}Mensaje nuevo:\n${payload}`;
-  return `<conversacion>\n${context || '(vacía)'}\n</conversacion>\n\n<voz>\n${voz || '(vacía)'}\n</voz>\n\nMODO ${mode}\n${task}`;
+      ? `Updates you already gave: ${payload || '(none)'}`
+      : `${said}${interrupting ? 'You were saying something else and are about to cut yourself off.\n\n' : ''}New message:\n${payload}`;
+  return `<conversation>\n${context || '(empty)'}\n</conversation>\n\n<voice>\n${voice || '(empty)'}\n</voice>\n\nMODE ${mode}\n${task}`;
 }
 
-export type FrontAction = 'responder' | 'enviar' | 'preguntar' | 'esperar' | 'interrumpir' | 'detener';
+export type FrontAction = 'respond' | 'send' | 'ask' | 'wait' | 'interrupt' | 'stop';
 
 export interface FrontDecision {
   action: FrontAction;
@@ -177,7 +183,7 @@ export interface FrontDecision {
   instruction: string;
 }
 
-const FRONT_ACTIONS = new Set<FrontAction>(['responder', 'enviar', 'preguntar', 'esperar', 'interrumpir', 'detener']);
+const FRONT_ACTIONS = new Set<FrontAction>(['respond', 'send', 'ask', 'wait', 'interrupt', 'stop']);
 
 /**
  * Read the front decision. `null` when there's no recognizable action — the
@@ -186,17 +192,17 @@ const FRONT_ACTIONS = new Set<FrontAction>(['responder', 'enviar', 'preguntar', 
  */
 export function parseFront(text: string): FrontDecision | null {
   // Haiku fills unused fields with "(vacío)" or "-"; read aloud, that's noise.
-  const blank = (v: string) => (/^[(\[]?\s*(vac[ií]o|ninguno|ninguna|nada|n\/a|-+)\s*[)\]]?\.?$/i.test(v) ? '' : v);
+  const blank = (v: string) => (/^[(\[]?\s*(empty|none|nothing|vac[ií]o|ninguno|ninguna|nada|n\/a|-+)\s*[)\]]?\.?$/i.test(v) ? '' : v);
   const field = (name: string) => {
     const m = text.match(new RegExp(`^\\s*${name}:[ \\t]*(.*)$`, 'im'));
     return m ? blank(m[1]!.trim()) : '';
   };
-  const action = field('ACCI[OÓ]N').toLowerCase().split(/\s/)[0] as FrontAction;
+  const action = field('ACTION').toLowerCase().split(/\s/)[0] as FrontAction;
   if (!FRONT_ACTIONS.has(action)) return null;
   // The instruction may run over several lines; everything after its label.
-  const instr = blank(text.match(/^\s*INSTRUCCI[OÓ]N:[ \t]*([\s\S]*)$/im)?.[1]?.trim() ?? '');
-  const decision = { action, say: field('DECIR'), instruction: instr };
-  if ((action === 'enviar' || action === 'interrumpir') && !decision.instruction) return null;
+  const instr = blank(text.match(/^\s*INSTRUCTION:[ \t]*([\s\S]*)$/im)?.[1]?.trim() ?? '');
+  const decision = { action, say: field('SAY'), instruction: instr };
+  if ((action === 'send' || action === 'interrupt') && !decision.instruction) return null;
   return decision;
 }
 
@@ -207,13 +213,13 @@ export function parseFront(text: string): FrontDecision | null {
 export function stripActionLines(text: string): string {
   // The whole front format: only DECIR is speech. An instruction running over
   // several lines would otherwise be read aloud past its first line.
-  if (/^\s*ACCI[OÓ]N:/im.test(text)) {
-    return text.match(/^\s*DECIR:[ \t]*(.*)$/im)?.[1]?.trim() ?? '';
+  if (/^\s*ACTION:/im.test(text)) {
+    return text.match(/^\s*SAY:[ \t]*(.*)$/im)?.[1]?.trim() ?? '';
   }
   return text
     .split('\n')
-    .filter((l) => !/^\s*(ACCI[OÓ]N|INSTRUCCI[OÓ]N):/i.test(l))
-    .map((l) => l.replace(/^\s*DECIR:\s*/i, ''))
+    .filter((l) => !/^\s*(ACTION|INSTRUCTION):/i.test(l))
+    .map((l) => l.replace(/^\s*SAY:\s*/i, ''))
     .join('\n')
     .trim();
 }
@@ -345,7 +351,7 @@ export class FastVoiceAgent {
     const stream = new WarmStream(this.tag);
     // A plain greeting, not a mode that can answer "(nada)" or carry an action
     // line: whatever this answers stays in the stream's history as an example.
-    void stream.ask(buildPrompt('front', '', 'hola'), 15_000);
+    void stream.ask(buildPrompt('front', '', 'hi'), 15_000);
     return stream;
   }
 
@@ -388,7 +394,7 @@ export class FastVoiceAgent {
     // The busy ack's action line is parsed by the caller; anywhere else it's a
     // stray from the stream's history and must never be read aloud.
     const text = raw && mode !== 'front' ? stripActionLines(raw) : raw;
-    if (!text || text === '(nada)') return null;
+    if (!text || /^\((nothing|nada)\)\.?$/i.test(text)) return null;
     return text;
   }
 

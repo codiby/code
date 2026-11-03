@@ -46,7 +46,7 @@ export function ChatImage({ image }: ChatImageProps) {
     return (
       <View className="my-1 rounded-lg bg-slate-100 px-3 py-2">
         <Text className="text-[11px] text-slate-400">
-          {`No se pudo abrir la imagen (${image.mediaType})`}
+          {`Could not open image (${image.mediaType})`}
         </Text>
       </View>
     );
@@ -58,7 +58,7 @@ export function ChatImage({ image }: ChatImageProps) {
     <>
       <Pressable
         accessibilityRole="imagebutton"
-        accessibilityLabel="Abrir imagen"
+        accessibilityLabel="Open image"
         onPress={() => setIsFullscreen(true)}
         className="my-1 active:opacity-80"
       >
@@ -83,7 +83,7 @@ export function ChatImage({ image }: ChatImageProps) {
           // own handler root even though the app already has one.
           <GestureHandlerRootView style={{ flex: 1 }}>
             <ImageLightbox
-              items={[{ id: 'chat-image', uri, name: 'Imagen' }]}
+              items={[{ id: 'chat-image', uri, name: 'Image' }]}
               initialIndex={0}
               onClose={() => setIsFullscreen(false)}
             />

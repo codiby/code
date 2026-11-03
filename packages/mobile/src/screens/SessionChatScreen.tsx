@@ -193,7 +193,7 @@ export function SessionChatScreen({
         setHasMore(page.hasMore);
         setError(null);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : 'Error desconocido');
+        setError(cause instanceof Error ? cause.message : 'Unknown error');
       } finally {
         isFetchingRef.current = false;
         setIsLoading(false);
@@ -251,7 +251,7 @@ export function SessionChatScreen({
       setError(null);
     } catch (cause) {
       // Lo guardado sigue en pantalla: el fallo solo se avisa.
-      setError(cause instanceof Error ? cause.message : 'Error desconocido');
+      setError(cause instanceof Error ? cause.message : 'Unknown error');
     } finally {
       isSyncingRef.current = false;
       setIsSyncing(false);
@@ -570,7 +570,7 @@ export function SessionChatScreen({
         >
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Volver"
+            accessibilityLabel="Back"
             onPress={onClose}
             className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
           >
@@ -579,7 +579,7 @@ export function SessionChatScreen({
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Ver la info de la sesión"
+            accessibilityLabel="View session info"
             onPress={onOpenInfo}
             className="flex-1 flex-row items-center gap-2.5 rounded-xl active:bg-slate-100"
           >
@@ -615,16 +615,16 @@ export function SessionChatScreen({
                   }`}
                 >
                   {permission !== null
-                    ? 'esperando permiso'
+                    ? 'waiting for permission'
                     : isStreaming
-                    ? 'escribiendo…'
+                    ? 'typing…'
                     : isSyncing
-                    ? 'sincronizando…'
+                    ? 'syncing…'
                     : isLive
-                    ? `en vivo · ${session.folder}`
+                    ? `live · ${session.folder}`
                     : socketStatus === 'closed'
                     ? session.folder
-                    : 'conectando…'}
+                    : 'connecting…'}
                 </Text>
               </View>
             </View>
@@ -738,7 +738,7 @@ export function SessionChatScreen({
               ListEmptyComponent={
                 <View className="items-center px-6 py-16">
                   <Text className="text-sm text-slate-500">
-                    Esta sesión no tiene mensajes.
+                    This session has no messages.
                   </Text>
                 </View>
               }
@@ -785,7 +785,7 @@ export function SessionChatScreen({
                   </Text>
                 )
               }
-              placeholder={directChat ? '¿Qué quieres hacer?' : undefined}
+              placeholder={directChat ? 'What do you want to do?' : undefined}
               disabled={isLoading || baseUrl.length === 0 || directChat?.busy}
               // Misma condición que el escritorio: respondiendo y sin permiso
               // pendiente. Con permiso hay una tarjeta ámbar que ya lo dice, y

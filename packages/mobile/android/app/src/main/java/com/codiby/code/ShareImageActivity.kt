@@ -43,7 +43,7 @@ class ShareImageActivity : ReactActivity() {
         decoder.execute {
             try {
                 val uris = sharedUris(source)
-                require(uris.size in 1..4) { "Comparte entre 1 y 4 imágenes." }
+                require(uris.size in 1..4) { "Share between 1 and 4 images." }
                 val images = Arguments.createArray()
                 uris.forEach { uri ->
                     val image = loadImage(uri)
@@ -59,7 +59,7 @@ class ShareImageActivity : ReactActivity() {
                     putString("text", source.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty().take(8000))
                     putArray("images", images)
                 })
-            } catch (error: Exception) { promise.reject("SHARE_IMAGES", error.message ?: "No se pudo leer la imagen", error) }
+            } catch (error: Exception) { promise.reject("SHARE_IMAGES", error.message ?: "Could not read the image", error) }
         }
     }
 
@@ -80,7 +80,7 @@ class ShareImageActivity : ReactActivity() {
         var sample = 1
         while (max(options.outWidth, options.outHeight) / sample > 1920) sample *= 2
         options.inJustDecodeBounds = false; options.inSampleSize = sample
-        var bitmap = contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, options) } ?: error("Imagen inválida")
+        var bitmap = contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, options) } ?: error("Invalid image")
         val orientation = contentResolver.openInputStream(uri).use { stream ->
             try { if (stream == null) 1 else ExifInterface(stream).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) } catch (_: Exception) { 1 }
         }
@@ -106,7 +106,7 @@ class ShareImageActivity : ReactActivity() {
             bitmap.recycle(); bitmap = opaque
         }
         val bytes = ByteArrayOutputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out); out.toByteArray() }
-        require(bytes.size <= 2_250_000) { "Imagen demasiado grande" }
+        require(bytes.size <= 2_250_000) { "Image too large" }
         bitmap.recycle()
         return JSONObject().put("mediaType", "image/jpeg").put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
     }

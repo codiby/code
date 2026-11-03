@@ -92,7 +92,7 @@ test('envía una sola vez por la ruta validada y no reintenta un POST fallido', 
   (sendMessage as jest.Mock).mockRejectedValue(new Error('503'));
   await expect(
     sendIncomingShare(host, chat, payload.text, payload.images),
-  ).rejects.toThrow('No se confirmó');
+  ).rejects.toThrow('Sending was not confirmed');
   expect(sendMessage).toHaveBeenCalledTimes(1);
   expect(sendMessage).toHaveBeenCalledWith(
     'https://remote',
@@ -112,6 +112,6 @@ test('no envía a un chat archivado después de guardar la lista', async () => {
   );
   await expect(
     sendIncomingShare(host, chat, payload.text, payload.images),
-  ).rejects.toThrow('ya no está activo');
+  ).rejects.toThrow('no longer active');
   expect(sendMessage).not.toHaveBeenCalled();
 });

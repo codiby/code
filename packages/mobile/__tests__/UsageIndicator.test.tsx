@@ -45,7 +45,7 @@ const headline = () =>
   tree.root.findAll(
     node =>
       typeof node.props.accessibilityLabel === 'string' &&
-      node.props.accessibilityLabel.startsWith('Uso del plan') &&
+      node.props.accessibilityLabel.startsWith('Plan usage') &&
       typeof node.props.onPress === 'function',
     { deep: false },
   )[0]!;
@@ -78,9 +78,9 @@ test('abre el detalle, fuerza actualización y conserva datos con aviso si falla
   ).toBeGreaterThan(0);
   mockFetch.mockRejectedValueOnce(new Error('Sin respuesta'));
   await act(async () => {
-    button('Actualizar uso').props.onPress();
+    button('Refresh usage').props.onPress();
   });
-  expect(headline().props.accessibilityLabel).toContain('datos incompletos');
+  expect(headline().props.accessibilityLabel).toContain('incomplete data');
   expect(headline().props.accessibilityLabel).toContain('92%');
   expect(
     tree.root.findAllByProps({ accessibilityRole: 'alert' }).length,
@@ -131,5 +131,5 @@ test('un servidor caído no dispara peticiones', async () => {
     tree = ReactTestRenderer.create(<UsageIndicator />);
   });
   expect(mockFetch).not.toHaveBeenCalled();
-  expect(headline().props.accessibilityLabel).toContain('datos incompletos');
+  expect(headline().props.accessibilityLabel).toContain('incomplete data');
 });

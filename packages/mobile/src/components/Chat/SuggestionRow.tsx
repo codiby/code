@@ -34,8 +34,8 @@ export function SuggestionRow({ suggestions, onSend, onEdit }: SuggestionRowProp
           <Pressable
             key={suggestion.kind}
             accessibilityRole="button"
-            accessibilityLabel={`Enviar: ${suggestion.text}`}
-            accessibilityHint="Mantén pulsado para editarla antes de enviar"
+            accessibilityLabel={`Send: ${suggestion.text}`}
+            accessibilityHint="Long-press to edit it before sending"
             onPress={() => onSend(suggestion.text)}
             onLongPress={() => onEdit(suggestion.text)}
             delayLongPress={300}

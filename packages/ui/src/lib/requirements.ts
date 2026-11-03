@@ -99,19 +99,19 @@ export const emptyProgress = (): RequirementProgress => ({
 });
 
 export const LOOP_PAUSE_LABEL: Record<LoopPauseReason, string> = {
-  max_iterations: 'llegó al tope de iteraciones',
-  max_cost: 'llegó al tope de costo',
-  max_runtime: 'llegó al tope de tiempo',
-  stalled: 'los mismos requerimientos fallaron sin cambios en disco',
-  awaiting_approval: 'no hay ningún requerimiento aprobado todavía',
-  user: 'lo detuviste',
+  max_iterations: 'hit the iteration limit',
+  max_cost: 'hit the cost limit',
+  max_runtime: 'hit the time limit',
+  stalled: 'the same requirements failed with no changes on disk',
+  awaiting_approval: 'no requirement has been approved yet',
+  user: 'you stopped it',
 };
 
 /** Human summary of the progress line, e.g. "2/4 passing · 1 borrador". */
 export function progressLabel(progress: RequirementProgress): string {
   const parts = [`${progress.passing}/${progress.locked} passing`];
-  if (progress.draft) parts.push(`${progress.draft} borrador${progress.draft === 1 ? '' : 'es'}`);
+  if (progress.draft) parts.push(`${progress.draft} draft${progress.draft === 1 ? '' : 's'}`);
   if (progress.waived) parts.push(`${progress.waived} waived`);
-  if (progress.tampered) parts.push(`${progress.tampered} alterado${progress.tampered === 1 ? '' : 's'}`);
+  if (progress.tampered) parts.push(`${progress.tampered} tampered`);
   return parts.join(' · ');
 }

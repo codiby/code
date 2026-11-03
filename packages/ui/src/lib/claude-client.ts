@@ -1840,7 +1840,7 @@ export class ClaudeClient {
     if (!remoteId) return this.serverUrl;
     this.ensureRemoteConn(remoteId);
     const base = await this.ensureRemoteBaseUp(remoteId);
-    if (!base) throw new Error(`No se pudo abrir el túnel a ${this.remoteMeta.get(remoteId)?.name || remoteId}.`);
+    if (!base) throw new Error(`Couldn't open the tunnel to ${this.remoteMeta.get(remoteId)?.name || remoteId}.`);
     return base;
   }
 
@@ -1848,7 +1848,7 @@ export class ClaudeClient {
   async getCodexThreads(remoteId: string | null = null, limit = 50): Promise<CodexThread[]> {
     const resp = await authedFetch(`${await this.codexBase(remoteId)}/codex/threads?limit=${limit}`);
     // A bridge older than the importer has no such route.
-    if (resp.status === 404) throw new Error('Este host no tiene el importador de Codex; actualiza su bridge.');
+    if (resp.status === 404) throw new Error('This host has no Codex importer; update its bridge.');
     if (!resp.ok) throw new Error(`Unable to list Codex threads (${resp.status})`);
     return resp.json();
   }

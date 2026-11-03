@@ -40,7 +40,7 @@ export function useRequest<T>(
           status: 'error',
           data: null,
           error:
-            error instanceof ServerError ? error.message : 'Error desconocido',
+            error instanceof ServerError ? error.message : 'Unknown error',
           checkedAt: Date.now(),
         });
       }

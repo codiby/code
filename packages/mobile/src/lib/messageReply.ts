@@ -59,6 +59,6 @@ export function replyFromMessage(message: ChatMessage): MessageReply {
     role: message.role === 'user' ? 'user' : 'assistant',
     text:
       readReply(message.content).text.trim().slice(0, 600) ||
-      (message.images.length > 0 ? 'Imagen' : 'Mensaje'),
+      (message.images.length > 0 ? 'Image' : 'Message'),
   };
 }
