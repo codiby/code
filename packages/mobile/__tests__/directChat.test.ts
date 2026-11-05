@@ -17,6 +17,7 @@ const session = (serverId: string, cwd: string): SessionSummary => ({
   name: 'Navegación',
   folder: 'app',
   updatedAt: 1,
+  lastSentAt: 1,
   isOpen: true,
   isRunning: false,
   provider: 'claude',

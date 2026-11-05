@@ -18,6 +18,7 @@ const snapshot: HomeSnapshot = {
       cwd: '/src/code',
       folder: 'code',
       updatedAt: 10,
+      lastSentAt: 10,
       isOpen: true,
       isRunning: false,
       provider: null,

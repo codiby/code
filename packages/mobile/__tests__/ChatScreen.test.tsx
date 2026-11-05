@@ -58,6 +58,7 @@ const temporary: SessionSummary = {
   cwd: '/a',
   folder: 'a',
   updatedAt: 0,
+  lastSentAt: 0,
   isOpen: true,
   isRunning: false,
   provider: 'claude',

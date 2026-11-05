@@ -5112,6 +5112,27 @@ export function ChatApp() {
       return order;
     });
   };
+  // Per-session "last message the user sent" — the sidebar order. Agent
+  // replies, tool calls, renames etc. don't move a session. The server's
+  // `last_sent_at` covers sessions whose messages aren't loaded; the local
+  // scan makes a just-sent message count before the list refreshes. Bridges
+  // older than `last_sent_at` fall back to the old activity order.
+  const sessionLastSentAt = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const s of sessions) {
+      if (s.last_sent_at === undefined) { out[s.id] = sessionLastMessageAt[s.id] ?? 0; continue; }
+      const msgs = sessionStates[s.id]?.messages || [];
+      let last = 0;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role !== 'user' || m.isToolResult || m.toolName) continue;
+        if (typeof m.timestamp === 'number') { last = m.timestamp; break; }
+      }
+      out[s.id] = Math.max(last, s.last_sent_at);
+    }
+    return out;
+  }, [sessions, sessionStates, sessionLastMessageAt]);
+
 
   const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
   explorerRootRef.current = explorerRoot;
@@ -6800,6 +6821,7 @@ export function ChatApp() {
               />
             ) : activeNavView === 'automations' ? (
               <AutomationsView
+              sessionLastSentAt={sessionLastSentAt}
                 client={client}
                 defaultCwd={
                   [...sessions]

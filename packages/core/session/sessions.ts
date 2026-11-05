@@ -5,6 +5,7 @@ import { DEFAULT_PROVIDER } from '../provider/registry';
 import {
   loadPreferences, savePreferences, hasStoredMessages, loadUIState, deleteSessionData,
 } from './storage';
+  storedLastUserMessageAt,
 import type { Session, PersistedSession, SessionStatus } from '../types';
 
 export const sessions = new Map<string, Session>();
@@ -16,6 +17,7 @@ export function saveSessions() {
     claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands,
     model: s.model, permissionMode: s.permissionMode, effort: s.effort, provider: s.provider,
     remoteId: s.remoteId,
+    lastUserMessageAt: s.lastUserMessageAt,
     portForwards: s.portForwards,
     status: s.status,
     loopState: s.loopState,
@@ -81,6 +83,7 @@ export function loadSessions() {
         model: p.model || null,
         permissionMode: p.permissionMode || 'default',
         effort: p.effort || null,
+        lastUserMessageAt: p.lastUserMessageAt ?? storedLastUserMessageAt(p.id),
         provider: p.provider || DEFAULT_PROVIDER,
         browserWs: new Set(),
         providerSession: null,
@@ -100,7 +103,8 @@ export function loadSessions() {
       });
     }
     log(`[persist] Loaded ${data.length} sessions`);
-    if (migrated) saveSessions();
+    // Persist the `lastUserMessageAt` backfill so the logs are scanned once.
+    if (migrated || data.some(p => p.lastUserMessageAt === undefined)) saveSessions();
   } catch {
     // No file or invalid — start fresh
   }
@@ -168,6 +172,13 @@ export function touchSession(sessionId: string) {
 let broadcastSessionList: (() => void) | null = null;
 export function setStatusBroadcaster(fn: () => void) {
   broadcastSessionList = fn;
+/** Record that the user sent a message at `at`. Doesn't persist on its own:
+ *  the caller touches/unarchives the session right after, which saves. */
+export function markUserMessage(sessionId: string, at: number) {
+  const s = sessions.get(sessionId);
+  if (s && at > s.lastUserMessageAt) s.lastUserMessageAt = at;
+}
+
 }
 
 /** If the session is archived, flip it back to `open` and repaint the
@@ -197,6 +208,9 @@ export function sessionToJSON(s: Session, port: number) {
     claude_session_id: s.claudeSessionId,
     ws_url: `ws://localhost:${port}/browser/ws/${s.id}`,
     saved_commands: s.savedCommands || [],
+    // List order: the last message the user sent, or creation for a session
+    // that hasn't had one yet (so a new session starts on top).
+    last_sent_at: s.lastUserMessageAt || s.createdAt,
     model: s.model || null,
     permission_mode: s.permissionMode || 'default',
     effort: s.effort || null,

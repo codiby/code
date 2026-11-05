@@ -479,6 +479,9 @@ export interface SessionInfo {
   /** Last meaningful activity (message, archive toggle, rename). Used to
    *  sort the archived list "most recent first". */
   updated_at: number;
+  /** When the user last sent a message (or `created_at` if never) — the
+   *  session-list order. Absent on bridges older than the field. */
+  last_sent_at?: number;
   /** UI lifecycle: 'open' tabs are visible, 'archived' are hidden. */
   status: 'open' | 'archived';
   /** Live process state for the underlying provider (Claude/Codex/etc). */

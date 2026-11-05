@@ -64,6 +64,7 @@ test('compartir reutiliza los chats activos del inicio, anclados y vistas previa
     cwd: '/src/code',
     folder: 'code',
     updatedAt: 5,
+    lastSentAt: 5,
     isOpen: true,
     isRunning: false,
     provider: null,

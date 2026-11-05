@@ -269,6 +269,7 @@ export function importCodexThread(threadId: string, opts: { permissionMode: stri
       cwd: meta?.cwd || homedir(),
       createdAt: now,
       updatedAt: now,
+      lastUserMessageAt: 0,
       claudeSessionId: threadId,
       browserWs: new Set(),
       providerSession: null,

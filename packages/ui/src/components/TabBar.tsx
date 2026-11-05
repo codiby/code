@@ -44,6 +44,9 @@ interface Props {
   /** Per-session timestamp (epoch ms) of the most recent message — used to
    *  render a "5m ago" hint inside vertical tabs. */
   sessionLastMessageAt?: Record<string, number>;
+  /** Per-session timestamp of the last message the user sent — the order
+   *  of sessions within each group. */
+  sessionLastSentAt?: Record<string, number>;
   /** Sessions pinned to the top of their group. Pinned tabs always sort
    *  above non-pinned ones regardless of last-message recency. */
   pinnedSessionIds?: Set<string>;
@@ -890,7 +893,7 @@ function IconPicker({ currentIcon, currentColor, onSelect, onClear }: {
 }
 
 export const TabBar = memo(function TabBar(props: Props) {
-  const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt,
+  const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt, sessionLastSentAt,
     pinnedSessionIds, onTogglePin, onKeepSession,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
     tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
@@ -1063,8 +1066,8 @@ export const TabBar = memo(function TabBar(props: Props) {
     : sessions;
 
   // Sort each parent's sessions: pinned first — among themselves by pin order,
-  // newest pin on top and frozen there — then everything else by last-message
-  // recency, with the incoming order as a stable tiebreaker.
+  // newest pin on top and frozen there — then everything else by when the
+  // user last sent a message, with the incoming order as a stable tiebreaker.
   const sessionIndex = useMemo(() => new Map(sessions.map((s, i) => [s.id, i])), [sessions]);
   const pinRank = useMemo(() => pinOrder(pinnedSessionIds), [pinnedSessionIds]);
   const sortSessions = (a: SessionInfo, b: SessionInfo) => {
@@ -1073,8 +1076,8 @@ export const TabBar = memo(function TabBar(props: Props) {
     if (pa !== pb) return pb - pa;
     // A pin stays where pinning put it; only another pin displaces it.
     if (pa) return (pinRank.get(b.id) ?? -1) - (pinRank.get(a.id) ?? -1);
-    const ta = sessionLastMessageAt?.[a.id] || 0;
-    const tb = sessionLastMessageAt?.[b.id] || 0;
+    const ta = sessionLastSentAt?.[a.id] || 0;
+    const tb = sessionLastSentAt?.[b.id] || 0;
     if (tb !== ta) return tb - ta;
     return (sessionIndex.get(a.id) ?? 0) - (sessionIndex.get(b.id) ?? 0);
   };
@@ -1094,7 +1097,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     map: tabGroupMap,
     childOrder: groupOrder,
     sortSessions,
-  }),[visibleSessions, treeGroups, tabGroupMap, groupOrder, pinnedSessionIds, pinRank, sessionLastMessageAt, sessionIndex]);
+  }),[visibleSessions, treeGroups, tabGroupMap, groupOrder, pinnedSessionIds, pinRank, sessionLastSentAt, sessionIndex]);
   const disposablesExpanded = !!normalizedSessionSearch || expandedGroupIds.has(DISPOSABLES_GROUP_ID);
 
   // Sidebar layout: the folder tree, or flat sections by what each session is
@@ -1126,7 +1129,7 @@ export const TabBar = memo(function TabBar(props: Props) {
       buckets[sectionOf(st, s.runtime_status, !!sessionAwaitingReply?.has(s.id))].push(s);
     }
     return STATUS_SECTIONS.map(({ key, label }) => ({ key, label, sessions: buckets[key].sort(sortSessions) }));
-  }, [visibleSessions, tabGroupMap, sessionStatuses, sessionStreaming, sessionTurnComplete, sessionAwaitingReply, sessionInterrupted, sessionHasPermission, pinnedSessionIds, pinRank, sessionLastMessageAt, sessionIndex]);
+  }, [visibleSessions, tabGroupMap, sessionStatuses, sessionStreaming, sessionTurnComplete, sessionAwaitingReply, sessionInterrupted, sessionHasPermission, pinnedSessionIds, pinRank, sessionLastSentAt, sessionIndex]);
 
   // react-aria drop handler for a tab dropped onto another tab. Mirrors the old
   // dnd-kit logic: Shift groups the two (or adds to the target's group), plain

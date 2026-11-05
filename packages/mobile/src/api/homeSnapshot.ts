@@ -41,7 +41,12 @@ function parse(raw: string | null): HomeSnapshot | null {
       return null;
     }
     return {
-      sessions: value.sessions,
+      // Snapshots saved before `lastSentAt` existed sort by `updatedAt`.
+      sessions: value.sessions.map(session =>
+        typeof session.lastSentAt === 'number'
+          ? session
+          : { ...session, lastSentAt: session.updatedAt },
+      ),
       groups: Array.isArray(value.groups) ? value.groups : [],
       serverMaps: Array.isArray(value.serverMaps) ? value.serverMaps : [],
       pinnedIds: Array.isArray(value.pinnedIds) ? value.pinnedIds : [],

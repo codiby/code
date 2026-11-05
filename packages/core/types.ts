@@ -55,6 +55,10 @@ export type Session = {
    *  captures the current value when it subscribes; on `onExit` it
    *  no-ops if the session's gen has moved on, which prevents a
    *  late-firing exit for a previous provider (e.g. during a restart)
+  /** When the user last sent a message (agent replies, tool calls and
+   *  metadata edits don't count). Drives the session-list order. 0 = never.
+   *  Persisted. */
+  lastUserMessageAt: number;
    *  from clobbering the freshly-spawned one. In-memory only — like
    *  `providerSession`, meaningless across server restarts. */
   providerSessionGen: number;
@@ -105,6 +109,8 @@ export type PersistedSession = {
   effort?: string | null;
   provider?: string;
   remoteId?: string | null;
+  /** Missing on files written before it existed: backfilled from the log. */
+  lastUserMessageAt?: number;
   portForwards?: PortForward[];
   loopState?: LoopState | null;
   disposableTtlMs?: number | null;

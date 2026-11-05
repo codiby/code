@@ -27,6 +27,7 @@ function toSessionSummary(
   }
 
   const cwdText = typeof cwd === 'string' ? cwd : '';
+  const updated = typeof updatedAt === 'number' ? updatedAt : 0;
 
   return {
     id,
@@ -35,7 +36,9 @@ function toSessionSummary(
     name,
     cwd: cwdText,
     folder: basename(cwdText),
-    updatedAt: typeof updatedAt === 'number' ? updatedAt : 0,
+    updatedAt: updated,
+    lastSentAt:
+      typeof raw.last_sent_at === 'number' ? raw.last_sent_at : updated,
     isOpen: raw.status === 'open',
     isRunning: raw.runtime_status === 'running',
     provider: typeof raw.provider === 'string' ? raw.provider : null,

@@ -681,9 +681,13 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
     () =>
       rawAll.map(item => {
         const at = live[item.key]?.lastAt ?? null;
-        return at !== null && at > item.updatedAt
-          ? { ...item, updatedAt: at }
-          : item;
+        const sentAt = live[item.key]?.lastSentAt ?? null;
+        const updatedAt = at !== null && at > item.updatedAt ? at : item.updatedAt;
+        const lastSentAt =
+          sentAt !== null && sentAt > item.lastSentAt ? sentAt : item.lastSentAt;
+        return updatedAt === item.updatedAt && lastSentAt === item.lastSentAt
+          ? item
+          : { ...item, updatedAt, lastSentAt };
       }),
     [rawAll, live],
   );
@@ -756,7 +760,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           if (pinA !== pinB) {
             return pinB - pinA;
           }
-          return b.updatedAt - a.updatedAt;
+          return b.lastSentAt - a.lastSentAt;
         })
     );
   }, [all, filter, pinnedIds, query]);
@@ -1161,7 +1165,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
       const items = [
         ...(byGroup.get(key) ?? []),
         ...(children.get(key) ?? []).flatMap(subtreeOf),
-      ].sort((a, b) => b.updatedAt - a.updatedAt);
+      ].sort((a, b) => b.lastSentAt - a.lastSentAt);
       subtrees.set(key, items);
       return items;
     };
@@ -1187,7 +1191,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
         .map(key => ({
           key,
           rank: pinnedGroups.indexOf(key),
-          lastAt: subtreeOf(key)[0]?.updatedAt ?? 0,
+          lastAt: subtreeOf(key)[0]?.lastSentAt ?? 0,
         }))
         .filter(
           entry =>

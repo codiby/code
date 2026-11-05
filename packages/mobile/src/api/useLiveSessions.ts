@@ -20,6 +20,8 @@ export interface LiveSession {
    * hora de la fila sin volver a pedir `/sessions`.
    */
   readonly lastAt: number | null;
+  /** Cuándo envió el usuario su último mensaje: el orden de la lista. */
+  readonly lastSentAt: number | null;
 }
 
 export type LiveSessions = Readonly<Record<string, LiveSession>>;
@@ -35,6 +37,7 @@ const IDLE: LiveSession = {
   activity: null,
   preview: null,
   lastAt: null,
+  lastSentAt: null,
 };
 
 /** Suscribirse a demasiadas sesiones por servidor no aporta nada en una lista. */
@@ -131,7 +134,8 @@ export function useLiveSessions(
           next.isStreaming === previous.isStreaming &&
           next.activity === previous.activity &&
           next.preview === previous.preview &&
-          next.lastAt === previous.lastAt
+          next.lastAt === previous.lastAt &&
+          next.lastSentAt === previous.lastSentAt
         ) {
           return current;
         }
@@ -190,6 +194,13 @@ export function useLiveSessions(
           }
           const at = message.timestamp > 0 ? message.timestamp : Date.now();
           patch(sessionId, { lastAt: at });
+          if (
+            message.role === 'user' &&
+            message.isToolResult !== true &&
+            message.toolName === null
+          ) {
+            patch(sessionId, { lastSentAt: at });
+          }
           if (message.toolName !== null) {
             patch(sessionId, { activity: shortToolName(message.toolName) });
           } else if (

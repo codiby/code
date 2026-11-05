@@ -99,6 +99,11 @@ export interface SessionSummary {
   /** Último segmento de `cwd`, que es lo que identifica al proyecto. */
   readonly folder: string;
   readonly updatedAt: number;
+  /**
+   * When the user last sent a message — the list order. Agent replies don't
+   * move it. Falls back to `updatedAt` on bridges older than the field.
+   */
+  readonly lastSentAt: number;
   readonly isOpen: boolean;
   readonly isRunning: boolean;
   readonly provider: string | null;

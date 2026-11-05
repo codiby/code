@@ -115,6 +115,7 @@ function ensureMainSession(): Session {
       cwd: CWD,
       createdAt: now,
       updatedAt: now,
+      lastUserMessageAt: 0,
       claudeSessionId: null,
       browserWs: new Set(),
       providerSession: null,

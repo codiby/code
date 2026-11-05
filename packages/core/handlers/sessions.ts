@@ -115,6 +115,7 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     createdAt: now,
     updatedAt: now,
     claudeSessionId: null,
+    lastUserMessageAt: 0,
     browserWs: new Set(),
     providerSession: null,
     providerSessionGen: 0,

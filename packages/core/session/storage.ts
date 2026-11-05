@@ -74,6 +74,27 @@ export function loadMessages(sessionId: string): unknown[] {
   }
 }
 
+/** Timestamp of the last message the user sent, read from the log; 0 when
+ *  there is none. One-time backfill for sessions persisted before
+ *  `lastUserMessageAt` existed, so it walks the file from the end and only
+ *  parses lines that can be a user message. */
+export function storedLastUserMessageAt(sessionId: string): number {
+  let content: string;
+  try { content = readFileSync(join(sessionDir(sessionId), 'messages.jsonl'), 'utf-8'); }
+  catch { return 0; }
+  const lines = content.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"role":"user"')) continue;
+    try {
+      const m = JSON.parse(line);
+      if (m.role !== 'user' || m.isToolResult || m.toolName) continue;
+      if (typeof m.timestamp === 'number' && m.timestamp > 0) return m.timestamp;
+    } catch {}
+  }
+  return 0;
+}
+
 /** True when the session has at least one message on disk. Stats the log
  *  instead of parsing it — callers only want "did anything ever happen here". */
 export function hasStoredMessages(sessionId: string): boolean {
