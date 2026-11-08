@@ -130,7 +130,6 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     provider,
     remoteId: null,
     portForwards: [],
-    loopState: null,
     disposableTtlMs,
   };
   sessions.set(session.id, session);

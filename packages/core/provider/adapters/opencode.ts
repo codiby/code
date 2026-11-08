@@ -301,7 +301,6 @@ function mapPermissionMode(mode: PermissionMode): PermissionConfig {
       return { edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' };
     case 'acceptEdits':
     case 'bypassPermissions':
-    case 'loop':
     case 'default':
     default:
       return { edit: 'allow', bash: 'allow', webfetch: 'allow', external_directory: 'allow' };
@@ -739,8 +738,8 @@ class OpenCodeProviderSession extends ProviderSessionBase {
       return;
     }
 
-    // A denial that carries a message is an automatic one (loop mode, session
-    // shutdown) and the message tells the agent how to proceed. `reject` has no
+    // A denial that carries a message is an automatic one (session shutdown)
+    // and the message tells the agent how to proceed. `reject` has no
     // room for text, so feed the reason back as the answer — that mirrors what
     // Claude receives as the denied tool's result.
     if (decision.message) {

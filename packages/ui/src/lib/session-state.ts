@@ -3,7 +3,7 @@ import type { MessageReply } from './message-reply';
 import type { MockupComment } from './mockup-inspector';
 import type { PlanComment } from '../components/PlanPanel';
 import type { PRInfo } from '../components/PRDetail';
-import type { LoopState, RequirementProgress, RequirementsSnapshot } from './requirements';
+import type { RequirementsSnapshot } from './requirements';
 
 /** A user message composed while the session was offline / mid-turn, staged
  *  locally until it can be delivered. */
@@ -78,7 +78,4 @@ export type LocalSessionState = SessionState & {
   /** Ids executing right now — local echo so a row shows the spinner before
    *  the server's `requirements` broadcast comes back. */
   requirementsRunning: string[];
-  /** Loop-mode state, or null when the session has never been looped. */
-  loop: LoopState | null;
-  loopProgress: RequirementProgress | null;
 };

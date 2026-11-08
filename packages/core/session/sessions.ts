@@ -20,7 +20,6 @@ export function saveSessions() {
     lastUserMessageAt: s.lastUserMessageAt,
     portForwards: s.portForwards,
     status: s.status,
-    loopState: s.loopState,
     disposableTtlMs: s.disposableTtlMs ?? null,
   }));
   try {
@@ -81,7 +80,8 @@ export function loadSessions() {
         claudeSessionId: p.claudeSessionId,
         savedCommands: p.savedCommands || [],
         model: p.model || null,
-        permissionMode: p.permissionMode || 'default',
+        // Loop mode is gone; it ran on bypass permissions, so keep those.
+        permissionMode: p.permissionMode === 'loop' ? 'bypassPermissions' : p.permissionMode || 'default',
         effort: p.effort || null,
         lastUserMessageAt: p.lastUserMessageAt ?? storedLastUserMessageAt(p.id),
         provider: p.provider || DEFAULT_PROVIDER,
@@ -94,11 +94,6 @@ export function loadSessions() {
         replayDone: false,
         remoteId: p.remoteId ?? null,
         portForwards: p.portForwards ?? [],
-        // A loop that was mid-flight when the bridge died is not resumed
-        // automatically — it comes back paused so the user decides.
-        loopState: p.loopState
-          ? { ...p.loopState, phase: p.loopState.phase === 'looping' ? 'paused' : p.loopState.phase }
-          : null,
         disposableTtlMs: p.disposableTtlMs ?? null,
       });
     }
@@ -215,7 +210,6 @@ export function sessionToJSON(s: Session, port: number) {
     permission_mode: s.permissionMode || 'default',
     effort: s.effort || null,
     provider: s.provider || 'claude',
-    loop_state: s.loopState ?? null,
     disposable_ttl_ms: s.disposableTtlMs ?? null,
   };
 }

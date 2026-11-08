@@ -1,7 +1,7 @@
 /**
- * Wire types for the session Requirements panel + Loop mode.
+ * Wire types for the session Requirements panel.
  *
- * Mirrors `packages/core/requirements/*` and `packages/core/loop/*`. The
+ * Mirrors `packages/core/requirements/*`. The
  * server is the only writer of `status` / `lastVerdict` / `state`; the panel
  * renders what it is told and asks the bridge for every mutation.
  */
@@ -78,34 +78,10 @@ export interface RequirementsSnapshot {
   progress: RequirementProgress;
 }
 
-export type LoopPhase = 'bootstrap' | 'looping' | 'paused' | 'done';
-export type LoopPauseReason =
-  | 'max_iterations' | 'max_cost' | 'max_runtime' | 'stalled' | 'awaiting_approval' | 'user';
-
-export interface LoopState {
-  phase: LoopPhase;
-  iteration: number;
-  maxIterations: number;
-  startedAt: number;
-  costUsd: number;
-  pauseReason: LoopPauseReason | null;
-  lastFailureKey: string | null;
-  stallCount: number;
-}
-
 export const emptyProgress = (): RequirementProgress => ({
   total: 0, locked: 0, draft: 0, waived: 0, tampered: 0,
   passing: 0, failing: 0, pending: 0, pendingProposals: 0, complete: false,
 });
-
-export const LOOP_PAUSE_LABEL: Record<LoopPauseReason, string> = {
-  max_iterations: 'hit the iteration limit',
-  max_cost: 'hit the cost limit',
-  max_runtime: 'hit the time limit',
-  stalled: 'the same requirements failed with no changes on disk',
-  awaiting_approval: 'no requirement has been approved yet',
-  user: 'you stopped it',
-};
 
 /** Human summary of the progress line, e.g. "2/4 passing · 1 borrador". */
 export function progressLabel(progress: RequirementProgress): string {

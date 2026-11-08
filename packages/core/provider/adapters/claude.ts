@@ -61,9 +61,7 @@ function toSdkPermissionMode(mode: PermissionMode): SdkPermissionMode {
   // itself and auto-rejects AskUserQuestion, never giving the user a chance to
   // answer. Map bypass to `default` so the CLI keeps routing tool uses through
   // our callback; the bridge is what actually auto-approves in bypass mode.
-  // `loop` is bypass with the escape hatches nailed shut, so it maps the same
-  // way — the bridge is what auto-approves and what auto-denies AskUserQuestion.
-  if (mode === 'bypassPermissions' || mode === 'loop') return 'default' as SdkPermissionMode;
+  if (mode === 'bypassPermissions') return 'default' as SdkPermissionMode;
   return mode as SdkPermissionMode;
 }
 

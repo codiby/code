@@ -13,14 +13,7 @@ export type PermissionMode =
   | 'default'
   | 'acceptEdits'
   | 'bypassPermissions'
-  | 'plan'
-  /**
-   * Loop — bypass-equivalent on permissions, but the session cannot hand
-   * control back: tools whose job is to ask the user are auto-denied, and the
-   * loop driver re-prompts after every turn until the session's approved
-   * requirements pass. See `loop/driver.ts`.
-   */
-  | 'loop';
+  | 'plan';
 
 /** Reasoning-effort level. Claude uses it directly; OpenCode maps it to a model variant. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';

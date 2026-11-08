@@ -10,7 +10,6 @@ import { Conn } from './conn';
 import { mergeSessionsByOwner } from './merge-sessions';
 import { emptyProgress } from './requirements';
 import type {
-  LoopState,
   Requirement,
   RequirementEvent,
   RequirementProgress,
@@ -749,8 +748,6 @@ type ClientCallbacks = {
   /** Requirements snapshot — pushed by the server before and after every check
    *  run, and on any mutation from either the agent's tools or the panel. */
   onRequirements?: (sessionId: string, snapshot: RequirementsSnapshot) => void;
-  /** Loop-mode state changed (armed, iteration advanced, paused, completed). */
-  onLoop?: (sessionId: string, loop: LoopState | null, progress: RequirementProgress) => void;
   onAutoApproved: (sessionId: string, toolName: string, filePath?: string, command?: string) => void;
   onSessionName: (sessionId: string, name: string) => void;
   onInitInfo: (sessionId: string, info: SessionInitInfo) => void;
@@ -1279,13 +1276,6 @@ export class ClaudeClient {
           proposals: (msg.proposals as RequirementProposal[]) || [],
           progress: (msg.progress as RequirementProgress) || emptyProgress(),
         });
-        break;
-      case 'loop':
-        this.callbacks.onLoop?.(
-          sessionId,
-          (msg.loop as LoopState | null) ?? null,
-          (msg.progress as RequirementProgress) || emptyProgress(),
-        );
         break;
       case 'auto_approved':
         this.callbacks.onAutoApproved(sessionId, msg.toolName as string, msg.filePath as string | undefined, msg.command as string | undefined);
@@ -2623,7 +2613,7 @@ export class ClaudeClient {
 
   /** List a session's resources, newest first. Optionally filter by kind. */
   // ---------------------------------------------------------------------------
-  // Requirements + Loop.
+  // Requirements.
   //
   // Approving, waiving, deleting and resolving proposals exist ONLY here: the
   // agent's MCP tools are append-only by design, so every one of these calls is
@@ -2712,33 +2702,6 @@ export class ClaudeClient {
     if (!resp.ok) return [];
     const data = await resp.json().catch(() => ({})) as { events?: RequirementEvent[] };
     return data.events || [];
-  }
-
-  /**
-   * Arm / pause / resume / stop Loop mode. Deliberately user-only — there is no
-   * MCP tool for any of these, because loop is bypass permissions plus
-   * unattended auto-continuation.
-   */
-  async loopControl(
-    sessionId: string,
-    action: 'start' | 'pause' | 'resume' | 'stop',
-  ): Promise<{ loop: LoopState | null; progress: RequirementProgress } | null> {
-    let base: string;
-    try { base = await this.sessionBase(sessionId); } catch { return null; }
-    const resp = await authedFetch(
-      `${base}/sessions/${encodeURIComponent(sessionId)}/loop/${action}`,
-      { method: 'POST' },
-    );
-    if (!resp.ok) return null;
-    return resp.json().catch(() => null);
-  }
-
-  async fetchLoop(sessionId: string): Promise<{ loop: LoopState | null; progress: RequirementProgress } | null> {
-    let base: string;
-    try { base = await this.sessionBase(sessionId); } catch { return null; }
-    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/loop`);
-    if (!resp.ok) return null;
-    return resp.json().catch(() => null);
   }
 
   async listResources(sessionId: string, kind?: string): Promise<SessionResource[]> {

@@ -285,7 +285,6 @@ export function importCodexThread(threadId: string, opts: { permissionMode: stri
       provider: 'codex',
       remoteId: null,
       portForwards: [],
-      loopState: null,
       disposableTtlMs: null,
     };
     sessions.set(session.id, session);

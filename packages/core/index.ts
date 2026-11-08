@@ -72,16 +72,8 @@ import {
   handleSetTarget,
   handleUpdateRequirement,
 } from './handlers/requirements';
-import {
-  handleGetLoop,
-  handlePauseLoop,
-  handleResumeLoop,
-  handleStartLoop,
-  handleStopLoop,
-} from './handlers/loop';
 import { configureRequirementsRunner } from './requirements/runner';
 import { listBrowserPreviews } from './provider/sdk-tools';
-import { configureLoopDriver, isLooping, onLoopTurnComplete, stopLoop } from './loop/driver';
 import { handleListMcpServers, handleAddMcpServer, handleRemoveMcpServer } from './handlers/mcp-servers';
 import { getCodexInfo } from './handlers/codex-info';
 import { handleSessionNotes } from './handlers/session-notes';
@@ -215,11 +207,10 @@ const SPAWN_MODE: SpawnMode = parseSpawnMode();
 // touches disk. No-op once the move has happened.
 migrateToCodiby();
 loadSessions();
-// Turns the previous run never finished. Loops are left out: they come back
-// paused and have their own resume control.
+// Turns the previous run never finished.
 loadInterruptedTurns((id) => {
   const s = sessions.get(id);
-  return !!s && s.status === 'open' && s.loopState?.phase !== 'paused';
+  return !!s && s.status === 'open';
 });
 loadRemotes();
 restoreProcessRegistry();
@@ -641,10 +632,12 @@ async function sendMessageToSession(
   sessionId: string,
   text: string,
   images?: { media_type: string; data: string }[],
+  opts: { bargeIn?: boolean } = {},
 ): Promise<{ ok: boolean; error?: string }> {
   const session = sessions.get(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
   grantAttachedPaths(session, text);
+  if (opts.bargeIn) await bargeIn(sessionId);
 
   if (!session.providerSession) {
     log(`[${session.id.slice(0, 8)}] Auto-starting provider on sendMessage (session was stopped/idle)`);
@@ -697,9 +690,6 @@ setBridgeDeps({
   onTurnComplete: (sessionId, info) => {
     completeAutomationRun(sessionId, info);
     speakTurnResult(sessionId, info.resultText);
-    // Deferred by a tick so the bridge finishes resetting the session's
-    // streaming state before the loop driver can push the next prompt into it.
-    setTimeout(() => void onLoopTurnComplete(sessionId, info), 0);
   },
   onError: (sessionId, error) => failAutomationRun(sessionId, error.message),
   onExit: (sessionId, code) => failAutomationRun(sessionId, `Provider exited with code ${code}`),
@@ -716,12 +706,6 @@ configureRequirementsRunner({
   broadcastToSession,
   sendBrowserRequest,
   listBrowserPreviews: (sessionId) => listBrowserPreviews(sessionId).map(entry => entry.name),
-});
-
-configureLoopDriver({
-  sendMessage: (sessionId, text) => sendMessageToSession(sessionId, text),
-  broadcastToSession,
-  broadcastSessionList,
 });
 
 // Let the terminals module push lifecycle events (terminal_created /
@@ -746,13 +730,42 @@ await pluginHost.loadPlugins({
  * Stop the session's current turn — the chat's Stop button, and voice mode
  * when the user calls off what the session is doing (integrations/voice.ts).
  */
-async function interruptSession(sessionId: string): Promise<void> {
+const interruptsInFlight = new Map<string, Promise<void>>();
+
+function interruptSession(sessionId: string): Promise<void> {
+  const running = interruptsInFlight.get(sessionId);
+  if (running) return running;
+  const p = interruptSessionNow(sessionId).finally(() => {
+    if (interruptsInFlight.get(sessionId) === p) interruptsInFlight.delete(sessionId);
+  });
+  interruptsInFlight.set(sessionId, p);
+  return p;
+}
+
+/**
+ * A user message sent mid-turn stops the agent so it reads the message right
+ * away (preference `interruptOnSend`, on by default — the same toggle the
+ * desktop's barge-in uses). Without this the provider only queues the prompt,
+ * and the agent keeps working until its turn ends on its own.
+ *
+ * Also waits out an interrupt already in flight (the desktop sends `interrupt`
+ * then `send_message` back-to-back): echoing the new message while the old
+ * turn is still being torn down would let its late `interrupted` status land
+ * after this turn's `streaming`, and clients would show the session as idle.
+ */
+async function bargeIn(sessionId: string): Promise<void> {
+  const running = interruptsInFlight.get(sessionId);
+  if (running) { await running; return; }
+  if (loadPreferences().interruptOnSend === false) return;
+  const session = sessions.get(sessionId);
+  if (!session?.providerSession || !getSessionState(sessionId).isStreaming) return;
+  log(`[${sessionId.slice(0, 8)}] Barge-in: interrupting the running turn for a new user message`);
+  await interruptSession(sessionId);
+}
+
+async function interruptSessionNow(sessionId: string): Promise<void> {
   const session = sessions.get(sessionId);
   if (!session) return;
-  // Stop always wins over the loop. Without this the driver would re-inject
-  // a continuation prompt on the next turn_complete and the Stop button
-  // would look broken.
-  if (session.loopState && session.loopState.phase !== 'done') stopLoop(sessionId);
   // Stop is also the user's escape hatch when `isStreaming` is wedged with
   // no live provider (SDK crashed silently, runtime hung past onExit, etc.).
   // Always force-clear server state below; only call provider.interrupt()
@@ -922,6 +935,8 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!session) return;
     // Files the user attached are readable the moment the message lands.
     grantAttachedPaths(session, msgText);
+    // A message typed mid-turn stops the agent so it reads it now.
+    await bargeIn(sessionId);
     // Auto-start the provider if the session is idle (e.g. after a stop, SDK
     // exit, or pre-resume race). Messages would otherwise be silently dropped.
     if (!session.providerSession) {
@@ -1240,10 +1255,6 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     if (!sessionId || !mode) return;
     const session = sessions.get(sessionId);
     if (!session) return;
-    // This frame only ever comes from the user's own mode picker, so leaving
-    // loop mode here is legitimate — but the driver has to be told, or it
-    // would keep re-injecting prompts into a session that is no longer looping.
-    if (session.permissionMode === 'loop' && mode !== 'loop') stopLoop(sessionId);
     session.permissionMode = mode;
     saveSessions();
     if (session.providerSession) {
@@ -1453,14 +1464,6 @@ app.get('/sessions/:id/published-ports', (c) => handleListPublishedPorts(c.req.p
 app.post('/sessions/:id/published-ports', (c) => handleAddPublishedPort(c.req.param('id'), c.req.raw));
 app.delete('/sessions/:id/published-ports/:publicPort', (c) =>
   handleRemovePublishedPort(c.req.param('id'), Number(c.req.param('publicPort'))));
-
-// ── Loop mode ──────────────────────────────────────────────────────────────
-// User-only by design: no MCP tool can arm a loop.
-app.get('/sessions/:id/loop', (c) => handleGetLoop(c.req.param('id')));
-app.post('/sessions/:id/loop/start', (c) => handleStartLoop(c.req.param('id'), broadcastSessionList));
-app.post('/sessions/:id/loop/pause', (c) => handlePauseLoop(c.req.param('id')));
-app.post('/sessions/:id/loop/resume', (c) => handleResumeLoop(c.req.param('id')));
-app.post('/sessions/:id/loop/stop', (c) => handleStopLoop(c.req.param('id'), broadcastSessionList));
 
 // ── Sessions ───────────────────────────────────────────────────────────────
 // Registered ahead of `/sessions/:id` so the literal segment can never be read
@@ -1786,7 +1789,8 @@ app.post('/sessions/:id/messages', async (c) => {
   let body: { text?: string; images?: { media_type: string; data: string }[] } = {};
   try { body = await req.json() as typeof body; } catch {}
   if (!body.text) return Response.json({ error: 'text required' }, { status: 400, headers: corsHeaders });
-  const result = await sendMessageToSession(sid, body.text, body.images);
+  // The phone and remote renderers post here: a person typing, so barge in.
+  const result = await sendMessageToSession(sid, body.text, body.images, { bargeIn: true });
   return Response.json(result, { headers: corsHeaders });
 });
 
@@ -2943,10 +2947,6 @@ setMcpDeps({
   async setSessionPermissionMode(sessionId, mode) {
     const session = sessions.get(sessionId);
     if (!session) return false;
-    // `EnterPlanMode` reaches this from a tool call, which would otherwise be
-    // a one-line escape from a loop the user armed. Switching out of loop mode
-    // is a user action, over /sessions/:id/loop/stop.
-    if (session.permissionMode === 'loop' && isLooping(sessionId)) return false;
     session.permissionMode = mode;
     saveSessions();
     if (session.providerSession) {

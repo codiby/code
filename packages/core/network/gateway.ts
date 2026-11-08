@@ -128,7 +128,6 @@ export async function refreshRemoteSessions(remoteId: string): Promise<boolean> 
         provider: s.provider ?? 'claude',
         claudeSessionId: s.claude_session_id ?? null,
         portForwards: [],
-        loopState: null,
         cachedAt: Date.now(),
       }));
 

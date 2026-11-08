@@ -150,16 +150,6 @@ async function patchSessionViaHandler(
       error: 'Cannot archive the main session — the Telegram bridge references it and the UI pins its tab. Use `/clear` on that tab to reset its history instead.',
     };
   }
-  // Leaving loop mode is a user action, over POST /sessions/:id/loop/stop —
-  // silently flipping the mode here would leave the loop driver re-injecting
-  // prompts into a session that no longer reports itself as looping.
-  if (patch.permissionMode !== undefined && session.permissionMode === 'loop') {
-    return {
-      ok: false,
-      error: `Session ${sessionId} is in loop mode. Stop the loop from the UI (or POST /sessions/${sessionId}/loop/stop) before changing its permission mode.`,
-    };
-  }
-
   const req = new Request(`http://internal/sessions/${sessionId}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
@@ -652,7 +642,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           permission_mode: {
             type: 'string',
             enum: SETTABLE_PERMISSION_MODES,
-            description: 'Permission mode for the session. Applied to the running provider too. Rejected while the session is in loop mode.',
+            description: 'Permission mode for the session. Applied to the running provider too.',
           },
         },
         required: ['session_id'],

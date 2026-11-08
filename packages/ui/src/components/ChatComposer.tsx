@@ -922,7 +922,7 @@ export function ChatComposer(props: Props) {
                   // Not a mode: saves the current one as the default and
                   // leaves the selection where it was.
                   if (key === SET_DEFAULT_MODE_KEY) {
-                    if (currentPermissionMode !== 'loop') onSetDefaultPermissionMode?.(currentPermissionMode);
+                    onSetDefaultPermissionMode?.(currentPermissionMode);
                     return;
                   }
                   onSelectPermissionMode(String(key));
@@ -940,13 +940,10 @@ export function ChatComposer(props: Props) {
                         <span className="text-xs">{m.label}</span>
                       </ListBoxItem>
                     ))}
-                    {/* Loop isn't a plain mode: picking it arms the loop driver
-                        (POST /loop/start) rather than just flipping a flag. */}
-                    <ListBoxItem key="loop" id="loop" textValue="Loop"><span className="text-xs text-cyan-300">🔁 Loop</span></ListBoxItem>
                     {onSetDefaultPermissionMode && (
                       <ListBoxItem key={SET_DEFAULT_MODE_KEY} id={SET_DEFAULT_MODE_KEY} textValue="New sessions" className="border-t border-white/5 mt-1 pt-1.5">
                         <span className="text-xs text-zinc-400">
-                          {currentPermissionMode === defaultPermissionMode || currentPermissionMode === 'loop'
+                          {currentPermissionMode === defaultPermissionMode
                             ? `New sessions: ${permissionModeLabel(defaultPermissionMode)}`
                             : `Use ${permissionModeLabel(currentPermissionMode)} for new sessions`}
                         </span>

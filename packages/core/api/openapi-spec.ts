@@ -89,7 +89,6 @@ export const openApiSpec: OpenApiSpec = {
     { name: 'Plugins', description: 'Sideloaded plugin manifests' },
     { name: 'Automations', description: 'Cron-based scheduled agent sessions and run history' },
     { name: 'Requirements', description: 'Per-session target + machine-verifiable acceptance criteria' },
-    { name: 'Loop', description: 'Loop mode — the session cannot stop until its requirements pass' },
     { name: 'WebSockets', description: 'Realtime channels (informational)' },
   ],
 
@@ -385,7 +384,7 @@ export const openApiSpec: OpenApiSpec = {
                 properties: {
                   name: { type: 'string', description: 'New session name shown in the tab bar' },
                   status: { type: 'string', enum: ['open', 'archived'], description: 'UI lifecycle: archived hides the tab (reversible)' },
-                  permissionMode: { type: 'string', description: 'default | acceptEdits | plan | bypassPermissions | loop' },
+                  permissionMode: { type: 'string', description: 'default | acceptEdits | plan | bypassPermissions' },
                 },
               },
             },
@@ -574,44 +573,6 @@ export const openApiSpec: OpenApiSpec = {
         summary: 'Reject a proposal',
         parameters: [sessionIdParam, { name: 'pid', in: 'path', required: true, schema: { type: 'string' } }],
         responses: { 200: { description: 'Requirements snapshot' }, 409: errorResponse('Already resolved') },
-      },
-    },
-
-    // ───────────────────────── Loop mode ─────────────────────────
-    '/sessions/{id}/loop': {
-      get: {
-        tags: ['Loop'],
-        summary: 'Loop state, progress and caps',
-        parameters: [sessionIdParam],
-        responses: { 200: { description: 'Loop state' }, 404: errorResponse('Session not found') },
-      },
-    },
-    '/sessions/{id}/loop/start': {
-      post: {
-        tags: ['Loop'],
-        summary: 'Arm Loop mode',
-        description: 'Puts the session into `loop` permission mode: bypass-equivalent permissions, AskUserQuestion/ExitPlanMode auto-denied, and a continuation prompt injected after every turn until all approved requirements pass. Never exposed as an MCP tool.',
-        parameters: [sessionIdParam],
-        responses: { 200: { description: 'Loop state' }, 404: errorResponse('Session not found') },
-      },
-    },
-    '/sessions/{id}/loop/pause': {
-      post: { tags: ['Loop'], summary: 'Pause the loop', parameters: [sessionIdParam], responses: { 200: { description: 'Loop state' } } },
-    },
-    '/sessions/{id}/loop/resume': {
-      post: {
-        tags: ['Loop'],
-        summary: 'Resume a paused loop with a fresh budget',
-        parameters: [sessionIdParam],
-        responses: { 200: { description: 'Loop state' }, 409: errorResponse('No loop to resume') },
-      },
-    },
-    '/sessions/{id}/loop/stop': {
-      post: {
-        tags: ['Loop'],
-        summary: 'Stop the loop and leave loop mode',
-        parameters: [sessionIdParam],
-        responses: { 200: { description: 'Loop state' }, 404: errorResponse('Session not found') },
       },
     },
 

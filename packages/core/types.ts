@@ -1,7 +1,6 @@
 import type { ChildProcess } from 'child_process';
 import type { ProviderSession } from './provider/types';
 import type { PtyHandle } from './process/pty';
-import type { LoopState } from './loop/types';
 
 /** A configured remote — points at an entry in the user's ~/.ssh/config. */
 export type Remote = {
@@ -79,10 +78,6 @@ export type Session = {
   remoteId: string | null;
   /** Port forwards opened while this session has at least one pane visible. */
   portForwards: PortForward[];
-  /** Loop-mode progress. Null unless the session has been put into `loop`
-   *  permission mode at least once. Persisted so a bridge restart doesn't
-   *  silently drop an in-flight loop's iteration/cost budget. */
-  loopState: LoopState | null;
   /** Files/folders the user attached to a message; read-only tools on them are
    *  auto-approved (see session/granted-paths.ts). In-memory only — the badge
    *  stays in the transcript, and re-sending it re-grants. */
@@ -112,7 +107,6 @@ export type PersistedSession = {
   /** Missing on files written before it existed: backfilled from the log. */
   lastUserMessageAt?: number;
   portForwards?: PortForward[];
-  loopState?: LoopState | null;
   disposableTtlMs?: number | null;
 };
 

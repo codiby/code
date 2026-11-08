@@ -46,7 +46,7 @@ interface Props {
   /** Tailwind max-width for the headline/branch chrome, so it lines up with
    *  the composer underneath it. Defaults to the historical `max-w-4xl`. */
   widthClass?: string;
-  /** The real composer (LoopBanner + ChatComposer). */
+  /** The real composer (ChatComposer and the pills above it). */
   children: ReactNode;
 }
 

@@ -199,7 +199,6 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         isGrantedRead(session, tool.name, (tool.input ?? {}) as Record<string, unknown>) ||
         (!USER_INTERACTION_TOOLS.has(tool.name) && (
           mode === 'bypassPermissions' ||
-          mode === 'loop' ||
           (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(tool.name)) ||
           (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(tool.name))
         ));
@@ -295,18 +294,6 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         };
       }
 
-      // Auto-deny: loop mode + a tool whose only purpose is to hand control
-      // back. In every other mode these prompt; here they would be the escape
-      // hatch out of a loop the user asked to run unattended, so the agent is
-      // told to decide for itself and keep going.
-      if (mode === 'loop' && USER_INTERACTION_TOOLS.has(req.toolName)) {
-        log(`[${sid8}] Auto-denied ${req.toolName} (loop mode)`);
-        return {
-          allow: false,
-          message: `Denied: this session is in Loop mode. You cannot hand control back to the user or ask for confirmation. Pick the most reasonable option, state your choice in the chat, and keep working — the turn will be re-injected until the session's approved requirements pass.`,
-        };
-      }
-
       // Auto-allow by mode (or always-allow list for safe in-process tools).
       // USER_INTERACTION_TOOLS (AskUserQuestion, ExitPlanMode) always prompt —
       // even in bypassPermissions — because their whole job is to hand control
@@ -317,7 +304,6 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         isGrantedRead(session, req.toolName, inputRecord) ||
         (!USER_INTERACTION_TOOLS.has(req.toolName) && (
           mode === 'bypassPermissions' ||
-          mode === 'loop' ||
           (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(req.toolName)) ||
           (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(req.toolName))
         ));

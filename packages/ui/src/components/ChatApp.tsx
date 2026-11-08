@@ -92,7 +92,6 @@ import { MockupPanel } from './MockupPanel';
 import { BrowserPanel } from './BrowserPanel';
 import { PlanPanel } from './PlanPanel';
 import { RequirementsPanel } from './RequirementsPanel';
-import { LoopBanner } from './LoopBanner';
 import { RemoteVersionBanner } from './RemoteVersionBanner';
 import { ClaudeUpdateDialog } from './ClaudeUpdateDialog';
 import { ClaudeLoginDialog } from './ClaudeLoginDialog';
@@ -1465,7 +1464,6 @@ export function ChatApp() {
     pastedImages: [],
     attachedFiles: [],
     requirements: null, requirementsOpen: false, requirementsRunning: [],
-    loop: null, loopProgress: null,
   });
 
   const getState = (id: string | null): LocalSessionState => {
@@ -1797,13 +1795,11 @@ export function ChatApp() {
                 openPR: existing?.openPR ?? null,
                 planComments: existing?.planComments ?? [],
                 planRequestId: existing?.planRequestId ?? null,
-                // Requirements/loop arrive over their own broadcasts and via a
+                // Requirements arrive over their own broadcasts and via a
                 // REST refetch on subscribe, so they'd be wiped by the spread.
                 requirements: existing?.requirements ?? null,
                 requirementsOpen: existing?.requirementsOpen ?? false,
                 requirementsRunning: existing?.requirementsRunning ?? [],
-                loop: existing?.loop ?? null,
-                loopProgress: existing?.loopProgress ?? null,
               },
             };
           });
@@ -2039,23 +2035,6 @@ export function ChatApp() {
                 requirementsRunning: snapshot.requirements
                   .filter(r => r.status === 'running')
                   .map(r => r.id),
-              },
-            };
-          });
-        },
-
-        onLoop: (sid, loop, progress) => {
-          setSessionStates(prev => {
-            const s = prev[sid] || emptyLocalState();
-            return {
-              ...prev,
-              [sid]: {
-                ...s,
-                loop,
-                loopProgress: progress,
-                // A running loop without the panel open leaves the user with no
-                // way to see what it is chasing.
-                requirementsOpen: s.requirementsOpen || loop?.phase === 'looping',
               },
             };
           });
@@ -4739,11 +4718,11 @@ export function ChatApp() {
   const [browserUrlModalOpen, setBrowserUrlModalOpen] = useState(false);
 
   // ---------------------------------------------------------------------------
-  // Requirements + Loop actions.
+  // Requirements actions.
   //
   // Every mutation here is a USER action by construction: the agent's tools can
   // only append requirements and queue proposals, so approving, waiving,
-  // deleting and arming a loop have no path except this panel.
+  // and deleting have no path except this panel.
   // ---------------------------------------------------------------------------
 
   /** Fold a REST response back into the session store. */
@@ -4775,14 +4754,8 @@ export function ChatApp() {
   const refreshRequirements = useCallback(async (sid: string) => {
     const c = clientRef.current;
     if (!c) return;
-    const [snapshot, loop] = await Promise.all([c.fetchRequirements(sid), c.fetchLoop(sid)]);
+    const snapshot = await c.fetchRequirements(sid);
     applyRequirementsSnapshot(sid, snapshot, { openIfFirst: true });
-    if (loop) {
-      setSessionStates(prev => {
-        const s = prev[sid] || emptyLocalState();
-        return { ...prev, [sid]: { ...s, loop: loop.loop, loopProgress: loop.progress } };
-      });
-    }
   }, [applyRequirementsSnapshot]);
 
   const runRequirements = useCallback(async (sid: string, ids?: string[]) => {
@@ -4804,36 +4777,6 @@ export function ChatApp() {
       return s ? { ...prev, [sid]: { ...s, requirementsRunning: [] } } : prev;
     });
   }, [applyRequirementsSnapshot]);
-
-  const armLoop = useCallback(async (sid: string) => {
-    const c = clientRef.current;
-    if (!c) return;
-    const result = await c.loopControl(sid, 'start');
-    if (!result) return;
-    setSessions(prev => prev.map(s => s.id === sid ? { ...s, permission_mode: 'loop' } : s));
-    setSessionStates(prev => {
-      const s = prev[sid] || emptyLocalState();
-      return { ...prev, [sid]: { ...s, loop: result.loop, loopProgress: result.progress, requirementsOpen: true } };
-    });
-  }, []);
-
-  const controlLoop = useCallback(async (sid: string, action: 'pause' | 'resume' | 'stop') => {
-    const c = clientRef.current;
-    if (!c) return;
-    const result = await c.loopControl(sid, action);
-    if (!result) return;
-    setSessionStates(prev => {
-      const s = prev[sid] || emptyLocalState();
-      return { ...prev, [sid]: { ...s, loop: result.loop, loopProgress: result.progress } };
-    });
-    // Stopping drops the session back to a mode where it can talk to the user
-    // again — mirror the server's choice locally so the picker agrees.
-    if (action === 'stop') {
-      setSessions(prev => prev.map(s => s.id === sid && s.permission_mode === 'loop'
-        ? { ...s, permission_mode: 'bypassPermissions' }
-        : s));
-    }
-  }, []);
 
   // First paint / reload / reconnect: the WS only pushes *changes*, so pull the
   // current snapshot whenever a session becomes the active one.
@@ -4870,12 +4813,8 @@ export function ChatApp() {
       setPendingBypassSessionId(sessionId);
       return;
     }
-    // Loop isn't a plain mode flip: the server has to arm the driver and seed
-    // the loop budget, so it goes through POST /loop/start. The mode change is
-    // a side effect of arming it, not the other way round.
-    if (mode === 'loop') { void armLoop(sessionId); return; }
     applyPermissionMode(sessionId, mode);
-  }, [applyPermissionMode, armLoop]);
+  }, [applyPermissionMode]);
 
   // Shift+Tab cycles the active session's permission mode while the chat
   // input is focused. Outside the chat input we leave Shift+Tab alone so the
@@ -5792,29 +5731,14 @@ export function ChatApp() {
     ];
     return (
       <>
-      {/* Loop state sits above the composer and is deliberately not
-          dismissible — an unattended auto-continuing agent should never be
-          running out of sight. */}
-      {s.loop && (
-        <LoopBanner
-          loop={s.loop}
-          progress={s.requirements?.progress ?? s.loopProgress}
-          onOpenRequirements={() => updateLocalState(sid, st => ({ ...st, requirementsOpen: true }))}
-          onPause={() => { void controlLoop(sid, 'pause'); }}
-          onResume={() => { void controlLoop(sid, 'resume'); }}
-          onStop={() => { void controlLoop(sid, 'stop'); }}
-        />
-      )}
-      {!s.loop && (
-        <ArchiveSuggestionPill
-          messages={s.messages}
-          streaming={s.isStreaming}
-          typing={!!s.input.trim()}
-          chord={kbBindings['archive-session'] ?? null}
-          onArchive={() => handleCloseTab(sid)}
-          className="-mb-1"
-        />
-      )}
+      <ArchiveSuggestionPill
+        messages={s.messages}
+        streaming={s.isStreaming}
+        typing={!!s.input.trim()}
+        chord={kbBindings['archive-session'] ?? null}
+        onArchive={() => handleCloseTab(sid)}
+        className="-mb-1"
+      />
       <ChatComposer
         key={sid}
         sessionId={sid}

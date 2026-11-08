@@ -491,7 +491,7 @@ export function listEvents(sessionId: string, limit = 200): RequirementEventReco
     .orderBy(desc(requirementEvents.createdAt)).limit(limit).all();
 }
 
-/** Everything the panel and the loop driver need in one read. */
+/** Everything the panel needs in one read. */
 export function snapshotFor(sessionId: string) {
   return {
     target: getTarget(sessionId),

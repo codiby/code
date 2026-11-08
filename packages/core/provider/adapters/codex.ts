@@ -29,7 +29,7 @@ export function buildCodexConfig(mcpServers?: Record<string, McpServerSpec>): Co
 }
 
 export function codexPermissions(mode: PermissionMode, cwd: string) {
-  if (mode === 'bypassPermissions' || mode === 'loop') return { approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
+  if (mode === 'bypassPermissions') return { approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
   const sandboxPolicy = mode === 'plan'
     ? { type: 'readOnly', networkAccess: false }
     : { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };

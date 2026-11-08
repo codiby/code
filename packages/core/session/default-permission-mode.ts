@@ -3,7 +3,6 @@
  *
  * Stored in ui-preferences.json as `defaultPermissionMode`. A session created
  * without an explicit mode starts in it; sessions already running keep theirs.
- * Loop is left out: it has to arm the loop driver, not just set a flag.
  */
 import { loadPreferences } from './storage';
 
