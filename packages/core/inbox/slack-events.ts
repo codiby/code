@@ -129,3 +129,21 @@ export function slackToMarkdown(text: string, userName: (id: string) => string):
   if (inFence) out.push('```');
   return out.join('\n');
 }
+
+/** Open Slack items that a message of the user's own answers: anything in
+ *  the same thread (the thread's opening message included), or, in a DM,
+ *  anything said before it outside a thread. */
+export function itemsAnsweredBy(
+  items: { id: string; source: string; context: Record<string, unknown> }[],
+  mine: { channel: string; ts: string; thread_ts?: string },
+): string[] {
+  // DM channel ids start with D; an mpim is a C/G id, answered in threads only.
+  const direct = mine.channel.startsWith('D');
+  return items.filter(i => {
+    if (i.source !== 'slack' || i.context.channel !== mine.channel) return false;
+    const ts = String(i.context.ts ?? '');
+    const thread = i.context.threadTs ? String(i.context.threadTs) : null;
+    if (mine.thread_ts) return thread === mine.thread_ts || ts === mine.thread_ts;
+    return direct && !thread && Number(ts) < Number(mine.ts);
+  }).map(i => i.id);
+}

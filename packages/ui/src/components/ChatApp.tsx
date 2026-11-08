@@ -2312,6 +2312,8 @@ export function ChatApp() {
         onInboxItem: (item) => setInboxItems(prev => [item, ...prev.filter(i => i.id !== item.id)]),
         onInboxRemoved: (id) => setInboxItems(prev => prev.filter(i => i.id !== id)),
         onSlackStatus: (status) => setSlackStatus(prev => ({ ...status, manifest: prev.manifest })),
+        // The Inbox's open conversation listens for these (Inbox.tsx).
+        onSlackMessage: (ev) => window.dispatchEvent(new CustomEvent('codiby:slack-message', { detail: ev })),
 
         onRemoteStatus: (remoteId, status, lastError) => {
           setRemoteStatuses(prev => ({ ...prev, [remoteId]: { status, lastError } }));

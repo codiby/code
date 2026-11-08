@@ -87,3 +87,25 @@ describe('emoji', () => {
     expect(slackToMarkdown('a las 10:30:45 `:tada:`', lookup.userName)).toBe('a las 10:30:45 `:tada:`');
   });
 });
+
+import { itemsAnsweredBy } from './slack-events';
+describe('itemsAnsweredBy', () => {
+  const it = (id: string, channel: string, ts: string, threadTs: string | null = null) =>
+    ({ id, source: 'slack', context: { channel, ts, threadTs } });
+  const items = [
+    it('mention-root', 'C1', '100.0'),            // a mention that opened a thread
+    it('reply-in-thread', 'C1', '105.0', '100.0'), // a reply in that thread
+    it('other-thread', 'C1', '200.0', '190.0'),
+    it('dm-old', 'D1', '50.0'),
+    it('dm-new', 'D1', '70.0'),
+  ];
+  test('a reply in a thread answers that thread, opening message included', () => {
+    expect(itemsAnsweredBy(items, { channel: 'C1', ts: '110.0', thread_ts: '100.0' }).sort()).toEqual(['mention-root', 'reply-in-thread']);
+  });
+  test('in a DM, a message answers what came before it', () => {
+    expect(itemsAnsweredBy(items, { channel: 'D1', ts: '60.0' })).toEqual(['dm-old']);
+  });
+  test('a top-level message in a channel answers nothing', () => {
+    expect(itemsAnsweredBy(items, { channel: 'C1', ts: '300.0' })).toEqual([]);
+  });
+});

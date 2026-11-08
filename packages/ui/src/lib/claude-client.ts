@@ -821,6 +821,8 @@ type ClientCallbacks = {
   onInboxItem?: (item: InboxItem) => void;
   onInboxRemoved?: (id: string) => void;
   onSlackStatus?: (status: SlackStatus) => void;
+  /** A Slack message as it happens, already formatted. */
+  onSlackMessage?: (ev: { channel: string; threadTs: string | null; message: SlackThreadMessage }) => void;
   /** A remote bridge's own preferences. Only its tab groups are of any use
    *  here — they're folded into the sidebar by name so a project that exists on
    *  both machines reads as one folder. `{}` means the remote went away and its
@@ -1397,6 +1399,9 @@ export class ClaudeClient {
         break;
       case 'inbox_removed':
         if (!remoteId) this.callbacks.onInboxRemoved?.(msg.id as string);
+        break;
+      case 'slack_message':
+        if (!remoteId) this.callbacks.onSlackMessage?.(msg as unknown as { channel: string; threadTs: string | null; message: SlackThreadMessage });
         break;
       case 'slack_status':
         if (!remoteId) this.callbacks.onSlackStatus?.(msg.status as SlackStatus);

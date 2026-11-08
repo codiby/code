@@ -198,6 +198,32 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [row.id]);
 
+  // Live: a message in this conversation, from anyone (you replying from
+  // Slack included), joins it as it happens.
+  useEffect(() => {
+    if (row.source !== 'slack') return;
+    const onMsg = (e: Event) => {
+      const ev = (e as CustomEvent<{ channel: string; threadTs: string | null; message: SlackThreadMessage }>).detail;
+      if (ev.channel !== ctx.channel) return;
+      setThread(prev => {
+        if (!prev) return prev;
+        const direct = String(ctx.channel).startsWith('D');
+        // A channel message with no replies yet roots its thread-to-be.
+        const rootTs = prev[0]?.root ? prev[0].ts
+          : ctx.threadTs ? String(ctx.threadTs)
+          : direct ? null : prev[0]?.ts ?? null;
+        const belongs = rootTs ? ev.threadTs === rootTs : direct && !ev.threadTs;
+        if (!belongs || prev.some(m => m.ts === ev.message.ts)) return prev;
+        const next = [...prev, ev.message];
+        if (rootTs && next[0]?.ts === rootTs && !next[0].root) next[0] = { ...next[0], root: true };
+        return next;
+      });
+    };
+    window.addEventListener('codiby:slack-message', onMsg);
+    return () => window.removeEventListener('codiby:slack-message', onMsg);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row.id]);
+
   const project = projects.find(p => p.id === projectId);
   const handOff = (prompt: string) => {
     const f = project?.folders[0];

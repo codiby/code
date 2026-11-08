@@ -16,9 +16,9 @@
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { CODIBY_DIR } from '../config/config';
-import { addInboxItem, rewriteOpenBodies } from './store';
+import { addInboxItem, listOpenInbox, markInboxDone, rewriteOpenBodies } from './store';
 import { emojifyPlain, resolveEmoji, setCustomEmoji } from './emoji';
-import { plainSlackText, slackMessageToItem, slackToMarkdown, type SlackMessage } from './slack-events';
+import { itemsAnsweredBy, plainSlackText, slackMessageToItem, slackToMarkdown, type SlackMessage } from './slack-events';
 
 const CONFIG_FILE = join(CODIBY_DIR, 'slack.json');
 const API = 'https://slack.com/api';
@@ -140,6 +140,7 @@ async function connect(): Promise<void> {
         void backfill();
       } else if (msg.type === 'events_api' && msg.payload?.event?.type === 'message') {
         void ingest(msg.payload.event);
+        void live(msg.payload.event);
       } else if (msg.type === 'disconnect') {
         ws.close();
       }
@@ -288,21 +289,38 @@ export async function slackThread(channel: string, ts: string, threadTs: string 
     for (const x of (m.text ?? '').matchAll(/<@([UW][A-Z0-9]+)/g)) ids.add(x[1]!);
   }
   await Promise.all([...ids].map(id => warmUser(id)));
-  return msgs.map(m => {
-    const raw = m as SlackMessage & { username?: string; bot_profile?: { name?: string }; reactions?: { name: string; count: number; users?: string[] }[] };
-    return {
-      user: m.user ?? '',
-      name: m.user ? userName(m.user) : raw.bot_profile?.name || raw.username || 'App',
-      ts: m.ts, mine: m.user === c.userId, bot: !!m.bot_id,
-      root: !!m.thread_ts && m.thread_ts === m.ts,
-      text: plainSlackText(m.text ?? '', userName),
-      markdown: slackToMarkdown(m.text ?? '', userName),
-      reactions: (raw.reactions ?? []).map(r => ({
-        name: r.name, count: r.count, mine: !!r.users?.includes(c.userId),
-        ...(resolveEmoji(r.name) ?? {}),
-      })),
-    };
-  });
+  return msgs.map(m => toThreadMessage(m, c.userId));
+}
+
+/** One Slack message as the Inbox shows it. Names must be warm already. */
+function toThreadMessage(m: SlackMessage, me: string): ThreadMessage {
+  const raw = m as SlackMessage & { username?: string; bot_profile?: { name?: string }; reactions?: { name: string; count: number; users?: string[] }[] };
+  return {
+    user: m.user ?? '',
+    name: m.user ? userName(m.user) : raw.bot_profile?.name || raw.username || 'App',
+    ts: m.ts, mine: m.user === me, bot: !!m.bot_id,
+    root: !!m.thread_ts && m.thread_ts === m.ts,
+    text: plainSlackText(m.text ?? '', userName),
+    markdown: slackToMarkdown(m.text ?? '', userName),
+    reactions: (raw.reactions ?? []).map(r => ({
+      name: r.name, count: r.count, mine: !!r.users?.includes(me),
+      ...(resolveEmoji(r.name) ?? {}),
+    })),
+  };
+}
+
+/** A message as it happens: windows showing that conversation append it,
+ *  and one of the user's own closes the items it answers (they replied from
+ *  Slack itself). */
+async function live(m: SlackMessage): Promise<void> {
+  if (!config || (m.subtype && m.subtype !== 'thread_broadcast' && m.subtype !== 'file_share' && m.subtype !== 'bot_message')) return;
+  const me = config.userId;
+  const ids = new Set<string>();
+  if (m.user) ids.add(m.user);
+  for (const x of (m.text ?? '').matchAll(/<@([UW][A-Z0-9]+)/g)) ids.add(x[1]!);
+  await Promise.all([...ids].map(id => warmUser(id)));
+  broadcast({ type: 'slack_message', channel: m.channel, threadTs: m.thread_ts ?? null, message: toThreadMessage(m, me) });
+  if (m.user === me) for (const id of itemsAnsweredBy(listOpenInbox(1000), m)) markInboxDone(id);
 }
 
 /** Reply as the user: in the thread when there is one, else in the DM. */
