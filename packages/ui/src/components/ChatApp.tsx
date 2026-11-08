@@ -5090,6 +5090,38 @@ export function ChatApp() {
     () => scopeToProject({ groups: sidebarGroups, map: sidebarGroupMap, sessions: sidebarSessions }, scopedProject),
     [sidebarGroups, sidebarGroupMap, sidebarSessions, scopedProject],
   );
+  /** The Board shows every session, closed ones included — narrowed the same way. */
+  const boardScope = useMemo(
+    () => scopeToProject({ groups: sidebarGroups, map: mergedGroupMap, sessions }, scopedProject),
+    [sidebarGroups, mergedGroupMap, sessions, scopedProject],
+  );
+  /** With "All projects", the sidebar lists one section per project, then
+   *  the sessions no project claims. Each section is the scope of its
+   *  project, so a group shared by two projects shows under both. */
+  const projectSections = useMemo(() => {
+    if (scopedProject || !projects.length) return undefined;
+    const input = { groups: sidebarGroups, map: sidebarGroupMap, sessions: sidebarSessions };
+    const claimed = new Set<string>();
+    const sections = projects.map(p => {
+      const scope = scopeToProject(input, p);
+      for (const s of scope.sessions) claimed.add(s.id);
+      return { key: p.id, name: p.name, color: p.color, ...scope };
+    });
+    const rest = sidebarSessions.filter(s => !claimed.has(s.id));
+    const keep = new Set<string>();
+    for (const s of rest) for (const id of ancestorChain(sidebarGroups, sidebarGroupMap[s.id])) keep.add(id);
+    for (const g of Object.values(sidebarGroups)) {
+      if (!g.projectId || !projectDefs[g.projectId]) for (const id of ancestorChain(sidebarGroups, g.id)) {
+        // Empty folders with no project stay reachable here.
+        if (!Object.values(sidebarGroupMap).includes(g.id) && g.allowEmpty) keep.add(id);
+      }
+    }
+    const groups = Object.fromEntries([...keep].map(id => [id, sidebarGroups[id]!]));
+    const restIds = new Set(rest.map(s => s.id));
+    const map = Object.fromEntries(Object.entries(sidebarGroupMap).filter(([sid, gid]) => restIds.has(sid) && keep.has(gid)));
+    sections.push({ key: '__none__', name: 'No project', color: undefined, groups, map, sessions: rest });
+    return sections;
+  }, [scopedProject, projects, sidebarGroups, sidebarGroupMap, sidebarSessions, projectDefs]);
   /** Folders open sessions run in — the dialog's one-click suggestions. */
   const projectFolderSuggestions = useMemo(() => {
     const seen = new Set<string>();
@@ -6952,6 +6984,7 @@ export function ChatApp() {
               onPickSessionAccent={colorChatBySession ? handlePickSessionAccent : undefined}
               tabGroups={scopedSidebar.groups}
               tabGroupMap={scopedSidebar.map}
+              projectSections={projectSections}
               groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
               onCreateGroup={handleCreateGroup}
@@ -7013,15 +7046,15 @@ export function ChatApp() {
               />
             ) : activeNavView === 'sessions-board' ? (
               <SessionsBoardView
-                sessions={sessions}
+                sessions={boardScope.sessions}
                 statuses={statuses}
                 streaming={sessionStreaming}
                 hasPermission={sessionHasPermission}
                 lastMessageAt={sessionLastMessageAt}
                 lastPreview={sessionLastPreview}
                 prLinks={prLinks}
-                tabGroups={sidebarGroups}
-                tabGroupMap={mergedGroupMap}
+                tabGroups={boardScope.groups}
+                tabGroupMap={boardScope.map}
                 onSelectSession={handleSelectSession}
                 onAssignGroup={(sid, gid) => gid ? handleAddToGroup(sid, gid) : handleUngroupTab(sid)}
               />

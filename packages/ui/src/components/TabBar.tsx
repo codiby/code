@@ -9,7 +9,7 @@ import { Button, TextField, Input } from '@heroui/react';
 import { useDrag, useDrop, mergeProps } from 'react-aria';
 import type { SessionInfo, ConnectionStatus, SessionActivity } from '../lib/claude-client';
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
-import type { TabGroupInfo } from '../lib/tab-groups';
+import { GROUP_HEX_COLOR, type TabGroupInfo } from '../lib/tab-groups';
 import {
   ancestorChain, buildGroupTree, descendantGroupIds, isAncestorOf, pinOrder,
   resolveGroupColor, type TreeNode,
@@ -20,6 +20,15 @@ import { persistPrefs } from '../lib/store/persist-prefs';
 import { UsagePopover } from './UsagePopover';
 
 type TabGroup = TabGroupInfo;
+
+export interface ProjectSection {
+  key: string;
+  name: string;
+  color?: string;
+  groups: Record<string, TabGroupInfo>;
+  map: Record<string, string>;
+  sessions: SessionInfo[];
+}
 
 /** Top-level views the sidebar can swap into the main pane. */
 export type NavView = 'overview' | 'sessions' | 'sessions-board' | 'automations';
@@ -135,6 +144,9 @@ interface Props {
   /** Active top-level view shown in the main pane. Drives the nav highlight at
    *  the top of the sidebar. */
   activeNavView?: NavView;
+  /** "All projects": one section per project (plus "No project"), each with
+   *  its own scoped groups / map / sessions. Absent = a single tree. */
+  projectSections?: ProjectSection[];
   /** Switch the main pane to a top-level view. */
   onSelectNavView?: (view: NavView) => void;
   /** Footer actions pinned to the bottom of the sidebar. */
@@ -865,7 +877,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     onCreateSubgroup, onEditGroupFolder, onMoveGroup, onAutoGroupSessions, onCreateFreeGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
-    activeNavView = 'sessions', onSelectNavView,
+    activeNavView = 'sessions', onSelectNavView, projectSections,
     onOpenSkills, onOpenMemory, onOpenSettings } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
@@ -1240,6 +1252,55 @@ export const TabBar = memo(function TabBar(props: Props) {
     );
   };
 
+  // Collapsed project sections, per window.
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('collapsedProjectSections') || '[]')); } catch { return new Set(); }
+  });
+  const toggleProjectSection = (key: string) => {
+    setCollapsedProjects(prev => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      try { localStorage.setItem('collapsedProjectSections', JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+  const visibleIds = useMemo(() => new Set(visibleSessions.map(s => s.id)), [visibleSessions]);
+  const renderProjectSections = () => (projectSections ?? []).map(sec => {
+    const secSessions = sec.sessions.filter(s => visibleIds.has(s.id) && sec.map[s.id] !== DISPOSABLES_GROUP_ID);
+    const { [DISPOSABLES_GROUP_ID]: _d, ...secGroups } = sec.groups;
+    const nodes = buildGroupTree({ sessions: secSessions, groups: secGroups, map: sec.map, childOrder: groupOrder, sortSessions });
+    if (!nodes.length && (normalizedSessionSearch || sec.key === '__none__')) return null;
+    const open = !!normalizedSessionSearch || !collapsedProjects.has(sec.key);
+    const hex = sec.color ? GROUP_HEX_COLOR[sec.color] : undefined;
+    return (
+      <div key={`proj-${sec.key}`} className="flex flex-col gap-px mt-2 first:mt-0">
+        <button
+          type="button"
+          onClick={() => toggleProjectSection(sec.key)}
+          aria-expanded={open}
+          className="group flex items-center gap-2 h-[26px] px-2 rounded-[6px] text-[11.5px] font-medium uppercase tracking-[0.04em] text-zinc-500 hover:text-zinc-300"
+        >
+          {sec.key === '__none__'
+            ? <span className="w-[14px] h-[14px] rounded-[4px] border border-dashed border-zinc-600 shrink-0" />
+            : (
+              <span
+                className="w-[14px] h-[14px] grid place-items-center rounded-[4px] font-mono text-[9px] font-semibold shrink-0 normal-case"
+                style={{ background: hex ?? 'var(--color-surface-lighter)', color: hex ? '#0f1012' : 'var(--color-zinc-300)' }}
+              >
+                {sec.name.trim().charAt(0).toUpperCase()}
+              </span>
+            )}
+          <span className="flex-1 text-left truncate">{sec.name}</span>
+          <span className="tabular-nums text-zinc-600 normal-case tracking-normal">{secSessions.length}</span>
+          <ChevronRight size={12} strokeWidth={1.8} className={`shrink-0 text-zinc-600 transition-transform ${open ? 'rotate-90' : ''}`} />
+        </button>
+        {open && (nodes.length
+          ? nodes.map(node => renderTreeNode(node))
+          : <div className="px-2 py-1 text-[12px] text-zinc-600">No open sessions</div>)}
+      </div>
+    );
+  });
+
   /** Status view: flat sections in the group header's anatomy (chevron, label,
    *  count). Rows carry their group as text, since they're no longer nested. */
   const renderStatusSections = () => statusSections.map(({ key, label, sessions: rows }) => {
@@ -1484,7 +1545,9 @@ export const TabBar = memo(function TabBar(props: Props) {
          <div className="flex flex-col gap-px">
            {tree.length === 0 && disposableSessions.length === 0 ? (
              <div className="px-3 py-5 text-center text-[12px] text-zinc-600">No matching sessions</div>
-           ) : groupBy === 'status' ? renderStatusSections() : tree.map(node => renderTreeNode(node))}
+           ) : groupBy === 'status' ? renderStatusSections()
+             : projectSections ? renderProjectSections()
+             : tree.map(node => renderTreeNode(node))}
         </div>
 
       </div>
