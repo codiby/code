@@ -216,7 +216,13 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
   const ctx = (row.item?.context ?? {}) as Record<string, string | number | boolean | null>;
   // The conversation as loaded, for the agent's prompt.
   const [thread, setThread] = useState<SlackThreadMessage[] | null>(null);
-  const [projectId, setProjectId] = useState<string>(defaultProjectId ?? projects[0]?.id ?? '');
+  // A Slack item belongs to the project whose connection it came through, and
+  // its agent starts there — no choice to make. Anything else (a PR, a
+  // message from the pre-projects connection) lets you pick.
+  const ownerProject = row.source === 'slack' && row.item
+    ? projects.find(p => p.id === slackConnectionOf(row.item!)) ?? null
+    : null;
+  const [projectId, setProjectId] = useState<string>(ownerProject?.id ?? defaultProjectId ?? projects[0]?.id ?? '');
 
   const [declining, setDeclining] = useState(false);
   const project = projects.find(p => p.id === projectId);
@@ -261,7 +267,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
     </div>
   );
 
-  const projectPicker = projects.length > 0 && (
+  const projectPicker = ownerProject ? null : projects.length > 0 && (
     <select className="ib-select" value={projectId} onChange={e => setProjectId(e.target.value)} aria-label="Project">
       {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
     </select>
