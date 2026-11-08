@@ -1294,9 +1294,14 @@ export const TabBar = memo(function TabBar(props: Props) {
           <span className="tabular-nums text-zinc-600 normal-case tracking-normal">{secSessions.length}</span>
           <ChevronRight size={12} strokeWidth={1.8} className={`shrink-0 text-zinc-600 transition-transform ${open ? 'rotate-90' : ''}`} />
         </button>
-        {open && (nodes.length
-          ? nodes.map(node => renderTreeNode(node))
-          : <div className="px-2 py-1 text-[12px] text-zinc-600">No open sessions</div>)}
+        {/* Nested like a folder's contents: same indent and hairline rail. */}
+        {open && (
+          <div className="tree-rail flex flex-col gap-px pl-2.5 ml-[15px]">
+            {nodes.length
+              ? nodes.map(node => renderTreeNode(node))
+              : <div className="px-2 py-1 text-[12px] text-zinc-600">No open sessions</div>}
+          </div>
+        )}
       </div>
     );
   });
