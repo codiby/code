@@ -47,7 +47,9 @@ import {
 } from '../lib/project-sync';
 import { ProjectDialog } from './ProjectDialog';
 import { ProjectSwitcher } from './ProjectSwitcher';
-import { Overview } from './Overview';
+import { Overview, modelLabel } from './Overview';
+import { Inbox } from './Inbox';
+import { buildInboxRows, type InboxRow } from '../lib/inbox';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
 import { repoFromPrUrl, type PrLink } from '../lib/store/slices/prSlice';
@@ -89,6 +91,8 @@ import {
   type RemoteTarget,
   type SessionActivity,
   type SessionInfo,
+  type InboxItem,
+  type SlackStatus,
   type SessionInitInfo,
   type SupportedModel,
   type TerminalInfo,
@@ -363,6 +367,9 @@ export function ChatApp() {
   /** Each remote's whole preferences blob, as last broadcast — what project
    *  sync reads to compare versions and to write back a merged copy. */
   const [remotePrefsRaw, setRemotePrefsRaw] = useState<Record<string, Record<string, unknown>>>({});
+  /** Inbox items this machine's bridge holds (Slack, PRs), kept live. */
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [slackStatus, setSlackStatus] = useState<SlackStatus>({ state: 'off' });
   /** The selected project, for handlers declared before it's computed: a
    *  group created while a project is selected belongs to that project. */
   const scopedProjectIdRef = useRef<string | null>(null);
@@ -2301,6 +2308,9 @@ export function ChatApp() {
         /** The machines a session can be spawned on, for the composer's host
          *  selector. */
         onRemotes: (list) => setRemotes(list),
+        onInboxItem: (item) => setInboxItems(prev => [item, ...prev.filter(i => i.id !== item.id)]),
+        onInboxRemoved: (id) => setInboxItems(prev => prev.filter(i => i.id !== id)),
+        onSlackStatus: (status) => setSlackStatus(prev => ({ ...status, manifest: prev.manifest })),
 
         onRemoteStatus: (remoteId, status, lastError) => {
           setRemoteStatuses(prev => ({ ...prev, [remoteId]: { status, lastError } }));
@@ -5067,6 +5077,13 @@ export function ChatApp() {
   const sessionInterrupted = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.wasInterrupted])), [sessionStates]);
   const sessionHasPermission = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.permRequest])), [sessionStates]);
 
+  // ── Inbox ───────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!client) return;
+    void client.getInbox().then(setInboxItems).catch(() => {});
+    void client.getSlack().then(setSlackStatus).catch(() => {});
+  }, [client]);
+
   // ── Project scope ─────────────────────────────────────────────────────────
   // Projects are user-defined (name, colour, folders per host) and synced in
   // the preferences. Which one is selected is a per-window view choice, so
@@ -5389,6 +5406,40 @@ export function ChatApp() {
     }
     return out;
   }, [sessions, sessionStates]);
+
+  /** The Inbox: stored items plus what the sessions in scope wait on. */
+  const inboxRows = useMemo(() => buildInboxRows(
+    inboxItems,
+    scopedProject ? scopedSidebar.sessions.filter(s => !isPendingSessionId(s.id)) : orderedOpenSessions,
+    {
+      hasPermission: sessionHasPermission,
+      interrupted: sessionInterrupted,
+      awaitingReply: awaitingReplyIds,
+      lastMessageAt: sessionLastMessageAt,
+      lastPreview: sessionLastPreview,
+      describe: (s) => {
+        const gid = mergedGroupMap[s.id];
+        const where = (gid && sidebarGroups[gid]?.name) || s.cwd.split(/[\\/]/).filter(Boolean).pop() || s.cwd;
+        return `${where} · ${modelLabel(s.model || s.provider_default_model)}`;
+      },
+    },
+  ), [inboxItems, scopedProject, scopedSidebar.sessions, orderedOpenSessions, sessionHasPermission, sessionInterrupted,
+    awaitingReplyIds, sessionLastMessageAt, sessionLastPreview, mergedGroupMap, sidebarGroups]);
+  /** "Done": a stored item closes on the bridge (every window follows); a
+   *  session row clears the flag that put it there. A pending permission
+   *  can't be dismissed — it needs a decision, so it opens the session. */
+  const handleInboxDone = (row: InboxRow) => {
+    if (row.item) {
+      setInboxItems(prev => prev.filter(i => i.id !== row.item!.id));
+      void clientRef.current?.inboxDone(row.item.id).catch(() => {});
+      return;
+    }
+    const sid = row.sessionId;
+    if (!sid) return;
+    if (row.bucket === 'read') setAwaitingReplyIds(prev => { const next = new Set(prev); next.delete(sid); return next; });
+    else if (row.bucket === 'broke') updateLocalState(sid, st => ({ ...st, wasInterrupted: false }));
+    else { setActiveNavView('sessions'); void handleSelectSession(sid); }
+  };
 
   // Archived list shown in the TabBar's restore dropdown — sorted
   // most-recent first. We trust the server-stamped `updated_at` (bumped
@@ -6664,7 +6715,7 @@ export function ChatApp() {
             <>
               <span className="path-slash" aria-hidden>/</span>
               <span className="text-[13px] font-medium text-zinc-200 mr-2">
-                {activeNavView === 'overview' ? 'Overview' : activeNavView === 'sessions-board' ? 'Board' : 'Automations'}
+                {activeNavView === 'overview' ? 'Overview' : activeNavView === 'inbox' ? 'Inbox' : activeNavView === 'sessions-board' ? 'Board' : 'Automations'}
               </span>
             </>
           )}
@@ -7156,6 +7207,7 @@ export function ChatApp() {
               tabGroups={scopedSidebar.groups}
               tabGroupMap={scopedSidebar.map}
               projectSections={projectSections}
+              inboxCount={inboxRows.length}
               groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
               onCreateGroup={handleCreateGroup}
@@ -7201,6 +7253,24 @@ export function ChatApp() {
           <div className="app-main flex-1 flex flex-col min-w-0">
             {standaloneVisible ? (
               <StandaloneEditor client={client} onOpenPaths={(paths) => routeOpenFilesRef.current(paths)} />
+            ) : activeNavView === 'inbox' ? (
+              <Inbox
+                client={client}
+                rows={inboxRows}
+                slack={slackStatus}
+                projects={projects}
+                defaultProjectId={scopedProjectId}
+                onOpenSession={(id) => { setActiveNavView('sessions'); void handleSelectSession(id); }}
+                onRead={(row) => { if (row.item && !row.item.readAt) void client?.inboxRead(row.item.id).catch(() => {}); }}
+                onDone={handleInboxDone}
+                onHandToAgent={({ cwd, remoteId, prompt }) => {
+                  const stored = localStorage.getItem('claude-ui-last-provider');
+                  const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
+                  setActiveNavView('sessions');
+                  void handleSpawnHome(cwd, provider, prompt, undefined, defaultPermissionModeByHost[remoteId || ''] ?? 'default', undefined, remoteId)
+                    .catch(err => alert((err as Error).message));
+                }}
+              />
             ) : activeNavView === 'overview' ? (
               <Overview
                 client={client}

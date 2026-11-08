@@ -77,6 +77,9 @@ import {
   handleUpdateBoard,
   handleUpdateStatus,
 } from './handlers/boards';
+import { listOpenInbox, markInboxDone, markInboxRead, pruneInbox, setInboxBroadcaster } from './inbox/store';
+import { configureSlack, disconnectSlack, getSlackStatus, setSlackBroadcaster, slackReply, slackThread, SLACK_MANIFEST, startSlack } from './inbox/slack';
+import { pollPullRequests, startPullRequestPolling } from './inbox/github';
 import { buildOverview } from './stats/overview';
 import { configureAutomationRunner, completeAutomationRun, failAutomationRun } from './automation/runner';
 import { startAutomationScheduler } from './automation/scheduler';
@@ -1461,6 +1464,45 @@ app.get('/automations/:id/runs', (c) => handleListAutomationRuns(c.req.param('id
 app.get('/automations/:id/runs/:runId', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId')));
 app.get('/automations/:id/runs/:runId/result', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId'), true));
 app.post('/automations/:id/runs/:runId/cancel', (c) => handleCancelAutomationRun(c.req.param('id'), c.req.param('runId')));
+
+// ── Inbox ──────────────────────────────────────────────────────────────────
+app.get('/inbox', () => Response.json(listOpenInbox(), { headers: corsHeaders }));
+app.post('/inbox/:id/done', (c) => Response.json({ ok: markInboxDone(c.req.param('id')) }, { headers: corsHeaders }));
+app.post('/inbox/:id/read', (c) => Response.json({ ok: markInboxRead(c.req.param('id')) }, { headers: corsHeaders }));
+app.post('/inbox/refresh', async () => { await pollPullRequests(); return Response.json({ ok: true }, { headers: corsHeaders }); });
+
+// Slack (Socket Mode). Tokens never leave this machine: the status endpoint
+// reports who is connected, not the credentials.
+app.get('/integrations/slack', () => Response.json({ ...getSlackStatus(), manifest: SLACK_MANIFEST }, { headers: corsHeaders }));
+app.put('/integrations/slack', async (c) => {
+  try {
+    const body = await c.req.json() as { appToken?: string; userToken?: string };
+    return Response.json(await configureSlack(body.appToken ?? '', body.userToken ?? ''), { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
+app.delete('/integrations/slack', () => { disconnectSlack(); return Response.json({ ok: true }, { headers: corsHeaders }); });
+app.get('/integrations/slack/thread', async (c) => {
+  const u = new URL(c.req.url);
+  try {
+    const msgs = await slackThread(u.searchParams.get('channel') ?? '', u.searchParams.get('ts') ?? '', u.searchParams.get('threadTs') || null);
+    return Response.json(msgs, { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
+app.post('/integrations/slack/reply', async (c) => {
+  try {
+    const body = await c.req.json() as { channel?: string; threadTs?: string | null; text?: string; itemId?: string };
+    if (!body.channel || !body.text?.trim()) throw new Error('channel and text are required');
+    await slackReply(body.channel, body.threadTs ?? null, body.text);
+    if (body.itemId) markInboxDone(body.itemId);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
 
 // ── Overview stats ─────────────────────────────────────────────────────────
 // POST so the scope (a project's session ids) travels in the body.
@@ -3024,6 +3066,18 @@ setMcpDeps({
 startPairingMaintenance(server.port!, broadcastRemoteList);
 configureAutomationRunner({ port: server.port!, sendMessage: sendMessageToSession, broadcastSessionList });
 startAutomationScheduler();
+// Inbox sources: Slack in real time over Socket Mode, PRs polled with gh.
+{
+  const toWindows = (msg: Record<string, unknown>) => {
+    const data = JSON.stringify(msg);
+    for (const ws of frontendClients) { try { ws.send(data); } catch {} }
+  };
+  setInboxBroadcaster(toWindows);
+  setSlackBroadcaster(toWindows);
+  pruneInbox();
+  startSlack();
+  startPullRequestPolling();
+}
 setTelegramBroadcaster(broadcastToSession);
 startTelegramBot(server.port);
 

@@ -233,3 +233,32 @@ export type BoardStatusRecord = typeof boardStatuses.$inferSelect;
 export type BoardTransitionRecord = typeof boardTransitions.$inferSelect;
 export type BoardSessionRecord = typeof boardSessions.$inferSelect;
 export type BoardSessionEventRecord = typeof boardSessionEvents.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Inbox — things outside a session that wait on the user (Slack mentions and
+// DMs, pull requests). Session items are derived live in the frontend and
+// never stored here. `id` is the source's own key (e.g. `slack:<ch>:<ts>`), so
+// a backfill that sees an item the realtime feed already delivered is a no-op.
+// ---------------------------------------------------------------------------
+
+export const inboxItems = sqliteTable('inbox_items', {
+  id: text('id').primaryKey(),
+  /** 'slack' | 'pr' */
+  source: text('source').notNull(),
+  /** slack: 'mention' | 'dm' | 'thread_reply' — pr: 'review_requested' | 'checks_failing' */
+  kind: text('kind').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull().default(''),
+  /** Source-specific fields (channel, thread ts, author, repo…), JSON. */
+  context: text('context').notNull().default('{}'),
+  url: text('url'),
+  /** When it happened at the source. */
+  occurredAt: integer('occurred_at').notNull(),
+  createdAt: integer('created_at').notNull(),
+  readAt: integer('read_at'),
+  doneAt: integer('done_at'),
+}, (table) => [
+  index('inbox_items_open_idx').on(table.doneAt, table.occurredAt),
+]);
+
+export type InboxItemRecord = typeof inboxItems.$inferSelect;

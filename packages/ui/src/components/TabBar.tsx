@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch, LayoutGrid, SquareKanban, Repeat, Folder, FolderOpen, PanelLeftOpen,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch, LayoutGrid, SquareKanban, Repeat, Folder, FolderOpen, PanelLeftOpen, Inbox as InboxIcon,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -31,7 +31,7 @@ export interface ProjectSection {
 }
 
 /** Top-level views the sidebar can swap into the main pane. */
-export type NavView = 'overview' | 'sessions' | 'sessions-board' | 'automations';
+export type NavView = 'overview' | 'inbox' | 'sessions' | 'sessions-board' | 'automations';
 
 interface Props {
   sessions: SessionInfo[];
@@ -147,6 +147,8 @@ interface Props {
   /** "All projects": one section per project (plus "No project"), each with
    *  its own scoped groups / map / sessions. Absent = a single tree. */
   projectSections?: ProjectSection[];
+  /** Items waiting in the Inbox, for the nav badge. */
+  inboxCount?: number;
   /** Switch the main pane to a top-level view. */
   onSelectNavView?: (view: NavView) => void;
   /** Footer actions pinned to the bottom of the sidebar. */
@@ -877,7 +879,7 @@ export const TabBar = memo(function TabBar(props: Props) {
     onCreateSubgroup, onEditGroupFolder, onMoveGroup, onAutoGroupSessions, onCreateFreeGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
-    activeNavView = 'sessions', onSelectNavView, projectSections,
+    activeNavView = 'sessions', onSelectNavView, projectSections, inboxCount = 0,
     onOpenSkills, onOpenMemory, onOpenSettings } = props;
 
   // Tick once a minute so age labels refresh from "1m" → "2m" → … without
@@ -1428,6 +1430,10 @@ export const TabBar = memo(function TabBar(props: Props) {
           <button type="button" title="Overview" aria-label="Overview" className={railBtn(activeNavView === 'overview')} onClick={() => onSelectNavView?.('overview')}>
             <LayoutGrid size={16} strokeWidth={1.6} />
           </button>
+          <button type="button" title={`Inbox${inboxCount ? ` (${inboxCount})` : ''}`} aria-label="Inbox" className={`relative ${railBtn(activeNavView === 'inbox')}`} onClick={() => onSelectNavView?.('inbox')}>
+            <InboxIcon size={16} strokeWidth={1.6} />
+            {inboxCount > 0 && <span className="nav-count absolute -top-0.5 -right-0.5 scale-90">{inboxCount > 99 ? '99+' : inboxCount}</span>}
+          </button>
           <button type="button" title="Board" aria-label="Board" className={railBtn(activeNavView === 'sessions-board')}
             onClick={() => onSelectNavView?.(activeNavView === 'sessions-board' ? 'sessions' : 'sessions-board')}>
             <SquareKanban size={16} strokeWidth={1.6} />
@@ -1542,6 +1548,13 @@ export const TabBar = memo(function TabBar(props: Props) {
             label="Overview"
             active={activeNavView === 'overview'}
             onClick={() => onSelectNavView?.('overview')}
+          />
+          <NavItem
+            icon={InboxIcon}
+            label="Inbox"
+            count={inboxCount}
+            active={activeNavView === 'inbox'}
+            onClick={() => onSelectNavView?.('inbox')}
           />
           <NavItem
             icon={SquareKanban}
@@ -1996,7 +2009,7 @@ export const TabBar = memo(function TabBar(props: Props) {
 });
 
 /** A top-level sidebar destination: icon + label, raised chip when selected. */
-function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon; label: string; active: boolean; onClick: () => void }) {
+function NavItem({ icon: Icon, label, active, onClick, count = 0 }: { icon: LucideIcon; label: string; active: boolean; onClick: () => void; count?: number }) {
   return (
     <button
       type="button"
@@ -2007,7 +2020,8 @@ function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon; lab
       }`}
     >
       <Icon size={15} strokeWidth={1.6} className={active ? 'text-zinc-100' : 'text-zinc-500'} />
-      <span>{label}</span>
+      <span className="flex-1 text-left">{label}</span>
+      {count > 0 && <span className="nav-count">{count > 99 ? '99+' : count}</span>}
     </button>
   );
 }

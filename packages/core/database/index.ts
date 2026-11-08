@@ -25,6 +25,13 @@ sqlite.exec('PRAGMA journal_mode = WAL;');
 sqlite.exec('PRAGMA foreign_keys = ON;');
 sqlite.exec('PRAGMA busy_timeout = 5000;');
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS inbox_items (
+    id TEXT PRIMARY KEY NOT NULL, source TEXT NOT NULL, kind TEXT NOT NULL,
+    title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '{}',
+    url TEXT, occurred_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    read_at INTEGER, done_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS inbox_items_open_idx ON inbox_items (done_at, occurred_at);
   CREATE TABLE IF NOT EXISTS session_notes (
     session_id TEXT PRIMARY KEY NOT NULL, content TEXT NOT NULL,
     revision INTEGER NOT NULL, updated_at INTEGER NOT NULL

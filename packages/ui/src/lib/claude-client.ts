@@ -470,6 +470,29 @@ export interface PermissionRequest {
   title?: string;
 }
 
+/** Mirrors core's `InboxItem` (packages/core/inbox/store.ts). */
+export interface InboxItem {
+  id: string;
+  source: 'slack' | 'pr';
+  kind: string;
+  title: string;
+  body: string;
+  context: Record<string, unknown>;
+  url: string | null;
+  occurredAt: number;
+  readAt: number | null;
+  doneAt: number | null;
+}
+export interface SlackStatus {
+  state: 'off' | 'connecting' | 'connected' | 'error';
+  error?: string;
+  user?: string;
+  team?: string;
+  teamUrl?: string;
+  manifest?: string;
+}
+export interface SlackThreadMessage { user: string; name: string; text: string; ts: string; mine: boolean }
+
 /** Mirrors core's `OverviewResponse` (packages/core/stats/overview.ts). */
 export interface OverviewStats {
   days: string[];
@@ -792,6 +815,11 @@ type ClientCallbacks = {
    */
   onBrowserRequest?: (req: { sessionId: string; name: string; requestId: string; action: string; args: unknown }) => void;
   onPreferences: (preferences: Record<string, unknown>) => void;
+  /** Inbox (this machine's bridge only): an item arrived or changed, an item
+   *  was closed, Slack's connection changed. */
+  onInboxItem?: (item: InboxItem) => void;
+  onInboxRemoved?: (id: string) => void;
+  onSlackStatus?: (status: SlackStatus) => void;
   /** A remote bridge's own preferences. Only its tab groups are of any use
    *  here — they're folded into the sidebar by name so a project that exists on
    *  both machines reads as one folder. `{}` means the remote went away and its
@@ -1362,6 +1390,15 @@ export class ClaudeClient {
         // Per-machine, like keybindings and preferences: a remote's links are
         // keyed by its own session ids and would collide with this window's.
         if (!remoteId) this.callbacks.onPrLinks?.(msg.prLinks as Record<string, unknown[]>);
+        break;
+      case 'inbox_item':
+        if (!remoteId && msg.item) this.callbacks.onInboxItem?.(msg.item as InboxItem);
+        break;
+      case 'inbox_removed':
+        if (!remoteId) this.callbacks.onInboxRemoved?.(msg.id as string);
+        break;
+      case 'slack_status':
+        if (!remoteId) this.callbacks.onSlackStatus?.(msg.status as SlackStatus);
         break;
       case 'preferences':
         // Preferences belong to the machine that sent them. Handing a remote's
@@ -2331,6 +2368,33 @@ export class ClaudeClient {
     const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`, remoteId));
     if (!resp.ok) return { is_git: false };
     return resp.json();
+  }
+
+  // ── Inbox ────────────────────────────────────────────────────────────────
+  private async json<T>(path: string, init?: RequestInit): Promise<T> {
+    const resp = await authedFetch(`${this.serverUrl}${path}`, init);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error((data as { error?: string }).error || `${path}: ${resp.status}`);
+    return data as T;
+  }
+  getInbox(): Promise<InboxItem[]> { return this.json('/inbox'); }
+  inboxDone(id: string): Promise<unknown> { return this.json(`/inbox/${encodeURIComponent(id)}/done`, { method: 'POST' }); }
+  inboxRead(id: string): Promise<unknown> { return this.json(`/inbox/${encodeURIComponent(id)}/read`, { method: 'POST' }); }
+  refreshInbox(): Promise<unknown> { return this.json('/inbox/refresh', { method: 'POST' }); }
+  getSlack(): Promise<SlackStatus> { return this.json('/integrations/slack'); }
+  connectSlack(appToken: string, userToken: string): Promise<SlackStatus> {
+    return this.json('/integrations/slack', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appToken, userToken }) });
+  }
+  disconnectSlack(): Promise<unknown> { return this.json('/integrations/slack', { method: 'DELETE' }); }
+  slackThread(channel: string, ts: string, threadTs: string | null): Promise<SlackThreadMessage[]> {
+    const q = new URLSearchParams({ channel, ts, ...(threadTs ? { threadTs } : {}) });
+    return this.json(`/integrations/slack/thread?${q}`);
+  }
+  slackReply(channel: string, threadTs: string | null, text: string, itemId?: string): Promise<unknown> {
+    return this.json('/integrations/slack/reply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, threadTs, text, itemId }),
+    });
   }
 
   /** Overview numbers for a set of (local) sessions over the last `days`.
