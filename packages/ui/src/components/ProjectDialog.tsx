@@ -14,6 +14,8 @@ interface Props {
   remotes: RemoteTarget[];
   /** Folders open sessions run in, offered as one-click additions. */
   suggestions: ProjectFolder[];
+  /** GitHub owners seen in the Inbox's pull requests, offered as one-click additions. */
+  orgSuggestions?: string[];
   onSave: (project: Omit<Project, 'id'>) => void;
   onDelete?: () => void;
   onClose: () => void;
@@ -33,10 +35,18 @@ const sameFolder = (a: ProjectFolder, b: ProjectFolder) => a.path === b.path && 
 
 /** Create or edit a project: name, colour, and the folders (each on a host)
  *  whose sessions belong to it. */
-export function ProjectDialog({ project, isNew, client, remotes, suggestions, onSave, onDelete, onClose, slack }: Props) {
+export function ProjectDialog({ project, isNew, client, remotes, suggestions, orgSuggestions = [], onSave, onDelete, onClose, slack }: Props) {
   const [name, setName] = useState(project.name);
   const [color, setColor] = useState(project.color ?? GROUP_COLORS[0]);
   const [folders, setFolders] = useState<ProjectFolder[]>(project.folders.length ? project.folders : []);
+  const [orgs, setOrgs] = useState<string[]>(project.githubOrgs ?? []);
+  const [orgDraft, setOrgDraft] = useState('');
+  const addOrg = (raw: string) => {
+    // Accept a bare owner, owner/repo, or a github.com URL — keep the owner.
+    const owner = raw.trim().replace(/^https?:\/\/github\.com\//, '').split('/')[0]?.trim();
+    if (owner && !orgs.some(o => o.toLowerCase() === owner.toLowerCase())) setOrgs([...orgs, owner]);
+    setOrgDraft('');
+  };
   const [confirmDelete, setConfirmDelete] = useState(false);
   /** Row whose folder browser is open. */
   const [browsing, setBrowsing] = useState<number | null>(null);
@@ -84,7 +94,11 @@ export function ProjectDialog({ project, isNew, client, remotes, suggestions, on
     .filter(f => f.path);
   const canSave = !!name.trim() && cleaned.length > 0;
 
-  const save = () => { if (canSave) onSave({ name: name.trim(), color, folders: cleaned }); };
+  const save = () => {
+    if (!canSave) return;
+    const all = orgDraft.trim() ? [...orgs, orgDraft.trim().split('/')[0]!] : orgs;
+    onSave({ name: name.trim(), color, folders: cleaned, githubOrgs: [...new Set(all)] });
+  };
   const patch = (i: number, p: Partial<ProjectFolder>) =>
     setFolders(prev => prev.map((f, j) => (j === i ? { ...f, ...p } : f)));
 
@@ -216,6 +230,42 @@ export function ProjectDialog({ project, isNew, client, remotes, suggestions, on
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[12px] text-zinc-500">GitHub organizations <span className="text-zinc-600">· their pull requests belong to this project</span></span>
+            <div className="flex flex-wrap items-center gap-1.5 min-h-8 px-2 py-1 rounded-md bg-base border border-border focus-within:border-zinc-500">
+              {orgs.map(o => (
+                <span key={o} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md bg-surface-lighter text-[12.5px] text-zinc-200">
+                  {o}
+                  <button type="button" onClick={() => setOrgs(orgs.filter(x => x !== o))} className="w-4 h-4 grid place-items-center rounded text-zinc-500 hover:text-zinc-200" aria-label={`Remove ${o}`}>
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+              <input
+                value={orgDraft}
+                onChange={e => setOrgDraft(e.target.value)}
+                onKeyDown={e => {
+                  if ((e.key === 'Enter' || e.key === ',') && orgDraft.trim()) { e.preventDefault(); addOrg(orgDraft); }
+                  if (e.key === 'Backspace' && !orgDraft && orgs.length) setOrgs(orgs.slice(0, -1));
+                }}
+                onBlur={() => { if (orgDraft.trim()) addOrg(orgDraft); }}
+                placeholder={orgs.length ? '' : 'e.g. your-org'}
+                className="flex-1 min-w-[120px] h-6 bg-transparent text-[12.5px] text-zinc-200 placeholder:text-zinc-600 outline-none"
+                aria-label="GitHub organization"
+              />
+            </div>
+            {orgSuggestions.filter(o => !orgs.some(x => x.toLowerCase() === o.toLowerCase())).length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {orgSuggestions.filter(o => !orgs.some(x => x.toLowerCase() === o.toLowerCase())).map(o => (
+                  <button key={o} type="button" onClick={() => addOrg(o)}
+                    className="h-6 flex items-center gap-1.5 px-2 rounded-md border border-border text-[11.5px] text-zinc-400 hover:text-zinc-200 hover:border-border-light">
+                    <Plus size={11} strokeWidth={1.8} /> {o}
+                  </button>
+                ))}
               </div>
             )}
           </div>

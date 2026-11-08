@@ -40,7 +40,7 @@ import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
-import { listProjects, scopeToProject, type Project, type ProjectFolder } from '../lib/project-scope';
+import { listProjects, projectOfRepo, scopeToProject, type Project, type ProjectFolder } from '../lib/project-scope';
 import {
   applyBundle, bundleOf, fingerprint, parseStoredProjects, projectHosts,
   type OrgPrefs, type StoredFolder, type StoredProject,
@@ -5137,7 +5137,7 @@ export function ChatApp() {
     for (const p of Object.values(storedProjects)) {
       if (p.deleted) continue;
       out[p.id] = {
-        id: p.id, name: p.name, color: p.color,
+        id: p.id, name: p.name, color: p.color, githubOrgs: p.githubOrgs,
         folders: p.folders.map(f => ({
           path: f.path,
           remoteId: f.hostId
@@ -5444,7 +5444,10 @@ export function ChatApp() {
   const inboxRows = useMemo(() => buildInboxRows(
     // A project shows the Slack it is connected to; All projects shows every
     // connection's.
-    scopedProject ? inboxItems.filter(i => i.source !== 'slack' || slackConnectionOf(i) === scopedProject.id) : inboxItems,
+    scopedProject ? inboxItems.filter(i =>
+      i.source === 'slack' ? slackConnectionOf(i) === scopedProject.id
+      : i.source === 'pr' ? projectOfRepo(String(i.context.repo ?? ''), [scopedProject]) === scopedProject.id
+      : true) : inboxItems,
     scopedProject ? scopedSidebar.sessions.filter(s => !isPendingSessionId(s.id)) : orderedOpenSessions,
     {
       hasPermission: sessionHasPermission,
@@ -9370,6 +9373,7 @@ export function ChatApp() {
             client={client}
             remotes={remotes}
             suggestions={projectFolderSuggestions}
+            orgSuggestions={[...new Set(inboxItems.filter(i => i.source === 'pr').map(i => String(i.context.repo ?? '').split('/')[0]).filter(Boolean))]}
             slack={{ status: editing ? slackConnections[editing.id] : undefined, legacy: slackConnections.default, manifest: slackManifest }}
             onClose={() => setProjectDialog(null)}
             onSave={(draft) => {
@@ -9377,7 +9381,11 @@ export function ChatApp() {
               const prev = storedProjects[id];
               writeStoredProjects({
                 ...storedProjects,
-                [id]: { id, name: draft.name, color: draft.color, folders: toStoredFolders(draft.folders), updatedAt: Date.now(), ...(prev?.fp ? { fp: prev.fp } : {}) },
+                [id]: {
+                  id, name: draft.name, color: draft.color, folders: toStoredFolders(draft.folders),
+                  ...(draft.githubOrgs?.length ? { githubOrgs: draft.githubOrgs } : {}),
+                  updatedAt: Date.now(), ...(prev?.fp ? { fp: prev.fp } : {}),
+                },
               });
               if (!editing) setActiveProjectId(id);
               setProjectDialog(null);

@@ -30,6 +30,7 @@ export interface StoredProject {
   name: string;
   color?: string;
   folders: StoredFolder[];
+  githubOrgs?: string[];
   updatedAt: number;
   /** Fingerprint of the organization last written with this version. */
   fp?: string;
@@ -137,6 +138,7 @@ export function parseStoredProjects(raw: unknown): Record<string, StoredProject>
     if (typeof p.name !== 'string' || !p.name.trim()) continue;
     out[id] = {
       id, name: p.name.trim(), color: typeof p.color === 'string' ? p.color : undefined,
+      ...(Array.isArray(p.githubOrgs) ? { githubOrgs: p.githubOrgs.filter((o): o is string => typeof o === 'string' && !!o.trim()).map(o => o.trim()) } : {}),
       folders, updatedAt, ...(typeof p.fp === 'string' ? { fp: p.fp } : {}),
     };
   }

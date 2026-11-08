@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import type { SessionInfo } from './claude-client';
 import type { TabGroupInfo } from './tab-groups';
 import {
-  listProjects, parseProjects, projectOfSession, scopeToProject, sessionInProject,
+  listProjects, parseProjects, projectOfRepo, projectOfSession, scopeToProject, sessionInProject,
   type Project,
 } from './project-scope';
 
@@ -101,5 +101,15 @@ describe('listProjects / parseProjects', () => {
       junk: 3,
     });
     expect(out).toEqual({ ok: { id: 'ok', name: 'up', color: undefined, folders: [{ path: '/src/up', remoteId: null }] } });
+  });
+});
+
+describe('projectOfRepo', () => {
+  test('matches the repo owner against each project\'s GitHub orgs, case-insensitively', () => {
+    const projects = [{ id: 'up', githubOrgs: ['SunroomOrg'] }, { id: 'code', githubOrgs: ['codiby'] }, { id: 'none' }];
+    expect(projectOfRepo('sunroomorg/web', projects)).toBe('up');
+    expect(projectOfRepo('codiby/ventiby', projects)).toBe('code');
+    expect(projectOfRepo('someone/else', projects)).toBeNull();
+    expect(projectOfRepo('', projects)).toBeNull();
   });
 });

@@ -29,6 +29,16 @@ export interface Project {
   name: string;
   color?: string;
   folders: ProjectFolder[];
+  /** GitHub organizations (or users) whose repos belong to the project — its
+   *  pull requests land in its Inbox and its agents start in it. */
+  githubOrgs?: string[];
+}
+
+/** The project a repository (`owner/name`) belongs to, by its GitHub owner. */
+export function projectOfRepo(repo: string, projects: Pick<Project, 'id' | 'githubOrgs'>[]): string | null {
+  const owner = repo.split('/')[0]?.toLowerCase();
+  if (!owner) return null;
+  return projects.find(p => p.githubOrgs?.some(o => o.toLowerCase() === owner))?.id ?? null;
 }
 
 export interface ProjectSummary extends Project {

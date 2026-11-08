@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { slackConnectionOf, type ClaudeClient, type SlackStatus, type SlackThreadMessage } from '../lib/claude-client';
 import { BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
-import type { ProjectFolder } from '../lib/project-scope';
+import { projectOfRepo, type ProjectFolder } from '../lib/project-scope';
 import { SlackAvatar, SlackConversation } from './SlackConversation';
 
 export interface HandOff { cwd: string; remoteId: string | null; prompt: string; itemId: string }
@@ -19,7 +19,7 @@ interface Props {
   scopedProjectId: string | null;
   onEditProject: (projectId: string) => void;
   /** Projects to start an agent in, first folder each. */
-  projects: { id: string; name: string; folders: ProjectFolder[] }[];
+  projects: { id: string; name: string; folders: ProjectFolder[]; githubOrgs?: string[] }[];
   defaultProjectId: string | null;
   onOpenSession: (sessionId: string) => void;
   onDone: (row: InboxRow) => void;
@@ -221,7 +221,9 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
   // message from the pre-projects connection) lets you pick.
   const ownerProject = row.source === 'slack' && row.item
     ? projects.find(p => p.id === slackConnectionOf(row.item!)) ?? null
-    : null;
+    : row.source === 'pr' && row.item
+      ? projects.find(p => p.id === projectOfRepo(String(row.item!.context.repo ?? ''), projects)) ?? null
+      : null;
   const [projectId, setProjectId] = useState<string>(ownerProject?.id ?? defaultProjectId ?? projects[0]?.id ?? '');
 
   const [declining, setDeclining] = useState(false);
