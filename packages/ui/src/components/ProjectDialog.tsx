@@ -107,7 +107,7 @@ export function ProjectDialog({ project, isNew, client, remotes, suggestions, on
               value={name}
               onChange={e => setName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') save(); }}
-              placeholder="e.g. Ventiby"
+              placeholder="Project name"
               className="h-8 px-2.5 rounded-md bg-base border border-border text-[13px] text-zinc-100 placeholder:text-zinc-600 outline-none focus:border-zinc-500"
             />
           </label>
