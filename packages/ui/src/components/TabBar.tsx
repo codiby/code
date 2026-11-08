@@ -18,7 +18,6 @@ import { isRemoteGroupKey } from '../lib/remote-groups';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
 import { UsagePopover } from './UsagePopover';
-import { getNative } from '../lib/native';
 
 type TabGroup = TabGroupInfo;
 
@@ -1365,15 +1364,12 @@ export const TabBar = memo(function TabBar(props: Props) {
         }}
         title="Drag to resize"
       />
-      {/* Brand row. Doubles as the window's drag handle; on macOS the traffic
-          lights sit at its left edge, so the mark starts after them. */}
+      {/* Top row: the window's drag handle, with the macOS traffic lights on
+          its left and search on its right. The brand lives at the bottom. */}
       <div
-        className="sidebar-brand h-12 shrink-0 flex items-center gap-2 pl-3.5 pr-2"
+        className="sidebar-top h-12 shrink-0 flex items-center gap-2 pl-3.5 pr-2"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        {HAS_TRAFFIC_LIGHTS && <div className="w-[64px] shrink-0" />}
-        <span className="brand-mark" aria-hidden><i /></span>
-        <span className="text-[14px] font-semibold tracking-[-0.2px] text-zinc-100">Codiby</span>
         <div className="flex-1" />
         <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <button
@@ -1529,15 +1525,18 @@ export const TabBar = memo(function TabBar(props: Props) {
         </button>
         {/* Owns its own data and panel; the sidebar only gives it a slot. */}
         <UsagePopover />
-      </div>
-
-      {/* Footer: settings and the build, like the mockup's last row. */}
-      <div className="mx-2 mb-2 pt-1 border-t border-border shrink-0">
         <button type="button" onClick={onOpenSettings} className={NAV_ROW}>
           <Settings size={15} strokeWidth={1.6} className="text-zinc-500" />
-          <span className="flex-1 text-left">Settings</span>
-          {APP_VERSION && <span className="font-mono text-[11px] text-zinc-600">{APP_VERSION}</span>}
+          <span>Settings</span>
         </button>
+      </div>
+
+      {/* Footer: the brand and the build. */}
+      <div className="mx-2 mb-2 pt-2 border-t border-border shrink-0 flex items-center gap-2 h-10 px-2">
+        <span className="brand-mark" aria-hidden><i /></span>
+        <span className="text-[13.5px] font-semibold tracking-[-0.2px] text-zinc-200">Codiby</span>
+        <span className="flex-1" />
+        {APP_VERSION && <span className="font-mono text-[11px] text-zinc-600">v{APP_VERSION}</span>}
       </div>
 
       {/* Sidebar overflow menu — actions on the whole sidebar. */}
@@ -1900,9 +1899,6 @@ function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon; lab
 
 /** A plain sidebar row (no selected state): Memory, Skills, Settings… */
 const NAV_ROW = 'nav-chip group w-full shrink-0 flex items-center gap-2.5 h-[30px] px-2 rounded-[7px] text-[13px] text-zinc-400 hover:text-zinc-200 hover:bg-surface-light/60 transition-colors';
-/** The Electron window hides its titlebar but keeps macOS's traffic lights,
- *  which land on the sidebar's brand row. A browser tab has none. */
-const HAS_TRAFFIC_LIGHTS = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) && !!getNative();
 const APP_VERSION: string = process.env.CODIBY_APP_VERSION ?? '';
 
 const MENU_ITEM = 'text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors';
