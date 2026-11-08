@@ -94,6 +94,25 @@ function forDisk(page: CachedPage): CachedPage {
   };
 }
 
+/**
+ * Por debajo del ~2 MB que admite una fila en Android. Pasarse no falla solo
+ * esa conversación: `setMany` va en una transacción y se perdía la escritura
+ * de todas las pendientes, índice incluido — al reabrir no había nada.
+ */
+const MAX_ROW_CHARS = 1_500_000;
+
+function serializeForDisk(page: CachedPage): string {
+  let trimmed = forDisk(page);
+  let json = JSON.stringify(trimmed);
+  while (json.length > MAX_ROW_CHARS && trimmed.messages.length > 1) {
+    // Fuera lo más viejo: es lo que menos se mira y lo que la red repone.
+    const drop = Math.max(1, Math.ceil(trimmed.messages.length / 4));
+    trimmed = { messages: trimmed.messages.slice(drop), hasMore: true };
+    json = JSON.stringify(trimmed);
+  }
+  return json;
+}
+
 function scheduleFlush(sessionKey: string) {
   dirty.add(sessionKey);
   if (flushTimer !== null) {
@@ -105,7 +124,7 @@ function scheduleFlush(sessionKey: string) {
     for (const key of dirty) {
       const page = cache.get(key);
       if (page !== undefined) {
-        entries[PREFIX + key] = JSON.stringify(forDisk(page));
+        entries[PREFIX + key] = serializeForDisk(page);
       }
     }
     dirty.clear();
@@ -155,6 +174,41 @@ const hydrated: Promise<void> = (async () => {
 /** Resuelve cuando lo guardado en disco ya está en memoria. */
 export function whenHydrated(): Promise<void> {
   return hydrated;
+}
+
+/**
+ * Lee del disco solo esta conversación.
+ *
+ * Al arrancar en frío, `hydrated` parsea hasta 30 conversaciones; esperar a
+ * todas para pintar la que abriste era el cargador que se veía a veces aunque
+ * el chat estuviera guardado. Esto lee una fila y no espera a las demás.
+ */
+export async function loadStoredMessages(
+  sessionKey: string,
+): Promise<CachedPage | null> {
+  const inMemory = cache.get(sessionKey);
+  if (inMemory !== undefined) {
+    return inMemory;
+  }
+  try {
+    const raw = await AsyncStorage.getItem(PREFIX + sessionKey);
+    const already = cache.get(sessionKey);
+    if (already !== undefined) {
+      return already;
+    }
+    if (raw === null) {
+      return null;
+    }
+    const page = JSON.parse(raw) as CachedPage;
+    if (!Array.isArray(page.messages)) {
+      return null;
+    }
+    const loaded = { messages: page.messages, hasMore: page.hasMore === true };
+    touch(sessionKey, loaded);
+    return loaded;
+  } catch {
+    return null;
+  }
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────

@@ -465,7 +465,12 @@ class OpenCodeProviderSession extends ProviderSessionBase {
     const client = createOpencodeClient({ baseUrl: server.url, directory: opts.cwd });
 
     let openSessionId: string;
-    if (opts.resumeSessionId) {
+    if (opts.resumeSessionId && opts.forkSession) {
+      const forked = await client.session.fork({ path: { id: opts.resumeSessionId }, throwOnError: true });
+      const data = (forked as { data?: { id?: string } }).data;
+      if (!data?.id) throw new Error('opencode: session.fork did not return an id');
+      openSessionId = data.id;
+    } else if (opts.resumeSessionId) {
       openSessionId = opts.resumeSessionId;
     } else {
       const created = await client.session.create({ body: {}, throwOnError: true });
@@ -824,7 +829,7 @@ class OpenCodeProviderSession extends ProviderSessionBase {
     if (input.images) {
       for (const img of input.images) parts.push(imageToFilePart(img));
     }
-    parts.push({ type: 'text', text: input.text });
+    if (input.text) parts.push({ type: 'text', text: input.text });
 
     // The legacy SDK client omits `variant` from its generated type, but
     // opencode's prompt endpoint accepts it to select a model variant.

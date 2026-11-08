@@ -490,6 +490,8 @@ export interface SessionInfo {
   ws_url: string;
   saved_commands: string[];
   model: string | null;
+  /** Model inherited from this session's host/provider settings. */
+  provider_default_model?: string | null;
   permission_mode: string;
   /** Reasoning-effort level. Null/absent → provider default. */
   effort?: string | null;
@@ -502,6 +504,8 @@ export interface SessionInfo {
   remoteName?: string | null;
   /** Throwaway session: archived after this many ms without activity. */
   disposable_ttl_ms?: number | null;
+  /** Workspace folders besides `cwd` (see the `ui_*_working_directory` tools). */
+  additional_directories?: string[];
 }
 
 export interface SessionInitInfo {
@@ -816,7 +820,8 @@ type ClientCallbacks = {
   /** The server-side workspace watcher reported a batch of file/folder changes
    *  for a session. Optional — viewers that don't surface file activity can
    *  omit it. */
-  onFileChanges?: (sessionId: string, changes: FileChange[]) => void;
+  /** `root` is the directory the change paths are relative to. */
+  onFileChanges?: (sessionId: string, changes: FileChange[], root: string | null) => void;
   /** The server-side watcher detected the session repo's checked-out branch
    *  change (checkout, worktree HEAD move). Empty string means detached HEAD. */
   onBranchChanged?: (sessionId: string, branch: string) => void;
@@ -1382,7 +1387,7 @@ export class ClaudeClient {
         });
         break;
       case 'file_changes':
-        this.callbacks.onFileChanges?.(sessionId, (msg.changes as FileChange[]) || []);
+        this.callbacks.onFileChanges?.(sessionId, (msg.changes as FileChange[]) || [], typeof msg.root === 'string' ? msg.root : null);
         break;
       case 'branch_changed':
         this.callbacks.onBranchChanged?.(sessionId, (msg.branch as string) || '');
@@ -1712,6 +1717,27 @@ export class ClaudeClient {
     if (remoteId) {
       // Record the mapping so subsequent REST/WS route to this remote; the
       // remote's `sessions` broadcast will surface it in the merged list.
+      this.sessionRemote.set(session.id, remoteId);
+      const meta = this.remoteMeta.get(remoteId);
+      session.remoteId = remoteId;
+      session.remoteColor = meta?.color ?? null;
+      session.remoteName = meta?.name ?? null;
+    }
+    return session;
+  }
+
+  /** Branch a session on the bridge that owns it: a copy of its transcript
+   *  whose provider forks the conversation on the first message. */
+  async branchSession(sessionId: string): Promise<SessionInfo> {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${sessionId}/branch`, { method: 'POST' });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => null) as { error?: string } | null;
+      throw new Error(detail?.error || `Failed to branch: ${resp.status}`);
+    }
+    const session = await resp.json() as SessionInfo;
+    const remoteId = this.sessionRemote.get(sessionId);
+    if (remoteId) {
       this.sessionRemote.set(session.id, remoteId);
       const meta = this.remoteMeta.get(remoteId);
       session.remoteId = remoteId;

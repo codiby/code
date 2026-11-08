@@ -93,6 +93,25 @@ export function peekHomeSnapshot(): HomeSnapshot | null | undefined {
 let timer: ReturnType<typeof setTimeout> | null = null;
 let latest: HomeSnapshot | null = null;
 
+/**
+ * Busca una sesión por id entre las que conoce el Home.
+ *
+ * Los ids se repiten entre máquinas (`main-session`), así que gana la del
+ * servidor de la conversación desde la que se tocó el enlace.
+ */
+export function findKnownSession(
+  id: string,
+  preferServerId: string,
+): SessionSummary | null {
+  const sessions = (latest ?? loaded)?.sessions ?? [];
+  const matches = sessions.filter(session => session.id === id);
+  return (
+    matches.find(session => session.serverId === preferServerId) ??
+    matches[0] ??
+    null
+  );
+}
+
 export function saveHomeSnapshot(snapshot: HomeSnapshot) {
   latest = snapshot;
   syncShareSessions(snapshot).catch(() => undefined);

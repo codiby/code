@@ -70,6 +70,8 @@ export const COMMANDS: CommandDef[] = [
   { id: 'save-file',        title: 'Save File',            category: 'Editor',     when: 'always', defaultChord: 'mod+s' },
   { id: 'new-file',         title: 'New File',             category: 'Editor',     when: 'always', defaultChord: 'mod+n' },
   { id: 'close-tab',        title: 'Close Editor / Tab',   category: 'Navigation', when: 'always', defaultChord: 'mod+w' },
+  // Same chord as VS Code's "Markdown: Open Preview".
+  { id: 'toggle-markdown-preview', title: 'Toggle Markdown Preview', category: 'Editor', when: 'always', defaultChord: 'mod+shift+v' },
   { id: 'new-session',      title: 'New Session',          category: 'Sessions',   when: 'always', defaultChord: null },
   { id: 'clear-chat',       title: 'Clear Chat',           category: 'Session',    when: 'always', defaultChord: null },
   { id: 'archive-session',  title: 'Archive Session',      category: 'Sessions',   when: 'always', defaultChord: 'mod+shift+enter' },

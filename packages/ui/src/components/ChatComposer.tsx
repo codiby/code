@@ -113,6 +113,7 @@ interface ActiveLike {
 interface ActiveSessionLike {
   remoteId?: string | null;
   model?: string | null;
+  provider_default_model?: string | null;
   permission_mode?: string;
   /** Reasoning-effort level; null/absent → provider default. */
   effort?: string | null;
@@ -138,6 +139,10 @@ const PERMISSION_MODE_ITEMS = [
 /** Selector entry that saves the current mode as the one new sessions start
  *  in, instead of switching this session's mode. */
 const SET_DEFAULT_MODE_KEY = '__set-default-mode__';
+
+/** Model selector entry that saves the current model as the one new
+ *  sessions start on, instead of switching this session's model. */
+const SET_DEFAULT_MODEL_KEY = '__set-default-model__';
 
 /** Bars lit on the effort chip, so the level reads at a glance without the
  *  label. Unknown/provider-specific ids fall back to none. */
@@ -236,6 +241,9 @@ interface Props {
   /** Make `mode` the one new sessions start in. Hides the selector's
    *  "Use for new sessions" entry when absent. */
   onSetDefaultPermissionMode?: (mode: string) => void;
+  /** Make `model` the `/default` for this session's provider and host.
+   *  Hides the model selector's "Use for new sessions" entry when absent. */
+  onSetDefaultModel?: (model: string) => void;
 
   /** Slash commands available for this session (builtins + SDK-published).
    *  Computed in the host because it depends on `initInfo` shape. */
@@ -269,7 +277,7 @@ export function ChatComposer(props: Props) {
     input, onChangeInput, pastedImages, onChangePastedImages,
     attachedFiles = [], onChangeAttachedFiles,
     active, activeSession, connectionStatus, opencodeInfo, claudeModels, defaultModel,
-    defaultPermissionMode = 'default', onSetDefaultPermissionMode,
+    defaultPermissionMode = 'default', onSetDefaultPermissionMode, onSetDefaultModel,
     slashCommands, client, cwd,
     onSend, submitting = false, onInterrupt, onSelectModel, onSelectPermissionMode, onSelectEffort, onFocus,
     onRegisterSnippet, autoFocus, widthClass = 'max-w-4xl',
@@ -625,9 +633,14 @@ export function ChatComposer(props: Props) {
   const modelChoices = isClaude
     ? (active.supportedModels?.length ? active.supportedModels : claudeModels)
     : (isCodex && codex.info?.models.length ? codex.info.models : active.supportedModels ?? (activeSession?.model ? [{ id: activeSession.model, label: activeSession.model }] : []));
+  const modelChoicesForLabel = isOpenCode ? (ocModels ?? []) : modelChoices;
   // "Default (Opus 5.5)": what a session left on Default actually runs.
-  const resolvedDefault = defaultModelLabel(defaultModel, isOpenCode ? (ocModels ?? []) : modelChoices);
+  const resolvedDefault = defaultModelLabel(defaultModel, modelChoicesForLabel, activeSession?.provider_default_model);
   const defaultLabel = resolvedDefault ? `Default (${resolvedDefault})` : 'Default';
+  // The concrete model this session is pinned to, if any — '' means it
+  // follows Default, so there's nothing to save as the new-sessions default.
+  const currentModelId = activeSession?.model || '';
+  const currentModelLabel = currentModelId ? defaultModelLabel(currentModelId, modelChoicesForLabel) ?? currentModelId : null;
   // Terminal commands can't be queued offline (they run on the live pane), so
   // they still require a live connection. Chat messages, however, can be
   // composed while the session is closed — they're staged with a "sending"
@@ -854,8 +867,14 @@ export function ChatComposer(props: Props) {
               )}
               <Select
                 aria-label="Model"
-                selectedKey={activeSession?.model || 'default'}
+                selectedKey={currentModelId || 'default'}
                 onSelectionChange={(key) => {
+                  // Not a model: saves the current one as the default and
+                  // leaves the selection where it was.
+                  if (key === SET_DEFAULT_MODEL_KEY) {
+                    if (currentModelId) onSetDefaultModel?.(currentModelId);
+                    return;
+                  }
                   const modelId = key === 'default' ? '' : String(key);
                   onSelectModel(modelId);
                 }}
@@ -884,6 +903,15 @@ export function ChatComposer(props: Props) {
                             <span className="text-xs">{m.label}</span>
                           </ListBoxItem>
                         ))}
+                    {onSetDefaultModel && (
+                      <ListBoxItem key={SET_DEFAULT_MODEL_KEY} id={SET_DEFAULT_MODEL_KEY} textValue="New sessions" className="border-t border-white/5 mt-1 pt-1.5">
+                        <span className="text-xs text-zinc-400">
+                          {currentModelId
+                            ? `Use ${currentModelLabel} for new sessions`
+                            : `New sessions: ${resolvedDefault ?? 'Default'}`}
+                        </span>
+                      </ListBoxItem>
+                    )}
                   </ListBox>
                 </SelectPopover>
               </Select>

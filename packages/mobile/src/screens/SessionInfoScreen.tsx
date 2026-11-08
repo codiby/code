@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,10 +11,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { fetchPreferences, savePinned } from '../api/preferences';
-import { fetchResources, resourceUrl, type SessionResource } from '../api/resources';
+import { fetchResources, type SessionResource } from '../api/resources';
+import { useSockets } from '../api/SocketProvider';
 import { deleteSession, renameSession, setSessionStatus } from '../api/sessions';
 import type { SessionSummary } from '../api/types';
 import { ImageLightbox } from '../components/Gallery';
+import { ModelPicker } from '../components/ModelPicker';
 import {
   ArchiveIcon,
   CloseIcon,
@@ -23,6 +25,7 @@ import {
   RenameIcon,
   TrashIcon,
 } from '../components/SessionList';
+import { sessionMedia } from '../lib/chatMedia';
 import { avatarColorFor, formatFullTimestamp, initialsOf } from '../lib/format';
 
 export interface SessionInfoScreenProps {
@@ -69,6 +72,9 @@ export function SessionInfoScreen({
   const [isRenaming, setIsRenaming] = useState(false);
   const [isWorking, setIsWorking] = useState(false);
   const [zoomedIndex, setZoomedIndex] = useState<number | null>(null);
+  const [model, setModel] = useState<string | null>(session.model ?? null);
+  const [isPickingModel, setIsPickingModel] = useState(false);
+  const sockets = useSockets();
 
   useEffect(() => {
     let cancelled = false;
@@ -83,7 +89,10 @@ export function SessionInfoScreen({
     };
   }, [baseUrl, token, session.id]);
 
-  const images = (resources ?? []).filter(item => item.mime.startsWith('image/'));
+  const images = useMemo(
+    () => sessionMedia(baseUrl, token, session.key, resources ?? []),
+    [baseUrl, token, session.key, resources],
+  );
   const mockups = (resources ?? []).filter(item => item.name.endsWith('.html'));
   const isPinned = pinnedIds.includes(session.id);
 
@@ -123,6 +132,30 @@ export function SessionInfoScreen({
       ],
     );
   }, [baseUrl, token, session.id, onGone]);
+
+  /**
+   * El mismo `set_model` que manda el escritorio: el bridge lo guarda, se lo
+   * pasa al proveedor si está corriendo y deja una nota en el chat.
+   */
+  const selectModel = useCallback(
+    (next: string | null) => {
+      setIsPickingModel(false);
+      const sent = sockets.send(session.serverId, {
+        type: 'set_model',
+        sessionId: session.id,
+        model: next ?? '',
+      });
+      if (sent) {
+        setModel(next);
+      } else {
+        Alert.alert('Model not changed', 'The connection to the server is down.');
+      }
+    },
+    [sockets, session.serverId, session.id],
+  );
+
+  const modelLabel =
+    model ?? (session.defaultModel ? `Default (${session.defaultModel})` : 'Default');
 
   const applyRename = useCallback(
     (next: string) => {
@@ -210,21 +243,26 @@ export function SessionInfoScreen({
           </View>
         ) : (
           <>
-            {images.length > 0 ? (
-              <View className="mt-2 border-y border-slate-200 bg-white">
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => onOpenGallery('image')}
-                  className="flex-row items-center px-4 pb-2 pt-3 active:opacity-60"
-                >
-                  <Text className="text-[12.5px] font-semibold text-slate-700">
-                    Images
-                  </Text>
-                  <Text className="ml-auto text-[11.5px] text-slate-400">
-                    {`${images.length} ›`}
-                  </Text>
-                </Pressable>
+            <View className="mt-2 border-y border-slate-200 bg-white">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open media"
+                onPress={() => onOpenGallery('image')}
+                className="flex-row items-center px-4 pb-2 pt-3 active:opacity-60"
+              >
+                <Text className="text-[12.5px] font-semibold text-slate-700">
+                  Media
+                </Text>
+                <Text className="ml-auto text-[11.5px] text-slate-400">
+                  {`${images.length + mockups.length} ›`}
+                </Text>
+              </Pressable>
 
+              {images.length === 0 ? (
+                <Text className="px-4 pb-3 text-[12px] text-slate-400">
+                  No images yet
+                </Text>
+              ) : (
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
@@ -241,14 +279,14 @@ export function SessionInfoScreen({
                       className="active:opacity-80"
                     >
                       <Image
-                        source={{ uri: resourceUrl(baseUrl, item, token) }}
+                        source={{ uri: item.uri }}
                         className="h-[74px] w-[74px] rounded-xl bg-slate-100"
                       />
                     </Pressable>
                   ))}
                 </ScrollView>
-              </View>
-            ) : null}
+              )}
+            </View>
 
             {mockups.length > 0 ? (
               <View className="mt-2 border-y border-slate-200 bg-white">
@@ -324,6 +362,21 @@ export function SessionInfoScreen({
               </Text>
             </View>
           ))}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Change model"
+            onPress={() => setIsPickingModel(true)}
+            className="flex-row items-center border-t border-slate-100 px-4 py-2.5 active:bg-slate-50"
+          >
+            <Text className="w-24 text-[12.5px] text-slate-400">Model</Text>
+            <Text
+              numberOfLines={1}
+              className="flex-1 text-[12.5px] font-medium text-slate-900"
+            >
+              {modelLabel}
+            </Text>
+            <Text className="text-[12.5px] text-slate-400">›</Text>
+          </Pressable>
         </View>
 
         <View className="mt-2 border-y border-slate-200 bg-white">
@@ -364,15 +417,21 @@ export function SessionInfoScreen({
 
       {zoomedIndex !== null ? (
         <ImageLightbox
-          items={images.map(item => ({
-            id: item.id,
-            uri: resourceUrl(baseUrl, item, token),
-            name: item.name,
-          }))}
+          items={images}
           initialIndex={zoomedIndex}
           onClose={() => setZoomedIndex(null)}
         />
       ) : null}
+
+      <ModelPicker
+        visible={isPickingModel}
+        baseUrl={baseUrl}
+        token={token}
+        provider={session.provider}
+        current={model}
+        onSelect={selectModel}
+        onClose={() => setIsPickingModel(false)}
+      />
 
       <RenameDialog
         visible={isRenaming}

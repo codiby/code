@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -97,6 +97,8 @@ interface Props {
    *  files it beside that one, `pair` groups the two in a new subgroup of
    *  its folder. */
   onNewSessionFromSession?: (sessionId: string, mode: 'sibling' | 'pair') => void;
+  /** Fork the session's conversation into a new session beside it. */
+  onBranchSession?: (sessionId: string) => void;
   /** Move a closed session into the archived bucket. The archive icon next
    *  to each row in the "+" dropdown's CLOSED section calls this — the
    *  session disappears from the dropdown, history is kept, and it can be
@@ -896,7 +898,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt, sessionLastSentAt,
     pinnedSessionIds, onTogglePin, onKeepSession,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
+    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onBranchSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
     onCreateSubgroup, onEditGroupFolder, onMoveGroup, onAutoGroupSessions, onCreateFreeGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
@@ -1794,6 +1796,16 @@ export const TabBar = memo(function TabBar(props: Props) {
               })()}
 
               <div className="h-px bg-border mx-2 my-1" />
+
+              {/* Same folder and settings, plus this conversation so far; the
+                  two diverge from the next message on. */}
+              {onBranchSession && (
+                <Button variant="ghost" fullWidth className="text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors flex items-center gap-2"
+                  onPress={() => { onBranchSession(tabMenu.tabId); setTabMenu(null); }}>
+                  <GitBranch size={11} strokeWidth={2.25} />
+                  Branch session
+                </Button>
+              )}
 
               {/* Both start in this session's own folder (repo or worktree)
                   and host. "Worktree" files the new one beside this one;

@@ -33,11 +33,12 @@ import type {
 } from '../api/types';
 import {
   lastSeqOf,
+  loadStoredMessages,
   mergeNewer,
   readMessages,
-  whenHydrated,
   subscribeMessages,
   writeMessages,
+  type CachedPage,
 } from '../api/messageStore';
 import { fetchSuggestions, type Suggestion } from '../api/suggestions';
 import { directMessageText } from '../api/directChat';
@@ -67,6 +68,14 @@ const OPTIMISTIC_PREFIX = 'local-';
 
 /** Alto inicial del compositor, hasta que `onLayout` mida el real. */
 const COMPOSER_CLEARANCE = 64;
+
+/**
+ * Al tapar un hueco se piden bloques de 60 —~50 KB con salidas de
+ * herramientas— hasta 20 veces: alcanza para una tarde de trabajo del agente
+ * sin bajar el historial entero de una sesión que lleva días.
+ */
+const GAP_FILL_LIMIT = 60;
+const GAP_FILL_PAGES = 20;
 
 export interface SessionChatScreenProps {
   readonly session: SessionSummary;
@@ -203,6 +212,67 @@ export function SessionChatScreen({
   );
 
   /**
+   * Tapa el hueco entre lo guardado y lo último que trajo la red.
+   *
+   * Antes, si mientras no mirabas llegaron más de 30 mensajes —un turno largo
+   * de herramientas los rebasa enseguida—, la conversación guardada se tiraba
+   * y quedaban solo esos 30: casi todo burbujas de herramientas, y lo anterior
+   * había que volver a bajarlo bloque a bloque al subir. Se veía como si la
+   * caché se hubiera borrado.
+   *
+   * Ahora se pinta lo nuevo en el acto y se piden hacia atrás los bloques que
+   * faltan hasta tocar lo guardado, que se conserva entero. Como la lista está
+   * invertida, lo que entra por arriba no mueve lo que estás viendo.
+   */
+  const fillGap = useCallback(
+    async (stored: CachedPage, tail: ChatMessage[], afterSeq: number) => {
+      const kept = stored.messages.filter(message => message.seq <= afterSeq);
+      const prepend = (older: ChatMessage[], hasMoreNext: boolean) => {
+        const ids = new Set(older.map(message => message.id));
+        const current = readMessages(session.key)?.messages ?? [];
+        const next = [...older, ...current.filter(m => !ids.has(m.id))];
+        writeMessages(session.key, next, hasMoreNext);
+        setMessages(next);
+        setHasMore(hasMoreNext);
+      };
+
+      writeMessages(session.key, tail, true);
+      setMessages(tail);
+      setHasMore(true);
+
+      // `loadOlder` pediría lo mismo en paralelo al llegar arriba.
+      isFetchingRef.current = true;
+      try {
+        let oldest = tail[0]?.seq ?? afterSeq + 1;
+        for (let page = 0; page < GAP_FILL_PAGES; page += 1) {
+          const older = await fetchMessages(
+            baseUrl,
+            session.id,
+            token,
+            oldest,
+            GAP_FILL_LIMIT,
+          );
+          const fresh = older.messages.filter(m => m.seq > afterSeq);
+          const reached =
+            fresh.length < older.messages.length ||
+            !older.hasMore ||
+            fresh.length === 0;
+          if (reached) {
+            prepend([...kept, ...fresh], stored.hasMore);
+            return;
+          }
+          prepend(fresh, true);
+          oldest = fresh[0]!.seq;
+        }
+        // Un hueco enorme: lo de más atrás se pide al subir, como siempre.
+      } finally {
+        isFetchingRef.current = false;
+      }
+    },
+    [baseUrl, session.id, session.key, token],
+  );
+
+  /**
    * Ponerse al día: pide solo lo que llegó después del último mensaje que ya
    * está en el teléfono. Lo guardado se queda en pantalla mientras tanto; el
    * header dice «sincronizando…» y nada más se mueve.
@@ -231,22 +301,22 @@ export function SessionChatScreen({
       );
       const latest = readMessages(session.key) ?? current;
       const oldestNew = page.messages[0]?.seq ?? Infinity;
-      // Se reemplaza si lo nuevo no se puede pegar a lo que había: porque el
-      // bridge avisó del hueco, o porque es uno viejo sin `after_seq` y su
-      // última página empieza después de lo que tenemos.
-      const replace =
+      // Hay hueco si lo nuevo no se puede pegar a lo que había: porque el
+      // bridge lo avisó, o porque es uno viejo sin `after_seq` y su última
+      // página empieza después de lo que tenemos.
+      const hasGap =
         page.gap === true || (page.gap === null && oldestNew > afterSeq + 1);
-      const next = replace
-        ? page.messages
-        : mergeNewer(
-            latest.messages,
-            page.messages.filter(message => message.seq > afterSeq),
-          );
-      const hasMoreNext = replace ? page.hasMore : latest.hasMore;
-      if (next !== latest.messages) {
-        writeMessages(session.key, next, hasMoreNext);
-        setMessages(next);
-        setHasMore(hasMoreNext);
+      if (!hasGap) {
+        const next = mergeNewer(
+          latest.messages,
+          page.messages.filter(message => message.seq > afterSeq),
+        );
+        if (next !== latest.messages) {
+          writeMessages(session.key, next, latest.hasMore);
+          setMessages(next);
+        }
+      } else {
+        await fillGap(current, page.messages, afterSeq);
       }
       setError(null);
     } catch (cause) {
@@ -256,7 +326,7 @@ export function SessionChatScreen({
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [baseUrl, session.id, session.key, token, loadPage]);
+  }, [baseUrl, session.id, session.key, token, loadPage, fillGap]);
 
   /**
    * Con algo guardado se sincroniza desde ya: la conversación ya está pintada
@@ -278,11 +348,10 @@ export function SessionChatScreen({
       return;
     }
     let cancelled = false;
-    whenHydrated().then(() => {
+    loadStoredMessages(session.key).then(stored => {
       if (cancelled) {
         return;
       }
-      const stored = readMessages(session.key);
       if (stored !== null || isReady) {
         hasStartedRef.current = true;
       }

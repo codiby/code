@@ -20,6 +20,7 @@
 
 import { watch, statSync, existsSync, readdirSync, type FSWatcher } from 'fs';
 import { join, sep } from 'path';
+import { homedir } from 'os';
 import { log, logError } from '../lib/logger';
 import { invalidateIndexFor } from '../handlers/files';
 import { runShell } from '../handlers/git';
@@ -105,12 +106,21 @@ function toPosix(p: string): string {
   return p.split(sep).join('/');
 }
 
+/** Home folders macOS guards behind a privacy (TCC) prompt. The walk is
+ *  synchronous, so reading one parks the whole server in open() until someone
+ *  answers a prompt the bun sidecar can't show — the port stays open but
+ *  nothing responds. An ad-hoc signed update loses every earlier grant. */
+const MACOS_PRIVATE_HOME_DIRS = new Set([
+  'Desktop', 'Documents', 'Downloads', 'Library', 'Movies', 'Music', 'Pictures',
+]);
+
 /** Immediate subdirectory names of `dir`. Symlinks aren't followed, so a
  *  symlinked directory never becomes a watch root (nor a walk loop). */
 function childDirs(dir: string): string[] {
   try {
+    const skipPrivate = process.platform === 'darwin' && dir === homedir();
     return readdirSync(dir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
+      .filter(d => d.isDirectory() && !(skipPrivate && MACOS_PRIVATE_HOME_DIRS.has(d.name)))
       .map(d => d.name);
   } catch {
     return []; // unreadable — nothing we can watch inside it anyway
@@ -427,7 +437,9 @@ function flush(entry: Entry, sessionId: string): void {
     try { invalidateIndexFor(entry.cwd); } catch {}
   }
   try {
-    entry.broadcast(sessionId, { type: 'file_changes', sessionId, changes });
+    // `root` is what the change paths are relative to — the session cwd when
+    // the watch started, which the explorer may not be showing.
+    entry.broadcast(sessionId, { type: 'file_changes', sessionId, root: entry.cwd, changes });
   } catch (err) {
     logError(`[watch] broadcast failed for ${sessionId.slice(0, 8)}: ${err}`);
   }

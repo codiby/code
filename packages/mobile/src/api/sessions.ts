@@ -42,6 +42,11 @@ function toSessionSummary(
     isOpen: raw.status === 'open',
     isRunning: raw.runtime_status === 'running',
     provider: typeof raw.provider === 'string' ? raw.provider : null,
+    model: typeof raw.model === 'string' ? raw.model : null,
+    defaultModel:
+      typeof raw.provider_default_model === 'string'
+        ? raw.provider_default_model
+        : null,
     disposableTtlMs:
       typeof raw.disposable_ttl_ms === 'number' ? raw.disposable_ttl_ms : null,
   };

@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
+  Alert,
   BackHandler,
   StatusBar,
   useWindowDimensions,
@@ -11,7 +12,10 @@ import {
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { findKnownSession } from './api/homeSnapshot';
+import { fetchSessions } from './api/sessions';
 import { SocketProvider } from './api/SocketProvider';
+import { SessionLinkContext } from './components/Markdown/SessionLinkContext';
 import { useMessageCacheSync } from './api/useMessageCacheSync';
 import Animated, {
   Easing,
@@ -154,6 +158,37 @@ function AppContent() {
     [progress],
   );
 
+  /**
+   * Un enlace `codiby-session:<id>` dentro de un mensaje. Lo normal es que el
+   * Home ya la conozca; si no —archivada, o de antes de la última recarga— se
+   * pregunta al servidor de la conversación abierta.
+   */
+  const openSessionById = useCallback(
+    async (id: string) => {
+      const serverId = openSession?.serverId ?? '';
+      if (openSession?.id === id) {
+        return;
+      }
+      let target = findKnownSession(id, serverId);
+      if (target === null && baseUrl.length > 0) {
+        try {
+          const list = await fetchSessions(baseUrl, token, serverId);
+          target = list.find(session => session.id === id) ?? null;
+        } catch {
+          target = null;
+        }
+      }
+      if (target === null) {
+        Alert.alert('Session not found', 'It may have been deleted.');
+        return;
+      }
+      setLayers([]);
+      setTotalMessages(null);
+      openSessionAnimated(target);
+    },
+    [openSession, baseUrl, token, openSessionAnimated],
+  );
+
   /** Se dispara cuando la conversación ya existe y está medida. */
   const startEnterAnimation = useCallback(() => {
     if (progress.value === 0) {
@@ -265,6 +300,7 @@ function AppContent() {
   }));
 
   return (
+    <SessionLinkContext.Provider value={openSessionById}>
     <View className="flex-1 bg-slate-100">
       <Animated.View className="flex-1" style={homeStyle}>
         {/* El Home no se desmonta al cambiar de pestaña: desmontarlo tiraba su
@@ -294,6 +330,10 @@ function AppContent() {
           />
 
           <Animated.View
+            // Saltar de una sesión a otra por un enlace no pasa por null: sin
+            // la key, la pantalla heredaría los mensajes de la anterior, y
+            // `onLayout` no volvería a dispararse para la animación de entrada.
+            key={openSession.key}
             style={chatStyle}
             className="absolute inset-0"
             onLayout={startEnterAnimation}
@@ -329,6 +369,7 @@ function AppContent() {
                 baseUrl={baseUrl}
                 token={token}
                 sessionId={openSession.id}
+                sessionKey={openSession.key}
                 initialTab={layer.tab}
                 onClose={goBack}
                 onOpenMockup={name => push({ kind: 'mockup', name })}
@@ -347,6 +388,7 @@ function AppContent() {
         </>
       ) : null}
     </View>
+    </SessionLinkContext.Provider>
   );
 }
 

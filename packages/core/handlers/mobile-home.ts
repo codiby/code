@@ -27,6 +27,9 @@ export function buildMobileHome(sessionList: unknown[], prefs: Json) {
       status: s.status,
       runtime_status: s.runtime_status,
       provider: s.provider,
+      // The session-info model picker shows what is selected now.
+      model: s.model,
+      provider_default_model: s.provider_default_model,
     };
   });
 

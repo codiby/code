@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
 import { ACCEPT_EDITS_TOOLS, ALWAYS_AUTO_APPROVE_TOOLS, MAIN_SESSION_ID, PLAN_DENY_TOOLS, PLAN_READ_ONLY_TOOLS, touchesProtectedPath, USER_INTERACTION_TOOLS } from '../config/config';
 import { log, logError } from '../lib/logger';
 import { isGrantedRead } from '../session/granted-paths';
+import { isWorkspaceRead } from '../session/workspace';
 import { saveSessions } from '../session/sessions';
 import { addMessage, getSessionState, updateSessionState, updateUIState } from '../session/state';
 import type { ChatMessage, PermissionRequest } from '../session/state';
@@ -67,11 +68,16 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     onCompaction: compaction,
     onInit(info) {
       session.claudeSessionId = info.providerSessionId;
+      // A branch now owns its forked conversation; later restarts resume it.
+      session.forkPending = false;
       saveSessions();
 
       const initInfo = {
         tools: info.tools,
-        cwd: info.cwd || session.cwd,
+        // The session's working directory, not the process's: a resumed
+        // provider may have been spawned where the conversation started
+        // (see session/workspace.ts), and the UI roots its explorer here.
+        cwd: session.cwd || info.cwd,
         version: info.version,
         slashCommands: info.slashCommands,
         model: info.model || session.model || '',
@@ -302,6 +308,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       const shouldAutoAccept =
         ALWAYS_AUTO_APPROVE_TOOLS.has(req.toolName) ||
         isGrantedRead(session, req.toolName, inputRecord) ||
+        isWorkspaceRead(session, req.toolName, inputRecord) ||
         (!USER_INTERACTION_TOOLS.has(req.toolName) && (
           mode === 'bypassPermissions' ||
           (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(req.toolName)) ||

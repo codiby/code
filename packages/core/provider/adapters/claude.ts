@@ -73,7 +73,8 @@ function buildUserMessage(text: string, images?: ImageInput[], sessionId?: strin
           type: 'image' as const,
           source: { type: 'base64' as const, media_type: img.media_type as any, data: img.data },
         })),
-        { type: 'text' as const, text },
+        // The API rejects an empty text block, and an image alone is a valid turn.
+        ...(text ? [{ type: 'text' as const, text }] : []),
       ]
     : text;
 
@@ -169,10 +170,12 @@ class ClaudeSession extends ProviderSessionBase {
       },
     };
     if (opts.model) sdkOptions.model = opts.model;
+    if (opts.additionalDirectories?.length) sdkOptions.additionalDirectories = opts.additionalDirectories;
     // Spawn-time only — the SDK's Query has no setEffort; live changes go
     // through a respawn-with-resume (see `set_effort` in index.ts).
     if (opts.effort) sdkOptions.effort = opts.effort;
     if (opts.resumeSessionId) sdkOptions.resume = opts.resumeSessionId;
+    if (opts.resumeSessionId && opts.forkSession) sdkOptions.forkSession = true;
     // NOTE: intentionally NOT setting `allowDangerouslySkipPermissions` for
     // bypass mode. That flag forces the CLI into true bypass, which skips the
     // `canUseTool` callback and prevents AskUserQuestion from ever prompting.
@@ -573,6 +576,16 @@ class ClaudeSession extends ProviderSessionBase {
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     if (!this.runtime) return;
     try { await this.runtime.setPermissionMode(toSdkPermissionMode(mode)); } catch {}
+  }
+
+  /** The process cwd is fixed at spawn, so a moved working directory joins
+   *  the permission scope as an additional directory; that also lets a `cd`
+   *  into it persist across Bash calls. */
+  async setWorkspace(workspace: { cwd: string; additionalDirectories: string[] }): Promise<void> {
+    if (!this.runtime) return;
+    try {
+      await this.runtime.applyFlagSettings({ permissions: { additionalDirectories: workspace.additionalDirectories } });
+    } catch {}
   }
 
   async close(): Promise<void> {

@@ -28,11 +28,11 @@ export function buildCodexConfig(mcpServers?: Record<string, McpServerSpec>): Co
   return { mcp_servers: codexMcp };
 }
 
-export function codexPermissions(mode: PermissionMode, cwd: string) {
+export function codexPermissions(mode: PermissionMode, cwd: string, additionalDirectories: string[] = []) {
   if (mode === 'bypassPermissions') return { approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
   const sandboxPolicy = mode === 'plan'
     ? { type: 'readOnly', networkAccess: false }
-    : { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+    : { type: 'workspaceWrite', writableRoots: [cwd, ...additionalDirectories], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
   return { approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: mode === 'plan' ? 'read-only' : 'workspace-write', sandboxPolicy };
 }
 
@@ -90,8 +90,9 @@ export class CodexProviderSession extends ProviderSessionBase {
 
   private async initialize() {
     await this.connection.ready;
-    const { sandboxPolicy, ...permissions } = codexPermissions(this.opts.permissionMode, this.opts.cwd);
-    const result = await this.connection.request(this.opts.resumeSessionId ? 'thread/resume' : 'thread/start', {
+    const { sandboxPolicy, ...permissions } = codexPermissions(this.opts.permissionMode, this.opts.cwd, this.opts.additionalDirectories);
+    const method = !this.opts.resumeSessionId ? 'thread/start' : this.opts.forkSession ? 'thread/fork' : 'thread/resume';
+    const result = await this.connection.request(method, {
       ...(this.opts.resumeSessionId ? { threadId: this.opts.resumeSessionId, excludeTurns: true } : {}),
       cwd: this.opts.cwd, model: this.opts.model, ...permissions,
       config: buildCodexConfig(this.opts.mcpServers),
@@ -127,15 +128,18 @@ export class CodexProviderSession extends ProviderSessionBase {
       await this.ready;
       if (!current() || state.cancelled) return;
       this.running = state;
-      const { sandbox, ...permissions } = codexPermissions(this.opts.permissionMode, this.opts.cwd);
+      const { sandbox, ...permissions } = codexPermissions(this.opts.permissionMode, this.opts.cwd, this.opts.additionalDirectories);
       const result = await this.connection.request('turn/start', {
         threadId: this.threadId,
         input: [
           ...(input.images || []).map(image => ({ type: 'image', url: `data:${image.media_type};base64,${image.data}` })),
-          { type: 'text', text: input.text, text_elements: [] },
+          ...(input.text ? [{ type: 'text', text: input.text, text_elements: [] }] : []),
         ],
         model: this.opts.model || this.defaultModel,
         effort: this.opts.effort === 'max' ? 'xhigh' : this.opts.effort || null,
+        // Applies to this and later turns, so a moved working directory
+        // takes effect from the next turn on.
+        cwd: this.opts.cwd,
         ...permissions,
       });
       state.id = result.turn.id;
@@ -286,6 +290,10 @@ export class CodexProviderSession extends ProviderSessionBase {
   }
   async setModel(model: string | null) { this.opts.model = model; }
   async setPermissionMode(mode: PermissionMode) { this.opts.permissionMode = mode; }
+  async setWorkspace(workspace: { cwd: string; additionalDirectories: string[] }) {
+    this.opts.cwd = workspace.cwd;
+    this.opts.additionalDirectories = workspace.additionalDirectories.filter(d => d !== workspace.cwd);
+  }
   async close() {
     if (!this.beginClose()) return;
     if (this.active) { this.active.cancelled = true; this.active.done.resolve({ status: 'interrupted' }); }

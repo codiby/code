@@ -10,9 +10,10 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { fetchResources, resourceUrl, type SessionResource } from '../api/resources';
+import { fetchResources, type SessionResource } from '../api/resources';
 import { ImageLightbox } from '../components/Gallery';
 import { CloseIcon } from '../components/SessionList';
+import { sessionMedia } from '../lib/chatMedia';
 
 export type GalleryTab = 'image' | 'mockup';
 
@@ -20,6 +21,8 @@ export interface ResourceGalleryProps {
   readonly baseUrl: string;
   readonly token: string;
   readonly sessionId: string;
+  /** Clave del caché de mensajes: de ahí salen las imágenes del chat. */
+  readonly sessionKey: string;
   readonly initialTab: GalleryTab;
   readonly onClose: () => void;
   readonly onOpenMockup: (name: string) => void;
@@ -33,6 +36,14 @@ function GridGap() {
   return <View style={{ height: GAP }} />;
 }
 
+function EmptyTab({ text }: { readonly text: string }) {
+  return (
+    <Text className="px-6 py-16 text-center text-[13px] text-slate-400">
+      {text}
+    </Text>
+  );
+}
+
 function mockupName(resource: SessionResource): string {
   return resource.name.replace(/\.html$/i, '');
 }
@@ -41,6 +52,7 @@ export function ResourceGallery({
   baseUrl,
   token,
   sessionId,
+  sessionKey,
   initialTab,
   onClose,
   onOpenMockup,
@@ -63,8 +75,8 @@ export function ResourceGallery({
   }, [baseUrl, token, sessionId]);
 
   const images = useMemo(
-    () => (resources ?? []).filter(item => item.mime.startsWith('image/')),
-    [resources],
+    () => sessionMedia(baseUrl, token, sessionKey, resources ?? []),
+    [baseUrl, token, sessionKey, resources],
   );
   const mockups = useMemo(
     () => (resources ?? []).filter(item => item.name.endsWith('.html')),
@@ -72,7 +84,6 @@ export function ResourceGallery({
   );
 
   const cell = Math.floor((width - GAP * (COLUMNS + 1)) / COLUMNS);
-  const shown = tab === 'image' ? images : mockups;
 
   return (
     <View className="absolute inset-0 bg-white">
@@ -123,9 +134,10 @@ export function ResourceGallery({
         </View>
       ) : tab === 'image' ? (
         <FlatList
-          data={shown}
+          data={images}
           keyExtractor={item => item.id}
           numColumns={COLUMNS}
+          ListEmptyComponent={<EmptyTab text="No images in this session yet" />}
           contentContainerStyle={{ padding: GAP, paddingBottom: insets.bottom + GAP }}
           columnWrapperStyle={{ gap: GAP }}
           ItemSeparatorComponent={GridGap}
@@ -137,7 +149,7 @@ export function ResourceGallery({
               className="active:opacity-80"
             >
               <Image
-                source={{ uri: resourceUrl(baseUrl, item, token) }}
+                source={{ uri: item.uri }}
                 style={{ width: cell, height: cell }}
                 className="rounded bg-slate-100"
               />
@@ -146,9 +158,10 @@ export function ResourceGallery({
         />
       ) : (
         <FlatList
-          data={shown}
+          data={mockups}
           keyExtractor={item => item.id}
           contentContainerStyle={{ paddingBottom: insets.bottom }}
+          ListEmptyComponent={<EmptyTab text="No mockups in this session yet" />}
           renderItem={({ item }) => (
             <Pressable
               accessibilityRole="button"
@@ -177,11 +190,7 @@ export function ResourceGallery({
           ya están cargadas, así que no merece una capa de la pila. */}
       {zoomedIndex !== null ? (
         <ImageLightbox
-          items={images.map(item => ({
-            id: item.id,
-            uri: resourceUrl(baseUrl, item, token),
-            name: item.name,
-          }))}
+          items={images}
           initialIndex={zoomedIndex}
           onClose={() => setZoomedIndex(null)}
         />

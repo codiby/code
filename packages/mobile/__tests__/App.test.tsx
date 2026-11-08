@@ -23,6 +23,12 @@ jest.mock('../src/config/ServerConfigContext', () => ({
   ServerConfigProvider: require('react-native').View,
   useRouteFor: () => ({ baseUrl: '', token: '' }),
 }));
+jest.mock('../src/api/homeSnapshot', () => ({
+  findKnownSession: () => null,
+}));
+jest.mock('../src/api/sessions', () => ({
+  fetchSessions: async () => [],
+}));
 jest.mock('../src/api/SocketProvider', () => ({
   SocketProvider: require('react-native').View,
 }));

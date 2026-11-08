@@ -50,6 +50,7 @@ interface Props {
    *  on it until the user picks another mode. */
   defaultPermissionModeByHost?: Record<string, string>;
   onSetDefaultPermissionMode?: (remoteId: string | null, mode: string) => void;
+  onSetDefaultModel?: (remoteId: string | null, provider: string, model: string) => void;
   /** Where the composer starts pointed: set when the group sits on a remote
    *  (all members share the same remoteId), null for local groups, and null
    *  for a *mixed* group — which is precisely the case the host selector below
@@ -90,7 +91,7 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], defaultModelsByHost, defaultPermissionModeByHost, onSetDefaultPermissionMode, remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBranchChanged }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], defaultModelsByHost, defaultPermissionModeByHost, onSetDefaultPermissionMode, onSetDefaultModel, remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBranchChanged }: Props) {
   const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const submittingRef = useRef(false);
@@ -188,21 +189,24 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     };
   }, [hostMenuOpen]);
 
-  // Reload recent dirs from localStorage each time the dropdown opens — the
-  // list may have grown since mount via other modals adding to it. Also wire
-  // click-outside / Escape to dismiss. Recents are stored per host, so a remote
-  // group offers the paths last used *on that remote*: mixing hosts here would
-  // spawn the session in a directory that doesn't exist there (provider would
-  // crash mid-turn → red dot).
+  // Recents are stored per host, so a remote group offers the paths last used
+  // *on that remote*: mixing hosts here would spawn the session in a directory
+  // that doesn't exist there (provider would crash mid-turn → red dot). Only
+  // what the host confirms still exists is ever listed — checked on mount so
+  // the menu opens already verified, and again on each open since the list may
+  // have grown via other modals.
+  useEffect(() => {
+    let cancelled = false;
+    if (!client) { setRecentDirs(getRecentDirs(target)); return; }
+    pruneRecentDirs(target, (p, r) => client.listDirs(p, r))
+      .then(dirs => { if (!cancelled) setRecentDirs(dirs); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [folderMenuOpen, target, client]);
+
+  // Click-outside / Escape dismiss the folder menu.
   useEffect(() => {
     if (!folderMenuOpen) return;
-    setRecentDirs(getRecentDirs(target));
-    let cancelled = false;
-    if (client) {
-      pruneRecentDirs(target, (p, r) => client.listDirs(p, r))
-        .then(dirs => { if (!cancelled) setRecentDirs(dirs); })
-        .catch(() => {});
-    }
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (folderMenuRef.current?.contains(target)) return;
@@ -213,11 +217,10 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
     document.addEventListener('mousedown', onDocMouseDown);
     document.addEventListener('keydown', onKey);
     return () => {
-      cancelled = true;
       document.removeEventListener('mousedown', onDocMouseDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [folderMenuOpen, target, client]);
+  }, [folderMenuOpen]);
 
   // Build the dropdown list: current cwd first (so it's always reachable as a
   // visual anchor), then de-duped recent dirs.
@@ -490,6 +493,15 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
                 className="absolute z-50 top-full left-0 mt-1 w-[380px] max-h-[340px] overflow-y-auto bg-surface border border-border-light rounded-lg shadow-2xl py-1"
                 role="listbox"
               >
+                <button
+                  type="button"
+                  onClick={() => { setFolderMenuOpen(false); setFolderBrowserOpen(true); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-zinc-300 hover:bg-surface-light/50 hover:text-zinc-100"
+                >
+                  <FolderSearch size={14} className="text-zinc-500 shrink-0" />
+                  <span>Browse for folder…</span>
+                </button>
+                <div className="h-px bg-border my-1" />
                 <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-600">
                   Recent projects
                 </div>
@@ -516,17 +528,6 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
                     </button>
                   );
                 })}
-                <>
-                    <div className="h-px bg-border my-1" />
-                    <button
-                      type="button"
-                      onClick={() => { setFolderMenuOpen(false); setFolderBrowserOpen(true); }}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-zinc-300 hover:bg-surface-light/50 hover:text-zinc-100"
-                    >
-                      <FolderSearch size={14} className="text-zinc-500 shrink-0" />
-                      <span>Browse for folder…</span>
-                    </button>
-                </>
               </div>
             )}
           </div>
@@ -576,6 +577,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
           defaultModel={defaultModelsByHost?.[target || '']?.[provider]}
           defaultPermissionMode={defaultPermissionModeByHost?.[target || '']}
           onSetDefaultPermissionMode={onSetDefaultPermissionMode ? (mode) => onSetDefaultPermissionMode(target, mode) : undefined}
+          onSetDefaultModel={onSetDefaultModel ? (model) => onSetDefaultModel(target, provider, model) : undefined}
           slashCommands={[]}
           client={client}
           cwd={cwd}

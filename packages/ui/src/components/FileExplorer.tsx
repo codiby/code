@@ -113,6 +113,10 @@ function useExplorer(): ExplorerCtxValue {
 interface Props {
   client: ClaudeClient | null;
   rootPath: string | null;
+  /** Every folder of the session's workspace (cwd first). With more than one,
+   *  the tree shows a switcher; picking a root calls `onSelectRoot`. */
+  workspaceRoots?: string[];
+  onSelectRoot?: (root: string) => void;
   collapsed: boolean;
   onToggle: () => void;
   onFileOpen: (path: string) => void;
@@ -916,7 +920,7 @@ function ProcessesSection({ client, sessionId, onViewTerminal, onCountChange }: 
   );
 }
 
-function FileTreeSection({ rootPath, entries, onNewAtRoot, onUpload, height, onHeightChange }: { rootPath: string | null; entries: FileEntry[]; onNewAtRoot: (kind: 'file' | 'dir') => void; onUpload?: () => void; height: number | null; onHeightChange: (h: number) => void }) {
+function FileTreeSection({ rootPath, workspaceRoots = [], onSelectRoot, entries, onNewAtRoot, onUpload, height, onHeightChange }: { rootPath: string | null; workspaceRoots?: string[]; onSelectRoot?: (root: string) => void; entries: FileEntry[]; onNewAtRoot: (kind: 'file' | 'dir') => void; onUpload?: () => void; height: number | null; onHeightChange: (h: number) => void }) {
   const { creatingIn, cancelCreate, commitCreate } = useExplorer();
   const [expanded, setExpanded] = useState(true);
   const label = rootPath ? rootPath.split('/').filter(Boolean).pop() || rootPath : 'Files';
@@ -997,6 +1001,26 @@ function FileTreeSection({ rootPath, entries, onNewAtRoot, onUpload, height, onH
         )}
       </div>
       {expanded && <CardDivider />}
+      {expanded && workspaceRoots.length > 1 && onSelectRoot && (
+        <div className="flex flex-wrap gap-1 px-[11px] py-[6px] shrink-0" role="tablist" aria-label="Workspace folders">
+          {workspaceRoots.map((root, i) => {
+            const selected = root === rootPath;
+            return (
+              <button
+                key={root}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                title={i === 0 ? `${root} (working directory)` : root}
+                onClick={() => onSelectRoot(root)}
+                className={`max-w-[160px] truncate h-[20px] px-[7px] rounded-[5px] text-[10.5px] font-medium transition-colors ${selected ? 'bg-[#5aa6f0]/15 text-[#8cc4ff]' : 'text-[#7c7f87] hover:text-[#b4b8c0] hover:bg-white/[0.04]'}`}
+              >
+                {root.split('/').filter(Boolean).pop() || root}
+              </button>
+            );
+          })}
+        </div>
+      )}
       {expanded && (
         <>
         <div
@@ -1813,7 +1837,7 @@ function PanelRail({ collapsed, items, activeKey, onSelect, onReorder, searchAct
   );
 }
 
-export const FileExplorer = memo(function FileExplorer({ client, rootPath, collapsed, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeDiffPath, changesCompare, onChangesCompareChange, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, searchActive = false, onSearchActiveChange, renderSearchCard, requestedTab, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
+export const FileExplorer = memo(function FileExplorer({ client, rootPath, workspaceRoots, onSelectRoot, collapsed, onFileOpen, onFileDiff, onFileDiffFullView, gitModified, activeFilePath, activeDiffPath, changesCompare, onChangesCompareChange, activeSessionId, onOpenTerminal, onStartReview, onRefreshGit, tools, sessionName, searchActive = false, onSearchActiveChange, renderSearchCard, requestedTab, sessions, sessionStatuses, onSelectSession, onNewSession, tabGroups, tabGroupMap }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>(() => (rootPath ? filesCache.get(rootPath) : null) || []);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const dragging = useRef(false);
@@ -1964,8 +1988,11 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
   // and per-file tints stay in sync.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ sessionId: string; changes: { kind: string; path: string }[] }>).detail;
+      const detail = (e as CustomEvent<{ sessionId: string; changes: { kind: string; path: string }[]; root?: string | null }>).detail;
       if (!detail || detail.sessionId !== activeSessionId || !rootPath) return;
+      // The watcher follows the session cwd; another workspace root on screen
+      // gets nothing from it.
+      if (detail.root && detail.root !== rootPath) return;
       const dirs = new Set<string>();
       for (const c of detail.changes) {
         if (c.kind === 'change') continue;
@@ -2210,6 +2237,8 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, colla
                   files: (
                     <FileTreeSection
                       rootPath={rootPath}
+                      workspaceRoots={workspaceRoots}
+                      onSelectRoot={onSelectRoot}
                       entries={entries}
                       onNewAtRoot={handleNewAtRoot}
                       onUpload={isRemote && rootPath ? () => handleUploadTo(rootPath) : undefined}

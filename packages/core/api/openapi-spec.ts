@@ -88,6 +88,7 @@ export const openApiSpec: OpenApiSpec = {
     { name: 'Mobile', description: 'Pairing & push notifications' },
     { name: 'Plugins', description: 'Sideloaded plugin manifests' },
     { name: 'Automations', description: 'Cron-based scheduled agent sessions and run history' },
+    { name: 'Boards', description: 'Jira-style boards of sessions with custom statuses and workflows' },
     { name: 'Requirements', description: 'Per-session target + machine-verifiable acceptance criteria' },
     { name: 'WebSockets', description: 'Realtime channels (informational)' },
   ],
@@ -211,6 +212,51 @@ export const openApiSpec: OpenApiSpec = {
           updatedAt: { type: 'integer' },
         },
       },
+      Board: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '`brd_…`' },
+          name: { type: 'string' },
+          description: { type: ['string', 'null'] },
+          workflowMode: { type: 'string', enum: ['free', 'strict'], description: '`strict` only allows moves listed in the board transitions.' },
+          createdAt: { type: 'integer' },
+          updatedAt: { type: 'integer' },
+        },
+      },
+      BoardStatus: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '`bst_…`' },
+          boardId: { type: 'string' },
+          name: { type: 'string', description: 'Unique per board, case-insensitive.' },
+          color: { type: 'string', description: '#rrggbb' },
+          category: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
+          position: { type: 'integer' },
+          isInitial: { type: 'boolean', description: 'Exactly one per board; where sessions land when they join.' },
+          wipLimit: { type: ['integer', 'null'] },
+        },
+      },
+      BoardTransition: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '`btr_…`' },
+          boardId: { type: 'string' },
+          fromStatusId: { type: ['string', 'null'], description: 'null = from any status' },
+          toStatusId: { type: 'string' },
+          name: { type: ['string', 'null'] },
+        },
+      },
+      BoardSession: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string', description: 'A session sits on at most one board.' },
+          boardId: { type: 'string' },
+          statusId: { type: 'string' },
+          position: { type: 'number', description: 'Fractional order within the column.' },
+          addedAt: { type: 'integer' },
+          updatedAt: { type: 'integer' },
+        },
+      },
       AutomationRun: {
         type: 'object',
         properties: {
@@ -320,6 +366,136 @@ export const openApiSpec: OpenApiSpec = {
     },
     '/automations/{id}/runs/{runId}/cancel': {
       post: { tags: ['Automations'], summary: 'Cancel an active run', responses: { 200: okResponse, 404: errorResponse('Active run not found') } },
+    },
+
+    // ───────────────────────── Boards ─────────────────────────
+    '/boards': {
+      get: { tags: ['Boards'], summary: 'List boards', responses: { 200: { description: 'Board list' } } },
+      post: {
+        tags: ['Boards'],
+        summary: 'Create a board',
+        description: 'Without `statuses`, the board starts with To Do / In Progress / Done. The first status is initial unless another sets `isInitial`.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+              name: { type: 'string' },
+              description: { type: ['string', 'null'] },
+              workflowMode: { type: 'string', enum: ['free', 'strict'], default: 'free' },
+              statuses: { type: 'array', items: { $ref: '#/components/schemas/BoardStatus' } },
+            },
+          } } },
+        },
+        responses: { 201: { description: 'Created' }, 400: errorResponse('Invalid input') },
+      },
+    },
+    '/boards/{id}': {
+      get: { tags: ['Boards'], summary: 'Get a board with its statuses, transitions and sessions', responses: { 200: { description: 'Board detail' }, 404: errorResponse('Not found') } },
+      patch: { tags: ['Boards'], summary: 'Rename a board or change its workflow mode', responses: { 200: { description: 'Updated' }, 400: errorResponse('Invalid input'), 404: errorResponse('Not found') } },
+      delete: { tags: ['Boards'], summary: 'Soft-delete a board and free its sessions', responses: { 200: okResponse, 404: errorResponse('Not found') } },
+    },
+    '/boards/{id}/statuses': {
+      post: {
+        tags: ['Boards'],
+        summary: 'Add a status (column) at the end',
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/BoardStatus' } } } },
+        responses: { 201: { description: 'Created' }, 409: errorResponse('Duplicate name') },
+      },
+    },
+    '/boards/{id}/statuses/order': {
+      put: {
+        tags: ['Boards'],
+        summary: 'Reorder statuses',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { statusIds: { type: 'array', items: { type: 'string' } } }, required: ['statusIds'] } } } },
+        responses: { 200: { description: 'Statuses in their new order' }, 400: errorResponse('statusIds must list every status once') },
+      },
+    },
+    '/boards/{id}/statuses/{statusId}': {
+      patch: { tags: ['Boards'], summary: 'Update a status; `isInitial: true` takes the flag from the current initial', responses: { 200: { description: 'Updated' }, 400: errorResponse('Invalid input'), 409: errorResponse('Duplicate name') } },
+      delete: {
+        tags: ['Boards'],
+        summary: 'Delete a status',
+        parameters: [{ name: 'reassignTo', in: 'query', schema: { type: 'string' }, description: 'Required when sessions sit in the status.' }],
+        responses: { 200: okResponse, 409: errorResponse('Status has sessions, or is the last one') },
+      },
+    },
+    '/boards/{id}/transitions': {
+      post: {
+        tags: ['Boards'],
+        summary: 'Allow a move between two statuses (strict boards)',
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/BoardTransition' } } } },
+        responses: { 201: { description: 'Created' }, 409: errorResponse('Transition already exists') },
+      },
+    },
+    '/boards/{id}/transitions/{transitionId}': {
+      delete: { tags: ['Boards'], summary: 'Remove a transition', responses: { 200: okResponse, 404: errorResponse('Not found') } },
+    },
+    '/boards/{id}/sessions': {
+      post: {
+        tags: ['Boards'],
+        summary: 'Put a session on the board',
+        description: 'Lands on the initial status unless `statusId`/`status` says otherwise. A session already on another board is moved; the response carries `movedFromBoardId`.',
+        requestBody: { required: true, content: { 'application/json': { schema: {
+          type: 'object',
+          required: ['sessionId'],
+          properties: {
+            sessionId: { type: 'string' },
+            statusId: { type: 'string' },
+            status: { type: 'string', description: 'Status name, case-insensitive' },
+            position: { type: 'number' },
+            actor: { type: 'string', enum: ['user', 'agent', 'automation'], default: 'user' },
+          },
+        } } } },
+        responses: { 201: { description: '`{ placement, overWipLimit, movedFromBoardId }`' }, 404: errorResponse('Board, session or status not found'), 409: errorResponse('Already on this board, or blocked by the workflow') },
+      },
+    },
+    '/boards/{id}/sessions/{sessionId}/move': {
+      post: {
+        tags: ['Boards'],
+        summary: 'Move a session to another status or position',
+        requestBody: { required: true, content: { 'application/json': { schema: {
+          type: 'object',
+          properties: {
+            statusId: { type: 'string' },
+            status: { type: 'string', description: 'Status name, case-insensitive' },
+            position: { type: 'number' },
+            actor: { type: 'string', enum: ['user', 'agent', 'automation'], default: 'user' },
+          },
+        } } } },
+        responses: { 200: { description: '`{ placement, overWipLimit }`' }, 409: errorResponse('No transition allows this move') },
+      },
+    },
+    '/boards/{id}/sessions/{sessionId}': {
+      delete: { tags: ['Boards'], summary: 'Take a session off the board', responses: { 200: okResponse, 404: errorResponse('Session is not on this board') } },
+    },
+    '/sessions/{id}/board': {
+      get: { tags: ['Boards'], summary: 'Board, status and move history of a session', parameters: [sessionIdParam], responses: { 200: { description: '`{ placement, board, status, events }`, or `{ placement: null }`' } } },
+    },
+    '/sessions/{id}/board/status': {
+      post: {
+        tags: ['Boards'],
+        summary: 'Set the status of a session by session id (for external pollers)',
+        description: 'Idempotent: posting the status the session already has returns `changed: false` and records no history. Strict boards still enforce their transitions. `boardId` is only used to put a session that is on no board yet onto one.',
+        parameters: [sessionIdParam],
+        requestBody: { required: true, content: { 'application/json': { schema: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', description: 'Status name, case-insensitive' },
+            statusId: { type: 'string' },
+            boardId: { type: 'string', description: 'Board to add the session to when it is on none' },
+            actor: { type: 'string', enum: ['user', 'agent', 'automation'], default: 'automation' },
+          },
+        } } } },
+        responses: {
+          200: { description: '`{ placement, changed, added: false, overWipLimit }`' },
+          201: { description: 'Session joined `boardId`: `{ placement, changed: true, added: true, overWipLimit }`' },
+          400: errorResponse('Missing status'),
+          404: errorResponse('Session or status not found, or session on no board and no boardId'),
+          409: errorResponse('Blocked by the workflow, or session is on another board'),
+        },
+      },
     },
 
     // ───────────────────────── Sessions ─────────────────────────

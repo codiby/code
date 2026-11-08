@@ -91,10 +91,14 @@ export function parsePermission(value: unknown): PermissionRequest | null {
 
 /**
  * Los parciales llegan varias veces por segundo. Renderizar cada uno satura el
- * hilo de JS; agruparlos en ventanas de ~80 ms se sigue viendo continuo y
- * acota los re-renders.
+ * hilo de JS, así que se pinta como mucho uno cada `PARTIAL_FLUSH_MS`.
+ *
+ * Es un throttle con flanco de subida: el parcial que llega tras una pausa se
+ * pinta en el acto, y solo los que vienen en ráfaga esperan lo que falte de la
+ * ventana. Antes cada parcial esperaba 80 ms enteros, que se sumaban a la red
+ * y dejaban la respuesta por encima de los 100 ms.
  */
-const PARTIAL_FLUSH_MS = 80;
+const PARTIAL_FLUSH_MS = 40;
 
 function readString(source: unknown, key: string): string | null {
   if (typeof source !== 'object' || source === null) {
@@ -184,9 +188,11 @@ export function useSessionSocket({
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingText: string | null = null;
     let pendingThinking: string | null = null;
+    let lastFlushAt = 0;
 
     const flushPartials = () => {
       flushTimer = null;
+      lastFlushAt = Date.now();
       if (pendingText !== null) {
         handlers.current.onPartialText(pendingText);
         pendingText = null;
@@ -198,8 +204,14 @@ export function useSessionSocket({
     };
 
     const schedulePartialFlush = () => {
-      if (flushTimer === null) {
-        flushTimer = setTimeout(flushPartials, PARTIAL_FLUSH_MS);
+      if (flushTimer !== null) {
+        return;
+      }
+      const wait = lastFlushAt + PARTIAL_FLUSH_MS - Date.now();
+      if (wait <= 0) {
+        flushPartials();
+      } else {
+        flushTimer = setTimeout(flushPartials, wait);
       }
     };
 

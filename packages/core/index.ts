@@ -46,7 +46,7 @@ import {
   handleRemovePublishedPort,
   publishedPortsFor,
 } from './handlers/published-ports';
-import { handleCreateSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
+import { handleCreateSession, handleBranchSession, handleResumeSession, handleRestartSession, handleRenameSession, handleStopSession, handleDeleteSession, handleClearSession } from './handlers/sessions';
 import {
   handleCancelAutomationRun,
   handleCreateAutomation,
@@ -59,6 +59,24 @@ import {
   handleRunAutomation,
   handleUpdateAutomation,
 } from './handlers/automations';
+import {
+  handleAddBoardSession,
+  handleCreateBoard,
+  handleCreateStatus,
+  handleCreateTransition,
+  handleDeleteBoard,
+  handleDeleteStatus,
+  handleDeleteTransition,
+  handleGetBoard,
+  handleGetSessionBoard,
+  handleListBoards,
+  handleMoveBoardSession,
+  handleRemoveBoardSession,
+  handleReorderStatuses,
+  handleSetSessionStatus,
+  handleUpdateBoard,
+  handleUpdateStatus,
+} from './handlers/boards';
 import { configureAutomationRunner, completeAutomationRun, failAutomationRun } from './automation/runner';
 import { startAutomationScheduler } from './automation/scheduler';
 import {
@@ -928,8 +946,8 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 
   // ---- send_message --------------------------------------------------------
   if (type === 'send_message') {
-    const { sessionId, text: msgText, images } = msg as { sessionId: string; text: string; images?: { media_type: string; data: string }[] };
-    if (!sessionId || !msgText) return;
+    const { sessionId, text: msgText = '', images } = msg as { sessionId: string; text: string; images?: { media_type: string; data: string }[] };
+    if (!sessionId || (!msgText && !images?.length)) return;
 
     const session = sessions.get(sessionId);
     if (!session) return;
@@ -1443,6 +1461,24 @@ app.get('/automations/:id/runs/:runId', (c) => handleGetAutomationRun(c.req.para
 app.get('/automations/:id/runs/:runId/result', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId'), true));
 app.post('/automations/:id/runs/:runId/cancel', (c) => handleCancelAutomationRun(c.req.param('id'), c.req.param('runId')));
 
+// ── Boards ─────────────────────────────────────────────────────────────────
+app.get('/boards', () => handleListBoards());
+app.post('/boards', (c) => handleCreateBoard(c.req.raw));
+app.get('/boards/:id', (c) => handleGetBoard(c.req.param('id')));
+app.patch('/boards/:id', (c) => handleUpdateBoard(c.req.param('id'), c.req.raw));
+app.delete('/boards/:id', (c) => handleDeleteBoard(c.req.param('id')));
+app.post('/boards/:id/statuses', (c) => handleCreateStatus(c.req.param('id'), c.req.raw));
+app.put('/boards/:id/statuses/order', (c) => handleReorderStatuses(c.req.param('id'), c.req.raw));
+app.patch('/boards/:id/statuses/:statusId', (c) => handleUpdateStatus(c.req.param('id'), c.req.param('statusId'), c.req.raw));
+app.delete('/boards/:id/statuses/:statusId', (c) => handleDeleteStatus(c.req.param('id'), c.req.param('statusId'), c.req.raw));
+app.post('/boards/:id/transitions', (c) => handleCreateTransition(c.req.param('id'), c.req.raw));
+app.delete('/boards/:id/transitions/:transitionId', (c) => handleDeleteTransition(c.req.param('id'), c.req.param('transitionId')));
+app.post('/boards/:id/sessions', (c) => handleAddBoardSession(c.req.param('id'), c.req.raw));
+app.post('/boards/:id/sessions/:sessionId/move', (c) => handleMoveBoardSession(c.req.param('id'), c.req.param('sessionId'), c.req.raw));
+app.delete('/boards/:id/sessions/:sessionId', (c) => handleRemoveBoardSession(c.req.param('id'), c.req.param('sessionId')));
+app.get('/sessions/:id/board', (c) => handleGetSessionBoard(c.req.param('id')));
+app.post('/sessions/:id/board/status', (c) => handleSetSessionStatus(c.req.param('id'), c.req.raw));
+
 // ── Requirements ───────────────────────────────────────────────────────────
 // Approving, deleting, waiving and resolving proposals are user-only routes.
 // The agent's equivalents live in the SDK MCP server and are append-only.
@@ -1549,6 +1585,20 @@ app.post('/codex/threads/:id/import', (c) => {
   else for (const message of added) broadcastToSession(session.id, { type: 'message', sessionId: session.id, message });
   broadcastSessionList();
   return Response.json({ session: sessionToJSON(session, server.port), added: added.length, created }, { headers: corsHeaders });
+});
+
+app.post('/sessions/:id/branch', async (c) => {
+  const sourceId = c.req.param('id');
+  const resp = handleBranchSession(sourceId, server.port);
+  if (resp.ok) {
+    const { id } = await resp.clone().json() as { id: string };
+    // Same folder as the source, so it files beside it in the sidebar.
+    const prefs = loadPreferences();
+    const map = (prefs.tabGroupMap as Record<string, string>) || {};
+    if (map[sourceId]) updatePreferences({ tabGroupMap: { ...map, [id]: map[sourceId] } });
+    broadcastSessionList();
+  }
+  return resp;
 });
 
 app.post('/sessions/:id/resume', (c) => {
@@ -1788,9 +1838,10 @@ app.post('/sessions/:id/messages', async (c) => {
   const sid = c.req.param('id');
   let body: { text?: string; images?: { media_type: string; data: string }[] } = {};
   try { body = await req.json() as typeof body; } catch {}
-  if (!body.text) return Response.json({ error: 'text required' }, { status: 400, headers: corsHeaders });
+  // A photo on its own is a whole message: the phone sends images with no text.
+  if (!body.text && !body.images?.length) return Response.json({ error: 'text or images required' }, { status: 400, headers: corsHeaders });
   // The phone and remote renderers post here: a person typing, so barge in.
-  const result = await sendMessageToSession(sid, body.text, body.images, { bargeIn: true });
+  const result = await sendMessageToSession(sid, body.text ?? '', body.images, { bargeIn: true });
   return Response.json(result, { headers: corsHeaders });
 });
 

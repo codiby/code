@@ -40,13 +40,24 @@ export type RuntimeStatus = 'starting' | 'running' | 'stopped';
 export type Session = {
   id: string;
   name: string;
+  /** Primary working directory — the editor, watcher, git and terminals
+   *  follow it. Can change mid-session; see session/workspace.ts. */
   cwd: string;
+  /** Extra folders the agent may work in, besides `cwd`. Persisted. */
+  additionalDirectories?: string[];
+  /** Where the provider conversation was started. A resume has to spawn
+   *  there even after `cwd` moved, or the transcript isn't found. Persisted. */
+  providerCwd?: string | null;
   createdAt: number;
   /** Wall-clock of the last meaningful activity (message added, archive
    *  toggled, rename, etc). Drives the "most recent first" ordering in
    *  the restore-archived dropdown so a session you just closed jumps
    *  to the top. Persisted. */
   updatedAt: number;
+  /** When the user last sent a message (agent replies, tool calls and
+   *  metadata edits don't count). Drives the session-list order. 0 = never.
+   *  Persisted. */
+  lastUserMessageAt: number;
   claudeSessionId: string | null;
   browserWs: Set<any>;
   providerSession: ProviderSession | null;
@@ -54,10 +65,6 @@ export type Session = {
    *  captures the current value when it subscribes; on `onExit` it
    *  no-ops if the session's gen has moved on, which prevents a
    *  late-firing exit for a previous provider (e.g. during a restart)
-  /** When the user last sent a message (agent replies, tool calls and
-   *  metadata edits don't count). Drives the session-list order. 0 = never.
-   *  Persisted. */
-  lastUserMessageAt: number;
    *  from clobbering the freshly-spawned one. In-memory only — like
    *  `providerSession`, meaningless across server restarts. */
   providerSessionGen: number;
@@ -86,15 +93,23 @@ export type Session = {
    *  without activity (`updatedAt`) the session is archived on its own. Null
    *  for regular sessions. See session/disposables.ts. */
   disposableTtlMs?: number | null;
+  /** Set on a branch until its provider starts: `claudeSessionId` still holds
+   *  the source's conversation, which the provider must fork instead of
+   *  resume. Cleared once the fork reports its own id. */
+  forkPending?: boolean;
 };
 
 export type PersistedSession = {
   id: string;
   name: string;
   cwd: string;
+  additionalDirectories?: string[];
+  providerCwd?: string | null;
   createdAt: number;
   /** Last-touched timestamp. Defaults to createdAt when missing. */
   updatedAt?: number;
+  /** Missing on files written before it existed: backfilled from the log. */
+  lastUserMessageAt?: number;
   claudeSessionId: string | null;
   /** Persisted UI status; defaults to 'open' when missing (legacy files). */
   status?: SessionStatus;
@@ -104,10 +119,9 @@ export type PersistedSession = {
   effort?: string | null;
   provider?: string;
   remoteId?: string | null;
-  /** Missing on files written before it existed: backfilled from the log. */
-  lastUserMessageAt?: number;
   portForwards?: PortForward[];
   disposableTtlMs?: number | null;
+  forkPending?: boolean;
 };
 
 export interface TrackedProcess {

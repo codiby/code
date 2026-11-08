@@ -2,10 +2,11 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { log, logError } from '../lib/logger';
 import { SESSIONS_FILE, CODIBY_DIR, MAIN_SESSION_ID } from '../config/config';
 import { DEFAULT_PROVIDER } from '../provider/registry';
+import { cachedClaudeSettingsModel } from '../provider/model-settings';
 import {
   loadPreferences, savePreferences, hasStoredMessages, loadUIState, deleteSessionData,
-} from './storage';
   storedLastUserMessageAt,
+} from './storage';
 import type { Session, PersistedSession, SessionStatus } from '../types';
 
 export const sessions = new Map<string, Session>();
@@ -13,14 +14,17 @@ export const sessions = new Map<string, Session>();
 export function saveSessions() {
   const data: PersistedSession[] = [...sessions.values()].map(s => ({
     id: s.id, name: s.name, cwd: s.cwd, createdAt: s.createdAt,
+    additionalDirectories: s.additionalDirectories?.length ? s.additionalDirectories : undefined,
+    providerCwd: s.providerCwd ?? null,
     updatedAt: s.updatedAt,
+    lastUserMessageAt: s.lastUserMessageAt,
     claudeSessionId: s.claudeSessionId, savedCommands: s.savedCommands,
     model: s.model, permissionMode: s.permissionMode, effort: s.effort, provider: s.provider,
     remoteId: s.remoteId,
-    lastUserMessageAt: s.lastUserMessageAt,
     portForwards: s.portForwards,
     status: s.status,
     disposableTtlMs: s.disposableTtlMs ?? null,
+    forkPending: s.forkPending || undefined,
   }));
   try {
     mkdirSync(CODIBY_DIR, { recursive: true });
@@ -75,15 +79,17 @@ export function loadSessions() {
         id: p.id,
         name: p.name,
         cwd: p.cwd,
+        additionalDirectories: p.additionalDirectories ?? [],
+        providerCwd: p.providerCwd ?? null,
         createdAt: p.createdAt,
         updatedAt: p.updatedAt ?? p.createdAt,
+        lastUserMessageAt: p.lastUserMessageAt ?? storedLastUserMessageAt(p.id),
         claudeSessionId: p.claudeSessionId,
         savedCommands: p.savedCommands || [],
         model: p.model || null,
         // Loop mode is gone; it ran on bypass permissions, so keep those.
         permissionMode: p.permissionMode === 'loop' ? 'bypassPermissions' : p.permissionMode || 'default',
         effort: p.effort || null,
-        lastUserMessageAt: p.lastUserMessageAt ?? storedLastUserMessageAt(p.id),
         provider: p.provider || DEFAULT_PROVIDER,
         browserWs: new Set(),
         providerSession: null,
@@ -95,6 +101,7 @@ export function loadSessions() {
         remoteId: p.remoteId ?? null,
         portForwards: p.portForwards ?? [],
         disposableTtlMs: p.disposableTtlMs ?? null,
+        forkPending: p.forkPending || undefined,
       });
     }
     log(`[persist] Loaded ${data.length} sessions`);
@@ -162,11 +169,6 @@ export function touchSession(sessionId: string) {
   saveSessions();
 }
 
-// Local broadcaster injected by index.ts (avoids a circular import) so the
-// sidebar repaints when a session's status flips out from under the user.
-let broadcastSessionList: (() => void) | null = null;
-export function setStatusBroadcaster(fn: () => void) {
-  broadcastSessionList = fn;
 /** Record that the user sent a message at `at`. Doesn't persist on its own:
  *  the caller touches/unarchives the session right after, which saves. */
 export function markUserMessage(sessionId: string, at: number) {
@@ -174,6 +176,11 @@ export function markUserMessage(sessionId: string, at: number) {
   if (s && at > s.lastUserMessageAt) s.lastUserMessageAt = at;
 }
 
+// Local broadcaster injected by index.ts (avoids a circular import) so the
+// sidebar repaints when a session's status flips out from under the user.
+let broadcastSessionList: (() => void) | null = null;
+export function setStatusBroadcaster(fn: () => void) {
+  broadcastSessionList = fn;
 }
 
 /** If the session is archived, flip it back to `open` and repaint the
@@ -195,18 +202,20 @@ export function sessionToJSON(s: Session, port: number) {
     id: s.id,
     name: s.name,
     cwd: s.cwd,
+    additional_directories: s.additionalDirectories ?? [],
     created_at: s.createdAt,
     updated_at: s.updatedAt,
+    // List order: the last message the user sent, or creation for a session
+    // that hasn't had one yet (so a new session starts on top).
+    last_sent_at: s.lastUserMessageAt || s.createdAt,
     status: s.status,
     runtime_status: s.runtimeStatus,
     ready: s.ready,
     claude_session_id: s.claudeSessionId,
     ws_url: `ws://localhost:${port}/browser/ws/${s.id}`,
     saved_commands: s.savedCommands || [],
-    // List order: the last message the user sent, or creation for a session
-    // that hasn't had one yet (so a new session starts on top).
-    last_sent_at: s.lastUserMessageAt || s.createdAt,
     model: s.model || null,
+    provider_default_model: (s.provider || 'claude') === 'claude' ? cachedClaudeSettingsModel(s.cwd, () => broadcastSessionList?.()) : null,
     permission_mode: s.permissionMode || 'default',
     effort: s.effort || null,
     provider: s.provider || 'claude',

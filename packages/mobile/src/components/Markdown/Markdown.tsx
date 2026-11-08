@@ -7,6 +7,7 @@ import type { InlineNode, MarkdownBlock } from '../../lib/markdown';
 import { inlineText, parseMarkdown } from '../../lib/markdown';
 import { CheckIcon, CopyIcon } from '../Chat/icons';
 import { DiffDocView } from './DiffDocView';
+import { SessionLinkContext } from './SessionLinkContext';
 import { TableScrollBoundary } from './TableScrollBoundary';
 import { HorizontalScrollGestureContext } from '../ScrollGestureContext';
 
@@ -80,6 +81,25 @@ function InlineCode({ value }: { readonly value: string }) {
   );
 }
 
+function SessionChip({
+  id,
+  label,
+}: {
+  readonly id: string;
+  readonly label: string;
+}) {
+  const openSession = useContext(SessionLinkContext);
+  return (
+    <Text
+      accessibilityRole={openSession === null ? undefined : 'link'}
+      onPress={openSession === null ? undefined : () => openSession(id)}
+      className="rounded bg-indigo-50 px-1 text-[12px] font-medium text-indigo-700"
+    >
+      {`\u{1F4AC} ${label}`}
+    </Text>
+  );
+}
+
 function Inline({ nodes }: { readonly nodes: InlineNode[] }) {
   return (
     <>
@@ -119,14 +139,7 @@ function Inline({ nodes }: { readonly nodes: InlineNode[] }) {
               </Text>
             );
           case 'session':
-            return (
-              <Text
-                key={key}
-                className="rounded bg-indigo-50 px-1 text-[12px] font-medium text-indigo-700"
-              >
-                {`\u{1F4AC} ${node.label}`}
-              </Text>
-            );
+            return <SessionChip key={key} id={node.id} label={node.label} />;
           case 'snippet':
             return (
               <Text

@@ -15,6 +15,7 @@ import { effectiveModel } from './default-model';
 import { startSessionWatcher } from '../session/watcher';
 import { remoteViewerSystemPrompt } from '../network/remote-viewer';
 import { sharedMemoryPrompt } from './shared-memory';
+import { additionalDirsFor, spawnCwdFor, workspacePrompt } from '../session/workspace';
 import type { Session } from '../types';
 import type { EffortLevel, McpServerSpec, PermissionMode, SpawnOptions } from './types';
 
@@ -66,13 +67,20 @@ export function startProviderSession(session: Session, port: number, resumeSessi
 
   const permissionMode: PermissionMode = (session.permissionMode as PermissionMode) || 'default';
 
+  // The working directory can move mid-session; a resume still has to start
+  // where the conversation lives. See session/workspace.ts.
+  const spawnCwd = spawnCwdFor(session, !!resumeSessionId);
+  if (!resumeSessionId || !session.providerCwd) session.providerCwd = spawnCwd;
+
   const opts: SpawnOptions = {
     sessionId: session.id,
-    cwd: session.cwd,
+    cwd: spawnCwd,
+    additionalDirectories: additionalDirsFor(session, spawnCwd),
     model: effectiveModel(session),
     permissionMode,
     effort: (session.effort as EffortLevel | null) ?? null,
     resumeSessionId: resumeSessionId ?? null,
+    forkSession: !!resumeSessionId && !!session.forkPending,
     mcpServers,
     // Null unless the user's browser is on another machine, in which case the
     // agent has to be told that the dev servers it starts here are unreachable
@@ -83,6 +91,7 @@ export function startProviderSession(session: Session, port: number, resumeSessi
     extraSystemPrompt: [
       remoteViewerSystemPrompt(session.id),
       sharedMemoryPrompt(session.provider, session.cwd),
+      workspacePrompt(session, spawnCwd),
     ].filter(Boolean).join('\n\n') || null,
   };
 

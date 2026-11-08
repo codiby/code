@@ -87,6 +87,46 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS requirement_events_session_idx
     ON requirement_events (session_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS boards (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, description TEXT,
+    workflow_mode TEXT NOT NULL DEFAULT 'free',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS board_statuses (
+    id TEXT PRIMARY KEY NOT NULL,
+    board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    name TEXT NOT NULL COLLATE NOCASE, color TEXT NOT NULL, category TEXT NOT NULL,
+    position INTEGER NOT NULL, is_initial INTEGER NOT NULL DEFAULT 0, wip_limit INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS board_statuses_board_name_idx
+    ON board_statuses (board_id, name);
+  CREATE INDEX IF NOT EXISTS board_statuses_board_position_idx
+    ON board_statuses (board_id, position);
+  CREATE TABLE IF NOT EXISTS board_transitions (
+    id TEXT PRIMARY KEY NOT NULL,
+    board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    from_status_id TEXT REFERENCES board_statuses(id) ON DELETE CASCADE,
+    to_status_id TEXT NOT NULL REFERENCES board_statuses(id) ON DELETE CASCADE,
+    name TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS board_transitions_move_idx
+    ON board_transitions (board_id, from_status_id, to_status_id);
+  CREATE TABLE IF NOT EXISTS board_sessions (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    status_id TEXT NOT NULL REFERENCES board_statuses(id),
+    position REAL NOT NULL, added_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS board_sessions_board_status_idx
+    ON board_sessions (board_id, status_id, position);
+  CREATE TABLE IF NOT EXISTS board_session_events (
+    id TEXT PRIMARY KEY NOT NULL, board_id TEXT NOT NULL, session_id TEXT NOT NULL,
+    from_status_id TEXT, to_status_id TEXT, actor TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS board_session_events_session_idx
+    ON board_session_events (session_id, created_at DESC);
 `);
 
 // ---------------------------------------------------------------------------

@@ -171,8 +171,9 @@ export function NewSessionModal({ isOpen, client, opencodeAvailable, onClose, on
     if (!isOpen) return;
     // Scoped to the selected host: a path browsed on ryzen9 does not exist on
     // this machine, so offering it under the Local tab only ever produces a
-    // session that boots in a missing directory.
-    setRecentDirs(getRecentDirs(remoteTarget));
+    // session that boots in a missing directory. Listed only once the host has
+    // confirmed each one still exists.
+    setRecentDirs(client ? [] : getRecentDirs(remoteTarget));
     setShowWorktree(false);
     setNewFolder(null);
     setNewFolderError(null);

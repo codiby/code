@@ -41,6 +41,8 @@ export type McpServerSpec =
 export type SpawnOptions = {
   sessionId: string;
   cwd: string;
+  /** Workspace folders besides `cwd` the agent may read and write. */
+  additionalDirectories?: string[];
   model: string | null;
   permissionMode: PermissionMode;
   /** Reasoning effort. Claude requires a respawn to apply it; OpenCode maps it
@@ -48,6 +50,10 @@ export type SpawnOptions = {
   effort?: EffortLevel | null;
   /** Provider-specific resume token (e.g. a Claude session UUID). */
   resumeSessionId?: string | null;
+  /** Branch the conversation behind `resumeSessionId` into a new one instead
+   *  of continuing it, so the source session keeps its own history. The
+   *  adapter reports the fork's id through `onInit`. */
+  forkSession?: boolean;
   mcpServers?: Record<string, McpServerSpec>;
   /**
    * Extra steering appended to the provider's system prompt for this session
@@ -181,6 +187,9 @@ export interface ProviderSession {
   interrupt(): Promise<void>;
   setModel(model: string | null): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
+  /** Follow a workspace change mid-session (see session/workspace.ts).
+   *  Optional: a provider without it picks the change up on its next spawn. */
+  setWorkspace?(workspace: { cwd: string; additionalDirectories: string[] }): Promise<void>;
   close(): Promise<void>;
 }
 

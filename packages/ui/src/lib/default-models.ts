@@ -21,12 +21,13 @@ function choiceLabel(m: ModelChoice): string {
 }
 
 /** What "Default" resolves to, for the selector's `Default (…)` label: the
- *  user's pick when there is one, else whatever the provider itself reports
- *  as its default (Claude's SDK "default" entry, Codex's `isDefault`). */
-export function defaultModelLabel(configured: string | undefined, choices: ModelChoice[]): string | null {
-  if (configured) {
-    const hit = choices.find(m => m.id === configured);
-    return hit ? choiceLabel(hit) : configured;
+ *  user's pick, then the session host's settings, then the provider catalogue.
+ *  Claude's SDK "default" entry is a recommendation, not its settings model. */
+export function defaultModelLabel(configured: string | undefined, choices: ModelChoice[], providerDefault?: string | null): string | null {
+  const model = configured || providerDefault;
+  if (model) {
+    const hit = choices.find(m => m.id === model);
+    return hit ? choiceLabel(hit) : model;
   }
   const sdkDefault = choices.find(m => m.id === 'default');
   if (sdkDefault?.description) return sdkDefault.description.split(' · ')[0].trim() || null;

@@ -15,6 +15,9 @@ import { corsHeaders, MAIN_SESSION_ID } from '../config/config';
 import { log } from '../lib/logger';
 import { sessions, sessionToJSON, saveSessions } from '../session/sessions';
 import { sessionNotesTool } from '../handlers/session-notes';
+import {
+  addWorkingDirectories, describeWorkspace, removeWorkingDirectory, resolveDirectory, setWorkingDirectory,
+} from '../session/workspace';
 import { SUGGEST_ARCHIVE_DESCRIPTION, SUGGEST_ARCHIVE_REASON } from '../session/archive-suggestion';
 import {
   handleCreateSession,
@@ -27,7 +30,8 @@ import type { ChatMessage } from '../session/state';
 import { createWorktree, applyWorktreeSetup } from '../handlers/worktree';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
-import { extname, basename } from 'path';
+import { extname, basename, resolve as resolvePath } from 'path';
+import { homedir } from 'os';
 import { saveResource, purgeSessionResources } from '../handlers/resources';
 import {
   IMAGE_MEDIA_TYPES,
@@ -810,6 +814,40 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: 'string', description: 'New session name. Aim for ≤ 24 chars so it fits a narrow tab. Format: "{TICKET-ID} {3-4 word description}". Omit ticket id if none was mentioned.' },
         },
         required: ['name'],
+      },
+    },
+    {
+      name: 'ui_set_working_directory',
+      description: "Change the current session's working directory. The Codiby Code editor's file tree, file watcher, git status and new terminals switch to it, and it is saved with the session. The previous working directory stays available as an additional directory unless `keep_previous` is false. Your shell does not move by itself: `cd` into the new directory before running commands there. Use when the work moves to another repository or folder.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          path: { type: 'string', description: 'Directory to switch to. Absolute, `~/…`, or relative to the current working directory.' },
+          keep_previous: { type: 'boolean', description: 'Keep the previous working directory as an additional directory (default true).' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'ui_add_working_directory',
+      description: "Add one or more directories to the current session's workspace, beside the working directory. You may read and edit files in them, and the user can browse them from the editor's file tree. Saved with the session. Use when a task spans several repositories or folders.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          paths: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Directories to add. Absolute, `~/…`, or relative to the working directory.' },
+        },
+        required: ['paths'],
+      },
+    },
+    {
+      name: 'ui_remove_working_directory',
+      description: "Remove an additional directory from the current session's workspace. The primary working directory can't be removed; switch it with ui_set_working_directory instead.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          path: { type: 'string', description: 'Additional directory to remove, as listed by the other working-directory tools.' },
+        },
+        required: ['path'],
       },
     },
     {
@@ -1848,6 +1886,44 @@ export async function executeLocalMcpTool(
         saveSessions();
         _deps.broadcastSessionList();
         return { content: [{ type: 'text', text: `Renamed session from "${previous}" to "${next}".` }] };
+      }
+      case 'ui_set_working_directory':
+      case 'ui_add_working_directory':
+      case 'ui_remove_working_directory': {
+        if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };
+        if (!uiSessionId) return { content: [{ type: 'text', text: 'No owning session — caller did not set the x-session-id header.' }], isError: true };
+        const session = sessions.get(uiSessionId);
+        if (!session) return { content: [{ type: 'text', text: `Session ${uiSessionId} not found.` }], isError: true };
+        const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true });
+        const ok = (text: string) => ({ content: [{ type: 'text' as const, text: `${text}\n\n${describeWorkspace(session)}` }] });
+
+        if (name === 'ui_remove_working_directory') {
+          const raw = typeof args!.path === 'string' ? args!.path.trim() : '';
+          if (!raw) return fail('path is required.');
+          const target = resolvePath(session.cwd, raw.replace(/^~(?=\/|$)/, homedir()));
+          if (target === session.cwd) return fail(`${target} is the working directory; switch it with ui_set_working_directory instead.`);
+          if (!removeWorkingDirectory(session, target, _deps)) return fail(`${target} is not an additional directory of this session.`);
+          return ok(`Removed ${target} from the workspace.`);
+        }
+
+        if (name === 'ui_set_working_directory') {
+          const resolved = await resolveDirectory(typeof args!.path === 'string' ? args!.path : '', session.cwd);
+          if (!resolved.ok) return fail(resolved.error);
+          if (resolved.path === session.cwd) return ok('Already the working directory.');
+          setWorkingDirectory(session, resolved.path, _deps, args!.keep_previous !== false);
+          return ok(`Working directory set to ${resolved.path}.`);
+        }
+
+        const raws = Array.isArray(args!.paths) ? (args!.paths as unknown[]).filter((p): p is string => typeof p === 'string') : [];
+        if (raws.length === 0) return fail('paths must list at least one directory.');
+        const paths: string[] = [];
+        for (const raw of raws) {
+          const resolved = await resolveDirectory(raw, session.cwd);
+          if (!resolved.ok) return fail(resolved.error);
+          paths.push(resolved.path);
+        }
+        const added = addWorkingDirectories(session, paths, _deps);
+        return ok(added.length ? `Added ${added.join(', ')}.` : 'Every directory was already in the workspace.');
       }
       case 'ui_restart_session': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

@@ -142,9 +142,94 @@ export const requirementEvents = sqliteTable('requirement_events', {
   index('requirement_events_session_idx').on(table.sessionId, table.createdAt),
 ]);
 
+// ---------------------------------------------------------------------------
+// Boards — Jira-style boards whose cards are sessions. Each board defines its
+// own statuses (columns) and, in `strict` mode, which moves between them are
+// allowed. A session sits on at most one board at a time.
+// ---------------------------------------------------------------------------
+
+export const boards = sqliteTable('boards', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  /** 'free' — any move is allowed; 'strict' — only moves in board_transitions. */
+  workflowMode: text('workflow_mode').notNull().default('free'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  deletedAt: integer('deleted_at'),
+});
+
+/**
+ * A column. `category` is what the rest of the app reads ("is this done?"),
+ * so each board can name its statuses freely. Exactly one per board is
+ * `isInitial` — where sessions land when they join the board.
+ */
+export const boardStatuses = sqliteTable('board_statuses', {
+  id: text('id').primaryKey(),
+  boardId: text('board_id').notNull().references(() => boards.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  color: text('color').notNull(),
+  category: text('category').notNull(),
+  position: integer('position').notNull(),
+  isInitial: integer('is_initial', { mode: 'boolean' }).notNull().default(false),
+  /** Soft limit: exceeding it is reported, never blocked. */
+  wipLimit: integer('wip_limit'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('board_statuses_board_name_idx').on(table.boardId, table.name),
+  index('board_statuses_board_position_idx').on(table.boardId, table.position),
+]);
+
+/** An allowed move in a `strict` board. A null `fromStatusId` means "from any status". */
+export const boardTransitions = sqliteTable('board_transitions', {
+  id: text('id').primaryKey(),
+  boardId: text('board_id').notNull().references(() => boards.id, { onDelete: 'cascade' }),
+  fromStatusId: text('from_status_id').references(() => boardStatuses.id, { onDelete: 'cascade' }),
+  toStatusId: text('to_status_id').notNull().references(() => boardStatuses.id, { onDelete: 'cascade' }),
+  name: text('name'),
+  createdAt: integer('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('board_transitions_move_idx').on(table.boardId, table.fromStatusId, table.toStatusId),
+]);
+
+/**
+ * Where a session sits. `sessionId` is the primary key, which is what keeps a
+ * session on a single board. No FK to sessions: they live on disk, not here.
+ * `position` is fractional so a drag rewrites one row, not the whole column.
+ */
+export const boardSessions = sqliteTable('board_sessions', {
+  sessionId: text('session_id').primaryKey(),
+  boardId: text('board_id').notNull().references(() => boards.id, { onDelete: 'cascade' }),
+  statusId: text('status_id').notNull().references(() => boardStatuses.id),
+  position: real('position').notNull(),
+  addedAt: integer('added_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+}, (table) => [
+  index('board_sessions_board_status_idx').on(table.boardId, table.statusId, table.position),
+]);
+
+/** Append-only move history. No FKs, so it outlives deleted statuses and boards. */
+export const boardSessionEvents = sqliteTable('board_session_events', {
+  id: text('id').primaryKey(),
+  boardId: text('board_id').notNull(),
+  sessionId: text('session_id').notNull(),
+  fromStatusId: text('from_status_id'),
+  toStatusId: text('to_status_id'),
+  actor: text('actor').notNull(),
+  createdAt: integer('created_at').notNull(),
+}, (table) => [
+  index('board_session_events_session_idx').on(table.sessionId, table.createdAt),
+]);
+
 export type AutomationRecord = typeof automations.$inferSelect;
 export type AutomationRunRecord = typeof automationRuns.$inferSelect;
 export type SessionTargetRecord = typeof sessionTargets.$inferSelect;
 export type RequirementRecord = typeof sessionRequirements.$inferSelect;
 export type RequirementProposalRecord = typeof requirementProposals.$inferSelect;
 export type RequirementEventRecord = typeof requirementEvents.$inferSelect;
+export type BoardRecord = typeof boards.$inferSelect;
+export type BoardStatusRecord = typeof boardStatuses.$inferSelect;
+export type BoardTransitionRecord = typeof boardTransitions.$inferSelect;
+export type BoardSessionRecord = typeof boardSessions.$inferSelect;
+export type BoardSessionEventRecord = typeof boardSessionEvents.$inferSelect;

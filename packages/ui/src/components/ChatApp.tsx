@@ -33,7 +33,7 @@ import { SkillsModal } from './SkillsModal';
 import { MemoryModal } from './MemoryModal';
 import { ResourcesPanel } from './ResourcesPanel';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
-import { matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
+import { chordTokens, matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { ArchiveSuggestionPill } from './ArchiveSuggestionPill';
 import { SessionDeleteToast, type PendingSessionDelete } from './SessionDeleteToast';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
@@ -105,7 +105,7 @@ import {
   sameLayout,
   type Workspace,
 } from './ChatFocusLayout';
-import { BookmarkPlus, MessageCircle, MessageSquarePlus } from 'lucide-react';
+import { BookmarkPlus, Code2, Eye, MessageCircle, MessageSquarePlus } from 'lucide-react';
 import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
 import { canReplyTo, readReply, replyFromMessage, replyFromSelection, withReply } from '../lib/message-reply';
@@ -146,6 +146,9 @@ const MOD_KEY = IS_MAC ? '⌘' : 'Ctrl';
 
 // Extensions that open in the image preview tab instead of the text editor.
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg']);
+
+// Editor tabs that can flip to a rendered preview (see `toggle-markdown-preview`).
+const isMarkdownPath = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
 
 // Display names for the providers a session can run on. Mirrors the labels in
 // GroupComposer / NewSessionModal so the empty-session headline reads the same
@@ -776,6 +779,32 @@ export function ChatApp() {
       setActiveId(session.id);
     } catch (err) {
       console.error('[ChatApp] Failed to start a session next to another:', err);
+    }
+  };
+
+  /** Branch a session: the bridge copies its transcript and forks the
+   *  provider conversation on the first message, so both continue apart. */
+  const handleBranchSession = async (sourceId: string) => {
+    const c = clientRef.current;
+    const source = sessions.find(s => s.id === sourceId);
+    if (!c || !source) return;
+    try {
+      const session = await c.branchSession(sourceId);
+      // The bridge files the branch beside a source in one of its own groups;
+      // a remote tab in a local group is ours to file.
+      const groupId = sidebarGroupMap[sourceId] ?? null;
+      if (groupId && source.remoteId && !isRemoteGroupKey(groupId)) {
+        const newMap = { ...tabGroupMap, [session.id]: groupId };
+        setTabGroupMap(newMap);
+        persistPrefs({ tabGroupMap: newMap });
+      }
+      c.subscribe(session.id);
+      subscribedRef.current.add(session.id);
+      setSelectedGroupId(null);
+      setActiveNavView('sessions');
+      setActiveId(session.id);
+    } catch (err) {
+      console.error('[ChatApp] Failed to branch session:', err);
     }
   };
 
@@ -1721,10 +1750,15 @@ export function ChatApp() {
           if (state.lite) {
             // No history in it: take the flags, keep whatever messages we have.
             const { messages: _none, partialText: _t, partialThinking: _th, ...flags } = state;
-            setSessionStates(prev => ({
-              ...prev,
-              [sid]: { ...(prev[sid] ?? emptyLocalState()), ...flags },
-            }));
+            setSessionStates(prev => {
+              const existing = prev[sid];
+              return {
+                ...prev,
+                // The server's copy of the draft trails the keystrokes still in
+                // flight, so adopting it mid-typing deletes letters.
+                [sid]: { ...(existing ?? emptyLocalState()), ...flags, ...(existing ? { input: existing.input } : {}) },
+              };
+            });
             return;
           }
           setSessionStates(prev => {
@@ -1763,6 +1797,11 @@ export function ChatApp() {
                 ...emptyLocalState(),
                 ...state,
                 messages: mergedMessages,
+                // The local draft wins once it exists: the server's `input`
+                // lags the keystrokes still in flight over the socket, and a
+                // session_state lands mid-typing (e.g. the provider booting
+                // on the first keystroke), so taking it erases letters.
+                input: existing ? existing.input : (state.input ?? ''),
                 // Preserve local-only fields (server doesn't track these,
                 // so the spread of `state` would otherwise wipe them every
                 // time we re-subscribe — e.g. switching to another tab and
@@ -2277,11 +2316,11 @@ export function ChatApp() {
           setPublishedPorts(prev => ({ ...prev, [sid]: ports }));
         },
 
-        onFileChanges: (sid, changes) => {
+        onFileChanges: (sid, changes, root) => {
           // Re-emit on a window event so any interested pane (file tree,
           // activity indicator, …) can react without ChatApp owning a
           // dedicated piece of state. Lightweight pub/sub.
-          window.dispatchEvent(new CustomEvent('file_changes', { detail: { sessionId: sid, changes } }));
+          window.dispatchEvent(new CustomEvent('file_changes', { detail: { sessionId: sid, changes, root } }));
         },
         onBranchChanged: (sid, branch) => {
           window.dispatchEvent(new CustomEvent('branch_changed', { detail: { sessionId: sid, branch } }));
@@ -2834,9 +2873,9 @@ export function ChatApp() {
     };
 
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ sessionId: string; changes: FileChange[] }>).detail;
+      const detail = (e as CustomEvent<{ sessionId: string; changes: FileChange[]; root?: string | null }>).detail;
       if (!detail || detail.sessionId !== sid) return;
-      const root = explorerRootRef.current;
+      const root = detail.root || explorerRootRef.current;
       if (!root) return;
       const tabs = editorTabsRef.current;
       for (const c of detail.changes) {
@@ -4188,6 +4227,20 @@ export function ChatApp() {
   };
 
   const explorerRootRef = useRef<string | null>(null);
+  // Markdown editor tabs showing the rendered preview instead of Monaco, keyed
+  // by session + path. View state only — not persisted.
+  const [mdPreviewKeys, setMdPreviewKeys] = useState<Set<string>>(() => new Set());
+  // Explorer root the user picked per session, with the cwd it was picked against.
+  const [explorerRootPicks, setExplorerRootPicks] = useState<Record<string, { cwd: string; root: string }>>({});
+  const toggleMarkdownPreview = useCallback((sid: string, path: string) => {
+    if (!isMarkdownPath(path)) return;
+    const key = liveBufKey(sid, path);
+    setMdPreviewKeys(prev => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  }, []);
   // Mirrors the active session's open editor tabs so the file-watcher listener
   // (which runs outside render) can read the current set without re-subscribing.
   const editorTabsRef = useRef<LocalSessionState['editorTabs']>([]);
@@ -4587,6 +4640,10 @@ export function ChatApp() {
       if (visible) { if (activePath) confirmCloseStandaloneFile(activePath); return; }
       closePanelRef.current();
     },
+    'toggle-markdown-preview': () => {
+      const path = activeEditorPathRef.current;
+      if (activeId && path) toggleMarkdownPreview(activeId, path);
+    },
     'new-session': () => setShowNewSession(true),
     'clear-chat': () => { if (activeId) clearSession(activeId); },
     'archive-session': () => { if (activeId) handleCloseTab(activeId); },
@@ -4808,6 +4865,27 @@ export function ChatApp() {
     if (!ok) setDefaultPermissionModeByHost(prev => ({ ...prev, [hostKey]: previous ?? 'default' }));
   }, []);
 
+  /** Same idea as `setDefaultPermissionMode`, but per host *and* provider —
+   *  the same bridge-saved preference the `/default` chat command writes. */
+  const setDefaultModel = useCallback(async (remoteId: string | null | undefined, provider: string, model: string) => {
+    const c = clientRef.current;
+    if (!c) return;
+    const hostKey = remoteId || '';
+    let previous: Record<string, string> | undefined;
+    let next: Record<string, string> = {};
+    setDefaultModelsByHost(prev => {
+      previous = prev[hostKey];
+      next = { ...previous };
+      if (model) next[provider] = model; else delete next[provider];
+      return { ...prev, [hostKey]: next };
+    });
+    const ok = await (remoteId
+      ? c.updateRemotePreferences(remoteId, { defaultModels: next })
+      : c.updatePreferences({ defaultModels: next })
+    ).catch(() => false);
+    if (!ok) setDefaultModelsByHost(prev => ({ ...prev, [hostKey]: previous ?? {} }));
+  }, []);
+
   const requestPermissionMode = useCallback((sessionId: string, mode: string) => {
     if (mode === 'bypassPermissions' && shouldWarnBypass()) {
       setPendingBypassSessionId(sessionId);
@@ -4999,6 +5077,27 @@ export function ChatApp() {
     return out;
   }, [sessions, sessionStates]);
 
+  // Per-session "last message the user sent" — the sidebar order. Agent
+  // replies, tool calls, renames etc. don't move a session. The server's
+  // `last_sent_at` covers sessions whose messages aren't loaded; the local
+  // scan makes a just-sent message count before the list refreshes. Bridges
+  // older than `last_sent_at` fall back to the old activity order.
+  const sessionLastSentAt = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const s of sessions) {
+      if (s.last_sent_at === undefined) { out[s.id] = sessionLastMessageAt[s.id] ?? 0; continue; }
+      const msgs = sessionStates[s.id]?.messages || [];
+      let last = 0;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role !== 'user' || m.isToolResult || m.toolName) continue;
+        if (typeof m.timestamp === 'number') { last = m.timestamp; break; }
+      }
+      out[s.id] = Math.max(last, s.last_sent_at);
+    }
+    return out;
+  }, [sessions, sessionStates, sessionLastMessageAt]);
+
   // Per-session "where it left off" preview — the last real assistant/user
   // line (skipping system notes, tool calls and thinking), trimmed to a
   // single line. Feeds the Sessions overview board/list so each card recovers
@@ -5051,29 +5150,18 @@ export function ChatApp() {
       return order;
     });
   };
-  // Per-session "last message the user sent" — the sidebar order. Agent
-  // replies, tool calls, renames etc. don't move a session. The server's
-  // `last_sent_at` covers sessions whose messages aren't loaded; the local
-  // scan makes a just-sent message count before the list refreshes. Bridges
-  // older than `last_sent_at` fall back to the old activity order.
-  const sessionLastSentAt = useMemo(() => {
-    const out: Record<string, number> = {};
-    for (const s of sessions) {
-      if (s.last_sent_at === undefined) { out[s.id] = sessionLastMessageAt[s.id] ?? 0; continue; }
-      const msgs = sessionStates[s.id]?.messages || [];
-      let last = 0;
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const m = msgs[i];
-        if (m.role !== 'user' || m.isToolResult || m.toolName) continue;
-        if (typeof m.timestamp === 'number') { last = m.timestamp; break; }
-      }
-      out[s.id] = Math.max(last, s.last_sent_at);
-    }
-    return out;
-  }, [sessions, sessionStates, sessionLastMessageAt]);
 
-
-  const explorerRoot = active.initInfo?.cwd || activeSession?.cwd || null;
+  // A session can span several folders (cwd + additional directories). The
+  // explorer shows the cwd unless the user picked another root — a pick only
+  // holds while the cwd it was made against is still the cwd, so the tree
+  // follows the agent when it moves the working directory.
+  const workspaceRoots = useMemo(() => activeSession
+    ? [...new Set([activeSession.cwd, ...(activeSession.additional_directories ?? [])].filter(Boolean))]
+    : [], [activeSession?.cwd, activeSession?.additional_directories]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rootPick = activeId ? explorerRootPicks[activeId] : undefined;
+  const explorerRoot = rootPick && rootPick.cwd === activeSession?.cwd && workspaceRoots.includes(rootPick.root)
+    ? rootPick.root
+    : active.initInfo?.cwd || activeSession?.cwd || null;
   explorerRootRef.current = explorerRoot;
   editorTabsRef.current = active.editorTabs;
   activeEditorPathRef.current = active.activeEditorPath;
@@ -5246,6 +5334,10 @@ export function ChatApp() {
     { id: 'close-editor', label: 'Close Editor / Tab', chord: kbBindings['close-tab'] ?? undefined, section: 'Navigation', onRun: () => closePanelRef.current() },
     { id: 'new-file', label: 'New File', chord: kbBindings['new-file'] ?? undefined, section: 'Editor', onRun: handleNewFile },
     { id: 'save-file', label: 'Save File', chord: kbBindings['save-file'] ?? undefined, section: 'Editor', onRun: handleSaveFileWrapped },
+    ...(activeId && active.activeEditorPath && isMarkdownPath(active.activeEditorPath) ? [{
+      id: 'toggle-markdown-preview', label: 'Toggle Markdown Preview', chord: kbBindings['toggle-markdown-preview'] ?? undefined, section: 'Editor',
+      onRun: () => toggleMarkdownPreview(activeId, active.activeEditorPath!),
+    }] : []),
     { id: 'clear-chat', label: 'Clear Chat', chord: kbBindings['clear-chat'] ?? undefined, section: 'Session', onRun: () => { if (activeId) clearSession(activeId); } },
     { id: 'keyboard-shortcuts', label: 'Keyboard Shortcuts', section: 'Navigation', onRun: () => setShowShortcuts(true) },
     { id: 'organize-tabs', label: 'Organize Tabs by Folder', section: 'Sessions', onRun: async () => {
@@ -5760,6 +5852,7 @@ export function ChatApp() {
         defaultModel={defaultModelsByHost[sess?.remoteId || '']?.[sess?.provider || 'claude']}
         defaultPermissionMode={defaultPermissionModeByHost[sess?.remoteId || '']}
         onSetDefaultPermissionMode={(mode) => { void setDefaultPermissionMode(sess?.remoteId, mode); }}
+        onSetDefaultModel={(model) => { void setDefaultModel(sess?.remoteId, sess?.provider || 'claude', model); }}
         slashCommands={sessionSlashCommands}
         client={client}
         cwd={s.initInfo?.cwd || sess?.cwd || null}
@@ -6678,6 +6771,7 @@ export function ChatApp() {
               sessionHasPermission={sessionHasPermission}
               sessionActivity={sessionActivity}
               sessionLastMessageAt={sessionLastMessageAt}
+              sessionLastSentAt={sessionLastSentAt}
               pinnedSessionIds={pinnedSessionIds}
               onTogglePin={handleTogglePin}
               onKeepSession={id => { void clientRef.current?.keepSession(id); }}
@@ -6714,6 +6808,7 @@ export function ChatApp() {
               onArchiveGroup={handleArchiveGroup}
               onNewSessionInGroup={handleNewSessionInGroup}
               onNewSessionFromSession={handleNewSessionFromSession}
+              onBranchSession={handleBranchSession}
               collapsed={tabsCollapsed}
               onToggleCollapsed={toggleTabsCollapsed}
               activeNavView={activeNavView}
@@ -6745,7 +6840,6 @@ export function ChatApp() {
               />
             ) : activeNavView === 'automations' ? (
               <AutomationsView
-              sessionLastSentAt={sessionLastSentAt}
                 client={client}
                 defaultCwd={
                   [...sessions]
@@ -6759,6 +6853,7 @@ export function ChatApp() {
                 defaultModelsByHost={defaultModelsByHost}
                 defaultPermissionModeByHost={defaultPermissionModeByHost}
                 onSetDefaultPermissionMode={(remoteId, mode) => { void setDefaultPermissionMode(remoteId, mode); }}
+                onSetDefaultModel={(remoteId, provider, model) => { void setDefaultModel(remoteId, provider, model); }}
                 key={selectedGroupId || "new-chat"}
                 groupName={selectedGroupId ? sidebarGroups[selectedGroupId]?.name || "" : ""}
                 groupCwd={
@@ -6878,6 +6973,7 @@ export function ChatApp() {
                       defaultModelsByHost={defaultModelsByHost}
                       defaultPermissionModeByHost={defaultPermissionModeByHost}
                       onSetDefaultPermissionMode={(remoteId, mode) => { void setDefaultPermissionMode(remoteId, mode); }}
+                      onSetDefaultModel={(remoteId, provider, model) => { void setDefaultModel(remoteId, provider, model); }}
                       groupName={sidebarGroups[selectedGroupId]!.name}
                       groupCwd={
                         sidebarGroups[selectedGroupId]!.cwd
@@ -7363,6 +7459,7 @@ export function ChatApp() {
                       defaultModelsByHost={defaultModelsByHost}
                       defaultPermissionModeByHost={defaultPermissionModeByHost}
                       onSetDefaultPermissionMode={(remoteId, mode) => { void setDefaultPermissionMode(remoteId, mode); }}
+                      onSetDefaultModel={(remoteId, provider, model) => { void setDefaultModel(remoteId, provider, model); }}
                       groupName={sidebarGroups[selectedGroupId]!.name}
                       groupCwd={
                         sidebarGroups[selectedGroupId]!.cwd
@@ -7407,10 +7504,32 @@ export function ChatApp() {
                         const eTab = active.editorTabs.find(t => t.path === ePath);
                         if (!eTab) return null;
                         const liveKey = liveBufKey(activeId, ePath);
+                        const isMd = isMarkdownPath(ePath);
+                        const mdPreview = isMd && mdPreviewKeys.has(liveKey);
+                        const previewChord = kbBindings['toggle-markdown-preview'];
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
                   <div className="flex-1 flex flex-col min-w-0">
-                    <div className={showDebugPanel ? 'flex-1 min-h-0' : 'flex-1'} style={showDebugPanel ? { flex: '1 1 60%' } : undefined}>
+                    <div className={`relative ${showDebugPanel ? 'flex-1 min-h-0' : 'flex-1'}`} style={showDebugPanel ? { flex: '1 1 60%' } : undefined}>
+                      {isMd && (
+                        <button
+                          type="button"
+                          onClick={() => toggleMarkdownPreview(activeId, ePath)}
+                          className="absolute top-2 right-4 z-10 flex items-center gap-1 h-6 px-2 rounded-md text-[11px] text-zinc-400 hover:text-zinc-100 bg-zinc-900/80 hover:bg-zinc-800 border border-white/10"
+                          title={`${mdPreview ? 'Show source' : 'Open preview'}${previewChord ? ` (${chordTokens(previewChord).join(IS_MAC ? '' : '+')})` : ''}`}
+                        >
+                          {mdPreview ? <Code2 size={12} /> : <Eye size={12} />}
+                          {mdPreview ? 'Source' : 'Preview'}
+                        </button>
+                      )}
+                      {mdPreview ? (
+                        // Pinned to the relative parent: that's a flex-1 without
+                        // min-h-0, so `h-full` would grow with the content and
+                        // never scroll.
+                        <div className="absolute inset-0 overflow-y-auto px-8 py-6">
+                          <Markdown text={liveBuffersRef.current[liveKey] ?? eTab.content} className="max-w-[860px] mx-auto" />
+                        </div>
+                      ) : (
                       <Editor
                         key={ePath}
                         path={monacoRef.current ? monacoRef.current.Uri.file(ePath).toString() : `file://${ePath.split('/').map(encodeURIComponent).join('/')}`}
@@ -7450,6 +7569,7 @@ export function ChatApp() {
                           readOnly: !!eTab.readOnly,
                         }}
                       />
+                      )}
                     </div>
                     {showDebugPanel && (
                       <div style={{ flex: '0 0 250px' }} className="min-h-0 overflow-hidden">
@@ -8043,6 +8163,11 @@ export function ChatApp() {
           <FileExplorer
             client={client}
             rootPath={explorerRoot}
+            workspaceRoots={workspaceRoots}
+            onSelectRoot={(root) => {
+              if (!activeId || !activeSession) return;
+              setExplorerRootPicks(prev => ({ ...prev, [activeId]: { cwd: activeSession.cwd, root } }));
+            }}
             collapsed={explorerCollapsed}
             onToggle={() => setExplorerCollapsed(c => !c)}
             onFileOpen={handleFileOpen}

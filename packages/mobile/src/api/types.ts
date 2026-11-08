@@ -107,5 +107,9 @@ export interface SessionSummary {
   readonly isOpen: boolean;
   readonly isRunning: boolean;
   readonly provider: string | null;
+  /** Modelo elegido para la sesión; `null` = el del proveedor. */
+  readonly model?: string | null;
+  /** El que usa el proveedor cuando la sesión no fija uno. */
+  readonly defaultModel?: string | null;
   readonly disposableTtlMs?: number | null;
 }

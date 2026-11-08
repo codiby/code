@@ -11,13 +11,14 @@ import { trackedProcesses, killProcessTree, saveProcessRegistry } from './proces
 import { killSessionLsp } from './lsp';
 import { DEFAULT_PROVIDER } from '../provider/registry';
 import { clearPendingDecisionsForSession } from '../provider/bridge';
-import { deleteSessionData, clearMessages } from '../session/storage';
+import { deleteSessionData, clearMessages, appendMessages, loadMessages } from '../session/storage';
 import { getDefaultPermissionMode } from '../session/default-permission-mode';
 import { stopSessionWatcher } from '../session/watcher';
 import { closeSessionPortForwards } from '../network/port-forward';
 import { forgetViewerBriefing } from '../network/remote-viewer';
 import { rootRepoOf } from './worktree';
 import { deleteSessionNotes } from './session-notes';
+import { removeSessionFromBoards } from '../boards/repository';
 import { parseDisposableTtl } from '../session/disposables';
 import type { Session } from '../types';
 
@@ -114,8 +115,8 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
     cwd,
     createdAt: now,
     updatedAt: now,
-    claudeSessionId: null,
     lastUserMessageAt: 0,
+    claudeSessionId: null,
     browserWs: new Set(),
     providerSession: null,
     providerSessionGen: 0,
@@ -155,6 +156,51 @@ export async function handleCreateSession(req: Request, port: number): Promise<R
   if (groupId) (payload as Record<string, unknown>).group_id = groupId;
   else if (ungrouped) (payload as Record<string, unknown>).ungrouped = true;
   return Response.json(payload, { headers: corsHeaders });
+}
+
+/** Branch a session: a new session with the same folder, provider and settings
+ *  and a copy of the transcript. Its provider stays stopped until the first
+ *  message, then forks the source's conversation (`forkPending`), so the two
+ *  continue independently from here. */
+export function handleBranchSession(sessionId: string, port: number): Response {
+  const source = sessions.get(sessionId);
+  if (!source) {
+    return Response.json({ error: 'Session not found' }, { status: 404, headers: corsHeaders });
+  }
+  const now = Date.now();
+  const session: Session = {
+    id: randomUUID(),
+    name: `${source.name} (branch)`,
+    cwd: source.cwd,
+    additionalDirectories: source.additionalDirectories?.length ? [...source.additionalDirectories] : undefined,
+    // The forked conversation lives where the source's started.
+    providerCwd: source.providerCwd ?? null,
+    createdAt: now,
+    updatedAt: now,
+    lastUserMessageAt: now,
+    claudeSessionId: source.claudeSessionId,
+    forkPending: !!source.claudeSessionId,
+    browserWs: new Set(),
+    providerSession: null,
+    providerSessionGen: 0,
+    ready: false,
+    status: 'open',
+    runtimeStatus: 'stopped',
+    replayDone: true,
+    savedCommands: [...source.savedCommands],
+    model: source.model,
+    permissionMode: source.permissionMode,
+    effort: source.effort,
+    provider: source.provider,
+    remoteId: null,
+    portForwards: [],
+    disposableTtlMs: null,
+  };
+  appendMessages(session.id, loadMessages(source.id));
+  sessions.set(session.id, session);
+  saveSessions();
+  log(`[${session.id.slice(0, 8)}] Branched from ${source.id.slice(0, 8)} (provider_session_id=${source.claudeSessionId ?? 'none'})`);
+  return Response.json(sessionToJSON(session, port), { headers: corsHeaders });
 }
 
 export function handleResumeSession(sessionId: string, port: number): Response {
@@ -372,6 +418,7 @@ export async function handleDeleteSession(
       try {
         deleteSessionData(sessionId);
         deleteSessionNotes(sessionId);
+        removeSessionFromBoards(sessionId);
         purgeResult.history = true;
         log(`[${sessionId.slice(0, 8)}] Purged session data on disk`);
       } catch (err) {
