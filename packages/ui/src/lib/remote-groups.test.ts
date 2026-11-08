@@ -183,3 +183,20 @@ describe('groupIdOfRemoteKey', () => {
     expect(groupIdOfRemoteKey('rmt:ryzen9:')).toBeNull();
   });
 });
+
+describe('mergeRemoteGroups — replicated groups', () => {
+  test('a remote group with a local id is the same folder, subgroups included', () => {
+    const merged = mergeRemoteGroups({
+      groups: { p: group('p', { projectId: 'P' }), sub: group('sub', { parentId: 'p', name: 'Sub' }) },
+      map: { 'local-1': 'sub' },
+      remotes: {
+        [RYZEN]: {
+          tabGroups: { p: group('p', { projectId: 'P' }), sub: group('sub', { parentId: 'p', name: 'Sub' }) },
+          tabGroupMap: { 'remote-1': 'sub' },
+        },
+      },
+    });
+    expect(Object.keys(merged.groups).sort()).toEqual(['p', 'sub']);
+    expect(merged.map).toEqual({ 'local-1': 'sub', 'remote-1': 'sub' });
+  });
+});

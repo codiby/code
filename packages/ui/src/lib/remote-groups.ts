@@ -124,6 +124,9 @@ export function mergeRemoteGroups(input: MergeRemoteGroupsInput): MergedGroups {
   for (const remoteId of remoteIds) {
     for (const group of Object.values(input.remotes[remoteId]!.tabGroups)) {
       if (!group?.id) continue;
+      // Same id on both machines: a group a project replicated (see
+      // project-sync.ts). It is one folder, at any depth.
+      if (input.groups[group.id]) { alias.set(`${remoteId}\0${group.id}`, group.id); continue; }
       const key = nameKey(group.name);
       const local = !group.parentId && key ? byName.get(key) : undefined;
       if (local) {
