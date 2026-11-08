@@ -172,37 +172,55 @@ export function SlackConversation({ client, connectionId, channel, ts, threadTs,
 
   return (
     <>
-      <div className="ib-thread">
+      <div className="ib-thread ib-conv">
         {!thread && !error && <div className="ib-faint flex items-center gap-2"><Loader2 size={13} className="animate-spin" /> Loading conversation…</div>}
         {error && <div className="ib-faint">Couldn't load the conversation: {error}</div>}
-        {(thread ?? []).map((m, i, all) => (
+        {(thread ?? []).map((m, i, all) => {
+          // Like Slack: messages from the same person a few minutes apart read
+          // as one block — photo and name once, the time on hover.
+          const prev = all[i - 1];
+          const cont = !!prev && !(prev.root && i === 1) && prev.user === m.user && !!m.user
+            && Number(m.ts) - Number(prev.ts) < 5 * 60;
+          const time = new Date(Number(m.ts) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          return (
           <Fragment key={m.ts}>
-            <div className={`ib-msg ${m.ts === highlightTs ? 'hl' : ''}`}>
-              <button type="button" className="ib-person" disabled={!m.user || m.mine} title={m.user && !m.mine ? `Message ${m.name}` : undefined}
-                onClick={() => m.user && !m.mine && onOpenDm(m.user, m.name)}>
-                <SlackAvatar name={m.name} url={m.avatar} />
-              </button>
-              <div className="min-w-0 relative">
-                <div className="ib-who-line">
-                  <button type="button" className="ib-person-name" disabled={!m.user || m.mine} onClick={() => m.user && !m.mine && onOpenDm(m.user, m.name)}>
-                    {m.mine ? 'You' : m.name}
+            <div className={`ib-msg ${cont ? 'cont' : ''} ${m.ts === highlightTs ? 'hl' : ''}`}>
+              {cont
+                ? <span className="ib-gutter-time">{time}</span>
+                : (
+                  <button type="button" className="ib-person" disabled={!m.user || m.mine} title={m.user && !m.mine ? `Message ${m.name}` : undefined}
+                    onClick={() => m.user && !m.mine && onOpenDm(m.user, m.name)}>
+                    <SlackAvatar name={m.name} url={m.avatar} />
                   </button>
-                  <span>{new Date(Number(m.ts) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-                {m.markdown ? <Markdown text={m.markdown} className="ib-md" /> : <div className="ib-txt">{m.text}</div>}
-                <div className="ib-reactions">
-                  {(m.reactions ?? []).map(r => (
-                    <button key={r.name} type="button" className={`ib-reaction ${r.mine ? 'mine' : ''}`} title={`:${r.name}:${r.mine ? ' — click to remove yours' : ''}`}
-                      onClick={() => react(m, r)}>
-                      {r.unicode ?? (r.url ? <img src={r.url} alt={`:${r.name}:`} /> : `:${r.name}:`)}
-                      <span>{r.count}</span>
+                )}
+              <div className="min-w-0">
+                {!cont && (
+                  <div className="ib-who-line">
+                    <button type="button" className="ib-person-name" disabled={!m.user || m.mine} onClick={() => m.user && !m.mine && onOpenDm(m.user, m.name)}>
+                      {m.mine ? 'You' : m.name}
                     </button>
-                  ))}
-                  <button type="button" className="ib-reaction ib-react-add" title="Add a reaction" onClick={() => setPicker(picker === m.ts ? null : m.ts)}>
-                    <SmilePlus size={14} strokeWidth={1.6} />
-                  </button>
-                  {picker === m.ts && <EmojiPicker client={client} onClose={() => setPicker(null)} onPick={e => { setPicker(null); void react(m, e); }} />}
-                </div>
+                    <span>{time}</span>
+                  </div>
+                )}
+                {m.markdown ? <Markdown text={m.markdown} className="ib-md" /> : <div className="ib-txt">{m.text}</div>}
+                {!!m.reactions?.length && (
+                  <div className="ib-reactions">
+                    {m.reactions.map(r => (
+                      <button key={r.name} type="button" className={`ib-reaction ${r.mine ? 'mine' : ''}`} title={`:${r.name}:${r.mine ? ' — click to remove yours' : ''}`}
+                        onClick={() => react(m, r)}>
+                        {r.unicode ?? (r.url ? <img src={r.url} alt={`:${r.name}:`} /> : `:${r.name}:`)}
+                        <span>{r.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Hover toolbar, as in Slack: reacting doesn't need a row of its own. */}
+              <div className={`ib-msg-tools ${picker === m.ts ? 'open' : ''}`}>
+                <button type="button" title="Add a reaction" onClick={() => setPicker(picker === m.ts ? null : m.ts)}>
+                  <SmilePlus size={15} strokeWidth={1.6} />
+                </button>
+                {picker === m.ts && <EmojiPicker client={client} onClose={() => setPicker(null)} onPick={e => { setPicker(null); void react(m, e); }} />}
               </div>
             </div>
             {/* Like Slack's thread pane: the opening message, then its replies. */}
@@ -210,7 +228,8 @@ export function SlackConversation({ client, connectionId, channel, ts, threadTs,
               <div className="ib-sep">{all.length - 1} {all.length === 2 ? 'reply' : 'replies'}</div>
             )}
           </Fragment>
-        ))}
+          );
+        })}
         {children}
         <div ref={endRef} />
       </div>
