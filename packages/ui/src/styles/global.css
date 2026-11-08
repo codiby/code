@@ -1565,3 +1565,5 @@ html.light .nav-count { background: #5b4bd6; }
 .ib-reaction img { height: 16px; width: auto; }
 .ib-reaction.mine { background: color-mix(in srgb, var(--ib-k-slack) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ib-k-slack) 45%, transparent); }
 .ib-reaction.mine span { color: var(--ib-k-slack); }
+.ib-sep { display: flex; align-items: center; gap: 10px; color: var(--ib-mute); font-size: 12px; margin: -2px 0 -2px 42px; }
+.ib-sep::after { content: ""; flex: 1; height: 1px; background: var(--ib-line); }

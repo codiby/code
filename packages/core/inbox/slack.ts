@@ -16,8 +16,8 @@
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { CODIBY_DIR } from '../config/config';
-import { addInboxItem } from './store';
-import { resolveEmoji, setCustomEmoji } from './emoji';
+import { addInboxItem, rewriteOpenBodies } from './store';
+import { emojifyPlain, resolveEmoji, setCustomEmoji } from './emoji';
 import { plainSlackText, slackMessageToItem, slackToMarkdown, type SlackMessage } from './slack-events';
 
 const CONFIG_FILE = join(CODIBY_DIR, 'slack.json');
@@ -136,7 +136,7 @@ async function connect(): Promise<void> {
       if (msg.type === 'hello') {
         retry = 0;
         setStatus({ state: 'connected', user: config!.userName, team: config!.teamName, teamUrl: config!.teamUrl });
-        void loadCustomEmoji();
+        void loadCustomEmoji().then(() => rewriteOpenBodies('slack', emojifyPlain));
         void backfill();
       } else if (msg.type === 'events_api' && msg.payload?.event?.type === 'message') {
         void ingest(msg.payload.event);
@@ -181,14 +181,16 @@ async function backfill(): Promise<void> {
   const since = Date.now() / 1000 - BACKFILL_DAYS * 86400;
   try {
     // Mentions anywhere the user can see.
-    const s = await api<{ messages: { matches: (SlackMessage & { channel: { id: string; name?: string; is_im?: boolean; is_mpim?: boolean } | string })[] } }>(
+    const s = await api<{ messages: { matches: (SlackMessage & { permalink?: string; channel: { id: string; name?: string; is_im?: boolean; is_mpim?: boolean } | string })[] } }>(
       'search.messages', { query: `<@${config.userId}>`, sort: 'timestamp', sort_dir: 'desc', count: 40 }, config.userToken);
     for (const m of s.messages.matches) {
       if (Number(m.ts) < since) continue;
       const ch: { id: string; name?: string; is_im?: boolean; is_mpim?: boolean } =
         typeof m.channel === 'string' ? { id: m.channel } : m.channel;
       if (ch.name) channels.set(ch.id, ch.name);
-      await ingest({ ...m, channel: ch.id, channel_type: ch.is_im ? 'im' : ch.is_mpim ? 'mpim' : 'channel' });
+      // Search results omit thread_ts; their permalink still carries it.
+      const threadTs = m.thread_ts ?? (m.permalink ? new URL(m.permalink).searchParams.get('thread_ts') ?? undefined : undefined);
+      await ingest({ ...m, thread_ts: threadTs, channel: ch.id, channel_type: ch.is_im ? 'im' : ch.is_mpim ? 'mpim' : 'channel' });
     }
     // Direct messages after the user's own last word in each conversation.
     const convs = await api<{ channels: { id: string; is_im?: boolean; is_mpim?: boolean }[] }>(
@@ -259,16 +261,26 @@ export function disconnectSlack(): void {
 // ── what the Inbox does with a Slack item ──────────────────────────────────
 
 export interface Reaction { name: string; count: number; mine: boolean; unicode?: string; url?: string }
-export interface ThreadMessage { user: string; name: string; text: string; markdown: string; ts: string; mine: boolean; bot: boolean; reactions: Reaction[] }
+export interface ThreadMessage { user: string; name: string; text: string; markdown: string; ts: string; mine: boolean; bot: boolean; reactions: Reaction[]; /** The message that opened the thread. */ root: boolean }
 
 /** The conversation around an item: the thread, or the last few messages of
  *  a DM. */
 export async function slackThread(channel: string, ts: string, threadTs: string | null): Promise<ThreadMessage[]> {
   if (!config) throw new Error('Slack is not connected');
   const c = config;
-  const msgs = threadTs
-    ? (await api<{ messages: SlackMessage[] }>('conversations.replies', { channel, ts: threadTs, limit: 40 }, c.userToken)).messages
-    : (await api<{ messages: SlackMessage[] }>('conversations.history', { channel, latest: ts, inclusive: true, limit: 8 }, c.userToken)).messages.reverse();
+  const replies = async (root: string) =>
+    (await api<{ messages: SlackMessage[] }>('conversations.replies', { channel, ts: root, limit: 40 }, c.userToken)).messages;
+  let msgs: SlackMessage[];
+  if (channel.startsWith('D') && !threadTs) {
+    // A DM reads as the conversation leading up to the message.
+    msgs = (await api<{ messages: SlackMessage[] }>('conversations.history', { channel, latest: ts, inclusive: true, limit: 8 }, c.userToken)).messages.reverse();
+  } else {
+    // In a channel, the message's thread — the way Slack opens it. An item
+    // stored without its thread_ts finds it from the message itself.
+    msgs = await replies(threadTs ?? ts);
+    const root = msgs[0]?.thread_ts;
+    if (!threadTs && root && root !== ts) msgs = await replies(root);
+  }
   // Authors and everyone mentioned, so no row reads as a raw user id.
   const ids = new Set<string>();
   for (const m of msgs) {
@@ -282,6 +294,7 @@ export async function slackThread(channel: string, ts: string, threadTs: string 
       user: m.user ?? '',
       name: m.user ? userName(m.user) : raw.bot_profile?.name || raw.username || 'App',
       ts: m.ts, mine: m.user === c.userId, bot: !!m.bot_id,
+      root: !!m.thread_ts && m.thread_ts === m.ts,
       text: plainSlackText(m.text ?? '', userName),
       markdown: slackToMarkdown(m.text ?? '', userName),
       reactions: (raw.reactions ?? []).map(r => ({

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   ArrowUp, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
   Loader2, MessageCircle, Pause, RefreshCw, Sparkles, X,
@@ -237,8 +237,9 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
         <div className="ib-thread">
           {!thread && !threadError && <div className="ib-faint flex items-center gap-2"><Loader2 size={13} className="animate-spin" /> Loading conversation…</div>}
           {threadError && <div className="ib-faint">Couldn't load the conversation: {threadError}</div>}
-          {(thread ?? []).map(m => (
-            <div key={m.ts} className={`ib-msg ${m.ts === ctx.ts ? 'hl' : ''}`}>
+          {(thread ?? []).map((m, i, all) => (
+            <Fragment key={m.ts}>
+            <div className={`ib-msg ${m.ts === ctx.ts ? 'hl' : ''}`}>
               <span className="ib-av" style={{ background: personColor(m.name) }}>{initials(m.name)}</span>
               <div className="min-w-0">
                 <div className="ib-who-line"><b>{m.mine ? 'You' : m.name}</b><span>{new Date(Number(m.ts) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
@@ -258,6 +259,11 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
                 )}
               </div>
             </div>
+            {/* Like Slack's thread pane: the opening message, then its replies. */}
+            {m.root && i === 0 && all.length > 1 && (
+              <div className="ib-sep">{all.length - 1} {all.length === 2 ? 'reply' : 'replies'}</div>
+            )}
+            </Fragment>
           ))}
           {row.agent ? <AgentCard row={row} onOpenSession={onOpenSession} onDone={onDone} /> : <div className="ib-agent">
             <Bot size={16} />

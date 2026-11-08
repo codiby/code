@@ -92,6 +92,18 @@ export function linkInboxSession(id: string, sessionId: string, now = Date.now()
   return true;
 }
 
+/** Re-render the stored preview of open items — for items saved before a
+ *  rendering step existed (e.g. emoji). Broadcasts only what changed. */
+export function rewriteOpenBodies(source: InboxItem['source'], fn: (body: string) => string): void {
+  for (const item of listOpenInbox(1000)) {
+    if (item.source !== source) continue;
+    const body = fn(item.body);
+    if (body === item.body) continue;
+    database.update(inboxItems).set({ body }).where(eq(inboxItems.id, item.id)).run();
+    broadcast({ type: 'inbox_item', item: getInboxItem(item.id) });
+  }
+}
+
 /** Close every open item of `source` that `stillOpen` no longer lists — a PR
  *  that got reviewed, checks that went green. */
 export function closeMissing(source: InboxItem['source'], stillOpen: Set<string>, now = Date.now()): void {
