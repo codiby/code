@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch, LayoutGrid, SquareKanban, Repeat, Folder, FolderOpen,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch, LayoutGrid, SquareKanban, Repeat, Folder, FolderOpen, PanelLeftOpen,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -1411,7 +1411,54 @@ export const TabBar = memo(function TabBar(props: Props) {
   // Collapsed: render nothing. The host's activity bar carries the
   // re-expand toggle plus the new-session / history affordances, so a
   // collapsed TabBar would just duplicate that column.
-  if (collapsed) return null;
+  // Collapsed: a narrow icon rail rather than nothing, so the window keeps
+  // its chrome column (and the macOS traffic lights keep a home). Wide
+  // enough for the lights; every icon carries its label as a tooltip.
+  if (collapsed) {
+    const railBtn = (active: boolean) => `w-9 h-9 grid place-items-center rounded-[8px] transition-colors ${
+      active ? 'nav-chip is-active text-zinc-100' : 'text-zinc-500 hover:text-zinc-200 hover:bg-surface-light/60'
+    }`;
+    return (
+      <div className="tab-bar relative flex flex-col items-center shrink-0 select-none h-full w-[72px] pb-2">
+        <div className="h-[38px] w-full shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
+        <button type="button" onClick={onToggleCollapsed} className="h-8 grid place-items-center mb-2" title="Show sidebar" aria-label="Show sidebar">
+          <span className="brand-mark" aria-hidden><i /></span>
+        </button>
+        <div className="flex flex-col items-center gap-1">
+          <button type="button" title="Overview" aria-label="Overview" className={railBtn(activeNavView === 'overview')} onClick={() => onSelectNavView?.('overview')}>
+            <LayoutGrid size={16} strokeWidth={1.6} />
+          </button>
+          <button type="button" title="Board" aria-label="Board" className={railBtn(activeNavView === 'sessions-board')}
+            onClick={() => onSelectNavView?.(activeNavView === 'sessions-board' ? 'sessions' : 'sessions-board')}>
+            <SquareKanban size={16} strokeWidth={1.6} />
+          </button>
+          <button type="button" title="Automations" aria-label="Automations" className={railBtn(activeNavView === 'automations')}
+            onClick={() => onSelectNavView?.(activeNavView === 'automations' ? 'sessions' : 'automations')}>
+            <Repeat size={16} strokeWidth={1.6} />
+          </button>
+          <div className="w-6 h-px bg-[var(--color-border)] my-1.5" />
+          <button type="button" title="New session" aria-label="New session" className={railBtn(false)} onClick={onNew}>
+            <Plus size={16} strokeWidth={1.6} />
+          </button>
+          <button type="button" title="Show sessions" aria-label="Show sessions" className={railBtn(false)} onClick={onToggleCollapsed}>
+            <PanelLeftOpen size={16} strokeWidth={1.6} />
+          </button>
+        </div>
+        <div className="flex-1" />
+        <div className="flex flex-col items-center gap-1 pt-2 border-t border-border w-10">
+          <button type="button" title="Memory" aria-label="Memory" className={railBtn(false)} onClick={onOpenMemory}>
+            <Brain size={16} strokeWidth={1.6} />
+          </button>
+          <button type="button" title="Skills" aria-label="Skills" className={railBtn(false)} onClick={onOpenSkills}>
+            <Sparkles size={16} strokeWidth={1.6} />
+          </button>
+          <button type="button" title="Settings" aria-label="Settings" className={railBtn(false)} onClick={onOpenSettings}>
+            <Settings size={16} strokeWidth={1.6} />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

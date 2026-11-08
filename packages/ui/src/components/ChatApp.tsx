@@ -6427,7 +6427,7 @@ export function ChatApp() {
               In the standard shell the sidebar owns that corner — unless it's
               collapsed, and then the lights sit over the panel's top-left. */}
           {isStandardShell
-            ? (tabsCollapsed && IS_MAC && getNative() ? <div className="w-[70px] shrink-0" /> : null)
+            ? null
             : IS_MAC ? <div className="w-20 shrink-0" /> : <div className="w-3 shrink-0" />}
 
           {/* Session controls — collapse toggle (standard only) +
@@ -7023,7 +7023,7 @@ export function ChatApp() {
           {/* Standard shell: one floating panel holding the path bar and the
               content (chat + explorer). Other layouts keep the old flat flow,
               so the wrappers collapse to `display: contents` there. */}
-          <div className={isStandardShell ? `shell-panel flex-1 flex flex-col min-w-0 min-h-0 ${tabsCollapsed ? 'ml-2' : ''}` : 'contents'}>
+          <div className={isStandardShell ? 'shell-panel flex-1 flex flex-col min-w-0 min-h-0' : 'contents'}>
           {isStandardShell && titlebar}
           <div className={isStandardShell ? 'flex-1 flex min-h-0 min-w-0' : 'contents'}>
 
