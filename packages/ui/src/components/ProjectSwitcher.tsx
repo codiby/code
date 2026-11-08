@@ -15,6 +15,12 @@ interface Props {
 }
 
 const NO_DRAG = { WebkitAppRegion: 'no-drag' } as React.CSSProperties;
+const IS_MAC = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+/** The shortcut for row `i` of the list (All projects is ` , then 1…9). */
+const shortcutOf = (projectIndex: number | null): string | null => {
+  const key = projectIndex === null ? '`' : projectIndex < 9 ? String(projectIndex + 1) : null;
+  return key ? (IS_MAC ? `⌃${key}` : `Ctrl+${key}`) : null;
+};
 const tilde = (p: string) => p.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
 
 /** Square monogram in the project's colour. */
@@ -80,7 +86,7 @@ export function ProjectSwitcher({ projects, activeProjectId, totalSessions, onSe
         onClick={() => setOpen(o => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Switch project"
+        title={`Switch project (${IS_MAC ? '⌃' : 'Ctrl+'}\` for all, ${IS_MAC ? '⌃' : 'Ctrl+'}1…9 for each)`}
         className={`h-7 flex items-center gap-2 pl-1 pr-1.5 rounded-md transition-colors ${open ? 'bg-surface-light' : 'hover:bg-surface-light'}`}
       >
         {active ? <ProjectMark name={active.name} color={active.color} /> : <AllMark />}
@@ -137,6 +143,10 @@ export function ProjectSwitcher({ projects, activeProjectId, totalSessions, onSe
                       </span>
                     )}
                     <span title="Open sessions">{row ? row.sessionCount : totalSessions}</span>
+                    {(() => {
+                      const hint = shortcutOf(row ? projects.indexOf(row) : null);
+                      return hint ? <kbd className="path-kbd" title={`Switch with ${hint}`}>{hint}</kbd> : <span className="w-[26px]" />;
+                    })()}
                     {row && (
                       <button
                         type="button"

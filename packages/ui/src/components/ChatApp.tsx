@@ -5321,6 +5321,28 @@ export function ChatApp() {
     sections.push({ key: '__none__', name: 'No project', color: undefined, groups, map, sessions: rest });
     return sections;
   }, [scopedProject, projects, sidebarGroups, sidebarGroupMap, sidebarSessions, projectDefs]);
+  // Project shortcuts: Ctrl+` → All projects, Ctrl+1…9 → the projects in the
+  // switcher's order. Ctrl itself (not ⌘), so they never shadow the ⌘-based
+  // bindings, and matched by physical key so any keyboard layout works.
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (e.code === 'Backquote' || e.key === '`') {
+        e.preventDefault();
+        setActiveProjectId(null);
+        return;
+      }
+      const n = /^Digit([1-9])$/.exec(e.code)?.[1];
+      const p = n ? projectsRef.current[Number(n) - 1] : undefined;
+      if (p) { e.preventDefault(); setActiveProjectId(p.id); }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** Folders open sessions run in — the dialog's one-click suggestions. */
   const projectFolderSuggestions = useMemo(() => {
     const seen = new Set<string>();
