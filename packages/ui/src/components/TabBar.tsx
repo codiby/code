@@ -1489,11 +1489,9 @@ export const TabBar = memo(function TabBar(props: Props) {
 
       </div>
 
-      {/* Footer, pinned: the Workspace tools, then settings and the build.
-          Only the session tree above scrolls. */}
-      <div className="px-2 pt-1 shrink-0 flex flex-col gap-px [&>*]:shrink-0">
-        {/* Workspace — tools that open over the main pane. */}
-        <div className="sidebar-section pl-2 pt-2 pb-1">Workspace</div>
+      {/* Footer, pinned under one hairline: the tools that open over the
+          main pane, then settings. Only the session tree above scrolls. */}
+      <div className="mx-2 mb-2 pt-1.5 border-t border-border shrink-0 flex flex-col gap-px [&>*]:shrink-0">
         {/* Disposables — the bridge's fixed folder, shown as an item that
             unfolds its sessions in place. Expanded state rides on the same
             persisted set as the groups. */}
@@ -1535,12 +1533,9 @@ export const TabBar = memo(function TabBar(props: Props) {
         </button>
         {/* Owns its own data and panel; the sidebar only gives it a slot. */}
         <UsagePopover />
-      </div>
-      <div className="mx-2 mb-2 mt-1 pt-1 border-t border-border shrink-0">
         <button type="button" onClick={onOpenSettings} className={NAV_ROW}>
           <Settings size={15} strokeWidth={1.6} className="text-zinc-500" />
-          <span className="flex-1 text-left">Settings</span>
-          {APP_VERSION && <span className="font-mono text-[11px] text-zinc-600">{APP_VERSION}</span>}
+          <span>Settings</span>
         </button>
       </div>
 
@@ -1904,7 +1899,6 @@ function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon; lab
 
 /** A plain sidebar row (no selected state): Memory, Skills, Settings… */
 const NAV_ROW = 'nav-chip group w-full shrink-0 flex items-center gap-2.5 h-[30px] px-2 rounded-[7px] text-[13px] text-zinc-400 hover:text-zinc-200 hover:bg-surface-light/60 transition-colors';
-const APP_VERSION: string = process.env.CODIBY_APP_VERSION ?? '';
 
 const MENU_ITEM = 'text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors';
 
