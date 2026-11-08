@@ -2321,6 +2321,7 @@ export function ChatApp() {
         }),
         // The Inbox's open conversation listens for these (Inbox.tsx).
         onSlackMessage: (ev) => window.dispatchEvent(new CustomEvent('codiby:slack-message', { detail: ev })),
+        onSlackReaction: (ev) => window.dispatchEvent(new CustomEvent('codiby:slack-reaction', { detail: ev })),
 
         onRemoteStatus: (remoteId, status, lastError) => {
           setRemoteStatuses(prev => ({ ...prev, [remoteId]: { status, lastError } }));

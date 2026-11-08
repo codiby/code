@@ -70,6 +70,8 @@ async function api<T = Record<string, unknown>>(method: string, params: Record<s
 export interface Reaction { name: string; count: number; mine: boolean; unicode?: string; url?: string }
 export interface ThreadMessage {
   user: string; name: string; text: string; markdown: string; ts: string; mine: boolean; bot: boolean;
+  /** Profile picture (or a bot's icon), when Slack has one. */
+  avatar?: string;
   reactions: Reaction[];
   /** The message that opened the thread. */
   root: boolean;
@@ -85,6 +87,7 @@ class SlackConnection {
   private stopped = true;
   status: SlackStatus = { state: 'off' };
   private users = new Map<string, string>();
+  private avatars = new Map<string, string>();
   private channels = new Map<string, string>();
   /** Thread roots the user has written in, learned live and from the backfill. */
   private myThreads = new Set<string>();
@@ -107,8 +110,10 @@ class SlackConnection {
   private async warmUser(id: string | undefined): Promise<void> {
     if (!id || (this.users.has(id) && this.users.get(id) !== id)) return;
     try {
-      const r = await api<{ user: { real_name?: string; name?: string; profile?: { real_name?: string; display_name?: string } } }>('users.info', { user: id }, this.config.userToken);
+      const r = await api<{ user: { real_name?: string; name?: string; profile?: { real_name?: string; display_name?: string; image_72?: string; image_48?: string } } }>('users.info', { user: id }, this.config.userToken);
       this.users.set(id, r.user.profile?.real_name || r.user.real_name || r.user.profile?.display_name || r.user.name || id);
+      const pic = r.user.profile?.image_72 || r.user.profile?.image_48;
+      if (pic) this.avatars.set(id, pic);
     } catch { /* keep the id */ }
   }
   private channelName = (id: string): string => this.channels.get(id) ?? id;
@@ -139,7 +144,7 @@ class SlackConnection {
     if (!item) return;
     // The original connection keeps its ids, so its items stay deduplicated.
     if (this.id !== DEFAULT_CONNECTION) item.id = `slack:${this.id}:${m.channel}:${m.ts}`;
-    item.context = { ...item.context, connectionId: this.id };
+    item.context = { ...item.context, connectionId: this.id, ...(m.user && this.avatars.get(m.user) ? { avatar: this.avatars.get(m.user) } : {}) };
     addInboxItem(item);
   }
 
@@ -157,9 +162,17 @@ class SlackConnection {
   }
 
   toThreadMessage(m: SlackMessage): ThreadMessage {
-    const raw = m as SlackMessage & { username?: string; bot_profile?: { name?: string }; reactions?: { name: string; count: number; users?: string[] }[] };
+    const raw = m as SlackMessage & {
+      username?: string;
+      bot_profile?: { name?: string; icons?: { image_72?: string; image_48?: string } };
+      icons?: { image_72?: string; image_48?: string };
+      reactions?: { name: string; count: number; users?: string[] }[];
+    };
     const me = this.config.userId;
+    const avatar = m.user ? this.avatars.get(m.user)
+      : raw.bot_profile?.icons?.image_72 || raw.bot_profile?.icons?.image_48 || raw.icons?.image_72 || raw.icons?.image_48;
     return {
+      ...(avatar ? { avatar } : {}),
       user: m.user ?? '',
       name: m.user ? this.userName(m.user) : raw.bot_profile?.name || raw.username || 'App',
       ts: m.ts, mine: m.user === me, bot: !!m.bot_id,
@@ -203,6 +216,15 @@ class SlackConnection {
         } else if (msg.type === 'events_api' && msg.payload?.event?.type === 'message') {
           void this.ingest(msg.payload.event);
           void this.live(msg.payload.event);
+        } else if (msg.type === 'events_api' && /^reaction_(added|removed)$/.test(String(msg.payload?.event?.type))) {
+          const ev = msg.payload!.event as unknown as { type: string; user: string; reaction: string; item?: { channel?: string; ts?: string } };
+          if (ev.item?.channel && ev.item.ts) {
+            broadcast({
+              type: 'slack_reaction', connectionId: this.id, channel: ev.item.channel, ts: ev.item.ts,
+              name: ev.reaction, added: ev.type === 'reaction_added', mine: ev.user === this.config.userId,
+              ...(resolveEmoji(ev.reaction) ?? {}),
+            });
+          }
         } else if (msg.type === 'disconnect') {
           ws.close();
         }
@@ -272,13 +294,13 @@ class SlackConnection {
   // ── what the Inbox does with an item ────────────────────────────────────
   /** The conversation around an item: its thread in a channel (the way Slack
    *  opens it), the last few messages in a DM. */
-  async thread(channel: string, ts: string, threadTs: string | null): Promise<ThreadMessage[]> {
+  async thread(channel: string, ts: string, threadTs: string | null, limit = 8): Promise<ThreadMessage[]> {
     const token = this.config.userToken;
     const replies = async (root: string) =>
       (await api<{ messages: SlackMessage[] }>('conversations.replies', { channel, ts: root, limit: 40 }, token)).messages;
     let msgs: SlackMessage[];
     if (channel.startsWith('D') && !threadTs) {
-      msgs = (await api<{ messages: SlackMessage[] }>('conversations.history', { channel, latest: ts, inclusive: true, limit: 8 }, token)).messages.reverse();
+      msgs = (await api<{ messages: SlackMessage[] }>('conversations.history', { channel, latest: ts, inclusive: true, limit }, token)).messages.reverse();
     } else {
       // An item stored without its thread_ts finds it from the message itself.
       msgs = await replies(threadTs ?? ts);
@@ -288,6 +310,18 @@ class SlackConnection {
     // Authors and everyone mentioned, so no row reads as a raw user id.
     await this.warmMentions(msgs);
     return msgs.map(m => this.toThreadMessage(m));
+  }
+
+  /** Add or take back the user's reaction on a message. */
+  async react(channel: string, ts: string, name: string, remove: boolean): Promise<void> {
+    await api(remove ? 'reactions.remove' : 'reactions.add', { channel, timestamp: ts, name }, this.config.userToken);
+  }
+
+  /** The DM with a user (opened if there was none yet). */
+  async openDm(user: string): Promise<{ channel: string; name: string; avatar?: string }> {
+    const r = await api<{ channel: { id: string } }>('conversations.open', { users: user }, this.config.userToken);
+    await this.warmUser(user);
+    return { channel: r.channel.id, name: this.userName(user), ...(this.avatars.get(user) ? { avatar: this.avatars.get(user) } : {}) };
   }
 
   /** Reply as the user: in the thread when there is one, else in the DM. */
@@ -386,9 +420,13 @@ export function moveSlackConnection(from: string, to: string): SlackStatus {
   return moved.status;
 }
 
-export function slackThread(id: string, channel: string, ts: string, threadTs: string | null): Promise<ThreadMessage[]> {
-  return conn(id).thread(channel, ts, threadTs);
+export function slackThread(id: string, channel: string, ts: string, threadTs: string | null, limit?: number): Promise<ThreadMessage[]> {
+  return conn(id).thread(channel, ts, threadTs, limit);
 }
+export function slackReact(id: string, channel: string, ts: string, name: string, remove: boolean): Promise<void> {
+  return conn(id).react(channel, ts, name, remove);
+}
+export function slackOpenDm(id: string, user: string) { return conn(id).openDm(user); }
 export function slackReply(id: string, channel: string, threadTs: string | null, text: string): Promise<void> {
   return conn(id).reply(channel, threadTs, text);
 }
@@ -418,6 +456,9 @@ oauth_config:
       - search:read
       - chat:write
       - emoji:read
+      - reactions:read
+      - reactions:write
+      - im:write
 settings:
   event_subscriptions:
     user_events:
@@ -425,6 +466,8 @@ settings:
       - message.groups
       - message.im
       - message.mpim
+      - reaction_added
+      - reaction_removed
   socket_mode_enabled: true
   org_deploy_enabled: false
   token_rotation_enabled: false

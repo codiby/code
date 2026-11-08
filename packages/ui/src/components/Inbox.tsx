@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowUp, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
+  ArrowLeft, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
   Loader2, MessageCircle, Pause, RefreshCw, Sparkles, UserX, X,
 } from 'lucide-react';
 import { slackConnectionOf, type ClaudeClient, type SlackStatus, type SlackThreadMessage } from '../lib/claude-client';
 import { BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
 import type { ProjectFolder } from '../lib/project-scope';
-import { Markdown } from './Markdown';
+import { SlackAvatar, SlackConversation } from './SlackConversation';
 
 export interface HandOff { cwd: string; remoteId: string | null; prompt: string; itemId: string }
 
@@ -75,7 +75,9 @@ function SourceTile({ row }: { row: InboxRow }) {
       <Icon size={17} strokeWidth={1.8} />
       {s
         ? <span className="ib-st" style={{ background: s.bg }}><s.icon size={10} strokeWidth={2.6} /></span>
-        : row.person && <span className="ib-who" style={{ background: personColor(row.title) }}>{row.person}</span>}
+        : typeof row.item?.context.avatar === 'string'
+          ? <img className="ib-who" src={row.item.context.avatar} alt="" />
+          : row.person && <span className="ib-who" style={{ background: personColor(row.title) }}>{row.person}</span>}
     </div>
   );
 }
@@ -84,6 +86,13 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
   const [tab, setTab] = useState<'all' | InboxSource>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
+  /** A DM opened from a person's name or photo, shown in place of the detail. */
+  const [dm, setDm] = useState<{ connectionId: string; channel: string; name: string; avatar?: string } | null>(null);
+  const openDm = async (connectionId: string, user: string, name: string) => {
+    if (!client) return;
+    try { setDm({ connectionId, ...(await client.slackOpenDm(connectionId, user)) }); }
+    catch (e) { alert(`Couldn't open the DM with ${name}: ${(e as Error).message}`); }
+  };
 
   const visible = useMemo(() => rows.filter(r => tab === 'all' || r.source === tab), [rows, tab]);
   const counts = useMemo(() => {
@@ -151,7 +160,7 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
               <div key={b.key}>
                 <div className="ib-grp">{b.label}</div>
                 {list.map(r => (
-                  <div key={r.id} className={`ib-row ${r.id === selected ? 'sel' : ''}`} onClick={() => { setSelected(r.id); setSetup(false); }}>
+                  <div key={r.id} className={`ib-row ${r.id === selected && !dm ? 'sel' : ''}`} onClick={() => { setSelected(r.id); setSetup(false); setDm(null); }}>
                     <SourceTile row={r} />
                     <div className="min-w-0">
                       <div className={`ib-kind ib-k-${r.source}`}>{SOURCE_LABEL[r.source]} <span className="ib-where">· {r.where}</span></div>
@@ -174,7 +183,9 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
       </section>
 
       <section className="ib-detail">
-        {setup || (!current && slackOff && !scopedProjectId)
+        {dm
+          ? <DmView client={client} dm={dm} onBack={() => setDm(null)} onOpenDm={(user, name) => openDm(dm.connectionId, user, name)} />
+          : setup || (!current && slackOff && !scopedProjectId)
           ? <SlackByProject projects={projects} connections={slackConnections} onEditProject={onEditProject} onClose={() => setSetup(false)} />
           : current
             ? <Detail
@@ -186,6 +197,7 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
                 onOpenSession={onOpenSession}
                 onDone={() => onDone(current)}
                 onHandToAgent={onHandToAgent}
+                onOpenDm={(user, name) => openDm(slackConnectionOf(current.item!), user, name)}
               />
             : <div className="ib-empty">Select something on the left.</div>}
       </section>
@@ -195,53 +207,16 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
 
 // ── detail ──────────────────────────────────────────────────────────────────
 
-function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone, onHandToAgent }: {
+function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone, onHandToAgent, onOpenDm }: {
   row: InboxRow; client: ClaudeClient | null;
   projects: Props['projects']; defaultProjectId: string | null;
   onOpenSession: (id: string) => void; onDone: () => void; onHandToAgent: (h: HandOff) => void;
+  onOpenDm: (user: string, name: string) => void;
 }) {
   const ctx = (row.item?.context ?? {}) as Record<string, string | number | boolean | null>;
+  // The conversation as loaded, for the agent's prompt.
   const [thread, setThread] = useState<SlackThreadMessage[] | null>(null);
-  const [threadError, setThreadError] = useState<string | null>(null);
-  const [reply, setReply] = useState('');
-  const [sending, setSending] = useState(false);
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? projects[0]?.id ?? '');
-
-  useEffect(() => {
-    if (row.source !== 'slack' || !client) return;
-    let live = true;
-    client.slackThread(slackConnectionOf(row.item!), String(ctx.channel), String(ctx.ts), ctx.threadTs ? String(ctx.threadTs) : null)
-      .then(t => { if (live) setThread(t); })
-      .catch(e => { if (live) setThreadError((e as Error).message); });
-    return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [row.id]);
-
-  // Live: a message in this conversation, from anyone (you replying from
-  // Slack included), joins it as it happens.
-  useEffect(() => {
-    if (row.source !== 'slack') return;
-    const onMsg = (e: Event) => {
-      const ev = (e as CustomEvent<{ channel: string; threadTs: string | null; message: SlackThreadMessage }>).detail;
-      if (ev.channel !== ctx.channel) return;
-      setThread(prev => {
-        if (!prev) return prev;
-        const direct = String(ctx.channel).startsWith('D');
-        // A channel message with no replies yet roots its thread-to-be.
-        const rootTs = prev[0]?.root ? prev[0].ts
-          : ctx.threadTs ? String(ctx.threadTs)
-          : direct ? null : prev[0]?.ts ?? null;
-        const belongs = rootTs ? ev.threadTs === rootTs : direct && !ev.threadTs;
-        if (!belongs || prev.some(m => m.ts === ev.message.ts)) return prev;
-        const next = [...prev, ev.message];
-        if (rootTs && next[0]?.ts === rootTs && !next[0].root) next[0] = { ...next[0], root: true };
-        return next;
-      });
-    };
-    window.addEventListener('codiby:slack-message', onMsg);
-    return () => window.removeEventListener('codiby:slack-message', onMsg);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [row.id]);
 
   const [declining, setDeclining] = useState(false);
   const project = projects.find(p => p.id === projectId);
@@ -297,37 +272,18 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
     return (
       <>
         {header}
-        <div className="ib-thread">
-          {!thread && !threadError && <div className="ib-faint flex items-center gap-2"><Loader2 size={13} className="animate-spin" /> Loading conversation…</div>}
-          {threadError && <div className="ib-faint">Couldn't load the conversation: {threadError}</div>}
-          {(thread ?? []).map((m, i, all) => (
-            <Fragment key={m.ts}>
-            <div className={`ib-msg ${m.ts === ctx.ts ? 'hl' : ''}`}>
-              <span className="ib-av" style={{ background: personColor(m.name) }}>{initials(m.name)}</span>
-              <div className="min-w-0">
-                <div className="ib-who-line"><b>{m.mine ? 'You' : m.name}</b><span>{new Date(Number(m.ts) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
-                {/* Slack's mrkdwn, converted by the bridge; older bridges send only text. */}
-                {m.markdown
-                  ? <Markdown text={m.markdown} className="ib-md" />
-                  : <div className="ib-txt">{m.text}</div>}
-                {!!m.reactions?.length && (
-                  <div className="ib-reactions">
-                    {m.reactions.map(r => (
-                      <span key={r.name} className={`ib-reaction ${r.mine ? 'mine' : ''}`} title={`:${r.name}:`}>
-                        {r.unicode ?? (r.url ? <img src={r.url} alt={`:${r.name}:`} /> : `:${r.name}:`)}
-                        <span>{r.count}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            {/* Like Slack's thread pane: the opening message, then its replies. */}
-            {m.root && i === 0 && all.length > 1 && (
-              <div className="ib-sep">{all.length - 1} {all.length === 2 ? 'reply' : 'replies'}</div>
-            )}
-            </Fragment>
-          ))}
+        <SlackConversation
+          client={client}
+          connectionId={slackConnectionOf(row.item!)}
+          channel={String(ctx.channel)}
+          ts={String(ctx.ts)}
+          threadTs={ctx.threadTs ? String(ctx.threadTs) : null}
+          highlightTs={String(ctx.ts)}
+          itemId={row.item?.id}
+          isDm={row.item?.kind === 'dm'}
+          onOpenDm={onOpenDm}
+          onThread={setThread}
+        >
           {row.agent ? <AgentCard row={row} onOpenSession={onOpenSession} onDone={onDone} /> : <div className="ib-agent">
             <Bot size={16} />
             <div className="min-w-0 flex-1">
@@ -349,35 +305,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
               </div>
             </div>
           </div>}
-        </div>
-        <div className="ib-reply">
-          <textarea
-            value={reply}
-            onChange={e => setReply(e.target.value)}
-            placeholder={ctx.inThread || ctx.threadTs ? 'Reply in thread…' : 'Reply…'}
-            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) (e.currentTarget.form ?? e.currentTarget.parentElement)?.querySelector<HTMLButtonElement>('.ib-send')?.click(); }}
-          />
-          <div className="ib-rb">
-            <span className="ib-faint text-[11.5px]">Sends as you · ⌘↩</span>
-            <button
-              type="button" className="ib-send" disabled={!reply.trim() || sending || !client}
-              onClick={async () => {
-                if (!client) return;
-                setSending(true);
-                try {
-                  // A thread is answered in the thread; a channel mention opens one on
-                  // the message; a DM is answered in the conversation itself.
-                  const threadTs = ctx.threadTs ? String(ctx.threadTs) : row.item?.kind === 'dm' ? null : String(ctx.ts);
-                  await client.slackReply(slackConnectionOf(row.item!), String(ctx.channel), threadTs, reply, row.item?.id);
-                  setReply('');
-                } catch (e) { alert(`Couldn't send: ${(e as Error).message}`); }
-                finally { setSending(false); }
-              }}
-            >
-              {sending ? <Loader2 size={14} className="animate-spin" /> : <ArrowUp size={15} />}
-            </button>
-          </div>
-        </div>
+        </SlackConversation>
       </>
     );
   }
@@ -436,6 +364,29 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
           </button>
         </div>
       </div>
+    </>
+  );
+}
+
+// ── a DM opened from a person ──────────────────────────────────────────────
+
+function DmView({ client, dm, onBack, onOpenDm }: {
+  client: ClaudeClient | null;
+  dm: { connectionId: string; channel: string; name: string; avatar?: string };
+  onBack: () => void; onOpenDm: (user: string, name: string) => void;
+}) {
+  // "Now", fixed when the DM opens, so the conversation reads up to the present.
+  const [now] = useState(() => (Date.now() / 1000).toFixed(6));
+  return (
+    <>
+      <div className="ib-dh">
+        <button type="button" className="ib-icon" onClick={onBack} title="Back"><ArrowLeft size={15} /></button>
+        <span className="ib-dkind ib-k-slack">Slack</span>
+        <SlackAvatar name={dm.name} url={dm.avatar} size={22} />
+        <span className="font-medium truncate">{dm.name}</span>
+        <span className="ib-faint text-[12px]">direct message</span>
+      </div>
+      <SlackConversation client={client} connectionId={dm.connectionId} channel={dm.channel} ts={now} threadTs={null} isDm limit={40} onOpenDm={onOpenDm} />
     </>
   );
 }

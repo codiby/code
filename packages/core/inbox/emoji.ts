@@ -68,3 +68,29 @@ export function emojifyMarkdown(text: string): string {
     return 'unicode' in g ? g.unicode : `![:${name}:](${g.url})`;
   });
 }
+
+export interface EmojiMatch { name: string; unicode?: string; url?: string }
+
+/** Emoji by name for a picker: prefix matches first, then anywhere in the
+ *  name, then tags (`ok` finds 👍). Empty query → a few common ones. */
+export function searchEmoji(query: string, limit = 48): EmojiMatch[] {
+  const q = query.trim().toLowerCase().replace(/^:|:$/g, '');
+  if (!q) {
+    return ['thumbsup', 'heart', 'joy', 'pray', 'eyes', 'tada', 'white_check_mark', 'fire', 'rocket', 'raised_hands',
+      'clap', 'ok_hand', '100', 'thinking_face', 'grinning', 'sweat_smile', 'muscle', 'wave', 'x', 'warning']
+      .map(name => ({ name, unicode: standard.get(name)! })).filter(e => e.unicode);
+  }
+  const out: EmojiMatch[] = [];
+  const seen = new Set<string>();
+  const push = (name: string, glyph: EmojiGlyph | null) => {
+    if (!glyph || seen.has(name) || out.length >= limit) return;
+    seen.add(name);
+    out.push({ name, ...glyph });
+  };
+  for (const pass of [(n: string) => n.startsWith(q), (n: string) => n.includes(q)]) {
+    for (const name of standard.keys()) if (pass(name)) push(name, { unicode: standard.get(name)! });
+    for (const name of custom.keys()) if (pass(name)) push(name, resolveEmoji(name));
+  }
+  for (const g of gemoji) if (g.tags.some(t => t.startsWith(q))) push(g.names[0]!, { unicode: g.emoji });
+  return out;
+}

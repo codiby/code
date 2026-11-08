@@ -78,7 +78,8 @@ import {
   handleUpdateStatus,
 } from './handlers/boards';
 import { linkInboxSession, listOpenInbox, markInboxDone, markInboxRead, pruneInbox, setInboxBroadcaster } from './inbox/store';
-import { configureSlack, disconnectSlack, moveSlackConnection, setSlackBroadcaster, slackReply, slackStatuses, slackThread, SLACK_MANIFEST, startSlack } from './inbox/slack';
+import { configureSlack, disconnectSlack, moveSlackConnection, setSlackBroadcaster, slackOpenDm, slackReact, slackReply, slackStatuses, slackThread, SLACK_MANIFEST, startSlack } from './inbox/slack';
+import { searchEmoji } from './inbox/emoji';
 import { declineReview, pollPullRequests, startPullRequestPolling } from './inbox/github';
 import { buildOverview } from './stats/overview';
 import { configureAutomationRunner, completeAutomationRun, failAutomationRun } from './automation/runner';
@@ -1500,7 +1501,8 @@ app.post('/integrations/slack/:id/move', async (c) => {
 app.get('/integrations/slack/:id/thread', async (c) => {
   const u = new URL(c.req.url);
   try {
-    const msgs = await slackThread(c.req.param('id'), u.searchParams.get('channel') ?? '', u.searchParams.get('ts') ?? '', u.searchParams.get('threadTs') || null);
+    const limit = Number(u.searchParams.get('limit')) || undefined;
+    const msgs = await slackThread(c.req.param('id'), u.searchParams.get('channel') ?? '', u.searchParams.get('ts') ?? '', u.searchParams.get('threadTs') || null, limit);
     return Response.json(msgs, { headers: corsHeaders });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
@@ -1517,6 +1519,26 @@ app.post('/integrations/slack/:id/reply', async (c) => {
     return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
   }
 });
+app.post('/integrations/slack/:id/react', async (c) => {
+  try {
+    const b = await c.req.json() as { channel?: string; ts?: string; name?: string; remove?: boolean };
+    if (!b.channel || !b.ts || !b.name) throw new Error('channel, ts and name are required');
+    await slackReact(c.req.param('id'), b.channel, b.ts, b.name, !!b.remove);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
+app.post('/integrations/slack/:id/dm', async (c) => {
+  try {
+    const b = await c.req.json() as { user?: string };
+    if (!b.user) throw new Error('user is required');
+    return Response.json(await slackOpenDm(c.req.param('id'), b.user), { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
+app.get('/integrations/slack-emoji', (c) => Response.json(searchEmoji(new URL(c.req.url).searchParams.get('q') ?? ''), { headers: corsHeaders }));
 // Decline a review request: take yourself off the PR's reviewers on GitHub,
 // then close the item.
 app.post('/inbox/:id/decline-review', async (c) => {

@@ -494,7 +494,9 @@ export interface SlackStatus {
 export const slackConnectionOf = (item: { context: Record<string, unknown> }) => String(item.context.connectionId ?? 'default');
 export interface SlackLiveMessage { connectionId?: string; channel: string; threadTs: string | null; message: SlackThreadMessage }
 export interface SlackReaction { name: string; count: number; mine: boolean; unicode?: string; url?: string }
-export interface SlackThreadMessage { user: string; name: string; text: string; markdown?: string; ts: string; mine: boolean; bot?: boolean; reactions?: SlackReaction[]; root?: boolean }
+export interface SlackThreadMessage { user: string; name: string; text: string; markdown?: string; ts: string; mine: boolean; bot?: boolean; reactions?: SlackReaction[]; root?: boolean; avatar?: string }
+export interface SlackLiveReaction { connectionId: string; channel: string; ts: string; name: string; added: boolean; mine: boolean; unicode?: string; url?: string }
+export interface EmojiMatch { name: string; unicode?: string; url?: string }
 
 /** Mirrors core's `OverviewResponse` (packages/core/stats/overview.ts). */
 export interface OverviewStats {
@@ -826,6 +828,8 @@ type ClientCallbacks = {
   onSlackStatus?: (id: string, status: SlackStatus) => void;
   /** A Slack message as it happens, already formatted. */
   onSlackMessage?: (ev: SlackLiveMessage) => void;
+  /** Someone (you included) reacted to, or un-reacted from, a message. */
+  onSlackReaction?: (ev: SlackLiveReaction) => void;
   /** A remote bridge's own preferences. Only its tab groups are of any use
    *  here — they're folded into the sidebar by name so a project that exists on
    *  both machines reads as one folder. `{}` means the remote went away and its
@@ -1405,6 +1409,9 @@ export class ClaudeClient {
         break;
       case 'slack_message':
         if (!remoteId) this.callbacks.onSlackMessage?.(msg as unknown as SlackLiveMessage);
+        break;
+      case 'slack_reaction':
+        if (!remoteId) this.callbacks.onSlackReaction?.(msg as unknown as SlackLiveReaction);
         break;
       case 'slack_status':
         if (!remoteId) this.callbacks.onSlackStatus?.(String(msg.id ?? 'default'), msg.status as SlackStatus);
@@ -2402,10 +2409,21 @@ export class ClaudeClient {
   moveSlack(from: string, to: string): Promise<SlackStatus> {
     return this.json(`/integrations/slack/${encodeURIComponent(from)}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to }) });
   }
-  slackThread(connectionId: string, channel: string, ts: string, threadTs: string | null): Promise<SlackThreadMessage[]> {
-    const q = new URLSearchParams({ channel, ts, ...(threadTs ? { threadTs } : {}) });
+  slackThread(connectionId: string, channel: string, ts: string, threadTs: string | null, limit?: number): Promise<SlackThreadMessage[]> {
+    const q = new URLSearchParams({ channel, ts, ...(threadTs ? { threadTs } : {}), ...(limit ? { limit: String(limit) } : {}) });
     return this.json(`/integrations/slack/${encodeURIComponent(connectionId)}/thread?${q}`);
   }
+  slackReact(connectionId: string, channel: string, ts: string, name: string, remove: boolean): Promise<unknown> {
+    return this.json(`/integrations/slack/${encodeURIComponent(connectionId)}/react`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channel, ts, name, remove }),
+    });
+  }
+  slackOpenDm(connectionId: string, user: string): Promise<{ channel: string; name: string; avatar?: string }> {
+    return this.json(`/integrations/slack/${encodeURIComponent(connectionId)}/dm`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user }),
+    });
+  }
+  searchEmoji(q: string): Promise<EmojiMatch[]> { return this.json(`/integrations/slack-emoji?q=${encodeURIComponent(q)}`); }
   slackReply(connectionId: string, channel: string, threadTs: string | null, text: string, itemId?: string): Promise<unknown> {
     return this.json(`/integrations/slack/${encodeURIComponent(connectionId)}/reply`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

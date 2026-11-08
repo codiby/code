@@ -109,3 +109,13 @@ describe('itemsAnsweredBy', () => {
     expect(itemsAnsweredBy(items, { channel: 'C1', ts: '300.0' })).toEqual([]);
   });
 });
+
+import { searchEmoji } from './emoji';
+describe('searchEmoji', () => {
+  test('prefix first, tags too, and a default set', () => {
+    expect(searchEmoji('rock')[0]).toEqual({ name: 'rock', unicode: '🪨' });
+    expect(searchEmoji('rock').some(e => e.name === 'rocket')).toBe(true);
+    expect(searchEmoji('ok').some(e => e.unicode === '👍')).toBe(true);
+    expect(searchEmoji('')[0]?.name).toBe('thumbsup');
+  });
+});
