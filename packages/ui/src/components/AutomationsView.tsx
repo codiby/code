@@ -164,7 +164,7 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-base">
+    <div className="flex-1 flex flex-col min-w-0 bg-surface">
       <div className="h-12 border-b border-border flex items-center justify-between px-5 shrink-0">
         <h1 className="text-[15px] font-semibold text-zinc-200 flex items-center gap-2">
           <Zap size={16} strokeWidth={2} className="text-indigo-400" />

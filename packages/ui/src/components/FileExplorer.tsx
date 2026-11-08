@@ -2174,7 +2174,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, works
   return (
     <ExplorerCtx.Provider value={ctxValue}>
       <aside
-        className={`relative bg-[#0e0f12] flex flex-col shrink-0 min-h-0 overflow-hidden select-none ${collapsed ? 'w-0' : ''}`}
+        className={`explorer-panel relative bg-[#0e0f12] flex flex-col shrink-0 min-h-0 overflow-hidden select-none ${collapsed ? 'w-0' : ''}`}
         style={collapsed ? undefined : { width: cardsCollapsed ? 50 : sidebarWidth }}
       >
         {/* Resize handle (hidden while collapsed — width is fixed) */}
@@ -2203,7 +2203,7 @@ export const FileExplorer = memo(function FileExplorer({ client, rootPath, works
             header, a hairline divider sits under it, and the active section
             (or the search card) fills the rest. */}
         {!cardsCollapsed && (
-          <div className={`flex-1 min-h-0 flex flex-col m-[7px] ${PANEL_CARD_CLS}`}>
+          <div className={`explorer-card flex-1 min-h-0 flex flex-col m-[7px] ${PANEL_CARD_CLS}`}>
             <PanelRail
               collapsed={cardsCollapsed}
               items={railItems}

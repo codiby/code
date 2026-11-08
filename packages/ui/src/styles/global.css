@@ -19,9 +19,9 @@
    * inherited body font pick these up, so the app renders identically
    * everywhere. The system stacks stay on as a last-resort fallback in case a
    * woff2 fails to load. */
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif,
+  --font-sans: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif,
                "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
-  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo,
+  --font-mono: "Geist Mono Variable", "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo,
                Consolas, "Liberation Mono", monospace;
 
   /* Palette aligned with the SessionTabStrip / titlebar mockup the design
@@ -224,6 +224,119 @@ html.light .app-main:not(:has(.workspace-panel)) {
   overflow: hidden;
 }
 html.light .app-main:not(:has(.workspace-panel)):first-child { margin-left: 8px; }
+
+/* ---------------------------------------------------------------------------
+   Sidebar, both themes. It sits on the chrome tone with no divider, so the
+   floating content panel carries the edge. The selected row is a raised chip
+   (a surface step plus a hairline) rather than a tint, the same anatomy for
+   nav items, group rows and session rows. */
+.tab-bar {
+  background: var(--color-base);
+  border-color: transparent;
+}
+.tab-bar .nav-chip.is-active {
+  background: var(--color-surface-light);
+  box-shadow: 0 0 0 1px var(--color-border);
+  color: var(--color-zinc-100);
+}
+html.light .tab-bar .nav-chip.is-active {
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-border-light), 0 1px 1px rgba(30, 28, 40, 0.04);
+}
+/* Rails under an expanded folder: a single neutral hairline. The folder's
+   colour already shows on its own icon; repeating it down the rail made the
+   tree read as a stack of coloured bars. */
+.tab-bar .tree-rail { border-left: 1px solid var(--color-border); }
+html.light .tab-bar .tree-rail { border-left-color: var(--color-zinc-700); }
+:root {
+  --dot-run: #3ccf8e;
+  --dot-wait: #e3a33b;
+  --dot-err: #ef6b5e;
+  --dot-idle: #45464e;
+}
+html.light {
+  --dot-run: #1f9d6b;
+  --dot-wait: #c27a12;
+  --dot-err: #c9483b;
+  --dot-idle: #c4c2cf;
+}
+@keyframes sessionPulse { 50% { opacity: 0.35; } }
+
+/* Brand mark: an ink square with a rotated chip of the chrome tone. */
+.brand-mark {
+  width: 20px; height: 20px; border-radius: 5px;
+  background: var(--color-zinc-100);
+  display: grid; place-items: center; flex: none;
+}
+.brand-mark i {
+  width: 8px; height: 8px; border-radius: 2px; display: block;
+  background: var(--color-base); transform: rotate(45deg);
+}
+
+.tab-bar .sidebar-section {
+  font-size: 11.5px;
+  color: var(--color-zinc-600);
+}
+
+/* ---------------------------------------------------------------------------
+   Standard shell: sidebar on the chrome tone, everything else in one floating
+   panel whose first row is the path bar. Both themes. */
+.shell-panel {
+  /* Positioned so it paints above the sidebar (which is `relative` for its
+     resize handle); otherwise the sidebar covers the panel's left hairline
+     and its rounded corners. */
+  position: relative;
+  z-index: 1;
+  margin: 8px 8px 8px 2px;
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-border), 0 1px 3px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+html.light .shell-panel {
+  box-shadow: 0 0 0 1px var(--color-border-light), 0 1px 3px rgba(30, 28, 40, 0.04);
+}
+/* The panel is the card now: the inner cards the light theme draws for
+   `.app-main` and each workspace panel would nest a card in a card. */
+html.light .shell-panel .app-main:not(:has(.workspace-panel)) {
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.shell-panel .app-titlebar.path-bar {
+  background: transparent;
+  border-color: var(--color-border);
+}
+html.light .shell-panel .app-titlebar.path-bar { border-color: var(--color-border-light); }
+.path-slash {
+  color: var(--color-border-light);
+  font-size: 18px;
+  font-weight: 300;
+  margin: 0 2px;
+  user-select: none;
+}
+html.light .path-slash { color: var(--color-zinc-700); }
+.path-kbd {
+  font: 500 10.5px var(--font-mono);
+  color: var(--color-zinc-500);
+  border: 1px solid var(--color-border-light);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 15px;
+}
+html.light .path-kbd { border-color: var(--color-zinc-700); }
+.path-search:hover { color: var(--color-zinc-400); }
+/* Solid ink: near-white on dark, near-black on light. */
+.path-primary {
+  background: #ececf1;
+  color: #111214;
+}
+.path-primary:hover { background: #ffffff; }
+.path-primary .path-kbd { color: #6b6b75; border-color: #c4c4cc; }
+html.light .path-primary { background: #1d1c24; color: #fbfbfd; }
+html.light .path-primary:hover { background: #2f2e38; }
+html.light .path-primary .path-kbd { color: #a3a2ae; border-color: #4a4955; }
 
 /* Chrome surfaces painted with arbitrary dark-hex utilities (bg-[#…]) that
    neither the semantic tokens nor the ramp inversion can reach: the sessions
@@ -1202,3 +1315,132 @@ html.light .ex-over { background: var(--color-surface); box-shadow: 0 0 0 1px va
 /* Archive suggestion pill above the composer (ArchiveSuggestionPill.tsx). */
 .archive-pill { animation: archive-pill-in .3s ease-out; }
 @keyframes archive-pill-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* Standard shell: the status bar is part of the chrome, under the panel. */
+body:has(.shell-panel) .app-statusbar {
+  background: var(--color-base);
+  border-color: transparent;
+}
+body:has(.shell-panel) .shell-panel { margin-bottom: 0; }
+
+/* ---------------------------------------------------------------------------
+   Overview screen. Measurements follow the approved mockup: 1080px column,
+   22px title, a hairline KPI strip, monochrome stacked bars with today in
+   the accent, and a status-grouped session table. */
+.overview {
+  --ov-ink: var(--color-zinc-100);
+  --ov-ink2: var(--color-zinc-400);
+  --ov-mute: var(--color-zinc-600);
+  --ov-faint: #5c5c66;
+  --ov-line: var(--color-border);
+  --ov-raise: var(--color-surface-light);
+  --ov-row-hover: var(--color-surface-light);
+  --ov-grp: #141517;
+  --ov-ok: #3ccf8e; --ov-err: #ef6b5e;
+  --ov-c1: #a9a9b4; --ov-c2: #5d5d68; --ov-c3: #34353c;
+  --ov-t1: #8b7cf6; --ov-t2: #5f53b8; --ov-t3: #3a3470;
+  --ov-grid: #202126; --ov-grid0: var(--color-border);
+  --ov-warn-bg: #2a2112; --ov-warn-bd: #4d3a17; --ov-warn-fg: #e3a33b;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ov-ink);
+}
+html.light .overview {
+  --ov-faint: #a3a2ae;
+  --ov-line: var(--color-border-light);
+  --ov-row-hover: #f6f5f9;
+  --ov-grp: #f7f6fa;
+  --ov-ok: #1f9d6b; --ov-err: #c9483b;
+  --ov-c1: #1d1c24; --ov-c2: #8d8a9c; --ov-c3: #cfcdd8;
+  --ov-t1: #5b4bd6; --ov-t2: #9b90e6; --ov-t3: #d6d1f5;
+  --ov-grid: #eeedf2; --ov-grid0: #dddbe5;
+  --ov-warn-bg: #fdf6ea; --ov-warn-bd: #ecd3a8; --ov-warn-fg: #9a5f0c;
+}
+.ov-wrap { max-width: 1080px; margin: 0 auto; padding: 36px 40px 48px; }
+.ov-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 28px; }
+.ov-head h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; margin: 0; }
+.ov-head p { margin: 4px 0 0; color: var(--ov-mute); }
+.ov-seg { display: flex; padding: 2px; border-radius: 7px; background: var(--ov-raise); margin-left: auto; }
+.ov-seg button { padding: 4px 10px; border-radius: 5px; color: var(--ov-mute); font-size: 12.5px; }
+.ov-seg button.on { background: var(--color-surface); color: var(--ov-ink); box-shadow: 0 0 0 1px var(--ov-line), 0 1px 1px rgba(0,0,0,.04); }
+
+.ov-kpis { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--ov-line); border-radius: 10px; margin-bottom: 20px; }
+.ov-kpi { padding: 14px 16px; min-width: 0; }
+.ov-kpi + .ov-kpi { border-left: 1px solid var(--ov-line); }
+.ov-kpi .l { color: var(--ov-mute); font-size: 12px; }
+.ov-kpi .v { font-size: 22px; font-weight: 600; letter-spacing: -0.6px; margin-top: 4px; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.ov-delta { font-size: 12px; font-weight: 500; letter-spacing: 0; }
+.ov-delta.up { color: var(--ov-ok); }
+.ov-delta.down { color: var(--ov-err); }
+.ov-delta.muted { color: var(--ov-mute); }
+.ov-spark { display: block; margin-top: 10px; width: 100%; height: 22px; }
+.ov-spark polyline { stroke: var(--ov-c1); stroke-width: 1.2; }
+
+.ov-panel { border: 1px solid var(--ov-line); border-radius: 10px; margin-bottom: 20px; overflow: hidden; }
+.ov-panel > header { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 16px; border-bottom: 1px solid var(--ov-line); }
+.ov-panel h2 { font-size: 13px; font-weight: 600; margin: 0; }
+.ov-panel .c { color: var(--ov-faint); }
+.ov-panel header .r { margin-left: auto; display: flex; gap: 14px; align-items: center; color: var(--ov-mute); font-size: 12px; }
+.ov-panel .lg { display: flex; align-items: center; gap: 6px; }
+.ov-panel .lg i { width: 8px; height: 8px; border-radius: 2px; display: block; }
+.ov-panel .lg i.c1 { background: var(--ov-c1); }
+.ov-panel .lg i.c2 { background: var(--ov-c2); }
+.ov-panel .lg i.c3 { background: var(--ov-c3); }
+.ov-chart-wrap { padding: 12px 16px 8px; }
+.ov-empty { height: 160px; display: grid; place-items: center; color: var(--ov-mute); }
+.ov-chart .grid { stroke: var(--ov-grid); }
+.ov-chart .grid0 { stroke: var(--ov-grid0); }
+.ov-chart .axis { fill: var(--ov-faint); font: 11px var(--font-mono); }
+.ov-chart .day { fill: var(--ov-mute); font: 11.5px var(--font-sans); }
+.ov-chart .day.today { fill: var(--ov-ink); }
+.ov-chart .c1 { fill: var(--ov-c1); } .ov-chart .c2 { fill: var(--ov-c2); } .ov-chart .c3 { fill: var(--ov-c3); }
+.ov-chart .t1 { fill: var(--ov-t1); } .ov-chart .t2 { fill: var(--ov-t2); } .ov-chart .t3 { fill: var(--ov-t3); }
+
+.ov-table { width: 100%; border-collapse: collapse; }
+.ov-table th { font-weight: 500; color: var(--ov-mute); font-size: 12px; text-align: left; padding: 8px 16px; border-bottom: 1px solid var(--ov-line); }
+.ov-table td { padding: 0 16px; height: 40px; border-bottom: 1px solid var(--ov-line); white-space: nowrap; }
+.ov-table tr:last-child td { border-bottom: 0; }
+.ov-table tbody tr { cursor: pointer; }
+.ov-table tbody tr:hover td { background: var(--ov-row-hover); }
+.ov-table tr.grp td { height: 30px; background: var(--ov-grp); color: var(--ov-mute); font-size: 12px; cursor: default; }
+.ov-table .ttl { display: flex; align-items: center; gap: 8px; font-weight: 500; min-width: 0; }
+.ov-table .ttl .nm { overflow: hidden; text-overflow: ellipsis; max-width: 380px; }
+.ov-table .tk { font: 11.5px var(--font-mono); color: var(--ov-mute); }
+.ov-table .br { font: 12px var(--font-mono); color: var(--ov-ink2); }
+.ov-table .mdl { color: var(--ov-ink2); }
+.ov-table .add { color: var(--ov-ok); font: 12px var(--font-mono); }
+.ov-table .del { color: var(--ov-err); font: 12px var(--font-mono); margin-left: 6px; }
+.ov-table .r { text-align: right; }
+.ov-table .muted { color: var(--ov-mute); }
+.ov-table .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 5px; font-size: 11.5px; font-weight: 400; box-shadow: inset 0 0 0 1px var(--ov-line); color: var(--ov-ink2); }
+.ov-table .tag.warn { box-shadow: inset 0 0 0 1px var(--ov-warn-bd); color: var(--ov-warn-fg); background: var(--ov-warn-bg); }
+.ov-foot { display: flex; align-items: center; gap: 6px; color: var(--ov-faint); font-size: 12px; margin: -6px 2px 0; }
+
+/* Inside the shell panel, the chat panel and the explorer are regions of the
+   one card, not cards of their own: no inset, no radius, no outline. The
+   explorer is set off by a single hairline. Split panes keep a hairline
+   between them; the focused one is the only one with a ring. */
+.shell-panel .p-1\.5:has(> .workspace-panel) { padding: 0; }
+.shell-panel .workspace-panel,
+html.light .shell-panel .workspace-panel {
+  border-radius: 0;
+  border-color: transparent;
+  box-shadow: none;
+  background: var(--color-surface);
+}
+.shell-panel :has(> .p-1\.5 + .p-1\.5) > .p-1\.5 + .p-1\.5 > .workspace-panel,
+.shell-panel .workspace-panel:not(:only-child) { border-left-color: var(--color-border); }
+.shell-panel .explorer-panel,
+html.light .shell-panel .explorer-panel {
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+}
+html.light .shell-panel .explorer-panel { border-left-color: var(--color-border-light); }
+.shell-panel .explorer-card,
+html.light .shell-panel .explorer-card {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}

@@ -124,11 +124,11 @@ export function UsagePopover() {
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         title="Plan usage"
-        className={`flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium transition-colors group ${
-          open ? 'bg-surface-light text-zinc-100' : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
+        className={`nav-chip w-full shrink-0 flex items-center gap-2.5 h-[30px] px-2 rounded-[7px] text-[13px] transition-colors group ${
+          open ? 'is-active text-zinc-100' : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light/60'
         }`}
       >
-        <Gauge size={15} className={open ? 'text-violet-400' : 'text-zinc-500 group-hover:text-violet-300 transition-colors'} />
+        <Gauge size={15} strokeWidth={1.6} className={open ? 'text-zinc-100' : 'text-zinc-500'} />
         <span className="flex-1 text-left">Usage</span>
         {headline && (
           <span className="flex items-center gap-1.5 shrink-0">

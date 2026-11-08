@@ -77,6 +77,7 @@ import {
   handleUpdateBoard,
   handleUpdateStatus,
 } from './handlers/boards';
+import { buildOverview } from './stats/overview';
 import { configureAutomationRunner, completeAutomationRun, failAutomationRun } from './automation/runner';
 import { startAutomationScheduler } from './automation/scheduler';
 import {
@@ -1460,6 +1461,19 @@ app.get('/automations/:id/runs', (c) => handleListAutomationRuns(c.req.param('id
 app.get('/automations/:id/runs/:runId', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId')));
 app.get('/automations/:id/runs/:runId/result', (c) => handleGetAutomationRun(c.req.param('id'), c.req.param('runId'), true));
 app.post('/automations/:id/runs/:runId/cancel', (c) => handleCancelAutomationRun(c.req.param('id'), c.req.param('runId')));
+
+// ── Overview stats ─────────────────────────────────────────────────────────
+// POST so the scope (a project's session ids) travels in the body.
+app.post('/stats/overview', async (c) => {
+  try {
+    const body = await c.req.json() as { sessionIds?: unknown; days?: unknown };
+    const sessionIds = Array.isArray(body.sessionIds) ? body.sessionIds.filter((x): x is string => typeof x === 'string') : [];
+    const days = typeof body.days === 'number' ? body.days : 7;
+    return Response.json(await buildOverview({ sessionIds, days }), { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
 
 // ── Boards ─────────────────────────────────────────────────────────────────
 app.get('/boards', () => handleListBoards());

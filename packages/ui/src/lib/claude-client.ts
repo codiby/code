@@ -470,6 +470,17 @@ export interface PermissionRequest {
   title?: string;
 }
 
+/** Mirrors core's `OverviewResponse` (packages/core/stats/overview.ts). */
+export interface OverviewStats {
+  days: string[];
+  tokensByProvider: Record<string, number[]>;
+  spend: { total: number; previous: number; daily: number[] };
+  sessions: { active: number; previous: number; daily: number[] };
+  lines: { additions: number; deletions: number; daily: number[] } | null;
+  prs: { merged: number; opened: number; daily: number[] } | null;
+  perSession: Record<string, { branch: string | null; additions: number; deletions: number }>;
+}
+
 export interface SessionInfo {
   id: string;
   name: string;
@@ -2320,6 +2331,22 @@ export class ClaudeClient {
     const resp = await authedFetch(await this.remoteUrl(`${this.serverUrl}/git-info?path=${encodeURIComponent(path)}`, remoteId));
     if (!resp.ok) return { is_git: false };
     return resp.json();
+  }
+
+  /** Overview numbers for a set of (local) sessions over the last `days`.
+   *  Null when the bridge predates the endpoint or the request fails. */
+  async getOverview(sessionIds: string[], days: number): Promise<OverviewStats | null> {
+    try {
+      const resp = await authedFetch(`${this.serverUrl}/stats/overview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionIds, days }),
+      });
+      if (!resp.ok) return null;
+      return await resp.json() as OverviewStats;
+    } catch {
+      return null;
+    }
   }
 
   async getGitModified(root: string, base?: string | null): Promise<{ path: string; staged: boolean; untracked?: boolean; additions?: number; deletions?: number }[]> {

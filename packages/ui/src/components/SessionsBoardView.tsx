@@ -193,7 +193,7 @@ export function SessionsBoardView(props: SessionsBoardViewProps) {
   const openCount = sessions.filter(s => s.status === 'open').length;
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-base relative">
+    <div className="flex-1 flex flex-col min-w-0 bg-surface relative">
       {/* Top bar */}
       <div className="h-12 border-b border-border flex items-center gap-3 px-5 shrink-0">
         <h1 className="text-[15px] font-semibold text-zinc-200 flex items-center gap-2">

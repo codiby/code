@@ -43,6 +43,11 @@ export interface TabGroupInfo {
    *  `autoGroupSessions` toggle which is opt-in for *any* new project. */
   autoClaim?: boolean;
 
+  /** Project the group was created in (see lib/project-scope). Keeps an empty
+   *  group visible while that project is selected; a group with sessions
+   *  shows wherever its sessions belong, tagged or not. */
+  projectId?: string;
+
   /** Model id (e.g. "claude-opus-4-7"). Empty/undefined = global default. */
   defaultModel?: string;
   /** Agent name (e.g. "claude", "Plan", "Explore"). */

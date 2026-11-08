@@ -40,6 +40,10 @@ import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
+import { listProjects, parseProjects, scopeToProject, type Project, type ProjectFolder } from '../lib/project-scope';
+import { ProjectDialog } from './ProjectDialog';
+import { ProjectSwitcher } from './ProjectSwitcher';
+import { Overview } from './Overview';
 import { PluginLinkedItemPickers, PluginDetailView, PluginSidebarPanels } from './PluginExtensionPoints';
 import { PRDetail, type PRInfo } from './PRDetail';
 import { repoFromPrUrl, type PrLink } from '../lib/store/slices/prSlice';
@@ -105,7 +109,7 @@ import {
   sameLayout,
   type Workspace,
 } from './ChatFocusLayout';
-import { BookmarkPlus, Code2, Eye, MessageCircle, MessageSquarePlus } from 'lucide-react';
+import { BookmarkPlus, Code2, Eye, GitBranch, MessageCircle, MessageSquarePlus } from 'lucide-react';
 import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
 import { canReplyTo, readReply, replyFromMessage, replyFromSelection, withReply } from '../lib/message-reply';
@@ -350,6 +354,11 @@ export function ChatApp() {
    *  session's chat body. Cleared as soon as a session is selected. */
   const selectedGroupId = useAppStore(s => s.selectedGroupId);
   const setSelectedGroupId = useAppStore(s => s.setSelectedGroupId);
+  /** User-defined projects (lib/project-scope), synced via preferences. */
+  const [projectDefs, setProjectDefs] = useState<Record<string, Project>>({});
+  /** The selected project, for handlers declared before it's computed: a
+   *  group created while a project is selected belongs to that project. */
+  const scopedProjectIdRef = useRef<string | null>(null);
   // Active top-level view in the main pane. 'sessions-board' shows the board and
   // 'automations' the scheduler screen; selecting any session or group snaps it
   // back to 'sessions'.
@@ -525,6 +534,7 @@ export function ChatApp() {
         parentId: null,
         allowEmpty: true,
         color: GROUP_COLORS[groupColorIdx++ % GROUP_COLORS.length]!,
+        ...(scopedProjectIdRef.current ? { projectId: scopedProjectIdRef.current } : {}),
       },
     };
     const newMap = { ...tabGroupMap };
@@ -649,6 +659,7 @@ export function ChatApp() {
         cwd: parent.cwd,
         parentId,
         allowEmpty: true,
+        ...(scopedProjectIdRef.current ? { projectId: scopedProjectIdRef.current } : {}),
       },
     };
     setTabGroups(newGroups);
@@ -2233,6 +2244,7 @@ export function ChatApp() {
           if (Array.isArray(prefs.pinnedSessionIds)) {
             setPinnedSessionIds(new Set(prefs.pinnedSessionIds as string[]));
           }
+          setProjectDefs(parseProjects(prefs.projects));
           const groupOrder = parseGroupOrder(prefs.groupOrder);
           if (groupOrder) {
             setGroupOrder(groupOrder);
@@ -5043,6 +5055,59 @@ export function ChatApp() {
   const sessionStreaming = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.isStreaming])), [sessionStates]);
   const sessionInterrupted = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.wasInterrupted])), [sessionStates]);
   const sessionHasPermission = useMemo(() => Object.fromEntries(Object.entries(sessionStates).map(([id, s]) => [id, !!s.permRequest])), [sessionStates]);
+
+  // ── Project scope ─────────────────────────────────────────────────────────
+  // Projects are user-defined (name, colour, folders per host) and synced in
+  // the preferences. Which one is selected is a per-window view choice, so
+  // that lives in localStorage.
+  const [activeProjectId, setActiveProjectIdState] = useState<string | null>(() => {
+    try { return localStorage.getItem('activeProjectId') || null; } catch { return null; }
+  });
+  const setActiveProjectId = (id: string | null) => {
+    setActiveProjectIdState(id);
+    try {
+      if (id) localStorage.setItem('activeProjectId', id);
+      else localStorage.removeItem('activeProjectId');
+    } catch {}
+  };
+  const saveProjects = (next: Record<string, Project>) => {
+    setProjectDefs(next);
+    persistPrefs({ projects: next });
+  };
+  /** The project dialog: `null` closed, `''` a new project, else the id. */
+  const [projectDialog, setProjectDialog] = useState<string | null>(null);
+  const projects = useMemo(() => listProjects({
+    projects: projectDefs,
+    sessions: orderedOpenSessions,
+    isLive: id => !!sessionStreaming[id],
+    isWaiting: id => !!sessionHasPermission[id],
+  }), [projectDefs, orderedOpenSessions, sessionStreaming, sessionHasPermission]);
+  // A deleted project drops back to "All projects" instead of an empty sidebar.
+  const scopedProject = activeProjectId ? projectDefs[activeProjectId] ?? null : null;
+  const scopedProjectId = scopedProject?.id ?? null;
+  scopedProjectIdRef.current = scopedProjectId;
+  const scopedSidebar = useMemo(
+    () => scopeToProject({ groups: sidebarGroups, map: sidebarGroupMap, sessions: sidebarSessions }, scopedProject),
+    [sidebarGroups, sidebarGroupMap, sidebarSessions, scopedProject],
+  );
+  /** Folders open sessions run in — the dialog's one-click suggestions. */
+  const projectFolderSuggestions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ProjectFolder[] = [];
+    for (const s of orderedOpenSessions) {
+      if (!s.cwd) continue;
+      // A worktree suggests its repo, which is what a project wants.
+      const path = repoRootOfWorktreeCwd(s.cwd) ?? s.cwd;
+      const key = `${s.remoteId ?? ''}:${path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ path, remoteId: s.remoteId ?? null });
+    }
+    return out;
+  }, [orderedOpenSessions]);
+  /** "New session" while a project is selected starts in its first folder. */
+  const newSessionInScope = () => { setSelectedGroupId(null); handleNewSessionComposer(); };
+
   // Per-session "last message at" timestamp — used by the vertical TabBar
   // to render a "5m ago" / "2h ago" / "3d ago" hint per tab. Falls back to
   // the session's createdAt if no messages exist yet.
@@ -5268,10 +5333,10 @@ export function ChatApp() {
   const branchBtnRef = useRef<HTMLButtonElement>(null);
   const branchInputRef = useRef<HTMLInputElement>(null);
 
-  const openBranchMenu = () => {
+  const openBranchMenu = (anchor?: HTMLElement | null) => {
     const c = clientRef.current;
     const root = explorerRootRef.current;
-    const rect = branchBtnRef.current?.getBoundingClientRect() || new DOMRect(10, window.innerHeight - 30, 100, 20);
+    const rect = (anchor ?? branchBtnRef.current)?.getBoundingClientRect() || new DOMRect(10, window.innerHeight - 30, 100, 20);
     setBranchMenu({ local: [], remote: [], current: gitBranch || '', rect });
     setBranchFilter('');
     if (c && root) {
@@ -6289,66 +6354,127 @@ export function ChatApp() {
     );
   };
 
-  return (
-    <Providers>
-      <div className="h-screen bg-base flex flex-col overflow-hidden">
+  // The titlebar. Horizontal and focus layouts pin it across the window;
+  // the standard layout renders it inside the floating content panel as the
+  // path bar (project / branch / session), with the sidebar running full
+  // height beside it.
+  const isStandardShell = layoutMode === 'standard';
+  const sessionHistoryControls = (
+    <>
+      <ActivityBarSessionActions
+        closedSessions={closedSessions}
+        onReopen={handleReopenSession}
+        onArchive={handleArchiveSession}
+      />
+      <RunningInstancesButton
+        sessions={sessions}
+        sessionStreaming={sessionStreaming}
+        sessionHasPermission={sessionHasPermission}
+        onStop={handleStopInstance}
+      />
+    </>
+  );
+  const titlebar = (
+    <>
         {/* Custom title bar — system chrome is hidden via Electron's
          *  `titleBarStyle: 'hiddenInset'`, which keeps the macOS traffic lights
          *  on the left and frees up the rest of the bar for our own content.
          *  The whole strip is a drag region, except for interactive controls
          *  (layout-mode pill) which opt out with `app-region: no-drag`. */}
         <div
-          className={`app-titlebar fixed top-0 left-0 right-0 z-[9999] flex items-center select-none border-b ${
-            layoutMode === 'horizontal'
-              ? 'h-10 bg-[#131418] border-[#2a2b30]'
-              : 'h-9 bg-base border-border'
+          className={`app-titlebar flex items-center select-none ${
+            isStandardShell
+              ? 'path-bar relative shrink-0 h-12 pl-2.5 pr-3 border-b'
+              : `fixed top-0 left-0 right-0 z-[9999] border-b ${layoutMode === 'horizontal'
+                ? 'h-10 bg-[#131418] border-[#2a2b30]'
+                : 'h-9 bg-base border-border'}`
           }`}
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
-          {/* Reserve room for macOS traffic lights / Windows left padding */}
-          {IS_MAC ? <div className="w-20 shrink-0" /> : <div className="w-3 shrink-0" />}
+          {/* Reserve room for macOS traffic lights / Windows left padding.
+              In the standard shell the sidebar owns that corner — unless it's
+              collapsed, and then the lights sit over the panel's top-left. */}
+          {isStandardShell
+            ? (tabsCollapsed && IS_MAC && getNative() ? <div className="w-[70px] shrink-0" /> : null)
+            : IS_MAC ? <div className="w-20 shrink-0" /> : <div className="w-3 shrink-0" />}
 
           {/* Session controls — collapse toggle (standard only) +
               history. Live in the titlebar so the activity bar stays focused
-              on view switching, and so they're reachable in every mode. */}
+              on view switching, and so they're reachable in every mode. In the
+              standard shell history/running move to the right-hand cluster so
+              the left reads as a path. */}
           <div
-            className="flex items-center gap-0.5 mr-2 shrink-0"
+            className="flex items-center gap-0.5 mr-1 shrink-0"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            {layoutMode === 'standard' && (
+            {isStandardShell && (
               <button
-                className={`w-7 h-6 flex items-center justify-center rounded-md transition-colors ${
-                  tabsCollapsed ? 'text-zinc-500 hover:text-zinc-200 hover:bg-surface-light' : 'text-zinc-200 bg-surface-light'
-                }`}
+                className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface-light transition-colors"
                 onClick={toggleTabsCollapsed}
-                title={tabsCollapsed ? 'Show sessions' : 'Hide sessions'}
-                aria-label={tabsCollapsed ? 'Show sessions sidebar' : 'Hide sessions sidebar'}
+                title={tabsCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+                aria-label={tabsCollapsed ? 'Show sidebar' : 'Hide sidebar'}
               >
-                <PanelLeft className="w-3.5 h-3.5" />
+                <PanelLeft className="w-[15px] h-[15px]" strokeWidth={1.6} />
               </button>
             )}
-            <ActivityBarSessionActions
-              closedSessions={closedSessions}
-              onReopen={handleReopenSession}
-              onArchive={handleArchiveSession}
-            />
-            <RunningInstancesButton
-              sessions={sessions}
-              sessionStreaming={sessionStreaming}
-              sessionHasPermission={sessionHasPermission}
-              onStop={handleStopInstance}
-            />
+            {!isStandardShell && sessionHistoryControls}
           </div>
+
+          {/* Path: / project / branch / session. */}
+          {isStandardShell && (
+            <>
+              <span className="path-slash" aria-hidden>/</span>
+              <ProjectSwitcher
+                projects={projects}
+                activeProjectId={scopedProjectId}
+                totalSessions={orderedOpenSessions.length}
+                onSelect={setActiveProjectId}
+                onNew={() => setProjectDialog('')}
+                onEdit={(id) => setProjectDialog(id)}
+              />
+            </>
+          )}
+          {isStandardShell && gitBranch && (
+            <>
+              <span className="path-slash" aria-hidden>/</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); openBranchMenu(e.currentTarget); }}
+                className="h-7 flex items-center gap-1.5 px-2 rounded-md text-zinc-300 hover:bg-surface-light transition-colors shrink-0"
+                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                title="Switch branch"
+              >
+                <GitBranch className="w-3.5 h-3.5 text-zinc-500" strokeWidth={1.6} />
+                <span className="font-mono text-[12px]">{gitBranch}</span>
+              </button>
+            </>
+          )}
+          {isStandardShell && activeId && activeNavView === 'sessions' && !selectedGroupId && (
+            <>
+              <span className="path-slash" aria-hidden>/</span>
+              <span className="text-[13px] font-medium text-zinc-200 truncate min-w-0 max-w-[260px] mr-2">
+                {(activeSession ?? pendingSessions.find(s => s.id === activeId))?.name}
+              </span>
+            </>
+          )}
+          {isStandardShell && activeNavView !== 'sessions' && (
+            <>
+              <span className="path-slash" aria-hidden>/</span>
+              <span className="text-[13px] font-medium text-zinc-200 mr-2">
+                {activeNavView === 'overview' ? 'Overview' : activeNavView === 'sessions-board' ? 'Board' : 'Automations'}
+              </span>
+            </>
+          )}
 
           {/* Active-session info controls — relocated here from the old
               per-chat info bar. Sits just after the session controls on the
               left; opts out of the window drag region so the buttons click. */}
-          {activeId && (
+          {activeId && (!isStandardShell || activeNavView === 'sessions') && (
             <div
               className="flex items-center gap-2 mr-2 min-w-0 shrink"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             >
-              {activeSession?.provider && (
+              {!isStandardShell && activeSession?.provider && (
                 <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-light text-zinc-300 font-semibold">
                   {activeSession.provider === 'claude' ? 'Claude'
                     : activeSession.provider === 'codex' ? 'Codex'
@@ -6356,7 +6482,7 @@ export function ChatApp() {
                     : activeSession.provider}
                 </span>
               )}
-              {active.initInfo?.version && (
+              {!isStandardShell && active.initInfo?.version && (
                 <span className="text-xs text-zinc-600">
                   v{active.initInfo.version} · {active.initInfo.tools.length} tools
                 </span>
@@ -6519,6 +6645,25 @@ export function ChatApp() {
               onToggleGroup={handleToggleGroup}
               onCloseGroup={handleRequestDeleteGroup}
             />
+          ) : isStandardShell ? (
+            <>
+              <div className="flex-1" />
+              {/* Right-aligned search, as in the path-bar design: the session
+                  name already sits in the path, so the pill just says Search. */}
+              <button
+                onClick={() => { setPaletteMode('commands'); setShowPalette(true); }}
+                title="Commands (⌘K) · Go to file (⌘P)"
+                className="path-search group h-[30px] w-[220px] shrink-0 pl-2.5 pr-1.5 mr-1.5 flex items-center gap-2 rounded-[7px] bg-surface-light text-zinc-600 transition-colors"
+                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              >
+                <Search className="w-[15px] h-[15px] shrink-0" strokeWidth={1.6} />
+                <span className="flex-1 text-left text-[13px]">Search</span>
+                <kbd className="path-kbd">⌘K</kbd>
+              </button>
+              <div className="flex items-center gap-0.5 mr-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                {sessionHistoryControls}
+              </div>
+            </>
           ) : (
             <>
               <div className="flex-1" />
@@ -6649,7 +6794,7 @@ export function ChatApp() {
             title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
             aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            className="mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border text-zinc-500 hover:text-zinc-300 transition-colors"
+            className={isStandardShell ? "mr-0.5 flex items-center justify-center w-7 h-7 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface-light transition-colors" : "mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border text-zinc-500 hover:text-zinc-300 transition-colors"}
           >
             {theme === 'light'
               ? <Moon className="w-4 h-4" strokeWidth={1.75} />
@@ -6660,12 +6805,12 @@ export function ChatApp() {
             title="New terminal"
             aria-label="New terminal"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            className="mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border text-zinc-500 hover:text-zinc-300 transition-colors"
+            className={isStandardShell ? "mr-0.5 flex items-center justify-center w-7 h-7 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-surface-light transition-colors" : "mr-1.5 flex items-center justify-center w-7 h-7 rounded-lg bg-surface border border-border text-zinc-500 hover:text-zinc-300 transition-colors"}
           >
             <Terminal className="w-4 h-4" strokeWidth={1.75} />
           </button>
           <div
-            className="mr-1.5 flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5"
+            className={isStandardShell ? "mr-2 flex items-center gap-0.5 rounded-lg p-0.5" : "mr-1.5 flex items-center gap-0.5 bg-surface border border-border rounded-lg p-0.5"}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <button
@@ -6702,6 +6847,20 @@ export function ChatApp() {
               <LayoutGrid className="w-3.5 h-3.5" />
             </button>
           </div>
+          {/* Primary action of the path bar: a solid ink button with its chord. */}
+          {isStandardShell && (
+            <button
+              type="button"
+              onClick={newSessionInScope}
+              className="path-primary h-[30px] mr-1.5 flex items-center gap-1.5 pl-2.5 pr-1.5 rounded-[7px] text-[13px] font-medium shrink-0"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              title="New session"
+            >
+              <Plus className="w-[15px] h-[15px]" strokeWidth={1.8} />
+              New session
+              <kbd className="path-kbd">⌘N</kbd>
+            </button>
+          )}
           {/* File-explorer panel toggle — pinned to the far right of the
               titlebar, since the Explorer is docked on the right of the chat. */}
           {activeNavView === 'sessions' && (
@@ -6710,7 +6869,7 @@ export function ChatApp() {
               title={explorerCollapsed ? 'Show file explorer' : 'Hide file explorer'}
               aria-label={explorerCollapsed ? 'Show file explorer' : 'Hide file explorer'}
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-              className={`${IS_MAC ? 'mr-3' : 'mr-36'} w-7 h-6 flex items-center justify-center rounded-md transition-colors ${
+              className={`${IS_MAC ? (isStandardShell ? 'mr-0' : 'mr-3') : 'mr-36'} w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
                 explorerCollapsed ? 'text-zinc-500 hover:text-zinc-200 hover:bg-surface-light' : 'text-zinc-200 bg-surface-light'
               }`}
             >
@@ -6718,6 +6877,13 @@ export function ChatApp() {
             </button>
           )}
         </div>
+    </>
+  );
+
+  return (
+    <Providers>
+      <div className="h-screen bg-base flex flex-col overflow-hidden">
+        {layoutMode !== 'standard' && titlebar}
         {layoutMode === 'focus' ? (
           <div className="flex-1 flex min-h-0 min-w-0 pt-9 relative">
             <ChatFocusLayout
@@ -6754,13 +6920,13 @@ export function ChatApp() {
             )}
           </div>
         ) : (
-        <div className={`flex-1 flex min-h-0 min-w-0 ${layoutMode === 'horizontal' ? 'pt-10' : 'pt-9'}`}>
+        <div className={`flex-1 flex min-h-0 min-w-0 ${layoutMode === 'horizontal' ? 'pt-10' : isStandardShell ? '' : 'pt-9'}`}>
           {/* Standard layout keeps the vertical TabBar sidebar; horizontal
               layout drops it because the SessionTabStrip in the titlebar
               handles session navigation. */}
           {layoutMode === 'standard' && (
             <TabBar
-              sessions={sidebarSessions}
+              sessions={scopedSidebar.sessions}
               closedSessions={closedSessions}
               activeSessionId={activeId}
               sessionStatuses={statuses}
@@ -6776,7 +6942,7 @@ export function ChatApp() {
               onTogglePin={handleTogglePin}
               onKeepSession={id => { void clientRef.current?.keepSession(id); }}
               onSelect={handleSelectSession}
-              onNew={handleNewSessionComposer}
+              onNew={newSessionInScope}
               onClose={handleCloseTab}
               onReopen={handleReopenSession}
               onRename={handleRenameSession}
@@ -6784,8 +6950,8 @@ export function ChatApp() {
               accentPalette={SESSION_ACCENT_PALETTE}
               getSessionAccent={getSessionAccent}
               onPickSessionAccent={colorChatBySession ? handlePickSessionAccent : undefined}
-              tabGroups={sidebarGroups}
-              tabGroupMap={sidebarGroupMap}
+              tabGroups={scopedSidebar.groups}
+              tabGroupMap={scopedSidebar.map}
               groupRemoteInfo={groupRemoteInfo}
               expandedGroupIds={expandedGroupIds}
               onCreateGroup={handleCreateGroup}
@@ -6821,9 +6987,30 @@ export function ChatApp() {
           {/* Side Panel (Explorer) is rendered on the RIGHT, after the chat
               content — see below. */}
 
+          {/* Standard shell: one floating panel holding the path bar and the
+              content (chat + explorer). Other layouts keep the old flat flow,
+              so the wrappers collapse to `display: contents` there. */}
+          <div className={isStandardShell ? `shell-panel flex-1 flex flex-col min-w-0 min-h-0 ${tabsCollapsed ? 'ml-2' : ''}` : 'contents'}>
+          {isStandardShell && titlebar}
+          <div className={isStandardShell ? 'flex-1 flex min-h-0 min-w-0' : 'contents'}>
+
           <div className="app-main flex-1 flex flex-col min-w-0">
             {standaloneVisible ? (
               <StandaloneEditor client={client} onOpenPaths={(paths) => routeOpenFilesRef.current(paths)} />
+            ) : activeNavView === 'overview' ? (
+              <Overview
+                client={client}
+                sessions={scopedSidebar.sessions}
+                projectName={scopedProject?.name ?? 'All projects'}
+                statuses={statuses}
+                streaming={sessionStreaming}
+                hasPermission={sessionHasPermission}
+                interrupted={sessionInterrupted}
+                turnComplete={turnCompleteIds}
+                awaitingReply={awaitingReplyIds}
+                lastSentAt={sessionLastSentAt}
+                onSelectSession={(id) => { setActiveNavView('sessions'); handleSelectSession(id); }}
+              />
             ) : activeNavView === 'sessions-board' ? (
               <SessionsBoardView
                 sessions={sessions}
@@ -6854,10 +7041,12 @@ export function ChatApp() {
                 defaultPermissionModeByHost={defaultPermissionModeByHost}
                 onSetDefaultPermissionMode={(remoteId, mode) => { void setDefaultPermissionMode(remoteId, mode); }}
                 onSetDefaultModel={(remoteId, provider, model) => { void setDefaultModel(remoteId, provider, model); }}
-                key={selectedGroupId || "new-chat"}
+                key={selectedGroupId || (scopedProject ? `new-chat:${scopedProject.id}` : "new-chat")}
                 groupName={selectedGroupId ? sidebarGroups[selectedGroupId]?.name || "" : ""}
                 groupCwd={
                   (selectedGroupId ? sidebarGroups[selectedGroupId]?.cwd || sessions.find(s => sidebarGroupMap[s.id] === selectedGroupId)?.cwd : null) ||
+                  // A selected project starts new sessions in its first folder.
+                  scopedProject?.folders[0]?.path ||
                   // Most recent session's cwd is a sensible default; the
                   // composer's folder picker still surfaces all recent dirs.
                   // Local sessions only: this composer starts on this machine,
@@ -6871,9 +7060,11 @@ export function ChatApp() {
                 opencodeInfo={opencodeInfo}
                 claudeModels={claudeModels}
                 remotes={remotes}
-                remoteId={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteId ?? null : null}
-                remoteName={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteName ?? null : null}
-                remoteColor={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteColor ?? null : null}
+                remoteId={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteId ?? null : scopedProject?.folders[0]?.remoteId ?? null}
+                remoteName={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteName ?? null
+                  : scopedProject?.folders[0]?.remoteId ? remotes.find(r => r.id === scopedProject.folders[0]!.remoteId)?.name ?? null : null}
+                remoteColor={selectedGroupId ? groupRemoteInfo[selectedGroupId]?.remoteColor ?? null
+                  : scopedProject?.folders[0]?.remoteId ? remotes.find(r => r.id === scopedProject.folders[0]!.remoteId)?.color ?? null : null}
                 onSpawn={selectedGroupId
                   ? (...args) => handleSpawnInGroup(selectedGroupId, ...args)
                   : handleSpawnHome}
@@ -8195,6 +8386,8 @@ export function ChatApp() {
             )}
           />
           )}
+          </div>
+          </div>
         </div>
         )}
 
@@ -8309,7 +8502,10 @@ export function ChatApp() {
             <>
               <div className="fixed inset-0 z-40" onClick={() => setBranchMenu(null)} />
               <div className="fixed z-50 bg-surface border border-border-light rounded-lg shadow-xl w-72 overflow-hidden"
-                style={{ bottom: 26, left: branchMenu.rect.left || 10 }}>
+                // Opened from the path bar it drops down; from the status bar it rises.
+                style={branchMenu.rect.top < window.innerHeight / 2
+                  ? { top: branchMenu.rect.bottom + 6, left: branchMenu.rect.left || 10 }
+                  : { bottom: 26, left: branchMenu.rect.left || 10 }}>
                 <div className="px-2 py-2 border-b border-border">
                   <input
                     ref={branchInputRef}
@@ -8835,6 +9031,34 @@ export function ChatApp() {
           </div>
         )}
       </div>
+      {projectDialog !== null && (() => {
+        const editing = projectDialog ? projectDefs[projectDialog] : undefined;
+        return (
+          <ProjectDialog
+            key={projectDialog || 'new'}
+            isNew={!editing}
+            project={editing ?? { name: '', folders: activeSession && activeSession.cwd
+              ? [{ path: repoRootOfWorktreeCwd(activeSession.cwd) ?? activeSession.cwd, remoteId: activeSession.remoteId ?? null }]
+              : [] }}
+            client={client}
+            remotes={remotes}
+            suggestions={projectFolderSuggestions}
+            onClose={() => setProjectDialog(null)}
+            onSave={(draft) => {
+              const id = editing?.id ?? crypto.randomUUID();
+              saveProjects({ ...projectDefs, [id]: { ...draft, id } });
+              if (!editing) setActiveProjectId(id);
+              setProjectDialog(null);
+            }}
+            onDelete={editing ? () => {
+              const { [editing.id]: _gone, ...rest } = projectDefs;
+              saveProjects(rest);
+              if (activeProjectId === editing.id) setActiveProjectId(null);
+              setProjectDialog(null);
+            } : undefined}
+          />
+        );
+      })()}
     </Providers>
   );
 }

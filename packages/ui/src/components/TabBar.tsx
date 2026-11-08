@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch, LayoutGrid, SquareKanban, Repeat, Folder, FolderOpen,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -18,11 +18,12 @@ import { isRemoteGroupKey } from '../lib/remote-groups';
 import { useAppStore } from '../lib/store';
 import { persistPrefs } from '../lib/store/persist-prefs';
 import { UsagePopover } from './UsagePopover';
+import { getNative } from '../lib/native';
 
 type TabGroup = TabGroupInfo;
 
 /** Top-level views the sidebar can swap into the main pane. */
-export type NavView = 'sessions' | 'sessions-board' | 'automations';
+export type NavView = 'overview' | 'sessions' | 'sessions-board' | 'automations';
 
 interface Props {
   sessions: SessionInfo[];
@@ -192,15 +193,11 @@ function formatTimeLeft(s: SessionInfo, lastMessageAt: number | undefined, now: 
  *  shows it as a footer item instead. */
 const DISPOSABLES_GROUP_ID = 'disposables';
 
-// Soft teal used for live (running) sessions — distinct from the status colors.
-const RUN_COLOR = '#5eead4';
+// Status colours live in global.css (`--dot-run`, `--dot-wait`, …) so the
+// light and dark themes can each pick a readable shade.
 
-// Amber marks a session blocked on the user (pending permission). Red stays
-// reserved for errors, so "needs you" never reads as "something broke".
-const WAITING_COLOR = '#fbbf24';
-
-type DotState = 'off' | 'idle' | 'working' | 'done' | 'starting' | 'error' | 'waiting';
-function dotStateOf(rt: string | undefined, connStatus: string, isStreaming: boolean, turnComplete: boolean, wasInterrupted: boolean, hasPermission: boolean): DotState {
+export type DotState = 'off' | 'idle' | 'working' | 'done' | 'starting' | 'error' | 'waiting';
+export function dotStateOf(rt: string | undefined, connStatus: string, isStreaming: boolean, turnComplete: boolean, wasInterrupted: boolean, hasPermission: boolean): DotState {
   if (connStatus === 'error' || wasInterrupted) return 'error';
   // A pending permission request blocks the run — the session isn't actually
   // working, so it wins over the typing bars (mirrors the composer's
@@ -239,54 +236,28 @@ function sectionOf(st: DotState, rt: string | undefined, awaitingReply: boolean)
  *  not-running (hollow ring), running-idle (muted teal dot), working (typing
  *  bars), turn-complete/starting (breathing glow), error (red). Always occupies
  *  a fixed-width box so the name column stays aligned across states. */
-function SessionDot({ rt, connStatus, isStreaming, turnComplete, wasInterrupted, hasPermission }: {
+export function SessionDot({ rt, connStatus, isStreaming, turnComplete, wasInterrupted, hasPermission }: {
   rt?: string; connStatus: string; isStreaming: boolean; turnComplete: boolean; wasInterrupted: boolean; hasPermission: boolean;
 }) {
   const st = dotStateOf(rt, connStatus, isStreaming, turnComplete, wasInterrupted, hasPermission);
-  const box = 'shrink-0 inline-flex items-center justify-center';
-  const boxStyle: React.CSSProperties = { width: 14, height: 14 };
-  if (st === 'working') {
-    return (
-      <span className={`${box} gap-[1.5px]`} style={boxStyle} aria-label="Working">
-        {[0, 1, 2].map(i => (
-          <span key={i} className="w-[2px] rounded-[1px]" style={{ height: 5, background: RUN_COLOR, animation: 'sessionTyping 1s ease-in-out infinite', animationDelay: `${i * 0.15}s` }} />
-        ))}
-      </span>
-    );
-  }
-  if (st === 'done' || st === 'starting') {
-    const c = st === 'done' ? '#34d399' : RUN_COLOR;
-    return (
-      <span className={box} style={boxStyle} aria-label={st === 'done' ? 'Turn complete' : 'Starting'}>
-        <span className="w-2 h-2 rounded-full" style={{ background: c, boxShadow: `0 0 7px ${c}`, animation: 'sessionBreathe 1.15s ease-in-out infinite' }} />
-      </span>
-    );
-  }
-  if (st === 'waiting') {
-    return (
-      <span className={box} style={boxStyle} aria-label="Waiting for permission" title="Waiting for permission">
-        <span className="w-2 h-2 rounded-full" style={{ background: WAITING_COLOR, boxShadow: `0 0 6px ${WAITING_COLOR}` }} />
-      </span>
-    );
-  }
-  if (st === 'error') {
-    return (
-      <span className={box} style={boxStyle} aria-label="Error">
-        <span className="w-2 h-2 rounded-full" style={{ background: '#f87171', boxShadow: '0 0 6px #f87171' }} />
-      </span>
-    );
-  }
-  if (st === 'idle') {
-    return (
-      <span className={box} style={boxStyle} aria-label="Running" title="Running">
-        <span className="rounded-full" style={{ width: 7, height: 7, background: 'color-mix(in srgb, #5eead4 55%, #0a0a0b)' }} />
-      </span>
-    );
-  }
-  // off — no running Claude instance
+  // Flat 6px dots, no glow: green pulses while the agent works, amber waits
+  // on you, a hollow ring means no process. Colour carries the state; motion
+  // is reserved for "something is happening right now".
+  const LABEL: Record<string, string> = {
+    working: 'Working', done: 'Turn complete', starting: 'Starting', waiting: 'Waiting for permission',
+    error: 'Error', idle: 'Running', off: 'Not running',
+  };
+  const style: React.CSSProperties =
+    st === 'working' ? { background: 'var(--dot-run)', animation: 'sessionPulse 2s ease-in-out infinite' }
+    : st === 'starting' ? { background: 'var(--dot-run)', animation: 'sessionPulse 1.15s ease-in-out infinite' }
+    : st === 'done' ? { background: 'var(--dot-run)' }
+    : st === 'waiting' ? { background: 'var(--dot-wait)' }
+    : st === 'error' ? { background: 'var(--dot-err)' }
+    : st === 'idle' ? { background: 'var(--dot-idle)' }
+    : { boxShadow: 'inset 0 0 0 1.25px var(--dot-idle)' };
   return (
-    <span className={box} style={boxStyle} aria-label="Not running" title="Not running">
-      <span className="rounded-full border-[1.5px] border-zinc-600 opacity-60" style={{ width: 7, height: 7 }} />
+    <span className="shrink-0 inline-flex items-center justify-center w-3.5 h-3.5" aria-label={LABEL[st]} title={LABEL[st]}>
+      <span className="rounded-full" style={{ width: 6, height: 6, ...style }} />
     </span>
   );
 }
@@ -417,16 +388,17 @@ type RowProps = {
 function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupted, turnComplete, hasPermission, activity, compact, ageLabel, disposableLeft, isPinned, groupLabel, editingId, editName, editRef, setEditName, startRename, commitRename, setEditingId, onSelect, onClose, onQuickDelete, onContextMenu, rootRef, rootProps, style, dragging }: RowProps & {
   rootRef?: (el: HTMLElement | null) => void; rootProps?: React.HTMLAttributes<HTMLElement>; style?: React.CSSProperties; dragging?: boolean;
 }) {
-  // Vertical sidebar: flat active background regardless of group color.
-  const activeBg = isActive ? 'bg-surface-light' : '';
+  // Vertical sidebar: the raised chip (see `.nav-chip` in global.css),
+  // regardless of group color.
+  const activeBg = isActive ? 'nav-chip is-active' : '';
   // Remote sessions are identified by a small colored name badge (below) rather
   // than tinting the whole row, matching the group-header / tab-strip pattern.
   const remoteC = session.remoteColor ? (COLOR_MAP[session.remoteColor] ?? null) : null;
   return (
     <div ref={rootRef as React.Ref<HTMLDivElement>} style={style}
       {...rootProps}
-      className={`tab-item group relative flex items-center gap-1.5 px-3 ${compact ? 'h-[26px]' : 'h-[30px]'} text-[12px] cursor-pointer w-full rounded-md transition-colors ${dragging ? 'opacity-40' : ''} ${
-        isActive ? `${activeBg} text-zinc-200` : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface/50'
+      className={`tab-item group relative flex items-center gap-2 px-2 ${compact ? 'h-[28px]' : 'h-[30px]'} text-[13px] cursor-pointer w-full rounded-[6px] transition-colors ${dragging ? 'opacity-40' : ''} ${
+        isActive ? `${activeBg} text-zinc-200` : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light/60'
       }`}
       onClick={() => onSelect(session.id)}
       onContextMenu={onContextMenu}
@@ -439,7 +411,7 @@ function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupt
             ref={editRef}
             onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingId(null); }}
             onBlur={commitRename}
-            className="bg-transparent border-0 px-0 py-0 text-[12px] text-zinc-200"
+            className="bg-transparent border-0 px-0 py-0 text-[13px] text-zinc-200"
           />
         </TextField>
       ) : (
@@ -487,7 +459,7 @@ function TabRowVisual({ session, isActive, connStatus, isStreaming, wasInterrupt
       )}
       {!disposableLeft && ageLabel && editingId !== session.id && !isActive && (
         <span
-          className="shrink-0 text-[10px] tabular-nums text-zinc-600 group-hover:hidden"
+          className="shrink-0 text-[11.5px] tabular-nums text-zinc-600 group-hover:hidden"
           title={`Last activity ${ageLabel} ago`}
         >
           {ageLabel}
@@ -675,11 +647,11 @@ function SortableGroupTab({ group, color, memberCount, isExpanded, hasActive, ha
 
   // Vertical sidebar: drop the filled background and border — the colored dot
   // alone is enough, keeping the sidebar visually clean (Arc/Zen style).
-  const baseCls = `group relative flex items-center gap-1.5 px-2 h-[28px] text-[12px] cursor-grab active:cursor-grabbing rounded-md transition-colors ${
+  const baseCls = `nav-chip group relative flex items-center gap-2.5 px-2 h-[30px] text-[13px] cursor-grab active:cursor-grabbing rounded-md transition-colors ${
     rejected ? 'ring-1 ring-red-400/50 bg-red-500/10'
       : nestHover ? `ring-1 ${colors.ring} bg-surface-light/60`
       : sessionHover ? `ring-1 ${colors.ring}` : ''
-  } hover:bg-surface/60 ${hasActive && !isExpanded ? 'text-zinc-200' : 'text-zinc-400'}`;
+  } hover:bg-surface-light/60 ${hasActive && !isExpanded ? 'text-zinc-200' : 'text-zinc-300'}`;
 
   return (
     <div ref={ref} {...mergeProps(editing ? {} : dragProps, dropProps)}
@@ -694,24 +666,15 @@ function SortableGroupTab({ group, color, memberCount, isExpanded, hasActive, ha
     >
       {isDropTarget && pos === 'above' && !rejected && <div className="absolute -top-0.5 left-0 right-0 h-0.5 bg-indigo-400 rounded-full z-10" />}
       {isDropTarget && pos === 'below' && !rejected && <div className="absolute -bottom-0.5 left-0 right-0 h-0.5 bg-indigo-400 rounded-full z-10" />}
-      {isExpanded
-        ? <ChevronDown size={12} className="shrink-0 text-zinc-500" />
-        : <ChevronRight size={12} className="shrink-0 text-zinc-500" />}
-      {/* The group's icon when set, else the original colored dot. */}
+      {/* A folder, as in the file tree. A custom icon keeps its group colour
+          so a folder you've marked still stands out; plain ones stay muted. */}
       {(() => {
         const Icon = group.icon ? ICON_MAP[group.icon] : null;
-        if (Icon) {
-          return (
-            <Icon
-              size={12}
-              className={`shrink-0 ${colors.text} ${hasActivity ? 'animate-pulse' : ''}`}
-              strokeWidth={2.25}
-            />
-          );
-        }
-        return (
-          <span className={`w-2 h-2 rounded-full shrink-0 ${colors.dot} ${hasActivity ? 'animate-pulse' : ''}`} />
-        );
+        return Icon
+          ? <Icon size={15} strokeWidth={1.6} className={`shrink-0 ${colors.text} ${hasActivity ? 'animate-pulse' : ''}`} />
+          : (isExpanded
+            ? <FolderOpen size={15} strokeWidth={1.6} className={`shrink-0 text-zinc-500 ${hasActivity ? 'animate-pulse' : ''}`} />
+            : <Folder size={15} strokeWidth={1.6} className={`shrink-0 text-zinc-500 ${hasActivity ? 'animate-pulse' : ''}`} />);
       })()}
       {editing ? (
         <TextField value={name} onChange={setName} aria-label="Group name" className="w-16 min-w-0">
@@ -726,7 +689,7 @@ function SortableGroupTab({ group, color, memberCount, isExpanded, hasActive, ha
         </TextField>
       ) : (
         <span
-          className="text-[12px] truncate flex-1"
+          className="text-[13px] truncate flex-1"
           onDoubleClick={e => { e.stopPropagation(); setEditing(true); setName(group.name); }}
         >
           {group.name}
@@ -747,7 +710,8 @@ function SortableGroupTab({ group, color, memberCount, isExpanded, hasActive, ha
         </span>
       )}
       {/* Subtree session count, swapped for the hover actions. */}
-      <span className="text-[11px] text-zinc-600 group-hover:hidden">{memberCount}</span>
+      <span className="text-[11.5px] tabular-nums text-zinc-600 group-hover:hidden">{memberCount}</span>
+      <ChevronRight size={13} strokeWidth={1.6} className={`shrink-0 text-zinc-600 transition-transform group-hover:hidden ${isExpanded ? 'rotate-90' : ''}`} />
       {/* Spawns a session in this group's cwd immediately — no composer step.
        *  Right-click (or the ⋯ button) surfaces the full options menu. */}
       <span
@@ -964,6 +928,8 @@ export const TabBar = memo(function TabBar(props: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [sessionSearch, setSessionSearch] = useState('');
+  /** The brand row's search icon reveals the filter field. */
+  const [searchOpen, setSearchOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [restoreSearch, setRestoreSearch] = useState('');
   const [restoreHighlight, setRestoreHighlight] = useState(0);
@@ -1059,6 +1025,11 @@ export const TabBar = memo(function TabBar(props: Props) {
       return next;
     });
   };
+
+  // The open session only reads as selected while its chat is on screen;
+  // Overview / Board / Automations take the selection over, so one row in
+  // the sidebar is highlighted at a time.
+  const selectedSessionId = activeNavView === 'sessions' ? activeSessionId : null;
 
   const normalizedSessionSearch = sessionSearch.trim().toLowerCase();
   const visibleSessions = normalizedSessionSearch
@@ -1160,7 +1131,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   };
 
   const tp = (s: SessionInfo, groupColor?: string, compact?: boolean) => ({
-    id: s.id, session: s, isActive: s.id === activeSessionId,
+    id: s.id, session: s, isActive: s.id === selectedSessionId,
     connStatus: sessionStatuses[s.id] || 'disconnected',
     isStreaming: sessionStreaming[s.id] || false,
     wasInterrupted: sessionInterrupted[s.id] || false,
@@ -1236,11 +1207,10 @@ export const TabBar = memo(function TabBar(props: Props) {
     const memberIds = nodeSessionIds(node);
     const expanded = isNodeExpanded(node);
     const color = resolveGroupColor(tabGroups, node.id);
-    const colors = COLOR_MAP[color] || COLOR_MAP.blue!;
     const remote = groupRemoteInfo?.[node.id];
     // Past three levels the rail alone carries the hierarchy — keep clawing
     // back horizontal space instead of pushing names off the edge.
-    const indent = node.depth >= 3 ? 'pl-1.5 ml-1.5' : 'pl-2 ml-3';
+    const indent = node.depth >= 3 ? 'pl-1.5 ml-1.5' : 'pl-2.5 ml-[15px]';
 
     return (
       <div key={`grp-${node.id}`} className="flex flex-col gap-0.5">
@@ -1249,7 +1219,7 @@ export const TabBar = memo(function TabBar(props: Props) {
           color={color}
           memberCount={node.sessionCount}
           isExpanded={expanded}
-          hasActive={memberIds.some(id => id === activeSessionId)}
+          hasActive={memberIds.some(id => id === selectedSessionId)}
           hasActivity={!expanded && memberIds.some(id => sessionHasPermission[id])}
           remoteName={remote?.remoteName ?? null}
           remoteColor={remote?.remoteColor ?? null}
@@ -1262,8 +1232,8 @@ export const TabBar = memo(function TabBar(props: Props) {
           onDropGroup={(fromGid, slot) => handleDropGroup(node, fromGid, slot)}
         />
         {expanded && (
-          // Indent + colored left rail spanning the full height of the subtree.
-          <div className={`flex flex-col gap-0.5 border-l-2 ${indent} ${colors.border}`}>
+          // Indent + a neutral hairline rail spanning the subtree (`.tree-rail`).
+          <div className={`tree-rail flex flex-col gap-0.5 ${indent}`}>
             {node.children.map(child => renderTreeNode(child))}
           </div>
         )}
@@ -1380,7 +1350,7 @@ export const TabBar = memo(function TabBar(props: Props) {
 
   return (
     <div
-      className="tab-bar relative flex flex-col bg-[#131418] shrink-0 select-none h-full border-r border-border"
+      className="tab-bar relative flex flex-col shrink-0 select-none h-full"
       style={{ width: vertWidth }}
     >
       {/* Right-edge drag handle for resizing the panel. Sits absolutely on the
@@ -1395,81 +1365,130 @@ export const TabBar = memo(function TabBar(props: Props) {
         }}
         title="Drag to resize"
       />
-      <div className="px-2 pt-2 shrink-0">
-         <div className="flex items-center gap-1 shrink-0 mb-1">
-           <div className="flex items-center gap-1.5 bg-[#1c1d22] border border-[#2a2b30] rounded-md px-2 h-8 flex-1 min-w-0">
-             <Search size={12} className="text-zinc-600 shrink-0" />
-             <input
-               type="search"
-               value={sessionSearch}
-               onChange={(e) => setSessionSearch(e.target.value)}
-               onKeyDown={(e) => {
-                 if (e.key === 'Escape') {
-                   e.currentTarget.blur();
-                   setSessionSearch('');
-                 }
-               }}
-               placeholder="Search sessions..."
-               aria-label="Search sessions"
-               className="flex-1 min-w-0 bg-transparent text-[12px] text-zinc-300 placeholder:text-zinc-600 outline-none border-0"
-             />
-             {sessionSearch && (
-               <button
-                 type="button"
-                 onClick={() => setSessionSearch('')}
-                 className="text-zinc-600 hover:text-zinc-300 transition-colors"
-                 aria-label="Clear session search"
-               >
-                 <X size={12} />
-               </button>
-             )}
-           </div>
-           {/* Outside the search pill: these act on the sidebar, not the query. */}
-           <button
-             type="button"
-             onClick={(e) => {
-               const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-               // Right edge of the button; the menu is pulled left from there
-               // so it can't overflow a narrow sidebar.
-               setSidebarMenu({ x: r.right, y: r.bottom + 4 });
-             }}
-             className="shrink-0 w-7 h-8 flex items-center justify-center rounded-md text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-colors"
-             aria-label="Sidebar options"
-             title="Sidebar options"
-           >
-             <MoreHorizontal size={14} />
-           </button>
-         </div>
-        <button
-          type="button"
-          onClick={onNew}
-          aria-pressed={activeNavView === 'sessions' && !activeSessionId}
-          className={`w-full flex items-center gap-2.5 h-9 px-3 rounded-md text-[12px] font-medium transition-colors ${
-            activeNavView === 'sessions' && !activeSessionId
-              ? 'bg-surface-light text-zinc-100'
-              : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
-          }`}
-        >
-          <SquarePen size={15} />
-          <span>New chat</span>
-        </button>
-      </div>
-       <div className="flex flex-col gap-0.5 px-2 py-2 overflow-y-auto flex-1">
-         {normalizedSessionSearch && (
-           <div className="px-1 pb-1 text-[10px] text-zinc-600">
-             {visibleSessions.length} {visibleSessions.length === 1 ? 'result' : 'results'}
-           </div>
-         )}
-         <div className="flex flex-col gap-0.5">
-           {tree.length === 0 && disposableSessions.length === 0 ? (
-             <div className="px-3 py-5 text-center text-[11px] text-zinc-600">No matching sessions</div>
-           ) : groupBy === 'status' ? renderStatusSections() : tree.map(node => renderTreeNode(node))}
+      {/* Brand row. Doubles as the window's drag handle; on macOS the traffic
+          lights sit at its left edge, so the mark starts after them. */}
+      <div
+        className="sidebar-brand h-12 shrink-0 flex items-center gap-2 pl-3.5 pr-2"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        {HAS_TRAFFIC_LIGHTS && <div className="w-[64px] shrink-0" />}
+        <span className="brand-mark" aria-hidden><i /></span>
+        <span className="text-[14px] font-semibold tracking-[-0.2px] text-zinc-100">Codiby</span>
+        <div className="flex-1" />
+        <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <button
+            type="button"
+            onClick={() => setSearchOpen(o => !o || !!sessionSearch)}
+            className={`w-7 h-7 grid place-items-center rounded-md transition-colors ${searchOpen ? 'text-zinc-200 bg-surface-light' : 'text-zinc-600 hover:text-zinc-200 hover:bg-surface-light'}`}
+            aria-label="Search sessions"
+            title="Search sessions"
+          >
+            <Search size={15} strokeWidth={1.6} />
+          </button>
         </div>
       </div>
 
-      {/* Footer — fixed actions pinned to the bottom of the sidebar. */}
-      <div className="flex flex-col gap-0.5 px-2 py-2 border-t border-border shrink-0">
-        {/* Disposables — the bridge's fixed folder, shown as a footer item that
+      <div className="px-2 shrink-0">
+        {(searchOpen || sessionSearch) && (
+          <div className="flex items-center gap-2 h-[30px] px-2.5 mb-2 rounded-[7px] bg-surface-light">
+            <Search size={14} strokeWidth={1.6} className="text-zinc-600 shrink-0" />
+            <input
+              type="search"
+              autoFocus
+              value={sessionSearch}
+              onChange={(e) => setSessionSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.currentTarget.blur();
+                  setSessionSearch('');
+                  setSearchOpen(false);
+                }
+              }}
+              placeholder="Search sessions"
+              aria-label="Search sessions"
+              className="flex-1 min-w-0 bg-transparent text-[13px] text-zinc-200 placeholder:text-zinc-600 outline-none border-0"
+            />
+            {sessionSearch && (
+              <button
+                type="button"
+                onClick={() => setSessionSearch('')}
+                className="text-zinc-600 hover:text-zinc-300 transition-colors"
+                aria-label="Clear session search"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        )}
+        {/* Top-level views. Same row anatomy as the session rows below, so the
+            selected chip reads the same wherever it lands. */}
+        <div className="flex flex-col gap-px">
+          <NavItem
+            icon={LayoutGrid}
+            label="Overview"
+            active={activeNavView === 'overview'}
+            onClick={() => onSelectNavView?.('overview')}
+          />
+          <NavItem
+            icon={SquareKanban}
+            label="Board"
+            active={activeNavView === 'sessions-board'}
+            onClick={() => onSelectNavView?.(activeNavView === 'sessions-board' ? 'sessions' : 'sessions-board')}
+          />
+          {/* Automations swaps the main pane rather than opening a modal, so
+              unlike Skills/Settings it carries an active state. */}
+          <NavItem
+            icon={Repeat}
+            label="Automations"
+            active={activeNavView === 'automations'}
+            onClick={() => onSelectNavView?.(activeNavView === 'automations' ? 'sessions' : 'automations')}
+          />
+        </div>
+        <div className="sidebar-section flex items-center justify-between pl-2 pr-0.5 pt-4 pb-1">
+          <span className="flex-1">Sessions</span>
+          {/* Acts on the sidebar, not the query: new group, auto-group, layout. */}
+          <button
+            type="button"
+            onClick={(e) => {
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              // Right edge of the button; the menu is pulled left from there
+              // so it can't overflow a narrow sidebar.
+              setSidebarMenu({ x: r.right, y: r.bottom + 4 });
+            }}
+            className="w-5 h-5 grid place-items-center rounded text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-colors"
+            aria-label="Sidebar options"
+            title="Sidebar options"
+          >
+            <MoreHorizontal size={13} strokeWidth={1.6} />
+          </button>
+          <button
+            type="button"
+            onClick={onNew}
+            className="w-5 h-5 grid place-items-center rounded text-zinc-600 hover:text-zinc-300 hover:bg-surface-light transition-colors"
+            aria-label="New session"
+            title="New session"
+          >
+            <Plus size={13} strokeWidth={1.6} />
+          </button>
+        </div>
+      </div>
+       {/* Children keep their height and the column scrolls; without
+           `shrink-0` flexbox squeezes the Workspace rows once the tree is long. */}
+       <div className="flex flex-col gap-px px-2 pb-2 overflow-y-auto flex-1 min-h-0 [&>*]:shrink-0">
+         {normalizedSessionSearch && (
+           <div className="px-2 pb-1 text-[11px] text-zinc-600">
+             {visibleSessions.length} {visibleSessions.length === 1 ? 'result' : 'results'}
+           </div>
+         )}
+         <div className="flex flex-col gap-px">
+           {tree.length === 0 && disposableSessions.length === 0 ? (
+             <div className="px-3 py-5 text-center text-[12px] text-zinc-600">No matching sessions</div>
+           ) : groupBy === 'status' ? renderStatusSections() : tree.map(node => renderTreeNode(node))}
+        </div>
+
+        {/* Workspace — tools that open over the main pane. */}
+        <div className="sidebar-section pl-2 pt-4 pb-1">Workspace</div>
+        {/* Disposables — the bridge's fixed folder, shown as an item that
             unfolds its sessions in place. Expanded state rides on the same
             persisted set as the groups. */}
         {disposableSessions.length > 0 && (
@@ -1478,20 +1497,17 @@ export const TabBar = memo(function TabBar(props: Props) {
               type="button"
               onClick={() => onToggleGroup(DISPOSABLES_GROUP_ID)}
               aria-expanded={disposablesExpanded}
-              className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
+              className={NAV_ROW}
             >
-              <Timer size={15} className="text-zinc-500 group-hover:text-teal-300 transition-colors" />
+              <Timer size={15} strokeWidth={1.6} className="text-zinc-500" />
               <span className="flex-1 text-left">Disposables</span>
               {!disposablesExpanded && disposableSessions.some(s => sessionHasPermission[s.id]) && (
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
               )}
-              <span className="text-[10px] tabular-nums text-zinc-600">{disposableSessions.length}</span>
-              {disposablesExpanded
-                ? <ChevronDown size={12} className="text-zinc-600" />
-                : <ChevronRight size={12} className="text-zinc-600" />}
+              <span className="text-[12px] tabular-nums text-zinc-600">{disposableSessions.length}</span>
             </button>
             {disposablesExpanded && (
-              <div className="flex flex-col gap-0.5 max-h-[40vh] overflow-y-auto ml-3 pl-2 border-l-2 border-teal-500/30">
+              <div className="tree-rail flex flex-col gap-px max-h-[40vh] overflow-y-auto ml-[15px] pl-2.5">
                 {disposableSessions.map(s => (
                   <ReorderTab
                     key={s.id}
@@ -1503,49 +1519,24 @@ export const TabBar = memo(function TabBar(props: Props) {
             )}
           </>
         )}
-        <button
-          type="button"
-          onClick={onOpenMemory}
-          className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
-        >
-          <Brain size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
+        <button type="button" onClick={onOpenMemory} className={NAV_ROW}>
+          <Brain size={15} strokeWidth={1.6} className="text-zinc-500" />
           <span>Memory</span>
         </button>
-        {/* Automations swaps the main pane rather than opening a modal, so
-            unlike Skills/Settings it carries an active state. */}
-        <button
-          type="button"
-          onClick={() => onSelectNavView?.(activeNavView === 'automations' ? 'sessions' : 'automations')}
-          aria-pressed={activeNavView === 'automations'}
-          className={`flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium transition-colors group ${
-            activeNavView === 'automations'
-              ? 'bg-surface-light text-zinc-100'
-              : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
-          }`}
-        >
-          <Zap
-            size={15}
-            className={activeNavView === 'automations' ? 'text-indigo-400' : 'text-zinc-500 group-hover:text-violet-300 transition-colors'}
-          />
-          <span>Automations</span>
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSkills}
-          className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
-        >
-          <Sparkles size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
+        <button type="button" onClick={onOpenSkills} className={NAV_ROW}>
+          <Sparkles size={15} strokeWidth={1.6} className="text-zinc-500" />
           <span>Skills</span>
         </button>
         {/* Owns its own data and panel; the sidebar only gives it a slot. */}
         <UsagePopover />
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="flex items-center gap-2.5 h-8 px-3 rounded-md text-[12px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-surface-light transition-colors group"
-        >
-          <Settings size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
-          <span>Settings</span>
+      </div>
+
+      {/* Footer: settings and the build, like the mockup's last row. */}
+      <div className="mx-2 mb-2 pt-1 border-t border-border shrink-0">
+        <button type="button" onClick={onOpenSettings} className={NAV_ROW}>
+          <Settings size={15} strokeWidth={1.6} className="text-zinc-500" />
+          <span className="flex-1 text-left">Settings</span>
+          {APP_VERSION && <span className="font-mono text-[11px] text-zinc-600">{APP_VERSION}</span>}
         </button>
       </div>
 
@@ -1889,6 +1880,30 @@ export const TabBar = memo(function TabBar(props: Props) {
     </div>
   );
 });
+
+/** A top-level sidebar destination: icon + label, raised chip when selected. */
+function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon; label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`nav-chip group w-full flex items-center gap-2.5 h-[30px] px-2 rounded-[7px] text-[13px] transition-colors ${
+        active ? 'is-active text-zinc-100' : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-light/60'
+      }`}
+    >
+      <Icon size={15} strokeWidth={1.6} className={active ? 'text-zinc-100' : 'text-zinc-500'} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+/** A plain sidebar row (no selected state): Memory, Skills, Settings… */
+const NAV_ROW = 'nav-chip group w-full shrink-0 flex items-center gap-2.5 h-[30px] px-2 rounded-[7px] text-[13px] text-zinc-400 hover:text-zinc-200 hover:bg-surface-light/60 transition-colors';
+/** The Electron window hides its titlebar but keeps macOS's traffic lights,
+ *  which land on the sidebar's brand row. A browser tab has none. */
+const HAS_TRAFFIC_LIGHTS = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) && !!getNative();
+const APP_VERSION: string = process.env.CODIBY_APP_VERSION ?? '';
 
 const MENU_ITEM = 'text-left justify-start px-3 py-1.5 h-auto rounded-none text-[12px] text-zinc-400 hover:bg-surface-light hover:text-zinc-200 transition-colors';
 
