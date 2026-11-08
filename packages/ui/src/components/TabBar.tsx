@@ -1365,7 +1365,7 @@ export const TabBar = memo(function TabBar(props: Props) {
         title="Drag to resize"
       />
       {/* Top row: the window's drag handle, with the macOS traffic lights on
-          its left and search on its right. The brand lives at the bottom. */}
+          its left and search on its right. The brand sits just below it. */}
       <div
         className="sidebar-top h-12 shrink-0 flex items-center gap-2 pl-3.5 pr-2"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
@@ -1382,6 +1382,11 @@ export const TabBar = memo(function TabBar(props: Props) {
             <Search size={15} strokeWidth={1.6} />
           </button>
         </div>
+      </div>
+
+      <div className="h-9 shrink-0 flex items-center gap-2 px-3.5 mb-1">
+        <span className="brand-mark" aria-hidden><i /></span>
+        <span className="text-[14px] font-semibold tracking-[-0.2px] text-zinc-100">Codiby</span>
       </div>
 
       <div className="px-2 shrink-0">
@@ -1525,18 +1530,15 @@ export const TabBar = memo(function TabBar(props: Props) {
         </button>
         {/* Owns its own data and panel; the sidebar only gives it a slot. */}
         <UsagePopover />
-        <button type="button" onClick={onOpenSettings} className={NAV_ROW}>
-          <Settings size={15} strokeWidth={1.6} className="text-zinc-500" />
-          <span>Settings</span>
-        </button>
       </div>
 
-      {/* Footer: the brand and the build. */}
-      <div className="mx-2 mb-2 pt-2 border-t border-border shrink-0 flex items-center gap-2 h-10 px-2">
-        <span className="brand-mark" aria-hidden><i /></span>
-        <span className="text-[13.5px] font-semibold tracking-[-0.2px] text-zinc-200">Codiby</span>
-        <span className="flex-1" />
-        {APP_VERSION && <span className="font-mono text-[11px] text-zinc-600">v{APP_VERSION}</span>}
+      {/* Footer: settings and the build. */}
+      <div className="mx-2 mb-2 pt-1 border-t border-border shrink-0">
+        <button type="button" onClick={onOpenSettings} className={NAV_ROW}>
+          <Settings size={15} strokeWidth={1.6} className="text-zinc-500" />
+          <span className="flex-1 text-left">Settings</span>
+          {APP_VERSION && <span className="font-mono text-[11px] text-zinc-600">{APP_VERSION}</span>}
+        </button>
       </div>
 
       {/* Sidebar overflow menu — actions on the whole sidebar. */}
