@@ -1367,7 +1367,7 @@ export const TabBar = memo(function TabBar(props: Props) {
       {/* Top row: the window's drag handle, with the macOS traffic lights on
           its left and search on its right. The brand sits just below it. */}
       <div
-        className="sidebar-top h-12 shrink-0 flex items-center gap-2 pl-3.5 pr-2"
+        className="sidebar-top h-[38px] shrink-0 flex items-center gap-2 pl-3.5 pr-2"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <div className="flex-1" />
@@ -1384,7 +1384,7 @@ export const TabBar = memo(function TabBar(props: Props) {
         </div>
       </div>
 
-      <div className="h-9 shrink-0 flex items-center gap-2 px-3.5 mb-1">
+      <div className="h-7 shrink-0 flex items-center gap-2 px-3.5 mb-2">
         <span className="brand-mark" aria-hidden><i /></span>
         <span className="text-[14px] font-semibold tracking-[-0.2px] text-zinc-100">Codiby</span>
       </div>
