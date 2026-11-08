@@ -35,9 +35,9 @@ import {
   webhookUrl,
 } from '../lib/automations';
 
-// The Automatizaciones screen — cron-scheduled prompts that the bridge runs on
+// The Automations screen — cron-scheduled prompts that the bridge runs on
 // its own, with no session open. Mounted in the main pane (replacing the
-// session workspace) when the sidebar's "Automatizaciones" nav item is active.
+// session workspace) when the sidebar's "Automations" nav item is active.
 //
 // Everything here is server state: definitions come from `GET /automations` and
 // history from `GET /automations/:id/runs`. There is no local store — the

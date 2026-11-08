@@ -1,4 +1,4 @@
-// Automatizaciones — presentation helpers for the automations REST API.
+// Automations — presentation helpers for the automations REST API.
 //
 // The definitions themselves live on the bridge (packages/core/automation/*)
 // and are read through `ClaudeClient`; this module holds only the pure

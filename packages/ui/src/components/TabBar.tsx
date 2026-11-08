@@ -1509,7 +1509,7 @@ export const TabBar = memo(function TabBar(props: Props) {
           <Brain size={15} className="text-zinc-500 group-hover:text-violet-300 transition-colors" />
           <span>Memory</span>
         </button>
-        {/* Automatizaciones swaps the main pane rather than opening a modal, so
+        {/* Automations swaps the main pane rather than opening a modal, so
             unlike Skills/Settings it carries an active state. */}
         <button
           type="button"
@@ -1525,7 +1525,7 @@ export const TabBar = memo(function TabBar(props: Props) {
             size={15}
             className={activeNavView === 'automations' ? 'text-indigo-400' : 'text-zinc-500 group-hover:text-violet-300 transition-colors'}
           />
-          <span>Automatizaciones</span>
+          <span>Automations</span>
         </button>
         <button
           type="button"
