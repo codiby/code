@@ -50,3 +50,22 @@ describe('plainSlackText / permalinks', () => {
     expect(slackPermalink(undefined, 'C1', '1.2')).toBeNull();
   });
 });
+
+import { slackToMarkdown } from './slack-events';
+describe('slackToMarkdown', () => {
+  const md = (t: string) => slackToMarkdown(t, lookup.userName);
+  test('formatting, links and mentions', () => {
+    expect(md('*Pending review* on _web_ ~old~ <https://gh.io/p/1|#6120> <@UMR> <!here>'))
+      .toBe('**Pending review** on *web* ~~old~~ [#6120](https://gh.io/p/1) **@Mariana Ruiz** **@here**');
+  });
+  test('bullets become list items, nested ones indented', () => {
+    expect(md('• uno\n    ◦ dos')).toBe('- uno\n  - dos');
+  });
+  test('code is left alone', () => {
+    expect(md('usa `*no bold*` y\n```\n*literal* &lt;x&gt;\n```')).toBe('usa `*no bold*` y\n```\n*literal* <x>\n```');
+    expect(md('```inline block```')).toBe('```\ninline block\n```');
+  });
+  test('a leading # is not a heading; entities decode', () => {
+    expect(md('#general &amp; co')).toBe('\\#general & co');
+  });
+});

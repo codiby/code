@@ -17,7 +17,7 @@ import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { CODIBY_DIR } from '../config/config';
 import { addInboxItem } from './store';
-import { plainSlackText, slackMessageToItem, type SlackMessage } from './slack-events';
+import { plainSlackText, slackMessageToItem, slackToMarkdown, type SlackMessage } from './slack-events';
 
 const CONFIG_FILE = join(CODIBY_DIR, 'slack.json');
 const API = 'https://slack.com/api';
@@ -244,7 +244,7 @@ export function disconnectSlack(): void {
 
 // ── what the Inbox does with a Slack item ──────────────────────────────────
 
-export interface ThreadMessage { user: string; name: string; text: string; ts: string; mine: boolean }
+export interface ThreadMessage { user: string; name: string; text: string; markdown: string; ts: string; mine: boolean; bot: boolean }
 
 /** The conversation around an item: the thread, or the last few messages of
  *  a DM. */
@@ -254,11 +254,23 @@ export async function slackThread(channel: string, ts: string, threadTs: string 
   const msgs = threadTs
     ? (await api<{ messages: SlackMessage[] }>('conversations.replies', { channel, ts: threadTs, limit: 40 }, c.userToken)).messages
     : (await api<{ messages: SlackMessage[] }>('conversations.history', { channel, latest: ts, inclusive: true, limit: 8 }, c.userToken)).messages.reverse();
-  await Promise.all(msgs.map(m => warmUser(m.user)));
-  return msgs.map(m => ({
-    user: m.user ?? '', name: m.user ? userName(m.user) : 'bot', ts: m.ts, mine: m.user === c.userId,
-    text: plainSlackText(m.text ?? '', userName),
-  }));
+  // Authors and everyone mentioned, so no row reads as a raw user id.
+  const ids = new Set<string>();
+  for (const m of msgs) {
+    if (m.user) ids.add(m.user);
+    for (const x of (m.text ?? '').matchAll(/<@([UW][A-Z0-9]+)/g)) ids.add(x[1]!);
+  }
+  await Promise.all([...ids].map(id => warmUser(id)));
+  return msgs.map(m => {
+    const raw = m as SlackMessage & { username?: string; bot_profile?: { name?: string } };
+    return {
+      user: m.user ?? '',
+      name: m.user ? userName(m.user) : raw.bot_profile?.name || raw.username || 'App',
+      ts: m.ts, mine: m.user === c.userId, bot: !!m.bot_id,
+      text: plainSlackText(m.text ?? '', userName),
+      markdown: slackToMarkdown(m.text ?? '', userName),
+    };
+  });
 }
 
 /** Reply as the user: in the thread when there is one, else in the DM. */

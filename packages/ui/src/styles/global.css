@@ -1548,3 +1548,12 @@ html.light .nav-count { background: #5b4bd6; }
 .ib-agent-waiting .ib-agent-state { color: var(--ib-warn); }
 .ib-agent-finished .ib-agent-state { color: var(--ib-ok); }
 .ib-agent-preview { margin-top: 6px; color: var(--ib-ink2); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+/* Slack messages rendered as Markdown: chat typography, tightened to a feed. */
+.ib-md { color: var(--ib-ink2); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.ib-msg.hl .ib-md { color: var(--ib-ink); }
+.ib-md p { margin: 0; }
+.ib-md .h-2 { height: 6px; }
+.ib-md ul, .ib-md ol { margin: 2px 0; }
+.ib-md a { color: var(--ib-k-slack); }
+.ib-md strong { color: var(--ib-ink); }
+.ib-md code[data-inline-code] { font-size: 12px; }

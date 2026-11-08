@@ -6,6 +6,7 @@ import {
 import type { ClaudeClient, SlackStatus, SlackThreadMessage } from '../lib/claude-client';
 import { BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
 import type { ProjectFolder } from '../lib/project-scope';
+import { Markdown } from './Markdown';
 
 export interface HandOff { cwd: string; remoteId: string | null; prompt: string; itemId: string }
 
@@ -241,7 +242,10 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
               <span className="ib-av" style={{ background: personColor(m.name) }}>{initials(m.name)}</span>
               <div className="min-w-0">
                 <div className="ib-who-line"><b>{m.mine ? 'You' : m.name}</b><span>{new Date(Number(m.ts) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
-                <div className="ib-txt">{m.text}</div>
+                {/* Slack's mrkdwn, converted by the bridge; older bridges send only text. */}
+                {m.markdown
+                  ? <Markdown text={m.markdown} className="ib-md" />
+                  : <div className="ib-txt">{m.text}</div>}
               </div>
             </div>
           ))}

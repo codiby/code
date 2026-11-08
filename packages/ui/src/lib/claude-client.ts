@@ -491,7 +491,7 @@ export interface SlackStatus {
   teamUrl?: string;
   manifest?: string;
 }
-export interface SlackThreadMessage { user: string; name: string; text: string; ts: string; mine: boolean }
+export interface SlackThreadMessage { user: string; name: string; text: string; markdown?: string; ts: string; mine: boolean; bot?: boolean }
 
 /** Mirrors core's `OverviewResponse` (packages/core/stats/overview.ts). */
 export interface OverviewStats {

@@ -85,3 +85,45 @@ export function slackMessageToItem(m: SlackMessage, l: SlackLookup): InboxInput 
     occurredAt: Math.round(Number(m.ts) * 1000),
   };
 }
+
+/** Slack mrkdwn → the Markdown the app renders. Code (fenced and inline) is
+ *  passed through untouched; everywhere else: links keep their target,
+ *  mentions become names, `*b*`/`_i_`/`~s~` become `**b**`/`*i*`/`~~s~~`, and
+ *  `•` bullets become list items. Lines stay lines (the renderer is
+ *  line-based, like Slack). */
+export function slackToMarkdown(text: string, userName: (id: string) => string): string {
+  const inline = (s: string) => s
+    .replace(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => `**@${userName(id)}**`)
+    .replace(/<#[A-Z0-9]+\|([^>]*)>/g, (_, name) => `**#${name}**`)
+    .replace(/<!subteam\^[A-Z0-9]+(?:\|([^>]*))?>/g, (_, name) => `**${name ?? '@team'}**`)
+    .replace(/<!(here|channel|everyone)(?:\|[^>]*)?>/g, (_, w) => `**@${w}**`)
+    .replace(/<mailto:([^|>]+)\|([^>]+)>/g, (_, _a, label) => label)
+    .replace(/<(https?:[^|>]+)\|([^>]+)>/g, (_, url, label) => `[${label}](${url})`)
+    .replace(/<(https?:[^>]+)>/g, (_, url) => url)
+    .replace(/(^|[\s(])\*([^*\n]+?)\*(?=$|[\s).,!?:;])/g, '$1**$2**')
+    .replace(/(^|[\s(])_([^_\n]+?)_(?=$|[\s).,!?:;])/g, '$1*$2*')
+    .replace(/(^|[\s(])~([^~\n]+?)~(?=$|[\s).,!?:;])/g, '$1~~$2~~')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+  const out: string[] = [];
+  let inFence = false;
+  for (const raw of text.split('\n')) {
+    // Slack lets a fence open mid-line (```code```); give it lines of its own.
+    const parts = raw.split('```');
+    for (let p = 0; p < parts.length; p++) {
+      if (p > 0) { out.push('```'); inFence = !inFence; }
+      const seg = parts[p]!;
+      if (inFence) { if (seg) out.push(seg.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')); continue; }
+      if (!seg && parts.length > 1) continue;
+      // Bullets: Slack sends • and ◦ (nested), indented by spaces.
+      const bullet = /^(\s*)[•◦▪]\s+(.*)$/.exec(seg);
+      const line = bullet ? `${'  '.repeat(Math.min(3, Math.round(bullet[1]!.length / 4)))}- ${bullet[2]}` : seg;
+      // Inline code stays verbatim; only the text around it is converted.
+      out.push(line.split(/(`[^`\n]+`)/).map((chunk, i) => (i % 2 ? chunk : inline(chunk))).join('')
+        // A Slack line starting with # isn't a heading.
+        .replace(/^(\s*)#/, '$1\\#'));
+    }
+  }
+  if (inFence) out.push('```');
+  return out.join('\n');
+}
