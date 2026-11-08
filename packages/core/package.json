@@ -13,6 +13,7 @@
     "@vscode/ripgrep": "1.18.0",
     "croner": "10.0.1",
     "drizzle-orm": "0.45.2",
+    "gemoji": "8",
     "hono": "4.12.23",
     "telegraf": "4.16.3",
     "zod": "4.4.3"

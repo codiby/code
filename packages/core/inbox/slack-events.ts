@@ -5,6 +5,7 @@
  */
 
 import type { InboxInput } from './store';
+import { emojifyMarkdown, emojifyPlain } from './emoji';
 
 export interface SlackMessage {
   type?: string;
@@ -36,13 +37,13 @@ const TALKING = new Set([undefined, '', 'thread_broadcast', 'file_share', 'me_me
 /** Slack markup → plain text: `<@U1>` → `@name`, `<#C1|dev>` → `#dev`,
  *  `<https://x|label>` → `label`, plus the three HTML entities Slack escapes. */
 export function plainSlackText(text: string, userName: (id: string) => string): string {
-  return text
+  return emojifyPlain(text
     .replace(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => `@${userName(id)}`)
     .replace(/<#[A-Z0-9]+\|([^>]*)>/g, (_, name) => `#${name}`)
     .replace(/<!(here|channel|everyone)>/g, (_, w) => `@${w}`)
     .replace(/<([^|>]+)\|([^>]+)>/g, (_, _url, label) => label)
     .replace(/<(https?:[^>]+)>/g, (_, url) => url)
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
 }
 
 export function slackPermalink(teamUrl: string | undefined, channel: string, ts: string, threadTs?: string): string | null {
@@ -92,7 +93,8 @@ export function slackMessageToItem(m: SlackMessage, l: SlackLookup): InboxInput 
  *  `•` bullets become list items. Lines stay lines (the renderer is
  *  line-based, like Slack). */
 export function slackToMarkdown(text: string, userName: (id: string) => string): string {
-  const inline = (s: string) => s
+  // Shortcodes last, so a `:name:` inside a link label still converts.
+  const inline = (s: string) => emojifyMarkdown(s
     .replace(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => `**@${userName(id)}**`)
     .replace(/<#[A-Z0-9]+\|([^>]*)>/g, (_, name) => `**#${name}**`)
     .replace(/<!subteam\^[A-Z0-9]+(?:\|([^>]*))?>/g, (_, name) => `**${name ?? '@team'}**`)
@@ -103,7 +105,7 @@ export function slackToMarkdown(text: string, userName: (id: string) => string):
     .replace(/(^|[\s(])\*([^*\n]+?)\*(?=$|[\s).,!?:;])/g, '$1**$2**')
     .replace(/(^|[\s(])_([^_\n]+?)_(?=$|[\s).,!?:;])/g, '$1*$2*')
     .replace(/(^|[\s(])~([^~\n]+?)~(?=$|[\s).,!?:;])/g, '$1~~$2~~')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
 
   const out: string[] = [];
   let inFence = false;

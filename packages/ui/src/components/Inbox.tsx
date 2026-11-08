@@ -246,6 +246,16 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
                 {m.markdown
                   ? <Markdown text={m.markdown} className="ib-md" />
                   : <div className="ib-txt">{m.text}</div>}
+                {!!m.reactions?.length && (
+                  <div className="ib-reactions">
+                    {m.reactions.map(r => (
+                      <span key={r.name} className={`ib-reaction ${r.mine ? 'mine' : ''}`} title={`:${r.name}:`}>
+                        {r.unicode ?? (r.url ? <img src={r.url} alt={`:${r.name}:`} /> : `:${r.name}:`)}
+                        <span>{r.count}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}

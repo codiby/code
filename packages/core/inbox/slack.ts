@@ -17,6 +17,7 @@ import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { CODIBY_DIR } from '../config/config';
 import { addInboxItem } from './store';
+import { resolveEmoji, setCustomEmoji } from './emoji';
 import { plainSlackText, slackMessageToItem, slackToMarkdown, type SlackMessage } from './slack-events';
 
 const CONFIG_FILE = join(CODIBY_DIR, 'slack.json');
@@ -135,6 +136,7 @@ async function connect(): Promise<void> {
       if (msg.type === 'hello') {
         retry = 0;
         setStatus({ state: 'connected', user: config!.userName, team: config!.teamName, teamUrl: config!.teamUrl });
+        void loadCustomEmoji();
         void backfill();
       } else if (msg.type === 'events_api' && msg.payload?.event?.type === 'message') {
         void ingest(msg.payload.event);
@@ -157,6 +159,18 @@ function scheduleReconnect(): void {
   const delay = Math.min(60_000, 1000 * 2 ** retry++);
   if (status.state === 'connected') setStatus({ ...status, state: 'connecting' });
   retryTimer = setTimeout(() => { retryTimer = null; void connect(); }, delay);
+}
+
+/** The workspace's own emoji. Needs `emoji:read`; an app created from an
+ *  older manifest lacks it, and its custom emoji just stay as `:name:`. */
+async function loadCustomEmoji(): Promise<void> {
+  if (!config) return;
+  try {
+    const r = await api<{ emoji: Record<string, string> }>('emoji.list', {}, config.userToken);
+    setCustomEmoji(r.emoji);
+  } catch (e) {
+    console.log('[slack] custom emoji unavailable:', (e as Error).message);
+  }
 }
 
 // ── Backfill: what arrived while the bridge was down ──────────────────────
@@ -244,7 +258,8 @@ export function disconnectSlack(): void {
 
 // ── what the Inbox does with a Slack item ──────────────────────────────────
 
-export interface ThreadMessage { user: string; name: string; text: string; markdown: string; ts: string; mine: boolean; bot: boolean }
+export interface Reaction { name: string; count: number; mine: boolean; unicode?: string; url?: string }
+export interface ThreadMessage { user: string; name: string; text: string; markdown: string; ts: string; mine: boolean; bot: boolean; reactions: Reaction[] }
 
 /** The conversation around an item: the thread, or the last few messages of
  *  a DM. */
@@ -262,13 +277,17 @@ export async function slackThread(channel: string, ts: string, threadTs: string 
   }
   await Promise.all([...ids].map(id => warmUser(id)));
   return msgs.map(m => {
-    const raw = m as SlackMessage & { username?: string; bot_profile?: { name?: string } };
+    const raw = m as SlackMessage & { username?: string; bot_profile?: { name?: string }; reactions?: { name: string; count: number; users?: string[] }[] };
     return {
       user: m.user ?? '',
       name: m.user ? userName(m.user) : raw.bot_profile?.name || raw.username || 'App',
       ts: m.ts, mine: m.user === c.userId, bot: !!m.bot_id,
       text: plainSlackText(m.text ?? '', userName),
       markdown: slackToMarkdown(m.text ?? '', userName),
+      reactions: (raw.reactions ?? []).map(r => ({
+        name: r.name, count: r.count, mine: !!r.users?.includes(c.userId),
+        ...(resolveEmoji(r.name) ?? {}),
+      })),
     };
   });
 }
@@ -303,6 +322,7 @@ oauth_config:
       - users:read
       - search:read
       - chat:write
+      - emoji:read
 settings:
   event_subscriptions:
     user_events:

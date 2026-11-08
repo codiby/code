@@ -69,3 +69,21 @@ describe('slackToMarkdown', () => {
     expect(md('#general &amp; co')).toBe('\\#general & co');
   });
 });
+
+import { resolveEmoji, setCustomEmoji } from './emoji';
+describe('emoji', () => {
+  test('standard shortcodes, skin tones, Slack-only names', () => {
+    expect(slackToMarkdown(':thumbsup: :rocket: :wave::skin-tone-3: :white_check_mark:', lookup.userName)).toBe('👍 🚀 👋🏼 ✅');
+    expect(plainSlackText('listo :tada:', lookup.userName)).toBe('listo 🎉');
+  });
+  test('custom workspace emoji become inline images; aliases follow; unknown stay as text', () => {
+    setCustomEmoji({ partyparrot: 'https://emoji.slack-edge.com/T1/parrot.gif', pp: 'alias:partyparrot' });
+    expect(slackToMarkdown(':pp: :nope:', lookup.userName)).toBe('![:pp:](https://emoji.slack-edge.com/T1/parrot.gif) :nope:');
+    expect(plainSlackText(':partyparrot:', lookup.userName)).toBe(':partyparrot:');
+    expect(resolveEmoji('pp')).toEqual({ url: 'https://emoji.slack-edge.com/T1/parrot.gif' });
+    setCustomEmoji({});
+  });
+  test('times and code are not emoji', () => {
+    expect(slackToMarkdown('a las 10:30:45 `:tada:`', lookup.userName)).toBe('a las 10:30:45 `:tada:`');
+  });
+});

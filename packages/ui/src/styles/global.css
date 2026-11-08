@@ -1557,3 +1557,11 @@ html.light .nav-count { background: #5b4bd6; }
 .ib-md a { color: var(--ib-k-slack); }
 .ib-md strong { color: var(--ib-ink); }
 .ib-md code[data-inline-code] { font-size: 12px; }
+/* Emoji: custom workspace ones are images sized to the text around them. */
+.ib-md img[alt^=":"] { display: inline-block; height: 1.3em; width: auto; margin: 0 1px; vertical-align: -0.3em; border-radius: 3px; }
+.ib-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.ib-reaction { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 7px; border-radius: 12px; font-size: 13px; background: var(--color-surface-light); box-shadow: inset 0 0 0 1px var(--ib-line); }
+.ib-reaction span { font-size: 11.5px; font-weight: 500; color: var(--ib-ink2); }
+.ib-reaction img { height: 16px; width: auto; }
+.ib-reaction.mine { background: color-mix(in srgb, var(--ib-k-slack) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ib-k-slack) 45%, transparent); }
+.ib-reaction.mine span { color: var(--ib-k-slack); }
