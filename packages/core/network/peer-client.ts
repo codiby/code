@@ -60,6 +60,29 @@ export class PeerClient {
     return hosts;
   }
 
+  /** POST bridge-to-bridge state to `path` on a paired remote with write
+   *  coordination, after checking it is the host it claims to be. */
+  async post<T>(remoteId: string, path: string, body: Record<string, unknown>): Promise<T> {
+    const local = this.deps.identity();
+    const remote = this.deps.remotes().find(r => r.id === remoteId);
+    if (!remote || remote.coordination !== 'write') throw new Error('This host is not paired for writing');
+    const connection = await this.deps.connect(remote.id);
+    try {
+      const destination = await this.identityAt(connection.baseUrl);
+      if (destination.hostId === local.hostId) throw new Error('Remote route points to the local host');
+      this.assertRoute(remote);
+      this.deps.pin(remote.id, destination.hostId);
+      const response = await fetch(`${connection.baseUrl}${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...this.deps.credentials?.(remote.id) },
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({ ...body, protocolVersion: local.protocolVersion, targetHostId: destination.hostId, source: { hostId: local.hostId } }),
+      });
+      const data = await response.json().catch(() => ({})) as T & { error?: string };
+      if (!response.ok) throw new Error(data.error || `Peer HTTP ${response.status}`);
+      return data;
+    } finally { connection.release(); }
+  }
+
   async call(hostId: string, tool: PeerTool, args: Record<string, unknown>, owner: string): Promise<CallToolResult> {
     const local = this.deps.identity();
     let remote = this.deps.remotes().find(r => r.hostId === hostId || r.id === hostId);

@@ -90,6 +90,13 @@ export class PairingManager {
     if (record.status !== 'paired' || body.source?.hostId !== record.peer.hostId) throw new Error('Pairing is inactive or source identity does not match');
     if (isPeerWrite(body.tool) && record.permission !== 'write') throw new Error('This pairing only permits reading context');
   }
+  /** Bridge-to-bridge state sync (projects): same credential and source
+   *  check as a peer tool, and a write, so it needs a write pairing. */
+  authorizeWrite(req: Request, sourceHostId: unknown) {
+    const record = this.record(req.headers.get('x-codiby-pair-id'), req.headers.get('authorization')?.replace(/^Bearer /, ''));
+    if (record.status !== 'paired' || sourceHostId !== record.peer.hostId) throw new Error('Pairing is inactive or source identity does not match');
+    if (record.permission !== 'write') throw new Error('This pairing only permits reading');
+  }
   private keyDirectory(id: string) { return join(this.deps.directory, 'keys', id); }
   private async request(connection: Connection, action: string, body: unknown): Promise<any> {
     const response = await fetch(`${connection.baseUrl}/peer/pair/${action}`, {

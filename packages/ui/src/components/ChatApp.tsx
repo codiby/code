@@ -41,10 +41,7 @@ import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
 import { listProjects, projectOfRepo, scopeToProject, type Project, type ProjectFolder } from '../lib/project-scope';
-import {
-  applyBundle, bundleOf, fingerprint, parseStoredProjects, projectHosts,
-  type OrgPrefs, type StoredFolder, type StoredProject,
-} from '../lib/project-sync';
+import { parseStoredProjects, type StoredFolder, type StoredProject } from '../lib/project-sync';
 import { ProjectDialog } from './ProjectDialog';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { Overview, modelLabel } from './Overview';
@@ -365,9 +362,6 @@ export function ChatApp() {
   const setSelectedGroupId = useAppStore(s => s.setSelectedGroupId);
   /** User-defined projects (lib/project-scope), synced via preferences. */
   const [storedProjects, setStoredProjects] = useState<Record<string, StoredProject>>({});
-  /** Each remote's whole preferences blob, as last broadcast — what project
-   *  sync reads to compare versions and to write back a merged copy. */
-  const [remotePrefsRaw, setRemotePrefsRaw] = useState<Record<string, Record<string, unknown>>>({});
   /** Inbox items this machine's bridge holds (Slack, PRs), kept live. */
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   /** Slack connections on this machine's bridge: project id (or `default`,
@@ -2292,10 +2286,6 @@ export function ChatApp() {
          *  reach `tabGroups`, which is what gets persisted locally. An empty
          *  blob means the remote was removed. */
         onRemotePreferences: (remoteId, prefs) => {
-          setRemotePrefsRaw(prev => {
-            if (!Object.keys(prefs).length) { const { [remoteId]: _gone, ...rest } = prev; return rest; }
-            return { ...prev, [remoteId]: prefs };
-          });
           setDefaultModelsByHost(prev => ({ ...prev, [remoteId]: readDefaultModels(prefs) }));
           setDefaultPermissionModeByHost(prev => ({ ...prev, [remoteId]: readDefaultPermissionMode(prefs) }));
           const tabGroups = (prefs.tabGroups as Record<string, TabGroupInfo> | undefined) ?? {};
@@ -5160,119 +5150,8 @@ export function ChatApp() {
     persistPrefs({ projects: next });
   };
 
-  // ── Project sync ────────────────────────────────────────────────────────
-  // Last change wins, per project (lib/project-sync). Three steps, debounced:
-  // notice a local edit to a project's organization, adopt a newer copy a
-  // remote holds, and push to every host the project spans that is behind.
-  const groupOrderState = useAppStore(s => s.groupOrder);
-  const pushedRef = useRef<Record<string, number>>({});
-  useEffect(() => {
-    if (!localHostId || !client) return;
-    const timer = setTimeout(() => {
-      const now = Date.now();
-      let org: OrgPrefs = { tabGroups, tabGroupMap, groupOrder: groupOrderState, pinnedSessionIds: [...pinnedSessionIds] };
-      let next = storedProjects;
-      let projectsDirty = false, orgDirty = false;
-
-      // 0. Projects saved before folders carried a host identity: fill it in
-      //    once the host is known (this machine, or a remote that answered).
-      for (const p of Object.values(next)) {
-        if (!p.folders.some(f => !f.hostId)) continue;
-        const folders = p.folders.map(f => {
-          if (f.hostId) return f;
-          const hostId = !f.remoteId ? localHostId : remoteHostIds[f.remoteId];
-          return hostId ? { path: f.path, hostId } : f;
-        });
-        if (folders.some((f, i) => f !== p.folders[i])) {
-          next = { ...next, [p.id]: { ...p, folders } };
-          projectsDirty = true;
-        }
-      }
-
-      // 1. A local edit: the organization no longer matches its fingerprint.
-      for (const p of Object.values(next)) {
-        if (p.deleted) continue;
-        const fp = fingerprint(bundleOf(org, p.id));
-        if (p.fp === fp) continue;
-        // Another window of this host made the change; let that one stamp it.
-        if (p.fp !== undefined && !document.hasFocus()) continue;
-        next = { ...next, [p.id]: { ...next[p.id]!, fp, updatedAt: now } };
-        projectsDirty = true;
-      }
-
-      // 2. A newer copy on a remote (edited there while this one wasn't
-      //    reachable, or before this window loaded).
-      const orgOf = (raw: Record<string, unknown>): OrgPrefs => ({
-        tabGroups: (raw.tabGroups as Record<string, TabGroupInfo>) ?? {},
-        tabGroupMap: (raw.tabGroupMap as Record<string, string>) ?? {},
-        groupOrder: parseGroupOrder(raw.groupOrder) ?? {},
-        pinnedSessionIds: Array.isArray(raw.pinnedSessionIds) ? raw.pinnedSessionIds as string[] : [],
-      });
-      for (const raw of Object.values(remotePrefsRaw)) {
-        for (const q of Object.values(parseStoredProjects(raw.projects))) {
-          const mine = next[q.id];
-          if (!mine && !projectHosts(q).has(localHostId)) continue;
-          if (mine && q.updatedAt <= mine.updatedAt) continue;
-          if (q.deleted) {
-            next = { ...next, [q.id]: q };
-          } else {
-            const bundle = bundleOf(orgOf(raw), q.id);
-            org = applyBundle(org, q.id, bundle);
-            orgDirty = true;
-            next = { ...next, [q.id]: { ...q, fp: fingerprint(bundle) } };
-          }
-          projectsDirty = true;
-        }
-      }
-      if (orgDirty) {
-        setTabGroups(org.tabGroups);
-        setTabGroupMap(org.tabGroupMap);
-        setGroupOrder(org.groupOrder);
-        setPinnedSessionIds(new Set(org.pinnedSessionIds));
-        persistPrefs({ tabGroups: org.tabGroups, tabGroupMap: org.tabGroupMap, groupOrder: org.groupOrder, pinnedSessionIds: org.pinnedSessionIds });
-      }
-      if (projectsDirty) writeStoredProjects(next);
-
-      // 3. Push to the hosts that are behind — one merged write per host, so
-      //    two projects bound for the same machine can't overwrite each other.
-      const outgoing = new Map<string, { raw: Record<string, unknown>; org: OrgPrefs; projects: Record<string, unknown>; keys: string[] }>();
-      for (const p of Object.values(next)) {
-        for (const hostId of projectHosts(p)) {
-          if (hostId === localHostId) continue;
-          const rid = remoteIdOfHost(hostId);
-          const raw = rid ? remotePrefsRaw[rid] : undefined;
-          if (!rid || !raw) continue;
-          const theirs = parseStoredProjects(raw.projects)[p.id];
-          if (theirs && theirs.updatedAt >= p.updatedAt) continue;
-          const key = `${rid}:${p.id}:${p.updatedAt}`;
-          if (pushedRef.current[key]) continue;
-          let o = outgoing.get(rid);
-          if (!o) {
-            o = { raw, org: orgOf(raw), projects: { ...((raw.projects as Record<string, unknown>) ?? {}) }, keys: [] };
-            outgoing.set(rid, o);
-          }
-          o.projects[p.id] = p;
-          if (!p.deleted) o.org = applyBundle(o.org, p.id, bundleOf(org, p.id));
-          o.keys.push(key);
-        }
-      }
-      for (const [rid, o] of outgoing) {
-        for (const k of o.keys) pushedRef.current[k] = now;
-        void client.updateRemotePreferences(rid, {
-          projects: o.projects,
-          tabGroups: o.org.tabGroups,
-          tabGroupMap: o.org.tabGroupMap,
-          groupOrder: o.org.groupOrder,
-          pinnedSessionIds: o.org.pinnedSessionIds,
-        }).catch(err => {
-          console.error('[project-sync] push failed', rid, err);
-          for (const k of o.keys) delete pushedRef.current[k];
-        });
-      }
-    }, 600);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localHostId, client, storedProjects, tabGroups, tabGroupMap, groupOrderState, pinnedSessionIds, remotePrefsRaw, remoteHostIds]);
+  // Project replication between hosts is the bridges' job (core/projects):
+  // this window only saves projects and shows what the bridge broadcasts.
   /** The project dialog: `null` closed, `''` a new project, else the id. */
   const [projectDialog, setProjectDialog] = useState<string | null>(null);
   const projects = useMemo(() => listProjects({

@@ -81,6 +81,7 @@ import { linkInboxSession, listOpenInbox, markInboxDone, markInboxRead, pruneInb
 import { configureSlack, disconnectSlack, moveSlackConnection, setSlackBroadcaster, slackOpenDm, slackReact, slackReply, slackStatuses, slackThread, SLACK_MANIFEST, startSlack } from './inbox/slack';
 import { searchEmoji } from './inbox/emoji';
 import { declineReview, pollPullRequests, startPullRequestPolling } from './inbox/github';
+import { handlePeerProjects, onLocalWrite as onProjectsWrite, setProjectSyncStore, startProjectSync } from './projects/sync';
 import { buildOverview } from './stats/overview';
 import { configureAutomationRunner, completeAutomationRun, failAutomationRun } from './automation/runner';
 import { startAutomationScheduler } from './automation/scheduler';
@@ -425,6 +426,9 @@ async function applyDefaultModels(before: Record<string, string>) {
 
 function updatePreferences(partial: Record<string, unknown>): Record<string, unknown> {
   const prefs = loadPreferences();
+  // Snapshot before the merge below mutates `prefs` in place: project sync
+  // compares the two.
+  const before = { ...prefs };
   // A group that lives on another machine is recognisable by its id prefix, and
   // never belongs in this file. The frontend already drops them on the way out
   // (`stripRemoteGroups`); this is the same rule at the only place that writes,
@@ -454,9 +458,12 @@ function updatePreferences(partial: Record<string, unknown>): Record<string, unk
     (next.tabGroupMap as Record<string, string>) || {},
   );
   if (refiled) Object.assign(next, { tabGroups: refiled.groups, tabGroupMap: refiled.map });
-  savePreferences(next);
-  broadcastPreferences(next);
-  return next;
+  // Projects merge per id and get a new version when their definition or
+  // organization changed; the bridges then replicate them (projects/sync.ts).
+  const stamped = onProjectsWrite(before, next);
+  savePreferences(stamped);
+  broadcastPreferences(stamped);
+  return stamped;
 }
 
 /** Fold the duplicates an older build left behind, before any client reads. */
@@ -2694,6 +2701,23 @@ const server = Bun.serve({
       return new Response('Unauthorized', { status: 401, headers: corsHeaders });
     }
 
+    // Bridge-to-bridge project replication. Same trust as /peer/tools: a real
+    // loopback/SSH connection, a write pairing, and the sender's identity.
+    if (url.pathname === '/peer/projects') {
+      if (!isLoopback(server.requestIP(req)?.address)) return Response.json({ error: 'Peer operations require a local or SSH connection' }, { status: 403, headers: corsHeaders });
+      try {
+        const body = await req.json() as { protocolVersion?: number; targetHostId?: string; source?: { hostId?: string } };
+        pairings.authorizeWrite(req, body.source?.hostId);
+        const local = getHostIdentity();
+        if (body.protocolVersion !== local.protocolVersion || body.targetHostId !== local.hostId) {
+          return Response.json({ error: 'Target host identity mismatch or incompatible protocol' }, { status: 409, headers: corsHeaders });
+        }
+        return Response.json(handlePeerProjects(body as Parameters<typeof handlePeerProjects>[0]), { headers: corsHeaders });
+      } catch (error: any) {
+        return Response.json({ error: error.message }, { status: 403, headers: corsHeaders });
+      }
+    }
+
     if (url.pathname === '/peer/tools') {
       try { pairings.authorize(req, await req.clone().json()); }
       catch (error: any) { return Response.json({ error: error.message }, { status: 403, headers: corsHeaders }); }
@@ -3119,6 +3143,9 @@ startAutomationScheduler();
     for (const ws of frontendClients) { try { ws.send(data); } catch {} }
   };
   setInboxBroadcaster(toWindows);
+  // Project replication between paired bridges.
+  setProjectSyncStore(loadPreferences, (p) => { savePreferences(p); broadcastPreferences(p); });
+  startProjectSync();
   setSlackBroadcaster(toWindows);
   pruneInbox();
   startSlack();
