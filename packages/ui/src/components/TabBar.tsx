@@ -1487,8 +1487,13 @@ export const TabBar = memo(function TabBar(props: Props) {
            ) : groupBy === 'status' ? renderStatusSections() : tree.map(node => renderTreeNode(node))}
         </div>
 
+      </div>
+
+      {/* Footer, pinned: the Workspace tools, then settings and the build.
+          Only the session tree above scrolls. */}
+      <div className="px-2 pt-1 shrink-0 flex flex-col gap-px [&>*]:shrink-0">
         {/* Workspace — tools that open over the main pane. */}
-        <div className="sidebar-section pl-2 pt-4 pb-1">Workspace</div>
+        <div className="sidebar-section pl-2 pt-2 pb-1">Workspace</div>
         {/* Disposables — the bridge's fixed folder, shown as an item that
             unfolds its sessions in place. Expanded state rides on the same
             persisted set as the groups. */}
@@ -1531,9 +1536,7 @@ export const TabBar = memo(function TabBar(props: Props) {
         {/* Owns its own data and panel; the sidebar only gives it a slot. */}
         <UsagePopover />
       </div>
-
-      {/* Footer: settings and the build. */}
-      <div className="mx-2 mb-2 pt-1 border-t border-border shrink-0">
+      <div className="mx-2 mb-2 mt-1 pt-1 border-t border-border shrink-0">
         <button type="button" onClick={onOpenSettings} className={NAV_ROW}>
           <Settings size={15} strokeWidth={1.6} className="text-zinc-500" />
           <span className="flex-1 text-left">Settings</span>
