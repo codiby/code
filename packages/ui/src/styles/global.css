@@ -1567,3 +1567,24 @@ html.light .nav-count { background: #5b4bd6; }
 .ib-reaction.mine span { color: var(--ib-k-slack); }
 .ib-sep { display: flex; align-items: center; gap: 10px; color: var(--ib-mute); font-size: 12px; margin: -2px 0 -2px 42px; }
 .ib-sep::after { content: ""; flex: 1; height: 1px; background: var(--ib-line); }
+
+/* Project dialog — Slack connection. */
+.slk-box { border: 1px solid var(--color-border); border-radius: 9px; padding: 10px 12px; background: var(--color-base); }
+.slk-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 7px; font-size: 12.5px; color: var(--color-zinc-300); box-shadow: inset 0 0 0 1px var(--color-border-light); background: var(--color-surface); white-space: nowrap; }
+.slk-btn:hover:not(:disabled) { background: var(--color-surface-light); }
+.slk-btn:disabled { opacity: 0.45; }
+.slk-btn.acc { background: #e0457b; color: #fff; box-shadow: none; }
+html.light .slk-btn.acc { background: #c0265f; }
+.slk-link { color: #e0457b; font-size: 12.5px; text-decoration: underline; cursor: pointer; }
+.slk-steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: var(--color-zinc-400); }
+.slk-steps b { color: var(--color-zinc-200); font-weight: 500; }
+.slk-steps a { color: #e0457b; text-decoration: underline; cursor: pointer; }
+.slk-steps code { font-family: var(--font-mono); font-size: 11.5px; }
+.slk-manifest { position: relative; margin-top: 6px; border-radius: 7px; border: 1px solid var(--color-border); background: var(--color-surface); }
+.slk-manifest pre { margin: 0; padding: 8px 10px; max-height: 140px; overflow: auto; font: 11px/1.5 var(--font-mono); color: var(--color-zinc-400); }
+.slk-manifest .slk-btn { position: absolute; top: 5px; right: 5px; height: 24px; }
+.slk-input { height: 32px; padding: 0 10px; border-radius: 7px; background: var(--color-surface); border: 1px solid var(--color-border); color: var(--color-zinc-100); font: 12.5px var(--font-mono); outline: none; }
+.slk-input:focus { border-color: var(--color-zinc-500); }
+.slk-error { color: #ef6b5e; font-size: 12.5px; margin-top: 8px; }
+.ib-dates { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12px; color: var(--ib-mute); }
+.ib-proj-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--ib-line); }

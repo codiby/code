@@ -93,6 +93,7 @@ import {
   type SessionInfo,
   type InboxItem,
   type SlackStatus,
+  slackConnectionOf,
   type SessionInitInfo,
   type SupportedModel,
   type TerminalInfo,
@@ -369,7 +370,10 @@ export function ChatApp() {
   const [remotePrefsRaw, setRemotePrefsRaw] = useState<Record<string, Record<string, unknown>>>({});
   /** Inbox items this machine's bridge holds (Slack, PRs), kept live. */
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
-  const [slackStatus, setSlackStatus] = useState<SlackStatus>({ state: 'off' });
+  /** Slack connections on this machine's bridge: project id (or `default`,
+   *  the one made before projects had their own) → status. */
+  const [slackConnections, setSlackConnections] = useState<Record<string, SlackStatus>>({});
+  const [slackManifest, setSlackManifest] = useState('');
   /** The selected project, for handlers declared before it's computed: a
    *  group created while a project is selected belongs to that project. */
   const scopedProjectIdRef = useRef<string | null>(null);
@@ -2311,7 +2315,10 @@ export function ChatApp() {
         onRemotes: (list) => setRemotes(list),
         onInboxItem: (item) => setInboxItems(prev => [item, ...prev.filter(i => i.id !== item.id)]),
         onInboxRemoved: (id) => setInboxItems(prev => prev.filter(i => i.id !== id)),
-        onSlackStatus: (status) => setSlackStatus(prev => ({ ...status, manifest: prev.manifest })),
+        onSlackStatus: (id, status) => setSlackConnections(prev => {
+          if (status.state === 'off') { const { [id]: _gone, ...rest } = prev; return rest; }
+          return { ...prev, [id]: status };
+        }),
         // The Inbox's open conversation listens for these (Inbox.tsx).
         onSlackMessage: (ev) => window.dispatchEvent(new CustomEvent('codiby:slack-message', { detail: ev })),
 
@@ -5084,7 +5091,7 @@ export function ChatApp() {
   useEffect(() => {
     if (!client) return;
     void client.getInbox().then(setInboxItems).catch(() => {});
-    void client.getSlack().then(setSlackStatus).catch(() => {});
+    void client.getSlack().then(r => { setSlackConnections(r.connections ?? {}); setSlackManifest(r.manifest ?? ''); }).catch(() => {});
   }, [client]);
 
   // ── Project scope ─────────────────────────────────────────────────────────
@@ -5412,7 +5419,9 @@ export function ChatApp() {
 
   /** The Inbox: stored items plus what the sessions in scope wait on. */
   const inboxRows = useMemo(() => buildInboxRows(
-    inboxItems,
+    // A project shows the Slack it is connected to; All projects shows every
+    // connection's.
+    scopedProject ? inboxItems.filter(i => i.source !== 'slack' || slackConnectionOf(i) === scopedProject.id) : inboxItems,
     scopedProject ? scopedSidebar.sessions.filter(s => !isPendingSessionId(s.id)) : orderedOpenSessions,
     {
       hasPermission: sessionHasPermission,
@@ -7268,7 +7277,10 @@ export function ChatApp() {
               <Inbox
                 client={client}
                 rows={inboxRows}
-                slack={slackStatus}
+                slackConnections={slackConnections}
+                slackManifest={slackManifest}
+                scopedProjectId={scopedProjectId}
+                onEditProject={(id) => setProjectDialog(id)}
                 projects={projects}
                 defaultProjectId={scopedProjectId}
                 onOpenSession={(id) => { setActiveNavView('sessions'); void handleSelectSession(id); }}
@@ -9335,6 +9347,7 @@ export function ChatApp() {
             client={client}
             remotes={remotes}
             suggestions={projectFolderSuggestions}
+            slack={{ status: editing ? slackConnections[editing.id] : undefined, legacy: slackConnections.default, manifest: slackManifest }}
             onClose={() => setProjectDialog(null)}
             onSave={(draft) => {
               const id = editing?.id ?? crypto.randomUUID();

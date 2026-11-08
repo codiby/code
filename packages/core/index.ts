@@ -78,8 +78,8 @@ import {
   handleUpdateStatus,
 } from './handlers/boards';
 import { linkInboxSession, listOpenInbox, markInboxDone, markInboxRead, pruneInbox, setInboxBroadcaster } from './inbox/store';
-import { configureSlack, disconnectSlack, getSlackStatus, setSlackBroadcaster, slackReply, slackThread, SLACK_MANIFEST, startSlack } from './inbox/slack';
-import { pollPullRequests, startPullRequestPolling } from './inbox/github';
+import { configureSlack, disconnectSlack, moveSlackConnection, setSlackBroadcaster, slackReply, slackStatuses, slackThread, SLACK_MANIFEST, startSlack } from './inbox/slack';
+import { declineReview, pollPullRequests, startPullRequestPolling } from './inbox/github';
 import { buildOverview } from './stats/overview';
 import { configureAutomationRunner, completeAutomationRun, failAutomationRun } from './automation/runner';
 import { startAutomationScheduler } from './automation/scheduler';
@@ -1478,31 +1478,50 @@ app.post('/inbox/refresh', async () => { await pollPullRequests(); return Respon
 
 // Slack (Socket Mode). Tokens never leave this machine: the status endpoint
 // reports who is connected, not the credentials.
-app.get('/integrations/slack', () => Response.json({ ...getSlackStatus(), manifest: SLACK_MANIFEST }, { headers: corsHeaders }));
-app.put('/integrations/slack', async (c) => {
+app.get('/integrations/slack', () => Response.json({ connections: slackStatuses(), manifest: SLACK_MANIFEST }, { headers: corsHeaders }));
+app.put('/integrations/slack/:id', async (c) => {
   try {
     const body = await c.req.json() as { appToken?: string; userToken?: string };
-    return Response.json(await configureSlack(body.appToken ?? '', body.userToken ?? ''), { headers: corsHeaders });
+    return Response.json(await configureSlack(c.req.param('id'), body.appToken ?? '', body.userToken ?? ''), { headers: corsHeaders });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
   }
 });
-app.delete('/integrations/slack', () => { disconnectSlack(); return Response.json({ ok: true }, { headers: corsHeaders }); });
-app.get('/integrations/slack/thread', async (c) => {
+app.delete('/integrations/slack/:id', (c) => { disconnectSlack(c.req.param('id')); return Response.json({ ok: true }, { headers: corsHeaders }); });
+app.post('/integrations/slack/:id/move', async (c) => {
+  try {
+    const body = await c.req.json() as { to?: string };
+    if (!body.to) throw new Error('to is required');
+    return Response.json(moveSlackConnection(c.req.param('id'), body.to), { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
+app.get('/integrations/slack/:id/thread', async (c) => {
   const u = new URL(c.req.url);
   try {
-    const msgs = await slackThread(u.searchParams.get('channel') ?? '', u.searchParams.get('ts') ?? '', u.searchParams.get('threadTs') || null);
+    const msgs = await slackThread(c.req.param('id'), u.searchParams.get('channel') ?? '', u.searchParams.get('ts') ?? '', u.searchParams.get('threadTs') || null);
     return Response.json(msgs, { headers: corsHeaders });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
   }
 });
-app.post('/integrations/slack/reply', async (c) => {
+app.post('/integrations/slack/:id/reply', async (c) => {
   try {
     const body = await c.req.json() as { channel?: string; threadTs?: string | null; text?: string; itemId?: string };
     if (!body.channel || !body.text?.trim()) throw new Error('channel and text are required');
-    await slackReply(body.channel, body.threadTs ?? null, body.text);
+    await slackReply(c.req.param('id'), body.channel, body.threadTs ?? null, body.text);
     if (body.itemId) markInboxDone(body.itemId);
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });
+  }
+});
+// Decline a review request: take yourself off the PR's reviewers on GitHub,
+// then close the item.
+app.post('/inbox/:id/decline-review', async (c) => {
+  try {
+    await declineReview(c.req.param('id'));
     return Response.json({ ok: true }, { headers: corsHeaders });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400, headers: corsHeaders });

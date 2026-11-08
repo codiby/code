@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowUp, Folder, FolderOpen, Loader2, Plus, Trash2, X } from 'lucide-react';
 import { GROUP_COLORS, GROUP_HEX_COLOR } from '../lib/tab-groups';
-import type { ClaudeClient, RemoteTarget } from '../lib/claude-client';
+import type { ClaudeClient, RemoteTarget, SlackStatus } from '../lib/claude-client';
+import { SlackConnect } from './SlackConnect';
 import type { Project, ProjectFolder } from '../lib/project-scope';
 
 interface Props {
@@ -16,6 +17,9 @@ interface Props {
   onSave: (project: Omit<Project, 'id'>) => void;
   onDelete?: () => void;
   onClose: () => void;
+  /** This project's Slack connection on this machine, and the one made
+   *  before projects had their own (offered to move here). */
+  slack?: { status?: SlackStatus; legacy?: SlackStatus; manifest: string };
 }
 
 const hostName = (remotes: RemoteTarget[], id: string | null) =>
@@ -29,7 +33,7 @@ const sameFolder = (a: ProjectFolder, b: ProjectFolder) => a.path === b.path && 
 
 /** Create or edit a project: name, colour, and the folders (each on a host)
  *  whose sessions belong to it. */
-export function ProjectDialog({ project, isNew, client, remotes, suggestions, onSave, onDelete, onClose }: Props) {
+export function ProjectDialog({ project, isNew, client, remotes, suggestions, onSave, onDelete, onClose, slack }: Props) {
   const [name, setName] = useState(project.name);
   const [color, setColor] = useState(project.color ?? GROUP_COLORS[0]);
   const [folders, setFolders] = useState<ProjectFolder[]>(project.folders.length ? project.folders : []);
@@ -87,7 +91,7 @@ export function ProjectDialog({ project, isNew, client, remotes, suggestions, on
   return createPortal(
     <div className="fixed inset-0 z-[10001] grid place-items-center bg-black/40" onMouseDown={onClose}>
       <div
-        className="w-[520px] max-w-[92vw] bg-surface rounded-xl border border-border-light shadow-2xl"
+        className="w-[560px] max-w-[92vw] max-h-[88vh] flex flex-col bg-surface rounded-xl border border-border-light shadow-2xl"
         onMouseDown={e => e.stopPropagation()}
         role="dialog"
         aria-label={isNew ? 'New project' : 'Edit project'}
@@ -99,7 +103,7 @@ export function ProjectDialog({ project, isNew, client, remotes, suggestions, on
           </button>
         </div>
 
-        <div className="p-4 flex flex-col gap-4">
+        <div className="p-4 flex flex-col gap-4 overflow-y-auto min-h-0">
           <label className="flex flex-col gap-1.5">
             <span className="text-[12px] text-zinc-500">Name</span>
             <input
@@ -214,6 +218,13 @@ export function ProjectDialog({ project, isNew, client, remotes, suggestions, on
                 </div>
               </div>
             )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[12px] text-zinc-500">Slack</span>
+            {isNew || !('id' in project)
+              ? <div className="text-[12px] text-zinc-600 px-0.5">Create the project first, then connect its Slack workspace here.</div>
+              : <SlackConnect client={client} projectId={project.id} status={slack?.status} legacy={slack?.legacy} manifest={slack?.manifest ?? ''} />}
           </div>
         </div>
 

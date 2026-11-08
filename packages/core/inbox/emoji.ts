@@ -23,11 +23,17 @@ const TONES: Record<string, string> = {
   'skin-tone-5': '\u{1F3FE}', 'skin-tone-6': '\u{1F3FF}',
 };
 
+/** Custom emoji per connected workspace, looked up as one set: two
+ *  workspaces rarely share a custom name, and when they do either image is
+ *  close enough for a preview. */
+const workspaces = new Map<string, Map<string, string>>();
 let custom = new Map<string, string>();
 
-/** Install the workspace's custom emoji (`emoji.list` → name → url or `alias:x`). */
-export function setCustomEmoji(list: Record<string, string>): void {
-  custom = new Map(Object.entries(list));
+/** Install a workspace's custom emoji (`emoji.list` → name → url or `alias:x`).
+ *  `workspace` defaults to a single shared slot (tests, one connection). */
+export function setCustomEmoji(list: Record<string, string>, workspace = 'default'): void {
+  workspaces.set(workspace, new Map(Object.entries(list)));
+  custom = new Map([...workspaces.values()].flatMap(m => [...m]));
 }
 
 export function resolveEmoji(name: string, depth = 0): EmojiGlyph | null {

@@ -104,6 +104,27 @@ export function rewriteOpenBodies(source: InboxItem['source'], fn: (body: string
   }
 }
 
+/** Point open items of connection `from` at `to` (a Slack connection moved
+ *  into a project). Items with no connection belong to `fallback`. */
+export function retagConnection(from: string, to: string, fallback: string): void {
+  for (const item of listOpenInbox(1000)) {
+    if (item.source !== 'slack' || String(item.context.connectionId ?? fallback) !== from) continue;
+    const context = { ...item.context, connectionId: to };
+    database.update(inboxItems).set({ context: JSON.stringify(context) }).where(eq(inboxItems.id, item.id)).run();
+    broadcast({ type: 'inbox_item', item: getInboxItem(item.id) });
+  }
+}
+
+/** Merge fresh fields into an item's context (dates a source reports again). */
+export function refreshInboxContext(id: string, patch: Record<string, unknown>): void {
+  const cur = getInboxItem(id);
+  if (!cur) return;
+  const context = { ...cur.context, ...patch };
+  if (JSON.stringify(context) === JSON.stringify(cur.context)) return;
+  database.update(inboxItems).set({ context: JSON.stringify(context) }).where(eq(inboxItems.id, id)).run();
+  broadcast({ type: 'inbox_item', item: getInboxItem(id) });
+}
+
 /** Close every open item of `source` that `stillOpen` no longer lists — a PR
  *  that got reviewed, checks that went green. */
 export function closeMissing(source: InboxItem['source'], stillOpen: Set<string>, now = Date.now()): void {

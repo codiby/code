@@ -489,8 +489,10 @@ export interface SlackStatus {
   user?: string;
   team?: string;
   teamUrl?: string;
-  manifest?: string;
 }
+/** The connection a Slack item came through: a project id, or `default`. */
+export const slackConnectionOf = (item: { context: Record<string, unknown> }) => String(item.context.connectionId ?? 'default');
+export interface SlackLiveMessage { connectionId?: string; channel: string; threadTs: string | null; message: SlackThreadMessage }
 export interface SlackReaction { name: string; count: number; mine: boolean; unicode?: string; url?: string }
 export interface SlackThreadMessage { user: string; name: string; text: string; markdown?: string; ts: string; mine: boolean; bot?: boolean; reactions?: SlackReaction[]; root?: boolean }
 
@@ -820,9 +822,10 @@ type ClientCallbacks = {
    *  was closed, Slack's connection changed. */
   onInboxItem?: (item: InboxItem) => void;
   onInboxRemoved?: (id: string) => void;
-  onSlackStatus?: (status: SlackStatus) => void;
+  /** A Slack connection's status changed (`id` = project id, or `default`). */
+  onSlackStatus?: (id: string, status: SlackStatus) => void;
   /** A Slack message as it happens, already formatted. */
-  onSlackMessage?: (ev: { channel: string; threadTs: string | null; message: SlackThreadMessage }) => void;
+  onSlackMessage?: (ev: SlackLiveMessage) => void;
   /** A remote bridge's own preferences. Only its tab groups are of any use
    *  here — they're folded into the sidebar by name so a project that exists on
    *  both machines reads as one folder. `{}` means the remote went away and its
@@ -1401,10 +1404,10 @@ export class ClaudeClient {
         if (!remoteId) this.callbacks.onInboxRemoved?.(msg.id as string);
         break;
       case 'slack_message':
-        if (!remoteId) this.callbacks.onSlackMessage?.(msg as unknown as { channel: string; threadTs: string | null; message: SlackThreadMessage });
+        if (!remoteId) this.callbacks.onSlackMessage?.(msg as unknown as SlackLiveMessage);
         break;
       case 'slack_status':
-        if (!remoteId) this.callbacks.onSlackStatus?.(msg.status as SlackStatus);
+        if (!remoteId) this.callbacks.onSlackStatus?.(String(msg.id ?? 'default'), msg.status as SlackStatus);
         break;
       case 'preferences':
         // Preferences belong to the machine that sent them. Handing a remote's
@@ -2390,17 +2393,21 @@ export class ClaudeClient {
     return this.json(`/inbox/${encodeURIComponent(id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
   }
   refreshInbox(): Promise<unknown> { return this.json('/inbox/refresh', { method: 'POST' }); }
-  getSlack(): Promise<SlackStatus> { return this.json('/integrations/slack'); }
-  connectSlack(appToken: string, userToken: string): Promise<SlackStatus> {
-    return this.json('/integrations/slack', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appToken, userToken }) });
+  declineReview(itemId: string): Promise<unknown> { return this.json(`/inbox/${encodeURIComponent(itemId)}/decline-review`, { method: 'POST' }); }
+  getSlack(): Promise<{ connections: Record<string, SlackStatus>; manifest: string }> { return this.json('/integrations/slack'); }
+  connectSlack(id: string, appToken: string, userToken: string): Promise<SlackStatus> {
+    return this.json(`/integrations/slack/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appToken, userToken }) });
   }
-  disconnectSlack(): Promise<unknown> { return this.json('/integrations/slack', { method: 'DELETE' }); }
-  slackThread(channel: string, ts: string, threadTs: string | null): Promise<SlackThreadMessage[]> {
+  disconnectSlack(id: string): Promise<unknown> { return this.json(`/integrations/slack/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+  moveSlack(from: string, to: string): Promise<SlackStatus> {
+    return this.json(`/integrations/slack/${encodeURIComponent(from)}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to }) });
+  }
+  slackThread(connectionId: string, channel: string, ts: string, threadTs: string | null): Promise<SlackThreadMessage[]> {
     const q = new URLSearchParams({ channel, ts, ...(threadTs ? { threadTs } : {}) });
-    return this.json(`/integrations/slack/thread?${q}`);
+    return this.json(`/integrations/slack/${encodeURIComponent(connectionId)}/thread?${q}`);
   }
-  slackReply(channel: string, threadTs: string | null, text: string, itemId?: string): Promise<unknown> {
-    return this.json('/integrations/slack/reply', {
+  slackReply(connectionId: string, channel: string, threadTs: string | null, text: string, itemId?: string): Promise<unknown> {
+    return this.json(`/integrations/slack/${encodeURIComponent(connectionId)}/reply`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channel, threadTs, text, itemId }),
     });

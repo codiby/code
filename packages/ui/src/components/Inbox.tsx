@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   ArrowUp, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
-  Loader2, MessageCircle, Pause, RefreshCw, Sparkles, X,
+  Loader2, MessageCircle, Pause, RefreshCw, Sparkles, UserX, X,
 } from 'lucide-react';
-import type { ClaudeClient, SlackStatus, SlackThreadMessage } from '../lib/claude-client';
+import { slackConnectionOf, type ClaudeClient, type SlackStatus, type SlackThreadMessage } from '../lib/claude-client';
 import { BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
 import type { ProjectFolder } from '../lib/project-scope';
 import { Markdown } from './Markdown';
@@ -13,7 +13,11 @@ export interface HandOff { cwd: string; remoteId: string | null; prompt: string;
 interface Props {
   client: ClaudeClient | null;
   rows: InboxRow[];
-  slack: SlackStatus;
+  /** Slack connections on this machine: project id (or `default`) → status. */
+  slackConnections: Record<string, SlackStatus>;
+  slackManifest: string;
+  scopedProjectId: string | null;
+  onEditProject: (projectId: string) => void;
   /** Projects to start an agent in, first folder each. */
   projects: { id: string; name: string; folders: ProjectFolder[] }[];
   defaultProjectId: string | null;
@@ -31,6 +35,16 @@ const TABS: { key: 'all' | InboxSource; label: string }[] = [
   { key: 'pr', label: 'Pull requests' },
 ];
 const open = (url: string | null | undefined) => { if (url) window.open(url, '_blank', 'noopener'); };
+
+/** "3 days ago", "4 months ago" — for dates that can be far back. */
+function longAgo(ts: number): string {
+  const d = Math.max(0, (Date.now() - ts) / 86_400_000);
+  if (d < 1) return 'today';
+  if (d < 2) return 'yesterday';
+  if (d < 30) return `${Math.floor(d)} days ago`;
+  if (d < 365) return `${Math.floor(d / 30)} month${d < 60 ? '' : 's'} ago`;
+  return `${Math.floor(d / 365)} year${d < 730 ? '' : 's'} ago`;
+}
 
 function ago(ts: number): string {
   const s = Math.max(0, (Date.now() - ts) / 1000);
@@ -66,7 +80,7 @@ function SourceTile({ row }: { row: InboxRow }) {
   );
 }
 
-export function Inbox({ client, rows, slack, projects, defaultProjectId, onOpenSession, onDone, onRead, onHandToAgent }: Props) {
+export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditProject, projects, defaultProjectId, onOpenSession, onDone, onRead, onHandToAgent }: Props) {
   const [tab, setTab] = useState<'all' | InboxSource>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
@@ -85,7 +99,12 @@ export function Inbox({ client, rows, slack, projects, defaultProjectId, onOpenS
   }, [current, visible]);
   useEffect(() => { if (current?.unread && current.item) onRead(current); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [current?.id]);
 
-  const slackOff = slack.state === 'off' || slack.state === 'error';
+  // Slack connects per project. In a project, its own connection; in All
+  // projects, whether any is up.
+  const own = scopedProjectId ? slackConnections[scopedProjectId] : undefined;
+  const anyUp = Object.values(slackConnections).some(c => c.state === 'connected' || c.state === 'connecting');
+  const slackOff = scopedProjectId ? !own || own.state === 'error' : !anyUp;
+  const connectSlack = () => { if (scopedProjectId) onEditProject(scopedProjectId); else setSetup(true); };
 
   return (
     <div className="inbox flex-1 min-h-0 grid grid-cols-[minmax(420px,1fr)_1fr]">
@@ -116,8 +135,8 @@ export function Inbox({ client, rows, slack, projects, defaultProjectId, onOpenS
             </button>
           ))}
           {slackOff && (
-            <button type="button" className="ib-connect" onClick={() => setSetup(true)}>
-              <Hash size={13} strokeWidth={1.8} /> {slack.state === 'error' ? 'Slack: reconnect' : 'Connect Slack'}
+            <button type="button" className="ib-connect" onClick={connectSlack}>
+              <Hash size={13} strokeWidth={1.8} /> {own?.state === 'error' ? 'Slack: reconnect' : 'Connect Slack'}
             </button>
           )}
         </div>
@@ -155,8 +174,8 @@ export function Inbox({ client, rows, slack, projects, defaultProjectId, onOpenS
       </section>
 
       <section className="ib-detail">
-        {setup || (!current && slackOff)
-          ? <SlackSetup client={client} slack={slack} onClose={() => setSetup(false)} />
+        {setup || (!current && slackOff && !scopedProjectId)
+          ? <SlackByProject projects={projects} connections={slackConnections} onEditProject={onEditProject} onClose={() => setSetup(false)} />
           : current
             ? <Detail
                 key={current.id}
@@ -191,7 +210,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
   useEffect(() => {
     if (row.source !== 'slack' || !client) return;
     let live = true;
-    client.slackThread(String(ctx.channel), String(ctx.ts), ctx.threadTs ? String(ctx.threadTs) : null)
+    client.slackThread(slackConnectionOf(row.item!), String(ctx.channel), String(ctx.ts), ctx.threadTs ? String(ctx.threadTs) : null)
       .then(t => { if (live) setThread(t); })
       .catch(e => { if (live) setThreadError((e as Error).message); });
     return () => { live = false; };
@@ -224,6 +243,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [row.id]);
 
+  const [declining, setDeclining] = useState(false);
   const project = projects.find(p => p.id === projectId);
   const handOff = (prompt: string) => {
     const f = project?.folders[0];
@@ -244,7 +264,24 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
             <ExternalLink size={14} /> {row.source === 'slack' ? 'Open in Slack' : 'Open on GitHub'}
           </button>
         )}
-        <button type="button" className="ib-btn" onClick={onDone}><CircleCheck size={14} /> Done</button>
+        {row.source === 'pr' && row.item?.kind === 'review_requested' && (
+          <button
+            type="button" className="ib-btn" disabled={declining}
+            title="Remove yourself from the reviewers on GitHub"
+            onClick={async () => {
+              if (!client || !row.item) return;
+              setDeclining(true);
+              try { await client.declineReview(row.item.id); onDone(); }
+              catch (e) { alert(`Couldn't decline: ${(e as Error).message}`); }
+              finally { setDeclining(false); }
+            }}
+          >
+            {declining ? <Loader2 size={14} className="animate-spin" /> : <UserX size={14} />} Decline review
+          </button>
+        )}
+        <button type="button" className="ib-btn" onClick={onDone} title={row.source === 'pr' ? 'Remove from the Inbox — nothing changes on GitHub' : undefined}>
+          {row.source === 'pr' ? <><X size={14} /> Dismiss</> : <><CircleCheck size={14} /> Done</>}
+        </button>
       </div>
     </div>
   );
@@ -331,7 +368,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
                   // A thread is answered in the thread; a channel mention opens one on
                   // the message; a DM is answered in the conversation itself.
                   const threadTs = ctx.threadTs ? String(ctx.threadTs) : row.item?.kind === 'dm' ? null : String(ctx.ts);
-                  await client.slackReply(String(ctx.channel), threadTs, reply, row.item?.id);
+                  await client.slackReply(slackConnectionOf(row.item!), String(ctx.channel), threadTs, reply, row.item?.id);
                   setReply('');
                 } catch (e) { alert(`Couldn't send: ${(e as Error).message}`); }
                 finally { setSending(false); }
@@ -355,6 +392,11 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
             <div className="ib-faint text-[12px]">{String(ctx.repo)} #{String(ctx.number)}</div>
             <div className="text-[15px] font-semibold mt-1">{row.title}</div>
             <div className="ib-txt mt-1.5">{row.body}</div>
+            <div className="ib-dates">
+              {typeof ctx.createdAt === 'number' && <span title={new Date(ctx.createdAt).toLocaleString()}>Opened {longAgo(ctx.createdAt)}</span>}
+              <span title={new Date(Number(ctx.updatedAt ?? row.at)).toLocaleString()}>Updated {longAgo(Number(ctx.updatedAt ?? row.at))}</span>
+              {Date.now() - Number(ctx.updatedAt ?? row.at) > 30 * 86_400_000 && <span className="ib-tag warn">Stale</span>}
+            </div>
           </div>
           {row.agent ? <AgentCard row={row} onOpenSession={onOpenSession} onDone={onDone} /> : <div className="ib-agent">
             <Bot size={16} />
@@ -398,65 +440,46 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
   );
 }
 
-// ── Slack setup ─────────────────────────────────────────────────────────────
+// ── Slack, project by project ──────────────────────────────────────────────
 
-function SlackSetup({ client, slack, onClose }: { client: ClaudeClient | null; slack: SlackStatus; onClose: () => void }) {
-  const [appToken, setAppToken] = useState('');
-  const [userToken, setUserToken] = useState('');
-  const [manifest, setManifest] = useState(slack.manifest ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (manifest || !client) return;
-    void client.getSlack().then(s => setManifest(s.manifest ?? '')).catch(() => {});
-  }, [client, manifest]);
-
+function SlackByProject({ projects, connections, onEditProject, onClose }: {
+  projects: Props['projects']; connections: Record<string, SlackStatus>;
+  onEditProject: (id: string) => void; onClose: () => void;
+}) {
+  const legacy = connections.default;
   return (
     <>
       <div className="ib-dh">
         <span className="ib-dkind ib-k-slack">Slack</span>
-        <span className="font-medium">Connect your workspace</span>
+        <span className="font-medium">Connect a workspace</span>
         <button type="button" className="ib-icon ml-auto" onClick={onClose} aria-label="Close"><X size={15} /></button>
       </div>
       <div className="ib-thread ib-setup">
         <p className="ib-txt">
-          Mentions, DMs and replies in your threads land here the moment they're sent. Codiby uses a Slack app of your own in
-          Socket Mode: your computer opens the connection to Slack, so nothing needs a public URL. Tokens stay in
-          <code> ~/.codiby/slack.json</code> on this machine.
+          Slack connects per project: each one can bring its own workspace, and its mentions, DMs and thread replies land
+          in the Inbox as they happen. Open a project's settings to connect it.
         </p>
-        {slack.state === 'error' && slack.error && <div className="ib-error">Last error: {slack.error}</div>}
-        <ol>
-          <li>
-            <b>Create the app from this manifest.</b> In <a onClick={() => open('https://api.slack.com/apps?new_app=1')}>api.slack.com/apps</a>, choose
-            “From a manifest”, pick your workspace and paste:
-            <div className="ib-manifest">
-              <pre>{manifest || '…'}</pre>
-              <button type="button" className="ib-btn" onClick={() => { void navigator.clipboard.writeText(manifest); setCopied(true); setTimeout(() => setCopied(false), 1500); }}>
-                {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-          </li>
-          <li><b>App-level token.</b> Basic Information → App-Level Tokens → Generate, with the <code>connections:write</code> scope. It starts with <code>xapp-</code>.</li>
-          <li><b>User token.</b> Install App → Install to Workspace, then copy the <i>User OAuth Token</i>. It starts with <code>xoxp-</code>.</li>
-        </ol>
-        <label className="ib-field"><span>App-level token</span><input value={appToken} onChange={e => setAppToken(e.target.value)} placeholder="xapp-…" spellCheck={false} /></label>
-        <label className="ib-field"><span>User OAuth token</span><input value={userToken} onChange={e => setUserToken(e.target.value)} placeholder="xoxp-…" spellCheck={false} /></label>
-        {error && <div className="ib-error">{error}</div>}
-        <div>
-          <button
-            type="button" className="ib-btn acc" disabled={busy || !appToken || !userToken || !client}
-            onClick={async () => {
-              if (!client) return;
-              setBusy(true); setError(null);
-              try { await client.connectSlack(appToken, userToken); onClose(); }
-              catch (e) { setError((e as Error).message); }
-              finally { setBusy(false); }
-            }}
-          >
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Hash size={14} />} Connect
-          </button>
+        {legacy && legacy.state !== 'off' && (
+          <div className="ib-faint text-[12.5px]">
+            {legacy.team} is connected without a project. Open the project it belongs to and choose “Use the {legacy.team} connection”.
+          </div>
+        )}
+        <div className="flex flex-col gap-1.5">
+          {projects.length === 0 && <div className="ib-faint">Create a project first, from the project switcher.</div>}
+          {projects.map(p => {
+            const st = connections[p.id];
+            return (
+              <div key={p.id} className="ib-proj-row">
+                <span className="font-medium">{p.name}</span>
+                <span className="ib-faint text-[12px] truncate">
+                  {st ? (st.state === 'connected' ? `${st.team} · ${st.user}` : st.state === 'error' ? `Error: ${st.error}` : 'Connecting…') : 'Not connected'}
+                </span>
+                <button type="button" className="ib-btn ml-auto" onClick={() => onEditProject(p.id)}>
+                  {st ? 'Settings' : 'Connect'}
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
     </>
