@@ -77,7 +77,7 @@ import {
   handleUpdateBoard,
   handleUpdateStatus,
 } from './handlers/boards';
-import { listOpenInbox, markInboxDone, markInboxRead, pruneInbox, setInboxBroadcaster } from './inbox/store';
+import { linkInboxSession, listOpenInbox, markInboxDone, markInboxRead, pruneInbox, setInboxBroadcaster } from './inbox/store';
 import { configureSlack, disconnectSlack, getSlackStatus, setSlackBroadcaster, slackReply, slackThread, SLACK_MANIFEST, startSlack } from './inbox/slack';
 import { pollPullRequests, startPullRequestPolling } from './inbox/github';
 import { buildOverview } from './stats/overview';
@@ -1469,6 +1469,11 @@ app.post('/automations/:id/runs/:runId/cancel', (c) => handleCancelAutomationRun
 app.get('/inbox', () => Response.json(listOpenInbox(), { headers: corsHeaders }));
 app.post('/inbox/:id/done', (c) => Response.json({ ok: markInboxDone(c.req.param('id')) }, { headers: corsHeaders }));
 app.post('/inbox/:id/read', (c) => Response.json({ ok: markInboxRead(c.req.param('id')) }, { headers: corsHeaders }));
+app.post('/inbox/:id/session', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { sessionId?: string };
+  if (!body.sessionId) return Response.json({ error: 'sessionId required' }, { status: 400, headers: corsHeaders });
+  return Response.json({ ok: linkInboxSession(c.req.param('id'), body.sessionId) }, { headers: corsHeaders });
+});
 app.post('/inbox/refresh', async () => { await pollPullRequests(); return Response.json({ ok: true }, { headers: corsHeaders }); });
 
 // Slack (Socket Mode). Tokens never leave this machine: the status endpoint

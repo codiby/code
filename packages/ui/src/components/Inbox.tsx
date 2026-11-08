@@ -7,7 +7,7 @@ import type { ClaudeClient, SlackStatus, SlackThreadMessage } from '../lib/claud
 import { BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
 import type { ProjectFolder } from '../lib/project-scope';
 
-export interface HandOff { cwd: string; remoteId: string | null; prompt: string }
+export interface HandOff { cwd: string; remoteId: string | null; prompt: string; itemId: string }
 
 interface Props {
   client: ClaudeClient | null;
@@ -201,7 +201,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
   const handOff = (prompt: string) => {
     const f = project?.folders[0];
     if (!f) return;
-    onHandToAgent({ cwd: f.path, remoteId: f.remoteId, prompt });
+    onHandToAgent({ cwd: f.path, remoteId: f.remoteId, prompt, itemId: row.item?.id ?? row.id });
   };
 
   const header = (
@@ -245,7 +245,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
               </div>
             </div>
           ))}
-          <div className="ib-agent">
+          {row.agent ? <AgentCard row={row} onOpenSession={onOpenSession} onDone={onDone} /> : <div className="ib-agent">
             <Bot size={16} />
             <div className="min-w-0 flex-1">
               <b>Hand this to an agent</b>
@@ -265,7 +265,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
                 {projectPicker}
               </div>
             </div>
-          </div>
+          </div>}
         </div>
         <div className="ib-reply">
           <textarea
@@ -310,7 +310,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
             <div className="text-[15px] font-semibold mt-1">{row.title}</div>
             <div className="ib-txt mt-1.5">{row.body}</div>
           </div>
-          <div className="ib-agent">
+          {row.agent ? <AgentCard row={row} onOpenSession={onOpenSession} onDone={onDone} /> : <div className="ib-agent">
             <Bot size={16} />
             <div className="min-w-0 flex-1">
               <b>{failing ? 'Fix it with an agent' : 'Review it with an agent'}</b>
@@ -329,7 +329,7 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
                 {projectPicker}
               </div>
             </div>
-          </div>
+          </div>}
         </div>
       </>
     );
@@ -414,5 +414,40 @@ function SlackSetup({ client, slack, onClose }: { client: ClaudeClient | null; s
         </div>
       </div>
     </>
+  );
+}
+
+/** Where a handed-off item stands: the agent session's live state and its
+ *  latest words, in place of the "hand it off" block. */
+function AgentCard({ row, onOpenSession, onDone }: { row: InboxRow; onOpenSession: (id: string) => void; onDone: () => void }) {
+  const a = row.agent!;
+  const label = {
+    working: 'Working on it…',
+    waiting: 'Needs your decision to continue',
+    finished: 'Finished — read what it found',
+    idle: 'Idle',
+    gone: 'The session was closed',
+  }[a.state];
+  return (
+    <div className={`ib-agent-card ib-agent-${a.state}`}>
+      <div className="flex items-center gap-2.5">
+        <span className="ib-agent-dot" />
+        <div className="min-w-0 flex-1">
+          <div className="ib-faint text-[11.5px] uppercase tracking-[0.04em] font-semibold">Agent session</div>
+          <div className="font-medium truncate">{a.name}</div>
+        </div>
+        {a.state !== 'gone' && (
+          <button type="button" className="ib-btn" onClick={() => onOpenSession(a.sessionId)}><ArrowUpRight size={14} /> Open session</button>
+        )}
+      </div>
+      <div className="ib-agent-state">{label}</div>
+      {a.preview && <div className="ib-agent-preview">{a.preview}</div>}
+      {a.state === 'finished' && (
+        <div className="flex gap-1.5 mt-3">
+          <button type="button" className="ib-btn acc" onClick={() => onOpenSession(a.sessionId)}><ArrowUpRight size={14} /> Review the result</button>
+          <button type="button" className="ib-btn" onClick={onDone}><CircleCheck size={14} /> Done</button>
+        </div>
+      )}
+    </div>
   );
 }

@@ -945,6 +945,7 @@ export function ChatApp() {
       subscribedRef.current.add(session.id);
       setActiveId(session.id);
       if (prompt || images?.length) c.sendMessage(session.id, prompt || ' ', images);
+      return session.id;
     } catch (err) {
       console.error('[ChatApp] Failed to spawn session from home:', err);
       throw err;
@@ -5417,6 +5418,14 @@ export function ChatApp() {
       awaitingReply: awaitingReplyIds,
       lastMessageAt: sessionLastMessageAt,
       lastPreview: sessionLastPreview,
+      agent: (sid) => {
+        const s = sessions.find(x => x.id === sid);
+        if (!s || s.status !== 'open') return { sessionId: sid, name: s?.name ?? 'Agent session', state: 'gone', preview: sessionLastPreview[sid] ?? '' };
+        const state = sessionHasPermission[sid] ? 'waiting'
+          : sessionStreaming[sid] || s.runtime_status === 'starting' ? 'working'
+          : awaitingReplyIds.has(sid) ? 'finished' : 'idle';
+        return { sessionId: sid, name: s.name, state, preview: sessionLastPreview[sid] ?? '' };
+      },
       describe: (s) => {
         const gid = mergedGroupMap[s.id];
         const where = (gid && sidebarGroups[gid]?.name) || s.cwd.split(/[\\/]/).filter(Boolean).pop() || s.cwd;
@@ -5424,7 +5433,7 @@ export function ChatApp() {
       },
     },
   ), [inboxItems, scopedProject, scopedSidebar.sessions, orderedOpenSessions, sessionHasPermission, sessionInterrupted,
-    awaitingReplyIds, sessionLastMessageAt, sessionLastPreview, mergedGroupMap, sidebarGroups]);
+    awaitingReplyIds, sessionLastMessageAt, sessionLastPreview, mergedGroupMap, sidebarGroups, sessions, sessionStreaming]);
   /** "Done": a stored item closes on the bridge (every window follows); a
    *  session row clears the flag that put it there. A pending permission
    *  can't be dismissed — it needs a decision, so it opens the session. */
@@ -7263,12 +7272,19 @@ export function ChatApp() {
                 onOpenSession={(id) => { setActiveNavView('sessions'); void handleSelectSession(id); }}
                 onRead={(row) => { if (row.item && !row.item.readAt) void client?.inboxRead(row.item.id).catch(() => {}); }}
                 onDone={handleInboxDone}
-                onHandToAgent={({ cwd, remoteId, prompt }) => {
+                onHandToAgent={async ({ cwd, remoteId, prompt, itemId }) => {
                   const stored = localStorage.getItem('claude-ui-last-provider');
                   const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
-                  setActiveNavView('sessions');
-                  void handleSpawnHome(cwd, provider, prompt, undefined, defaultPermissionModeByHost[remoteId || ''] ?? 'default', undefined, remoteId)
-                    .catch(err => alert((err as Error).message));
+                  // Stay in the Inbox: the item turns into a live card of the
+                  // session working on it.
+                  try {
+                    const sid = await handleSpawnHome(cwd, provider, prompt, undefined, defaultPermissionModeByHost[remoteId || ''] ?? 'default', undefined, remoteId);
+                    if (!sid) return;
+                    setInboxItems(prev => prev.map(i => i.id === itemId ? { ...i, context: { ...i.context, sessionId: sid, handedAt: Date.now() } } : i));
+                    void clientRef.current?.linkInboxSession(itemId, sid).catch(() => {});
+                  } catch (err) {
+                    alert((err as Error).message);
+                  }
                 }}
               />
             ) : activeNavView === 'overview' ? (
@@ -7341,7 +7357,7 @@ export function ChatApp() {
                   : scopedProject?.folders[0]?.remoteId ? remotes.find(r => r.id === scopedProject.folders[0]!.remoteId)?.color ?? null : null}
                 onSpawn={selectedGroupId
                   ? (...args) => handleSpawnInGroup(selectedGroupId, ...args)
-                  : handleSpawnHome}
+                  : async (...args) => { await handleSpawnHome(...args); }}
                 onBranchChanged={setGitBranch}
               />
             ) : (

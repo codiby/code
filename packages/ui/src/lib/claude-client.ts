@@ -2380,6 +2380,9 @@ export class ClaudeClient {
   getInbox(): Promise<InboxItem[]> { return this.json('/inbox'); }
   inboxDone(id: string): Promise<unknown> { return this.json(`/inbox/${encodeURIComponent(id)}/done`, { method: 'POST' }); }
   inboxRead(id: string): Promise<unknown> { return this.json(`/inbox/${encodeURIComponent(id)}/read`, { method: 'POST' }); }
+  linkInboxSession(id: string, sessionId: string): Promise<unknown> {
+    return this.json(`/inbox/${encodeURIComponent(id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
+  }
   refreshInbox(): Promise<unknown> { return this.json('/inbox/refresh', { method: 'POST' }); }
   getSlack(): Promise<SlackStatus> { return this.json('/integrations/slack'); }
   connectSlack(appToken: string, userToken: string): Promise<SlackStatus> {

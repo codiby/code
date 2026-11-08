@@ -49,3 +49,15 @@ describe('inbox rows', () => {
     expect(initials('rtalexk')).toBe('RT');
   });
 });
+
+describe('handed to an agent', () => {
+  test('the item moves to "With an agent", takes the session state, and the session is not listed twice', () => {
+    const it = item({ id: 'pr1', source: 'pr', kind: 'review_requested', context: { repo: 'o/web', number: 1, sessionId: 'c' } });
+    const rows = buildInboxRows([it], [session('c')], {
+      ...flags,
+      agent: sid => ({ sessionId: sid, name: 'Review PR', state: 'finished', preview: 'LGTM with two nits' }),
+    });
+    expect(rows.map(r => r.id)).toEqual(['pr1']);
+    expect([rows[0]!.bucket, rows[0]!.tag?.label, rows[0]!.agent?.preview]).toEqual(['progress', 'Agent finished', 'LGTM with two nits']);
+  });
+});

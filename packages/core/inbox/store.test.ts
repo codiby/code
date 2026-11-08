@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { addInboxItem, closeMissing, listOpenInbox, markInboxDone, markInboxRead, setInboxBroadcaster } from './store';
+import { addInboxItem, closeMissing, getInboxItem, linkInboxSession, listOpenInbox, markInboxDone, markInboxRead, setInboxBroadcaster } from './store';
 
 // Sandbox database comes from scripts/test-preload.ts, like every other suite.
 
@@ -42,4 +42,14 @@ describe('inbox store', () => {
     expect(open.has(gone.id)).toBe(false);
     expect(open.has(other.id)).toBe(true);
   });
+});
+
+test('linking a session keeps the context and marks it read', () => {
+  const a = item();
+  addInboxItem(a);
+  expect(linkInboxSession(a.id, 'sess-1', 77)).toBe(true);
+  const got = getInboxItem(a.id)!;
+  expect(got.context).toEqual({ channel: 'C1', sessionId: 'sess-1', handedAt: 77 });
+  expect(got.readAt).toBe(77);
+  expect(linkInboxSession('nope', 's')).toBe(false);
 });

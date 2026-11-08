@@ -80,6 +80,18 @@ export function markInboxRead(id: string, now = Date.now()): boolean {
   return true;
 }
 
+/** Record that an agent session is working on the item. The link lives in
+ *  the item's context, so every window shows it "with an agent". */
+export function linkInboxSession(id: string, sessionId: string, now = Date.now()): boolean {
+  const cur = getInboxItem(id);
+  if (!cur) return false;
+  const context = { ...cur.context, sessionId, handedAt: now };
+  database.update(inboxItems).set({ context: JSON.stringify(context), readAt: cur.readAt ?? now })
+    .where(eq(inboxItems.id, id)).run();
+  broadcast({ type: 'inbox_item', item: getInboxItem(id) });
+  return true;
+}
+
 /** Close every open item of `source` that `stillOpen` no longer lists — a PR
  *  that got reviewed, checks that went green. */
 export function closeMissing(source: InboxItem['source'], stillOpen: Set<string>, now = Date.now()): void {
