@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowLeft, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
   Loader2, MessageCircle, Pause, RefreshCw, Sparkles, UserX, X,
@@ -26,6 +26,10 @@ interface Props {
   onDone: (row: InboxRow) => void;
   onRead: (row: InboxRow) => void;
   onHandToAgent: (h: HandOff) => void;
+  /** A session's chat and composer, to work it from here. */
+  renderSession?: (sessionId: string) => ReactNode;
+  /** A session is on screen: make sure its history is loaded. */
+  onViewSession?: (sessionId: string) => void;
 }
 
 const SOURCE_LABEL: Record<InboxSource, string> = { session: 'Session', slack: 'Slack', pr: 'Pull request' };
@@ -83,7 +87,7 @@ function SourceTile({ row }: { row: InboxRow }) {
   );
 }
 
-export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditProject, projects, defaultProjectId, onOpenSession, onDone, onRead, onHandToAgent }: Props) {
+export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditProject, projects, defaultProjectId, onOpenSession, onDone, onRead, onHandToAgent, renderSession, onViewSession }: Props) {
   const [tab, setTab] = useState<'all' | InboxSource>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
@@ -196,6 +200,8 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
                 projects={projects}
                 defaultProjectId={defaultProjectId}
                 onOpenSession={onOpenSession}
+                renderSession={renderSession}
+                onViewSession={onViewSession}
                 onDone={() => onDone(current)}
                 onHandToAgent={onHandToAgent}
                 onOpenDm={(user, name) => openDm(slackConnectionOf(current.item!), user, name)}
@@ -208,8 +214,9 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
 
 // ── detail ──────────────────────────────────────────────────────────────────
 
-function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone, onHandToAgent, onOpenDm }: {
+function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone, onHandToAgent, onOpenDm, renderSession, onViewSession }: {
   row: InboxRow; client: ClaudeClient | null;
+  renderSession?: Props['renderSession']; onViewSession?: Props['onViewSession'];
   projects: Props['projects']; defaultProjectId: string | null;
   onOpenSession: (id: string) => void; onDone: () => void; onHandToAgent: (h: HandOff) => void;
   onOpenDm: (user: string, name: string) => void;
@@ -360,6 +367,15 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
     );
   }
 
+  if (row.sessionId && renderSession) {
+    return (
+      <>
+        {header}
+        <InlineSession sessionId={row.sessionId} onView={onViewSession}>{renderSession(row.sessionId)}</InlineSession>
+      </>
+    );
+  }
+
   return (
     <>
       {header}
@@ -377,6 +393,30 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
       </div>
     </>
   );
+}
+
+/** The session itself, live: its thread, kept at the latest message while
+ *  you're there, and its composer to answer or approve without leaving. */
+function InlineSession({ sessionId, onView, children }: { sessionId: string; onView?: (id: string) => void; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { onView?.(sessionId); }, [sessionId, onView]);
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const scroller = () => root.querySelector<HTMLElement>('.overflow-y-auto');
+    let pinned = true;
+    const toEnd = () => { const el = scroller(); if (el && pinned) el.scrollTop = el.scrollHeight; };
+    const onScroll = (e: Event) => {
+      const el = e.target as HTMLElement;
+      if (el === scroller()) pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    root.addEventListener('scroll', onScroll, true);
+    const mo = new MutationObserver(toEnd);
+    mo.observe(root, { childList: true, subtree: true, characterData: true });
+    toEnd();
+    return () => { mo.disconnect(); root.removeEventListener('scroll', onScroll, true); };
+  }, [sessionId]);
+  return <div ref={ref} className="ib-session">{children}</div>;
 }
 
 // ── a DM opened from a person ──────────────────────────────────────────────

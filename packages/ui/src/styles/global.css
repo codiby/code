@@ -1501,6 +1501,9 @@ html.light .inbox {
 .ib-btn.acc { background: var(--ib-k-session); color: #fff; box-shadow: none; }
 .ib-select { height: 28px; padding: 0 8px; border-radius: 7px; background: var(--color-base); border: 1px solid var(--ib-line); color: var(--ib-ink2); font-size: 12.5px; }
 .ib-thread { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+.ib-session { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ib-composer { flex: none; display: flex; flex-direction: column; align-items: center; padding: 0 16px 14px; }
+.ib-composer > * { width: 100%; }
 .ib-msg { display: grid; grid-template-columns: 32px 1fr; gap: 10px; }
 .ib-av { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; font-size: 11px; font-weight: 600; color: #fff; }
 .ib-who-line { display: flex; gap: 8px; align-items: baseline; }

@@ -6066,7 +6066,9 @@ export function ChatApp() {
   // standard chat tree renders the active session's composer inline; the
   // focus-mode grid renders one per pane so the streaming/loader animation
   // is visible everywhere an agent is working.
-  const renderComposer = (sid: string) => {
+  // `inline`: shown outside the sessions view (the Inbox) — focusing it must
+  // not jump to the session, and the archive pill has no place there.
+  const renderComposer = (sid: string, opts?: { inline?: boolean }) => {
     const s = sessionStates[sid];
     if (!s) return null;
     const sess = sessions.find(x => x.id === sid);
@@ -6081,19 +6083,19 @@ export function ChatApp() {
     ];
     return (
       <>
-      <ArchiveSuggestionPill
+      {!opts?.inline && <ArchiveSuggestionPill
         messages={s.messages}
         streaming={s.isStreaming}
         typing={!!s.input.trim()}
         chord={kbBindings['archive-session'] ?? null}
         onArchive={() => handleCloseTab(sid)}
         className="-mb-1"
-      />
+      />}
       <ChatComposer
         key={sid}
         sessionId={sid}
         widthClass={chatWidthClass}
-        autoFocus={sid === activeId}
+        autoFocus={!opts?.inline && sid === activeId}
         input={s.input}
         replyTo={s.replyTo}
         onCancelReply={() => updateLocalState(sid, st => ({ ...st, replyTo: null }))}
@@ -6135,7 +6137,7 @@ export function ChatApp() {
           clientRef.current.setEffort(sid, effort);
           setSessions(prev => prev.map(x => x.id === sid ? { ...x, effort: effort || null } : x));
         }}
-        onFocus={() => { if (sid !== activeId) handleSelectSession(sid); }}
+        onFocus={() => { if (!opts?.inline && sid !== activeId) handleSelectSession(sid); }}
       />
       </>
     );
@@ -7203,6 +7205,16 @@ export function ChatApp() {
                 projects={projects}
                 defaultProjectId={scopedProjectId}
                 onOpenSession={(id) => { setActiveNavView('sessions'); void handleSelectSession(id); }}
+                renderSession={(id) => (
+                  <>
+                    {renderChatBody(id)}
+                    <div className="ib-composer">{renderComposer(id, { inline: true })}</div>
+                  </>
+                )}
+                onViewSession={(id) => {
+                  // A remote session subscribed without its history: load it now.
+                  if (clientRef.current && liteSubscribedRef.current.delete(id)) clientRef.current.hydrate(id);
+                }}
                 onRead={(row) => { if (row.item && !row.item.readAt) void client?.inboxRead(row.item.id).catch(() => {}); }}
                 onDone={handleInboxDone}
                 onHandToAgent={async ({ cwd, remoteId, prompt, itemId }) => {
