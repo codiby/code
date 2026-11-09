@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionInfo } from './claude-client';
-import { buildInboxRows, initials, itemRow } from './inbox';
+import { buildInboxRows, initials, itemRow, plainPreview } from './inbox';
 
 const session = (id: string): SessionInfo => ({
   id, name: id, cwd: '/src', created_at: 0, updated_at: 0,
@@ -59,5 +59,12 @@ describe('handed to an agent', () => {
     });
     expect(rows.map(r => r.id)).toEqual(['pr1']);
     expect([rows[0]!.bucket, rows[0]!.tag?.label, rows[0]!.agent?.preview]).toEqual(['progress', 'Agent finished', 'LGTM with two nits']);
+  });
+});
+
+describe('plainPreview', () => {
+  test('a Markdown message reads as one line', () => {
+    expect(plainPreview('El PR está abierto: [#312](https://gh/312), desde `main`.\n\n## Cómo lo armé\n- **Rama** aparte'))
+      .toBe('El PR está abierto: #312, desde main. Cómo lo armé Rama aparte');
   });
 });

@@ -5334,6 +5334,17 @@ export function ChatApp() {
       awaitingReply: awaitingReplyIds,
       lastMessageAt: sessionLastMessageAt,
       lastPreview: sessionLastPreview,
+      lastMessage: (sid) => {
+        // The newest agent (or user) text, whole — the detail renders it.
+        const msgs = sessionStates[sid]?.messages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i]!;
+          if (m.role === 'system' || m.isToolResult || m.toolName || m.isThinking) continue;
+          const c = (m.role === 'user' ? readReply(m.content || '').text : m.content || '').trim();
+          if (c) return c;
+        }
+        return undefined;
+      },
       agent: (sid) => {
         const s = sessions.find(x => x.id === sid);
         if (!s || s.status !== 'open') return { sessionId: sid, name: s?.name ?? 'Agent session', state: 'gone', preview: sessionLastPreview[sid] ?? '' };
@@ -5345,11 +5356,14 @@ export function ChatApp() {
       describe: (s) => {
         const gid = mergedGroupMap[s.id];
         const where = (gid && sidebarGroups[gid]?.name) || s.cwd.split(/[\\/]/).filter(Boolean).pop() || s.cwd;
-        return `${where} · ${modelLabel(s.model || s.provider_default_model)}`;
+        // A remote session may not report its model; name the provider then.
+        const model = s.model || s.provider_default_model;
+        const provider = s.provider === 'codex' ? 'Codex' : s.provider === 'opencode' ? 'OpenCode' : 'Claude';
+        return `${where} · ${model ? modelLabel(model) : provider}`;
       },
     },
   ), [inboxItems, scopedProject, scopedSidebar.sessions, orderedOpenSessions, sessionHasPermission, sessionInterrupted,
-    awaitingReplyIds, sessionLastMessageAt, sessionLastPreview, mergedGroupMap, sidebarGroups, sessions, sessionStreaming]);
+    awaitingReplyIds, sessionLastMessageAt, sessionLastPreview, mergedGroupMap, sidebarGroups, sessions, sessionStreaming, sessionStates]);
   /** "Done": a stored item closes on the bridge (every window follows); a
    *  session row clears the flag that put it there. A pending permission
    *  can't be dismissed — it needs a decision, so it opens the session. */

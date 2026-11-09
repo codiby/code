@@ -1626,3 +1626,4 @@ img.ib-who { object-fit: cover; padding: 0; }
 .ib-msg-tools .ib-picker { left: auto; right: 0; bottom: auto; top: calc(100% + 6px); }
 .ib-conv > .ib-msg:has(+ .ib-msg.cont) { padding-bottom: 1px; }
 .ib-conv > .ib-msg.cont { padding-top: 0; }
+.ib-session-md { border-left: 2px solid var(--ib-line); padding-left: 12px; }

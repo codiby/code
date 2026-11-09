@@ -7,6 +7,7 @@ import { slackConnectionOf, type ClaudeClient, type SlackStatus, type SlackThrea
 import { BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
 import { projectOfRepo, type ProjectFolder } from '../lib/project-scope';
 import { SlackAvatar, SlackConversation } from './SlackConversation';
+import { Markdown } from './Markdown';
 
 export interface HandOff { cwd: string; remoteId: string | null; prompt: string; itemId: string }
 
@@ -365,7 +366,9 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
       <div className="ib-thread">
         <div className="ib-faint text-[12px]">{row.where}</div>
         <div className="text-[15px] font-semibold">{row.title}</div>
-        {row.body && <div className="ib-txt whitespace-pre-wrap">{row.body}</div>}
+        {row.markdown
+          ? <Markdown text={row.markdown} className="ib-md ib-session-md" />
+          : row.body && <div className="ib-txt whitespace-pre-wrap">{row.body}</div>}
         <div>
           <button type="button" className="ib-btn acc" onClick={() => onOpenSession(row.sessionId!)}>
             <ArrowUpRight size={14} /> {row.status === 'wait' ? 'Review and decide' : row.status === 'err' ? 'Open to resume' : 'Open session'}

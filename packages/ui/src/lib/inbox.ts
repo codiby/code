@@ -28,6 +28,8 @@ export interface InboxRow {
   at: number;
   unread: boolean;
   sessionId?: string;
+  /** A session's latest message in full, as Markdown, for the detail. */
+  markdown?: string;
   item?: InboxItem;
   /** The agent session handling this item, when one was started for it. */
   agent?: AgentState;
@@ -56,6 +58,8 @@ export interface SessionFlags {
   lastPreview: Record<string, string>;
   /** `code · Opus 5.5` — where the session runs and with what. */
   describe: (s: SessionInfo) => string;
+  /** The session's latest message in full (Markdown), when loaded. */
+  lastMessage?: (sessionId: string) => string | undefined;
   /** Live state of an agent session an item was handed to. */
   agent?: (sessionId: string) => AgentState | null;
 }
@@ -81,6 +85,21 @@ function withAgent(row: InboxRow, agentOf: SessionFlags['agent']): InboxRow {
   };
 }
 
+/** Markdown → one readable line for a list row: links keep their text,
+ *  emphasis and heading marks go. */
+export function plainPreview(md: string): string {
+  return md
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`{3}[\s\S]*?`{3}/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/(^|\s)#{1,6}\s+/g, '$1')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(^|[\s(])[*_]([^*_\n]+)[*_]/g, '$1$2')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function initials(name: string): string {
   const parts = name.replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/);
   return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1]![0] : parts[0]?.[1] ?? '')).toUpperCase();
@@ -93,7 +112,8 @@ export function sessionRows(sessions: SessionInfo[], f: SessionFlags, skip: Read
     if (skip.has(s.id)) continue;
     const base = {
       id: `session:${s.id}`, source: 'session' as const, title: s.name, where: f.describe(s),
-      body: f.lastPreview[s.id] ?? '', at: f.lastMessageAt[s.id] || s.updated_at, unread: true, sessionId: s.id,
+      body: plainPreview(f.lastPreview[s.id] ?? ''), markdown: f.lastMessage?.(s.id),
+      at: f.lastMessageAt[s.id] || s.updated_at, unread: true, sessionId: s.id,
     };
     if (f.hasPermission[s.id]) rows.push({ ...base, bucket: 'decision', status: 'wait', tag: { label: 'Needs approval', tone: 'warn' } });
     else if (f.interrupted[s.id]) rows.push({ ...base, bucket: 'broke', status: 'err', tag: { label: 'Interrupted', tone: 'err' } });
