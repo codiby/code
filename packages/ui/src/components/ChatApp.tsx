@@ -5196,11 +5196,14 @@ export function ChatApp() {
     const rest = sidebarSessions.filter(s => !claimed.has(s.id));
     const keep = new Set<string>();
     for (const s of rest) for (const id of ancestorChain(sidebarGroups, sidebarGroupMap[s.id])) keep.add(id);
+    // Empty folders no project shows stay reachable here — but one inside a
+    // project's group already shows there, and must not drag its parent along.
+    const shown = new Set(sections.flatMap(s => Object.keys(s.groups)));
+    const used = new Set(Object.values(sidebarGroupMap));
     for (const g of Object.values(sidebarGroups)) {
-      if (!g.projectId || !projectDefs[g.projectId]) for (const id of ancestorChain(sidebarGroups, g.id)) {
-        // Empty folders with no project stay reachable here.
-        if (!Object.values(sidebarGroupMap).includes(g.id) && g.allowEmpty) keep.add(id);
-      }
+      if (!g.allowEmpty || used.has(g.id) || shown.has(g.id)) continue;
+      if (g.projectId && projectDefs[g.projectId]) continue;
+      for (const id of ancestorChain(sidebarGroups, g.id)) keep.add(id);
     }
     const groups = Object.fromEntries([...keep].map(id => [id, sidebarGroups[id]!]));
     const restIds = new Set(rest.map(s => s.id));

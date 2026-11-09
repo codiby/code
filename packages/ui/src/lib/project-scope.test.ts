@@ -82,6 +82,14 @@ describe('scopeToProject', () => {
     expect(Object.keys(out.groups).sort()).toEqual(['feat', 'misc', 'other', 'work']);
     expect(out.map).toEqual({ b: 'misc', c: 'feat' });
   });
+
+  test('an empty folder kept on purpose goes with its parent\'s project', () => {
+    const withEmpty = { ...groups, later: group('later', { parentId: 'feat', allowEmpty: true }) };
+    expect(Object.keys(scopeToProject({ groups: withEmpty, map, sessions }, code).groups)).toContain('later');
+    // Not with a parent no session of the project reaches.
+    const lone = { ...groups, later: group('later', { parentId: 'misc', allowEmpty: true }) };
+    expect(Object.keys(scopeToProject({ groups: lone, map, sessions }, code).groups)).not.toContain('later');
+  });
 });
 
 describe('listProjects / parseProjects', () => {

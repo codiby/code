@@ -135,6 +135,9 @@ export function scopeToProject(input: ScopeInput, project: Project | null): Scop
   };
   for (const s of kept) keepChain(map[s.id]);
   for (const g of Object.values(groups)) if (g.projectId === project.id) keepChain(g.id);
+  // An empty folder kept on purpose (`allowEmpty`) goes with its parent: a
+  // ticket folder inside a project's group is that project's, sessions or not.
+  keepEmptyChildren(groups, map, keepGroups, g => !g.projectId || g.projectId === project.id);
 
   const scopedGroups: Record<string, TabGroupInfo> = {};
   for (const id of keepGroups) scopedGroups[id] = groups[id]!;
@@ -142,4 +145,22 @@ export function scopeToProject(input: ScopeInput, project: Project | null): Scop
   const scopedMap: Record<string, string> = {};
   for (const [sid, gid] of Object.entries(map)) if (keptIds.has(sid) && keepGroups.has(gid)) scopedMap[sid] = gid;
   return { groups: scopedGroups, map: scopedMap, sessions: kept };
+}
+
+/** Add every empty, kept-on-purpose group whose parent is already in `keep`,
+ *  down any depth. `ok` filters out groups that belong somewhere else. */
+export function keepEmptyChildren(
+  groups: Record<string, TabGroupInfo>, map: Record<string, string>, keep: Set<string>,
+  ok: (g: TabGroupInfo) => boolean = () => true,
+): void {
+  const used = new Set(Object.values(map));
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const g of Object.values(groups)) {
+      if (keep.has(g.id) || !g.allowEmpty || used.has(g.id) || !g.parentId || !keep.has(g.parentId) || !ok(g)) continue;
+      keep.add(g.id);
+      grew = true;
+    }
+  }
 }
