@@ -163,6 +163,9 @@ export function ProjectDialog({ project, isNew, client, remotes, suggestions, or
                 >
                   <option value="">Local</option>
                   {remotes.map(r => <option key={r.id} value={r.id}>{r.name || r.id}</option>)}
+                  {/* A host not reachable from here: say so instead of the
+                      select falling back to its first option, "Local". */}
+                  {f.remoteId?.startsWith('host:') && <option value={f.remoteId}>Another machine</option>}
                 </select>
                 <input
                   value={f.path}

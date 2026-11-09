@@ -763,6 +763,8 @@ export interface RemoteTarget {
   color?: string | null;
   /** Set for a WSL distro on this PC; it updates by reinstalling, not `/self-update`. */
   wsl?: { distro: string } | null;
+  /** The machine's `host_…` identity, as the registry learned it when pairing. */
+  hostId?: string | null;
 }
 
 type ClientCallbacks = {

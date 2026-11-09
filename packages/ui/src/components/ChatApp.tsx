@@ -5111,13 +5111,21 @@ export function ChatApp() {
   useEffect(() => {
     if (!client) return;
     for (const r of remotes) {
-      if (remoteHostIds[r.id] || remoteStatuses[r.id]?.status !== 'online') continue;
+      if (r.hostId || remoteHostIds[r.id] || remoteStatuses[r.id]?.status !== 'online') continue;
       void client.getHostInfo(r.id)
         .then(info => { if (info?.hostId) setRemoteHostIds(prev => ({ ...prev, [r.id]: info.hostId })); })
         .catch(() => {});
     }
   }, [client, remotes, remoteStatuses, remoteHostIds]);
-  const remoteIdOfHost = (hostId: string) => Object.keys(remoteHostIds).find(k => remoteHostIds[k] === hostId) ?? null;
+  /** Remote id → host identity. The registry already knows it for paired
+   *  hosts, so a remote that is offline or slow to answer `/host` still
+   *  resolves — otherwise its folders read as an unknown host. */
+  const hostIdsByRemote = useMemo(() => {
+    const out: Record<string, string> = { ...remoteHostIds };
+    for (const r of remotes) if (r.hostId) out[r.id] = r.hostId;
+    return out;
+  }, [remotes, remoteHostIds]);
+  const remoteIdOfHost = (hostId: string) => Object.keys(hostIdsByRemote).find(k => hostIdsByRemote[k] === hostId) ?? null;
 
   /** Projects as the UI uses them: live ones, each folder's host translated
    *  to this window's terms (null = this machine, else a remote's id). A host
@@ -5138,11 +5146,11 @@ export function ChatApp() {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storedProjects, localHostId, remoteHostIds]);
+  }, [storedProjects, localHostId, hostIdsByRemote]);
   const toStoredFolders = (folders: ProjectFolder[]): StoredFolder[] => folders.map(f => {
     const hostId = f.remoteId === null ? localHostId
       : f.remoteId.startsWith('host:') ? f.remoteId.slice(5)
-      : remoteHostIds[f.remoteId] ?? null;
+      : hostIdsByRemote[f.remoteId] ?? null;
     return hostId ? { path: f.path, hostId } : { path: f.path, remoteId: f.remoteId };
   });
   const writeStoredProjects = (next: Record<string, StoredProject>) => {
