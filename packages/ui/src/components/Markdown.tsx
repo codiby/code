@@ -135,6 +135,10 @@ function renderInline(text: string): string {
     )
     // Session deep-link chip: [Session Name](codiby-session:<id>)
     .replace(/\[([^\]]+)\]\(codiby-session:([^)]+)\)/g, (_m, label, id) => sessionLinkHtml(label, id.trim()))
+    // A Slack person: [@Name](slack-user:U123) — a chip the Slack views catch
+    // (data-slack-user) to open that person's DM.
+    .replace(/\[@([^\]]+)\]\(slack-user:([A-Z0-9]+)\)/g, (_m, name, id) =>
+      `<button type="button" data-slack-user="${id}" data-slack-name="${name.replace(/"/g, '&quot;')}" class="slk-mention">@${name}</button>`)
     // Images: ![alt](url)
     .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="max-w-full rounded my-1" />')
     // Links: [text](url)

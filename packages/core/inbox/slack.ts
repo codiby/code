@@ -192,7 +192,7 @@ class SlackConnection {
       ts: m.ts, mine: m.user === me, bot: !!m.bot_id,
       root: !!m.thread_ts && m.thread_ts === m.ts,
       text: plainSlackText(m.text ?? '', this.userName),
-      markdown: slackToMarkdown(m.text ?? '', this.userName),
+      markdown: slackToMarkdown(m.text ?? '', this.userName, me),
       reactions: (raw.reactions ?? []).map(r => ({
         name: r.name, count: r.count, mine: !!r.users?.includes(me),
         ...(resolveEmoji(r.name) ?? {}),

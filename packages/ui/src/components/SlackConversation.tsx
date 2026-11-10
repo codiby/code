@@ -202,7 +202,19 @@ export function SlackConversation({ client, connectionId, channel, ts, threadTs,
                     <span>{time}</span>
                   </div>
                 )}
-                {m.markdown ? <Markdown text={m.markdown} className="ib-md" /> : <div className="ib-txt">{m.text}</div>}
+                {m.markdown
+                  ? (
+                    // A mentioned person opens their DM, like their avatar does.
+                    <div onClick={e => {
+                      const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-slack-user]');
+                      if (!chip) return;
+                      e.preventDefault();
+                      onOpenDm(chip.dataset.slackUser!, chip.dataset.slackName ?? '');
+                    }}>
+                      <Markdown text={m.markdown} className="ib-md" />
+                    </div>
+                  )
+                  : <div className="ib-txt">{m.text}</div>}
                 {!!m.reactions?.length && (
                   <div className="ib-reactions">
                     {m.reactions.map(r => (

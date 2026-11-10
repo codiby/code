@@ -92,10 +92,12 @@ export function slackMessageToItem(m: SlackMessage, l: SlackLookup): InboxInput 
  *  mentions become names, `*b*`/`_i_`/`~s~` become `**b**`/`*i*`/`~~s~~`, and
  *  `•` bullets become list items. Lines stay lines (the renderer is
  *  line-based, like Slack). */
-export function slackToMarkdown(text: string, userName: (id: string) => string): string {
+export function slackToMarkdown(text: string, userName: (id: string) => string, me?: string): string {
   // Shortcodes last, so a `:name:` inside a link label still converts.
+  // A person's mention links to them (`slack-user:`), so the Inbox can open
+  // their DM; your own name stays plain.
   const inline = (s: string) => emojifyMarkdown(s
-    .replace(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => `**@${userName(id)}**`)
+    .replace(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => (id === me ? `**@${userName(id)}**` : `[@${userName(id).replace(/[[\]]/g, '')}](slack-user:${id})`))
     .replace(/<#[A-Z0-9]+\|([^>]*)>/g, (_, name) => `**#${name}**`)
     .replace(/<!subteam\^[A-Z0-9]+(?:\|([^>]*))?>/g, (_, name) => `**${name ?? '@team'}**`)
     .replace(/<!(here|channel|everyone)(?:\|[^>]*)?>/g, (_, w) => `**@${w}**`)

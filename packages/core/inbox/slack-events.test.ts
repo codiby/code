@@ -56,7 +56,10 @@ describe('slackToMarkdown', () => {
   const md = (t: string) => slackToMarkdown(t, lookup.userName);
   test('formatting, links and mentions', () => {
     expect(md('*Pending review* on _web_ ~old~ <https://gh.io/p/1|#6120> <@UMR> <!here>'))
-      .toBe('**Pending review** on *web* ~~old~~ [#6120](https://gh.io/p/1) **@Mariana Ruiz** **@here**');
+      .toBe('**Pending review** on *web* ~~old~~ [#6120](https://gh.io/p/1) [@Mariana Ruiz](slack-user:UMR) **@here**');
+  });
+  test('your own mention stays plain', () => {
+    expect(slackToMarkdown('<@UMR> hola', lookup.userName, 'UMR')).toBe('**@Mariana Ruiz** hola');
   });
   test('bullets become list items, nested ones indented', () => {
     expect(md('• uno\n    ◦ dos')).toBe('- uno\n  - dos');
