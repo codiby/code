@@ -18,7 +18,7 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { CODIBY_DIR } from '../config/config';
-import { addInboxItem, listOpenInbox, markInboxDone, retagConnection, rewriteOpenBodies, type InboxItem } from './store';
+import { addInboxItem, getInboxItem, listOpenInbox, markInboxDone, retagConnection, rewriteOpenBodies, type InboxItem } from './store';
 import { emojifyPlain, resolveEmoji, setCustomEmoji } from './emoji';
 import { itemsAnsweredBy, plainSlackText, slackMessageToItem, slackToMarkdown, type SlackMessage } from './slack-events';
 
@@ -80,11 +80,19 @@ export interface ThreadMessage {
 const fileOf = (id: string) => (id === DEFAULT_CONNECTION ? LEGACY_FILE : join(DIR, `${id.replace(/[^\w-]/g, '_')}.json`));
 const connectionOfItem = (i: { context: Record<string, unknown> }) => String(i.context.connectionId ?? DEFAULT_CONNECTION);
 
+/** No frame from Slack for this long and the socket is presumed dead. */
+const SILENCE_MS = 20 * 60_000;
+
 class SlackConnection {
   private socket: WebSocket | null = null;
   private retry = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = true;
+  /** Last frame from Slack, and the watchdog's last tick (a gap means the
+   *  machine slept). */
+  private lastFrame = 0;
+  private lastTick = 0;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
   status: SlackStatus = { state: 'off' };
   private users = new Map<string, string>();
   private avatars = new Map<string, string>();
@@ -143,7 +151,13 @@ class SlackConnection {
     });
     if (!item) return;
     // The original connection keeps its ids, so its items stay deduplicated.
-    if (this.id !== DEFAULT_CONNECTION) item.id = `slack:${this.id}:${m.channel}:${m.ts}`;
+    if (this.id !== DEFAULT_CONNECTION) {
+      // An item from before projects, moved onto this connection, keeps its
+      // old id: it is this same message, not a new one.
+      const legacy = getInboxItem(item.id);
+      if (legacy && String(legacy.context.connectionId ?? DEFAULT_CONNECTION) === this.id) return;
+      item.id = `slack:${this.id}:${m.channel}:${m.ts}`;
+    }
     item.context = { ...item.context, connectionId: this.id, ...(m.user && this.avatars.get(m.user) ? { avatar: this.avatars.get(m.user) } : {}) };
     addInboxItem(item);
   }
@@ -187,10 +201,48 @@ class SlackConnection {
   }
 
   // ── Socket Mode ───────────────────────────────────────────────────────────
-  start(): void { this.stopped = false; this.retry = 0; void this.connect(); }
+  start(): void {
+    this.stopped = false; this.retry = 0;
+    this.dropDuplicates();
+    void this.connect();
+    // A socket can die without a close — the Mac slept, the network changed —
+    // and keep reading as connected while nothing arrives. Reconnect after a
+    // sleep or a long silence; the fresh `hello` backfills the gap.
+    this.lastTick = Date.now();
+    this.watchdog ??= setInterval(() => {
+      const now = Date.now();
+      const slept = now - this.lastTick > 90_000;
+      this.lastTick = now;
+      if (this.stopped || !this.socket) return;
+      if (slept || now - this.lastFrame > SILENCE_MS) this.recycle(slept ? 'woke from sleep' : 'silent');
+    }, 30_000);
+  }
+
+  /** Drop the socket and open a new one at once. */
+  private recycle(why: string): void {
+    console.log(`[slack:${this.id}] reconnecting (${why})`);
+    const ws = this.socket; this.socket = null;
+    try { ws?.close(); } catch { /* already gone */ }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    this.retry = 0;
+    void this.connect();
+  }
+
+  /** Items stored twice — under the pre-projects id and again under this
+   *  connection's — keep the old one (it carries read state and agents). */
+  private dropDuplicates(): void {
+    if (this.id === DEFAULT_CONNECTION) return;
+    const prefix = `slack:${this.id}:`;
+    for (const item of listOpenInbox(1000)) {
+      if (!item.id.startsWith(prefix)) continue;
+      const legacy = getInboxItem(`slack:${item.id.slice(prefix.length)}`);
+      if (legacy && String(legacy.context.connectionId ?? DEFAULT_CONNECTION) === this.id) markInboxDone(item.id);
+    }
+  }
 
   stop(): void {
     this.stopped = true;
+    if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     const ws = this.socket; this.socket = null;
     try { ws?.close(); } catch { /* already closed */ }
@@ -203,7 +255,10 @@ class SlackConnection {
       const { url } = await api<{ url: string }>('apps.connections.open', {}, this.config.appToken);
       const ws = new WebSocket(url);
       this.socket = ws;
+      this.lastFrame = Date.now();
       ws.onmessage = (ev) => {
+        if (this.socket !== ws) return;
+        this.lastFrame = Date.now();
         let msg: { type?: string; envelope_id?: string; payload?: { event?: SlackMessage & { type?: string } } };
         try { msg = JSON.parse(String(ev.data)); } catch { return; }
         // Every envelope is acked at once, or Slack redelivers it.
