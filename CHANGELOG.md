@@ -5,6 +5,40 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.81] — 2026-11-10
+
+### Added
+
+- New shell: a full-height sidebar with a floating panel, a path bar (project / branch / session), Geist fonts, and an Overview screen with real usage and session stats.
+- Projects as their own entity: name, colour, folders on any host, and GitHub organizations. A project syncs between the hosts it has folders on, through the bridges, with the latest change winning.
+- A project switcher at the top of the sidebar. With "All projects", the sidebar and the Board list sessions project by project. Ctrl+` selects All projects and Ctrl+1…9 selects each project.
+- The project dialog picks each folder's host, browses that host's folders, and starts at the host's home.
+- Inbox: sessions waiting on you, pull requests (review requested, failing checks) and Slack mentions, DMs and thread replies, in real time over Socket Mode.
+- Slack per project: each project connects its own workspace from its settings. Conversations read like Slack (threads, grouped messages, Markdown, emoji, photos, reactions) and you can open a person's DM. Replying from Slack closes the item.
+- Hand an Inbox item to an agent: the session starts in the project that owns the item and shows as a live card in the Inbox.
+- Pull requests in the Inbox show their dates and can be declined (removes you as a reviewer) or dismissed.
+- A session row in the Inbox opens the session itself, with its chat and composer.
+- The sidebar collapses to an icon rail, and the Workspace section is pinned to its footer.
+- Boards, multi-root workspaces, branching a session, per-host model defaults, and a model picker on mobile.
+- Mist light theme and a refreshed composer. The whole product is in English.
+- Sending a message stops the running agent. Sessions are created instantly and start their provider only when needed.
+- Sidebar groups can have a folder of their own, and a group's new session is created right away on the host that has that folder.
+- Switch a session's provider before its first message.
+- Cross-file LSP navigation and rename in the editor, copy or reply to a text selection, zoom around the cursor in the image preview, and a live tool run folds into one rolling line.
+
+### Changed
+
+- The session list is ordered by the last message you sent. Loop mode is removed.
+
+### Fixed
+
+- Slack reconnects after the Mac sleeps or the socket goes silent, and backfills what it missed. Messages are no longer stored twice.
+- A remote host's folders keep their host in the project dialog instead of turning into Local on save.
+- An empty folder inside a project's group stays in that project instead of pulling its parent into "No project".
+- Copying rendered Markdown no longer adds stray bullets and numbers.
+- Codex sessions no longer show as busy because of unpaired Bash calls.
+- A closed session stays closed while the bridge catches up.
+
 ## [0.31.29] — 2026-10-26
 
 ### Added
