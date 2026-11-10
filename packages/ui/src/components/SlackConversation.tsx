@@ -100,6 +100,32 @@ export function SlackConversation({ client, connectionId, channel, ts, threadTs,
     return () => { live = false; };
   }, [client, connectionId, channel, ts, threadTs, limit]);
 
+  // Events are the fast path; this catches whatever they miss (a dropped
+  // socket, an app without event subscriptions): new messages are merged in
+  // by ts every few seconds while the conversation is open.
+  useEffect(() => {
+    if (!client) return;
+    let live = true;
+    const t = setInterval(() => {
+      if (document.hidden) return;
+      client.slackThread(connectionId, channel, isDm ? (Date.now() / 1000).toFixed(6) : ts, threadTs, limit)
+        .then(fresh => {
+          if (!live) return;
+          setThread(prev => {
+            if (!prev) return prev;
+            const byTs = new Map(fresh.map(m => [m.ts, m]));
+            const seen = new Set(prev.map(m => m.ts));
+            const added = fresh.filter(m => !seen.has(m.ts));
+            const updated = prev.map(m => byTs.get(m.ts) ?? m);
+            if (!added.length && updated.every((m, i) => m === prev[i] || JSON.stringify(m) === JSON.stringify(prev[i]))) return prev;
+            return [...updated, ...added].sort((a, b) => Number(a.ts) - Number(b.ts));
+          });
+        })
+        .catch(() => {});
+    }, 8000);
+    return () => { live = false; clearInterval(t); };
+  }, [client, connectionId, channel, ts, threadTs, limit, isDm]);
+
   useEffect(() => { if (thread) onThread?.(thread); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [thread]);
 
   // A DM opens at its latest message.

@@ -381,8 +381,14 @@ class SlackConnection {
 
   /** Reply as the user: in the thread when there is one, else in the DM. */
   async reply(channel: string, threadTs: string | null, text: string): Promise<void> {
-    await api('chat.postMessage', { channel, text, ...(threadTs ? { thread_ts: threadTs } : {}) }, this.config.userToken);
+    const r = await api<{ ts: string; message?: SlackMessage }>(
+      'chat.postMessage', { channel, text, ...(threadTs ? { thread_ts: threadTs } : {}) }, this.config.userToken);
     if (threadTs) this.myThreads.add(threadTs);
+    // Show it at once in every window on this conversation, without waiting
+    // for Slack's event (which may come late, or not at all); the event that
+    // follows is dropped by its ts.
+    const m: SlackMessage = { ...(r.message ?? { text, user: this.config.userId }), ts: r.ts, channel, ...(threadTs ? { thread_ts: threadTs } : {}) } as SlackMessage;
+    broadcast({ type: 'slack_message', connectionId: this.id, channel, threadTs, message: this.toThreadMessage(m) });
   }
 }
 
