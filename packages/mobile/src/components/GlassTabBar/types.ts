@@ -1,7 +1,7 @@
 import type { ComponentType } from 'react';
 
 /** Identificador estable de cada destino de la barra. */
-export type TabKey = 'home' | 'chat' | 'settings';
+export type TabKey = 'home' | 'chat' | 'agent' | 'settings';
 
 export interface TabIconProps {
   /** Lado del viewBox cuadrado, en px. */
@@ -22,6 +22,6 @@ export interface TabItem {
 export interface GlassTabBarProps {
   readonly activeKey: TabKey;
   readonly onChange: (key: TabKey) => void;
-  /** Permite sustituir o reordenar los destinos. Por defecto: chat, home, settings. */
+  /** Permite sustituir o reordenar los destinos. Por defecto: chat, home, agent, settings. */
   readonly items?: readonly TabItem[];
 }

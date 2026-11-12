@@ -16,15 +16,16 @@ import { addMessage, getSessionState, updateSessionState, updateUIState } from '
 import type { ChatMessage, PermissionRequest } from '../session/state';
 import type { Session } from '../types';
 import { notify } from '../integrations/notify';
-import { updateWorkingWithTool } from '../integrations/telegram';
 import { setClaudeModels } from '../handlers/claude-info';
+import { emitAgentToolUse, emitApprovalRequested, emitApprovalResolved, evaluateAgentPolicy } from '../agent/registry';
+import { handleAgentProviderError, handleAgentTurnComplete } from '../agent/dispatch';
+import { applyTaskEvent, pruneTasks, seedFromSnapshot, settleRunningTasks } from '../session/tasks';
 import type { PermissionDecision, PermissionRequestDetail, ProviderEvents, TurnCompleteInfo } from './types';
 
 export type BridgeDeps = {
   broadcastToSession: (sessionId: string, msg: object) => void;
   sendBrowserRequest: (sessionId: string, msg: object) => void;
   broadcastSessionList: () => void;
-  notifyTelegramIfMainSession: (sessionId: string) => void;
   onTurnComplete?: (sessionId: string, info: TurnCompleteInfo) => void;
   onError?: (sessionId: string, error: Error) => void;
   onExit?: (sessionId: string, code: number | null) => void;
@@ -46,9 +47,16 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     deps.broadcastToSession(session.id, { type: 'compaction', sessionId: session.id, active });
   };
 
-  const commitText = (text: string, meta?: { model?: string; usage?: any; parentToolUseId?: string | null }) => {
+  /** A sub-agent's own text/thinking goes out as `subagent_message`: it belongs
+   *  to the Agents window, not to the chat's message list (see isSubagentChatter). */
+  const broadcastChatter = (msg: ChatMessage) => {
+    deps.broadcastToSession(session.id, { type: 'subagent_message', sessionId: session.id, message: msg });
+  };
+
+  const commitText = (text: string, meta?: { model?: string; usage?: any; parentToolUseId?: string | null; agentId?: string | null }) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    const fromSubagent = !!(meta?.parentToolUseId || meta?.agentId);
     const msg: ChatMessage = {
       id: randomUUID(),
       role: 'assistant',
@@ -57,12 +65,35 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       model: meta?.model,
       usage: meta?.usage,
       parentToolUseId: meta?.parentToolUseId ?? null,
+      ...(meta?.agentId ? { agentId: meta.agentId } : {}),
     };
+    if (fromSubagent) {
+      // The main thread is still working while its sub-agent talks: leave its
+      // live preview and streaming flag alone.
+      if (addMessage(session.id, msg)) broadcastChatter(msg);
+      return;
+    }
     if (addMessage(session.id, msg)) {
       deps.broadcastToSession(session.id, { type: 'message', sessionId: session.id, message: msg });
     }
     updateSessionState(session.id, s => ({ ...s, partialText: '', isStreaming: false }));
   };
+
+  /** Stop-mark the tasks a dead provider left running (see settleRunningTasks). */
+  const settleTasks = () => {
+    const tasks = getSessionState(session.id).tasks;
+    if (!tasks) return;
+    const settled = settleRunningTasks(tasks);
+    if (settled.length === 0) return;
+    const next = { ...tasks };
+    for (const t of settled) next[t.taskId] = t;
+    updateSessionState(session.id, s => ({ ...s, tasks: next }));
+    for (const t of settled) deps.broadcastToSession(session.id, { type: 'task_update', sessionId: session.id, task: t });
+  };
+  // A new provider for this session means the previous one (and every
+  // sub-agent it was running) is gone — close() does not always deliver an
+  // onExit, so settle here too.
+  settleTasks();
 
   return {
     onCompaction: compaction,
@@ -141,6 +172,20 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       // clears on the next user send / turn completion, so live turns are
       // never gated here.
       if (getSessionState(session.id).wasInterrupted) return;
+      if (block.parentToolUseId || block.agentId) {
+        const sub: ChatMessage = {
+          id: randomUUID(),
+          role: 'assistant',
+          content: block.text,
+          timestamp: Date.now(),
+          isThinking: true,
+          thinkingRedacted: block.redacted || undefined,
+          parentToolUseId: block.parentToolUseId ?? null,
+          ...(block.agentId ? { agentId: block.agentId } : {}),
+        };
+        if (addMessage(session.id, sub)) broadcastChatter(sub);
+        return;
+      }
       // A thinking block usually precedes text/tool_use within the same
       // Anthropic Message, but in case the bridge has any pending streaming
       // text (rare — partial deltas should have been overwritten by the
@@ -184,8 +229,13 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       // partialText variable starts empty on each dispatch). If we don't flush
       // here, the client's `onMessage` handler will clear partialText when the
       // tool_use arrives and the streaming text VANISHES from the UI.
+      // `partialText` only ever holds the main thread's text (sub-agent
+      // partials are dropped in the adapter), so it commits as main even when
+      // this tool call is a background sub-agent's — tagging it with the
+      // sub-agent's ids would file it as chatter, out of the chat and the
+      // channel reply, and leave the preview set to be committed again.
       const pending = getSessionState(session.id).partialText;
-      if (pending?.trim()) commitText(pending, { parentToolUseId: tool.parentToolUseId });
+      if (pending?.trim()) commitText(pending);
 
       // The agent is still actively working — it's now running a tool. Keep
       // the "streaming" indicator on so the orange dot / mobile thinking
@@ -200,14 +250,21 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       }
 
       const mode = session.permissionMode || 'default';
-      const willAutoApprove =
-        ALWAYS_AUTO_APPROVE_TOOLS.has(tool.name) ||
-        isGrantedRead(session, tool.name, (tool.input ?? {}) as Record<string, unknown>) ||
-        (!USER_INTERACTION_TOOLS.has(tool.name) && (
-          mode === 'bypassPermissions' ||
-          (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(tool.name)) ||
-          (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(tool.name))
-        ));
+      const toolInput = (tool.input ?? {}) as Record<string, unknown>;
+      // The agent's policy has the final word on its own tool cards (preview
+      // only — the real decision is recorded in onPermissionRequest).
+      const policyPreview = !USER_INTERACTION_TOOLS.has(tool.name)
+        ? evaluateAgentPolicy({ session, toolName: tool.name, input: toolInput, phase: 'preview' })
+        : null;
+      const willAutoApprove = policyPreview
+        ? policyPreview.action === 'allow'
+        : ALWAYS_AUTO_APPROVE_TOOLS.has(tool.name) ||
+          isGrantedRead(session, tool.name, toolInput) ||
+          (!USER_INTERACTION_TOOLS.has(tool.name) && (
+            mode === 'bypassPermissions' ||
+            (mode === 'acceptEdits' && ACCEPT_EDITS_TOOLS.has(tool.name)) ||
+            (mode === 'plan' && PLAN_READ_ONLY_TOOLS.has(tool.name))
+          ));
       const chatMsg: ChatMessage = {
         id: tool.id || randomUUID(),
         role: 'assistant',
@@ -216,26 +273,24 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         toolName: tool.name,
         toolInput: tool.input,
         parentToolUseId: tool.parentToolUseId ?? null,
+        ...(tool.agentId ? { agentId: tool.agentId } : {}),
         autoApproved: willAutoApprove || undefined,
       };
       if (addMessage(session.id, chatMsg)) {
         deps.broadcastToSession(session.id, { type: 'message', sessionId: session.id, message: chatMsg });
       }
 
-      // For the Telegram-driven main session, stream tool progress into the
-      // pending "⏳ Claude is working…" bubble so the user can watch from
-      // Telegram. No-op for every other session.
+      // The agent's channels show tool progress (Telegram's working bubble).
       if (session.id === MAIN_SESSION_ID) {
-        try {
-          updateWorkingWithTool(tool.name, summariseToolInput(tool.name, tool.input as Record<string, unknown>));
-        } catch {}
+        emitAgentToolUse(session.id, tool.name, summariseToolInput(tool.name, toolInput));
       }
     },
 
     onToolResult(result) {
-      // Same safety flush — a tool_result could arrive while partialText is set.
+      // Same safety flush — a tool_result could arrive while partialText is set
+      // (main-thread text, as in onToolUse).
       const pending = getSessionState(session.id).partialText;
-      if (pending?.trim()) commitText(pending, { parentToolUseId: result.parentToolUseId });
+      if (pending?.trim()) commitText(pending);
 
       // Tool finished but the turn isn't done — the agent will keep working
       // (next assistant block or another tool). Keep the indicator lit.
@@ -254,10 +309,27 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         isToolResult: true,
         toolUseId: result.toolUseId,
         parentToolUseId: result.parentToolUseId ?? null,
+        ...(result.agentId ? { agentId: result.agentId } : {}),
         isError: result.isError,
       };
       if (addMessage(session.id, chatMsg)) {
         deps.broadcastToSession(session.id, { type: 'message', sessionId: session.id, message: chatMsg });
+      }
+    },
+
+    onTaskEvent(event) {
+      // Sub-agent / workflow lifecycle from the SDK → one record per task,
+      // pushed to the Agents panel as it changes.
+      const state = getSessionState(session.id);
+      const tasks = { ...(state.tasks ?? {}) };
+      const changed = event.kind === 'snapshot'
+        ? seedFromSnapshot(tasks, event)
+        : [applyTaskEvent(tasks[event.taskId], event)];
+      if (changed.length === 0) return;
+      for (const t of changed) tasks[t.taskId] = t;
+      updateSessionState(session.id, s => ({ ...s, tasks: pruneTasks(tasks) }));
+      for (const t of changed) {
+        deps.broadcastToSession(session.id, { type: 'task_update', sessionId: session.id, task: t });
       }
     },
 
@@ -300,6 +372,23 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
         };
       }
 
+      // Agent policy (packages/core/agent/policy). Only has an opinion about
+      // the agent session; USER_INTERACTION_TOOLS always reach the user.
+      if (!USER_INTERACTION_TOOLS.has(req.toolName)) {
+        const verdict = evaluateAgentPolicy({ session, toolName: req.toolName, input: inputRecord, phase: 'decide', requestId: req.requestId });
+        if (verdict?.action === 'deny') {
+          log(`[${sid8}] Policy denied ${req.toolName}${verdict.ruleId ? ` (rule ${verdict.ruleId})` : ''}`);
+          return { allow: false, message: `Denied by the agent's policy${verdict.reason ? `: ${verdict.reason}` : ''}. Do not retry; tell the owner what you were trying to do.` };
+        }
+        if (verdict?.action === 'allow') {
+          log(`[${sid8}] Policy allowed ${req.toolName}${verdict.ruleId ? ` (rule ${verdict.ruleId})` : ''}`);
+          return { allow: true };
+        }
+        if (verdict?.action === 'ask') {
+          return requestPermissionDecision(session, deps, { ...req, input: inputRecord });
+        }
+      }
+
       // Auto-allow by mode (or always-allow list for safe in-process tools).
       // USER_INTERACTION_TOOLS (AskUserQuestion, ExitPlanMode) always prompt —
       // even in bypassPermissions — because their whole job is to hand control
@@ -327,6 +416,8 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
     },
 
     onTurnComplete(info) {
+      // Set by a Stop (or an error) during this turn and cleared below; dispatch needs to know.
+      const stopped = getSessionState(session.id).wasInterrupted;
       compaction(false);
       deps.onTurnComplete?.(session.id, info);
       if (info.resultText) {
@@ -346,11 +437,10 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       session.replayDone = true;
       updateSessionState(session.id, s => ({ ...s, partialText: '', partialThinking: '', isStreaming: false, wasInterrupted: false, permRequest: null }));
       deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'turn_complete' });
-      deps.notifyTelegramIfMainSession(session.id);
-      // Generic "Claude is done" alert for any NON-main session's turn
-      // completion. The main (Telegram-driven) session already forwards
-      // its reply via notifyTelegramIfMainSession above — firing the
-      // generic notify too would produce a duplicate bubble in Telegram.
+      // `info` tells dispatch whether resultText is the model's answer or a provider error.
+      handleAgentTurnComplete(session.id, info, { interrupted: stopped });
+      // Generic "session finished" alert for any session but the agent's,
+      // whose replies already go back to its channels through dispatch.
       if (session.id !== MAIN_SESSION_ID) {
         try {
           const preview = (info.resultText || '').slice(0, 200);
@@ -380,6 +470,8 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       if (wasStreaming) {
         updateSessionState(session.id, s => ({ ...s, isStreaming: false, partialText: '', partialThinking: '', wasInterrupted: true }));
         deps.broadcastToSession(session.id, { type: 'status', sessionId: session.id, status: 'interrupted' });
+        // The agent's channels would otherwise never hear that their message died.
+        handleAgentProviderError(session.id, err.message);
       }
     },
 
@@ -398,6 +490,7 @@ export function createBridgeEvents(session: Session, deps: BridgeDeps): Provider
       session.ready = false;
       session.runtimeStatus = 'stopped';
       session.providerSession = null;
+      settleTasks();
       const state = getSessionState(session.id);
       if (state.partialText?.trim()) {
         const msg: ChatMessage = {
@@ -491,18 +584,42 @@ export function requestPermissionDecision(
   let resolve!: (decision: PermissionDecision) => void;
   const promise = new Promise<PermissionDecision>((res) => { resolve = res; });
   pendingDecisions.set(req.requestId, { sessionId: session.id, toolName: req.toolName, promise, resolve });
+
+  // Approval surfaces beyond the session's own UI (agent channels, push).
+  emitApprovalRequested({
+    requestId: req.requestId,
+    sessionId: session.id,
+    sessionName: session.name,
+    toolName: req.toolName,
+    title: req.title || req.displayName || req.toolName,
+    summary: req.description || summariseToolInput(req.toolName, permRequest.input),
+    input: permRequest.input,
+  });
   return promise;
 }
 
+/**
+ * Settle a pending permission request. `via` names the surface that answered
+ * ('desktop', 'mobile', 'telegram', 'whatsapp', 'push', 'expired'…) so the
+ * other surfaces can update and the activity log can record it.
+ */
 export function resolvePermissionDecision(
   requestId: string,
   decision: PermissionDecision,
+  via = 'ui',
 ): boolean {
   const pending = pendingDecisions.get(requestId);
   if (!pending) return false;
   pendingDecisions.delete(requestId);
   pending.resolve(decision);
+  emitApprovalResolved({ requestId, allow: decision.allow, via });
   return true;
+}
+
+/** Session id and tool of a pending request — for surfaces that only hold the id. */
+export function getPendingDecision(requestId: string): { sessionId: string; toolName: string } | null {
+  const pending = pendingDecisions.get(requestId);
+  return pending ? { sessionId: pending.sessionId, toolName: pending.toolName } : null;
 }
 
 export function clearPendingDecisionsForSession(sessionId: string, reason = 'Session stopped'): void {
@@ -510,12 +627,13 @@ export function clearPendingDecisionsForSession(sessionId: string, reason = 'Ses
     if (pending.sessionId !== sessionId) continue;
     pendingDecisions.delete(id);
     pending.resolve({ allow: false, message: reason, interrupt: true });
+    emitApprovalResolved({ requestId: id, allow: false, via: 'cancelled' });
   }
 }
 
 /** Pull a short, human-readable summary out of a tool's input — used in
  *  notification text. Falls back to a JSON dump for unknown tools. */
-function summariseToolInput(toolName: string, input: Record<string, unknown>): string {
+export function summariseToolInput(toolName: string, input: Record<string, unknown>): string {
   if (!input || typeof input !== 'object') return '';
   const get = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : undefined);
   switch (toolName) {

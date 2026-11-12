@@ -22,6 +22,7 @@ import { VoicePicker, byCategory, byLanguage } from './VoicePicker';
 import { ICON_MAP, ICON_MAP_QUICK } from '../lib/group-icons';
 import { resolveGroupColor } from '../lib/group-tree';
 import { useAppStore } from '../lib/store';
+import { ELEVENLABS_CLEAR_KEY, elevenLabsKeyForSave, elevenLabsKeyState, type ElevenLabsKeyState } from '../lib/voice-key';
 import {
   GROUP_COLORS, GROUP_HEX_COLOR, GROUP_DOT_COLOR,
   type TabGroupInfo,
@@ -204,8 +205,13 @@ function InheritNote({ overriding, fallback, onReset }: { overriding: boolean; f
  * ============================================================ */
 
 function TelegramSection({ serverUrl, showTelegramSession, onToggleShowTelegramSession }: { serverUrl: string | null; showTelegramSession: boolean; onToggleShowTelegramSession: (v: boolean) => void }) {
+  // The bot is one of the agent's channels now: the token is write-only and
+  // chats are paired from Agent → Channels (send /start, approve the code).
   const [botToken, setBotToken] = useState('');
   const [chatId, setChatId] = useState('');
+  const [hasToken, setHasToken] = useState(false);
+  const [pairedChats, setPairedChats] = useState<string[]>([]);
+  const [agentEnabled, setAgentEnabled] = useState(true);
   const [running, setRunning] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -213,21 +219,22 @@ function TelegramSection({ serverUrl, showTelegramSession, onToggleShowTelegramS
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = async () => {
     if (!serverUrl) return;
-    (async () => {
-      try {
-        const res = await fetch(`${serverUrl}/telegram/settings`);
-        if (res.ok) {
-          const data = await res.json();
-          setBotToken(data.botToken || '');
-          setChatId(data.chatId || '');
-          setRunning(!!data.running);
-        }
-      } catch {}
-      setLoaded(true);
-    })();
-  }, [serverUrl]);
+    try {
+      const res = await fetch(`${serverUrl}/telegram/settings`);
+      if (res.ok) {
+        const data = await res.json();
+        setHasToken(!!data.hasToken);
+        setPairedChats(Array.isArray(data.chatIds) ? data.chatIds : data.chatId ? [data.chatId] : []);
+        setAgentEnabled(data.agentEnabled !== false);
+        setRunning(!!data.running);
+      }
+    } catch {}
+    setLoaded(true);
+  };
+
+  useEffect(() => { void load(); }, [serverUrl]);
 
   const onSave = async () => {
     if (!serverUrl) return;
@@ -237,12 +244,15 @@ function TelegramSection({ serverUrl, showTelegramSession, onToggleShowTelegramS
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ botToken: botToken.trim(), chatId: chatId.trim() }),
       });
-      if (!res.ok) throw new Error(`Save failed (${res.status})`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Save failed (${res.status})`);
       setRunning(!!data.running);
+      setBotToken('');
+      setChatId('');
+      await load();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setSaving(false); }
   };
 
@@ -250,7 +260,7 @@ function TelegramSection({ serverUrl, showTelegramSession, onToggleShowTelegramS
     <>
       <SectionHeader
         title="Telegram Bot"
-        subtitle={<>Chat with Claude from Telegram. Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-zinc-300 underline">@BotFather</a> to get a token.</> as unknown as string}
+        subtitle={<>Talk to your Codiby agent from Telegram. Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-zinc-300 underline">@BotFather</a> to get a token. More options in Agent → Channels.</> as unknown as string}
         action={running ? (
           <span className="inline-flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-green-400">
             <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
@@ -263,10 +273,13 @@ function TelegramSection({ serverUrl, showTelegramSession, onToggleShowTelegramS
         <div className="text-[12px] text-zinc-600">Loading…</div>
       ) : (
         <div className="space-y-4">
-          <Field label="Bot token" hint="Paste the token returned by @BotFather. Stored encrypted on disk.">
+          {!agentEnabled && (
+            <div className="text-[11.5px] text-amber-300">The agent is off on this host, so the bot isn't running. Turn it on in the Agent view.</div>
+          )}
+          <Field label="Bot token" hint={hasToken ? 'Saved and encrypted. Paste a new token only to replace it.' : 'Paste the token returned by @BotFather. Stored encrypted on disk.'}>
             <div className="relative">
               <TextField type={showToken ? 'text' : 'password'} value={botToken} onChange={setBotToken} aria-label="Bot Token">
-                <Input placeholder="123456:ABC-DEF..." className="font-mono text-[12px] pr-14" />
+                <Input placeholder={hasToken ? '•••••••• (saved)' : '123456:ABC-DEF...'} className="font-mono text-[12px] pr-14" />
               </TextField>
               <button
                 onClick={() => setShowToken(v => !v)}
@@ -277,9 +290,12 @@ function TelegramSection({ serverUrl, showTelegramSession, onToggleShowTelegramS
             </div>
           </Field>
 
-          <Field label="Chat ID" hint="Optional. Restrict the bot to a single chat. Leave blank to accept any chat — send /start to discover the ID.">
-            <TextField value={chatId} onChange={setChatId} aria-label="Chat ID">
-              <Input placeholder="123456789" className="font-mono text-[12px]" />
+          <Field
+            label="Paired chats"
+            hint={`${pairedChats.length ? pairedChats.join(', ') : 'None yet'}. The bot only answers paired chats: send /start to it and approve the code in Agent → Channels, or add a chat ID here.`}
+          >
+            <TextField value={chatId} onChange={setChatId} aria-label="Add a chat ID">
+              <Input placeholder="Add a chat ID (optional)" className="font-mono text-[12px]" />
             </TextField>
           </Field>
 
@@ -310,7 +326,12 @@ function TelegramSection({ serverUrl, showTelegramSession, onToggleShowTelegramS
 }
 
 function DeepgramSection({ serverUrl }: { serverUrl: string | null }) {
+  // The key is write-only: the bridge only says whether one is saved. The
+  // field holds a replacement the user types, never the saved key.
   const [apiKey, setApiKey] = useState('');
+  // Bridges from before the key went write-only still return it, and treat
+  // a missing key on save as "remove it" — so it is sent back unchanged to them.
+  const [legacy, setLegacy] = useState<{ key: string } | null>(null);
   const [model, setModel] = useState('nova-3');
   const [language, setLanguage] = useState('multi');
   const [configured, setConfigured] = useState(false);
@@ -327,7 +348,7 @@ function DeepgramSection({ serverUrl }: { serverUrl: string | null }) {
         const res = await fetch(`${serverUrl}/deepgram/settings`);
         if (res.ok) {
           const data = await res.json();
-          setApiKey(data.apiKey || '');
+          setLegacy(typeof data.apiKey === 'string' ? { key: data.apiKey } : null);
           setModel(data.model || 'nova-3');
           setLanguage(data.language || 'multi');
           setConfigured(!!data.configured);
@@ -337,22 +358,31 @@ function DeepgramSection({ serverUrl }: { serverUrl: string | null }) {
     })();
   }, [serverUrl]);
 
-  const onSave = async () => {
+  const save = async (keyChange: { apiKey?: string; clearApiKey?: true }) => {
     if (!serverUrl) return;
     setSaving(true); setError(null); setSaved(false);
     try {
       const res = await fetch(`${serverUrl}/deepgram/settings`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: apiKey.trim(), model: model.trim() || 'nova-3', language: language.trim() || 'multi' }),
+        body: JSON.stringify({ ...keyChange, model: model.trim() || 'nova-3', language: language.trim() || 'multi' }),
       });
       if (!res.ok) throw new Error(`Save failed (${res.status})`);
       const data = await res.json();
       setConfigured(!!data.configured);
+      setApiKey('');
+      if (legacy) setLegacy({ key: keyChange.clearApiKey ? '' : keyChange.apiKey ?? legacy.key });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) { setError(String(e)); }
     finally { setSaving(false); }
   };
+
+  const onSave = () => {
+    const typed = apiKey.trim();
+    void save(typed ? { apiKey: typed } : legacy?.key ? { apiKey: legacy.key } : {});
+  };
+  // `apiKey: ''` clears it on bridges that predate `clearApiKey`.
+  const onClear = () => { void save({ apiKey: '', clearApiKey: true }); };
 
   return (
     <>
@@ -374,17 +404,24 @@ function DeepgramSection({ serverUrl }: { serverUrl: string | null }) {
         <div className="text-[12px] text-zinc-600">Loading…</div>
       ) : (
         <div className="space-y-4">
-          <Field label="API key">
-            <div className="relative">
-              <TextField type={showKey ? 'text' : 'password'} value={apiKey} onChange={setApiKey} aria-label="Deepgram API Key">
-                <Input placeholder="Your Deepgram API key" className="font-mono text-[12px] pr-14" />
-              </TextField>
-              <button
-                onClick={() => setShowKey(v => !v)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
-              >
-                {showKey ? 'Hide' : 'Show'}
-              </button>
+          <Field label="API key" hint={configured ? 'Saved. Paste a new key only to replace it.' : 'Stored on this host; it is never shown again after saving.'}>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1 min-w-0">
+                <TextField type={showKey ? 'text' : 'password'} value={apiKey} onChange={setApiKey} aria-label="Deepgram API Key">
+                  <Input placeholder={configured ? '•••• saved' : 'Your Deepgram API key'} className="font-mono text-[12px] pr-14" />
+                </TextField>
+                <button
+                  onClick={() => setShowKey(v => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                >
+                  {showKey ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {configured && (
+                <Button onPress={onClear} isDisabled={saving} className="text-[12px] px-3 py-1.5 h-auto rounded-md font-medium text-zinc-300 hover:text-red-300 bg-transparent border border-border hover:border-red-500/40 shrink-0">
+                  Clear key
+                </Button>
+              )}
             </div>
           </Field>
           <Field label="Model" hint="Defaults to nova-3, the recommended Deepgram general-purpose model.">
@@ -428,7 +465,11 @@ function VoiceModeSection({ serverUrl }: { serverUrl: string | null }) {
   const [deepgramVoice, setDeepgramVoice] = useState('aura-2-diana-es');
   const [sendAfterMs, setSendAfterMs] = useState(800);
   const [fastAgent, setFastAgent] = useState(true);
+  // The ElevenLabs key is write-only (lib/voice-key.ts): the field holds a
+  // replacement the user types, never the saved key; left empty, it's kept.
   const [elKey, setElKey] = useState('');
+  const [elConfigured, setElConfigured] = useState(false);
+  const [elLegacy, setElLegacy] = useState<ElevenLabsKeyState['legacy']>(null);
   const [elVoice, setElVoice] = useState('');
   const [elModel, setElModel] = useState('eleven_flash_v2_5');
   const [showKey, setShowKey] = useState(false);
@@ -452,7 +493,10 @@ function VoiceModeSection({ serverUrl }: { serverUrl: string | null }) {
           setDeepgramVoice(data.deepgramVoice || 'aura-2-diana-es');
           setSendAfterMs(Number.isFinite(Number(data.sendAfterMs)) ? Number(data.sendAfterMs) : 800);
           setFastAgent(data.fastAgent !== false);
-          setElKey(data.elevenlabs?.apiKey || '');
+          const keyState = elevenLabsKeyState(data.elevenlabs);
+          setElConfigured(keyState.configured);
+          setElLegacy(keyState.legacy);
+          setElKey('');
           setElVoice(data.elevenlabs?.voiceId || '');
           setElModel(data.elevenlabs?.modelId || 'eleven_flash_v2_5');
         }
@@ -464,27 +508,43 @@ function VoiceModeSection({ serverUrl }: { serverUrl: string | null }) {
   const range = speedRange?.[provider] ?? { min: 0.7, max: provider === 'elevenlabs' ? 1.2 : 1.5 };
   const clamped = Math.min(range.max, Math.max(range.min, speed));
 
-  const onSave = async () => {
+  const put = async (body: Record<string, unknown>, keyAfter: { configured: boolean; legacyKey: string }) => {
     if (!serverUrl) return;
     setSaving(true); setError(null); setSaved(false);
     try {
       const res = await fetch(`${serverUrl}/voice/settings`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ttsProvider: provider,
-          ttsSpeed: speed,
-          deepgramVoice,
-          sendAfterMs,
-          fastAgent,
-          elevenlabs: { apiKey: elKey.trim(), voiceId: elVoice, modelId: elModel },
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`Save failed (${res.status})`);
+      setElConfigured(keyAfter.configured);
+      setElKey('');
+      if (elLegacy) setElLegacy({ key: keyAfter.legacyKey });
       setVoicesReload((n) => n + 1);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) { setError(String(e)); }
     finally { setSaving(false); }
+  };
+
+  const onSave = () => {
+    const key = elevenLabsKeyForSave(elKey, elLegacy);
+    void put(
+      {
+        ttsProvider: provider,
+        ttsSpeed: speed,
+        deepgramVoice,
+        sendAfterMs,
+        fastAgent,
+        elevenlabs: { ...key, voiceId: elVoice, modelId: elModel },
+      },
+      { configured: !!elKey.trim() || elConfigured, legacyKey: key.apiKey ?? '' },
+    );
+  };
+
+  // Only the key changes; unsaved edits elsewhere in the form stay unsaved.
+  const onClearKey = () => {
+    void put({ elevenlabs: ELEVENLABS_CLEAR_KEY }, { configured: false, legacyKey: '' });
   };
 
   return (
@@ -576,19 +636,30 @@ function VoiceModeSection({ serverUrl }: { serverUrl: string | null }) {
           ) : (
             <>
               <Field label="ElevenLabs API key">
-                <div className="relative">
-                  <TextField type={showKey ? 'text' : 'password'} value={elKey} onChange={setElKey} aria-label="ElevenLabs API Key">
-                    <Input placeholder="Your ElevenLabs API key" className="font-mono text-[12px] pr-14" />
-                  </TextField>
-                  <button
-                    onClick={() => setShowKey(v => !v)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
-                  >
-                    {showKey ? 'Hide' : 'Show'}
-                  </button>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1 min-w-0">
+                    <TextField type={showKey ? 'text' : 'password'} value={elKey} onChange={setElKey} aria-label="ElevenLabs API Key">
+                      <Input placeholder={elConfigured ? '•••• saved' : 'Your ElevenLabs API key'} className="font-mono text-[12px] pr-14" />
+                    </TextField>
+                    <button
+                      onClick={() => setShowKey(v => !v)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                    >
+                      {showKey ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  {elConfigured && (
+                    <Button onPress={onClearKey} isDisabled={saving} className="text-[12px] px-3 py-1.5 h-auto rounded-md font-medium text-zinc-300 hover:text-red-300 bg-transparent border border-border hover:border-red-500/40 shrink-0">
+                      Clear key
+                    </Button>
+                  )}
                 </div>
                 <div className="mt-1 text-[11px] text-zinc-500">
-                  Get one at <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer" className="text-zinc-300 underline">elevenlabs.io</a>. Save it to load your voices.
+                  {elConfigured ? (
+                    <>Saved. Paste a new key only to replace it; leaving the field empty keeps the saved one.</>
+                  ) : (
+                    <>Get one at <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer" className="text-zinc-300 underline">elevenlabs.io</a>. Save it to load your voices; it is never shown again after saving.</>
+                  )}
                 </div>
               </Field>
               <Field label="Model">

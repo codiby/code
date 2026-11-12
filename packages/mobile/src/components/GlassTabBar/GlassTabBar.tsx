@@ -2,12 +2,13 @@ import { View } from 'react-native';
 
 import { useIsDark } from '../../theme';
 import { GlassTabBarItem } from './GlassTabBarItem';
-import { ChatIcon, HomeIcon, SettingsIcon } from './icons';
+import { AgentIcon, ChatIcon, HomeIcon, SettingsIcon } from './icons';
 import type { GlassTabBarProps, TabItem } from './types';
 
 export const DEFAULT_TAB_ITEMS: readonly TabItem[] = [
   { key: 'chat', label: 'Direct', Icon: ChatIcon },
   { key: 'home', label: 'Sessions', Icon: HomeIcon },
+  { key: 'agent', label: 'Agent', Icon: AgentIcon },
   { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 

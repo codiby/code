@@ -1186,6 +1186,8 @@ export const MessageBubble = memo(function MessageBubble({ message, onReply, onO
     const sending = message.deliveryStatus === 'sending';
     const failed = message.deliveryStatus === 'failed';
     const dim = pending || sending;
+    // Agent session: which channel a message arrived from (set server-side).
+    const source = message.source;
     return (
       <>
       <div className="flex justify-end py-1">
@@ -1225,6 +1227,12 @@ export const MessageBubble = memo(function MessageBubble({ message, onReply, onO
             )}
             {body.text && (
               <Markdown text={body.text} className="text-[13px] text-zinc-200 leading-relaxed" />
+            )}
+            {source && source.channelType !== 'app' && (
+              <div className={`mt-1 text-[10px] uppercase tracking-wide ${source.trusted ? 'text-zinc-500' : 'text-amber-300/80'}`}>
+                via {({ telegram: 'Telegram', whatsapp: 'WhatsApp', http_webhook: 'Webhook', ios_shortcut: 'iOS Shortcut' } as Record<string, string>)[source.channelType] ?? source.channelType}
+                {source.trusted ? '' : ' · from someone else'}
+              </div>
             )}
             {pending && (
               <div className="mt-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-blue-300/70">

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Sun, Moon, Eraser, FoldHorizontal, RectangleHorizontal, UnfoldHorizontal } from 'lucide-react';
+import { ArrowDown, Send as SendIcon, PanelsTopLeft, PanelTop, PanelLeft, PanelRight, LayoutGrid, Search, Terminal, ChevronUp, ChevronDown, ChevronRight, X, Plus, Maximize2, Minimize2, Check, Sun, Moon, Eraser, FoldHorizontal, RectangleHorizontal, UnfoldHorizontal, Bot } from 'lucide-react';
 import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator, ListBox, ListBoxItem } from '@heroui/react';
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
@@ -12,6 +12,7 @@ import { SessionTabStrip } from './SessionTabStrip';
 import { TabBar, type NavView } from './TabBar';
 import { SessionsBoardView } from './SessionsBoardView';
 import { AutomationsView } from './AutomationsView';
+import { AgentView } from './agent/AgentView';
 import { StandaloneEditor, openFileDialog, confirmCloseStandaloneFile } from './StandaloneEditor';
 import { useStandaloneFiles, openStandaloneFiles, saveStandaloneFile, hideStandaloneEditor, readLocalText } from '../lib/standalone-files';
 import { ActivityBarSessionActions } from './ActivityBarSessionActions';
@@ -32,6 +33,9 @@ import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { SkillsModal } from './SkillsModal';
 import { MemoryModal } from './MemoryModal';
 import { ResourcesPanel } from './ResourcesPanel';
+import { AgentsPanel } from './AgentsPanel';
+import { publishSubagentMessage } from '../lib/subagent-bus';
+import { groupTasks } from '../lib/subagents';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { chordTokens, matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { ArchiveSuggestionPill } from './ArchiveSuggestionPill';
@@ -1345,6 +1349,8 @@ export function ChatApp() {
   // header chip. `resourcesRefresh` is bumped on ws events (new image/mockup)
   // so an open drawer refetches without a manual reload.
   const [resourcesOpen, setResourcesOpen] = useState(false);
+  // Sub-agents drawer — same slot as Resources; opening one closes the other.
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [resourcesRefresh, setResourcesRefresh] = useState(0);
   const [resourceCount, setResourceCount] = useState(0);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
@@ -2119,6 +2125,16 @@ export function ChatApp() {
             return { ...prev, [sid]: { ...s, todos } };
           });
         },
+
+        // Sub-agent tasks (Claude SDK task_* events) for the Agents drawer.
+        onTaskUpdate: (sid, task) => {
+          setSessionStates(prev => {
+            const s = prev[sid] || emptyLocalState();
+            return { ...prev, [sid]: { ...s, tasks: { ...(s.tasks ?? {}), [task.taskId]: task } } };
+          });
+        },
+        // A sub-agent's own text/thinking: never added to the chat list.
+        onSubagentMessage: (sid, message) => publishSubagentMessage(sid, message),
 
         // Requirements snapshot — the server pushes one on every mutation and
         // around every check run. Opens the panel the first time a session
@@ -6227,6 +6243,43 @@ export function ChatApp() {
     && !!activeStageState
     && activeStageEmpty
     && !seenNonEmptyRef.current.has(activeId);
+
+  // EmptyComposerStage is a full-width child of the chat pane, so centred it
+  // would sit on top of the drawers beside the chat (Agents, Resources).
+  // While it's centred the pane leaves their width out: padding on the pane,
+  // cancelled on the chat row by a matching negative margin so the chat and
+  // the drawers keep their size. Docked, the composer spans the whole pane,
+  // under the drawers. Measured, not hard-coded: the drawers own their widths.
+  const [chatRowEl, setChatRowEl] = useState<HTMLDivElement | null>(null);
+  const [stageReserve, setStageReserve] = useState(0);
+  const [stageDocking, setStageDocking] = useState(false);
+  const stagePrevRef = useRef({ sid: activeId, centered: composerCentered });
+  useLayoutEffect(() => {
+    const prev = stagePrevRef.current;
+    stagePrevRef.current = { sid: activeId, centered: composerCentered };
+    const body = chatRowEl?.firstElementChild as HTMLElement | null | undefined;
+    if (!chatRowEl || !body || !composerCentered) {
+      // First message with a drawer open: widen back alongside the stage's
+      // dock tween instead of jumping sideways under the drawer.
+      if (stageReserve > 0 && prev.centered && prev.sid === activeId) setStageDocking(true);
+      setStageReserve(0);
+      return;
+    }
+    // Measured here too, not only from the observer, so a drawer opening is
+    // reserved for before the frame paints rather than one frame later.
+    const measure = () => setStageReserve(Math.max(0, Math.round(chatRowEl.clientWidth - body.offsetWidth)));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(chatRowEl);
+    ro.observe(body);
+    return () => ro.disconnect();
+  }, [chatRowEl, composerCentered, activeId, resourcesOpen, agentsOpen]);
+  useEffect(() => {
+    if (!stageDocking) return;
+    const t = setTimeout(() => setStageDocking(false), 700);
+    return () => clearTimeout(t);
+  }, [stageDocking]);
+
   const activeStageSession = activeId
     ? sessions.find(s => s.id === activeId) ?? pendingSessions.find(s => s.id === activeId)
     : undefined;
@@ -6306,9 +6359,13 @@ export function ChatApp() {
           );
         })()}
         {(() => {
+          // Agent cards nest their sub-agent's tool calls; any other sub-agent
+          // message (a workflow's agents) belongs to the Agents drawer.
+          const agentCardIds = new Set(cs.messages.filter(m => m.toolName === 'Agent').map(m => m.id));
           const grouped = collapseToolRuns(groupMessages(
             [...cs.messages]
               .filter(m => {
+                if (m.agentId && !(m.parentToolUseId && agentCardIds.has(m.parentToolUseId))) return false;
                 // Queued user messages render after the live thinking/text
                 // preview (below), so the in-flight assistant turn they
                 // interrupted stays above them in the timeline. Keeping them
@@ -6714,7 +6771,7 @@ export function ChatApp() {
             <>
               <span className="path-slash" aria-hidden>/</span>
               <span className="text-[13px] font-medium text-zinc-200 mr-2">
-                {activeNavView === 'overview' ? 'Overview' : activeNavView === 'inbox' ? 'Inbox' : activeNavView === 'sessions-board' ? 'Board' : 'Automations'}
+                {activeNavView === 'overview' ? 'Overview' : activeNavView === 'inbox' ? 'Inbox' : activeNavView === 'sessions-board' ? 'Board' : activeNavView === 'agent' ? 'Agent' : 'Automations'}
               </span>
             </>
           )}
@@ -7249,7 +7306,11 @@ export function ChatApp() {
           {isStandardShell && titlebar}
           <div className={isStandardShell ? 'flex-1 flex min-h-0 min-w-0' : 'contents'}>
 
-          <div className="app-main flex-1 flex flex-col min-w-0">
+          {/* `[&>*]:min-h-0`: each view below is a flex column child of this
+              pane, and one without `min-h-0` grows to its content's height
+              instead of scrolling inside the pane. Set here so a view that
+              leaves it out (the Board does) still scrolls. */}
+          <div className="app-main flex-1 flex flex-col min-w-0 [&>*]:min-h-0">
             {standaloneVisible ? (
               <StandaloneEditor client={client} onOpenPaths={(paths) => routeOpenFilesRef.current(paths)} />
             ) : activeNavView === 'inbox' ? (
@@ -7318,6 +7379,8 @@ export function ChatApp() {
                 onSelectSession={handleSelectSession}
                 onAssignGroup={(sid, gid) => gid ? handleAddToGroup(sid, gid) : handleUngroupTab(sid)}
               />
+            ) : activeNavView === 'agent' ? (
+              client ? <AgentView client={client} onOpenSession={handleSelectSession} /> : null
             ) : activeNavView === 'automations' ? (
               <AutomationsView
                 client={client}
@@ -7427,8 +7490,13 @@ export function ChatApp() {
                   const renderPanelTab = (tab: PanelTab) => {
                     switch (tab.kind) {
                       case 'chat': {
+                        // Same curve and length as EmptyComposerStage's dock tween.
+                        const dockTransition = 'duration-[620ms] ease-[cubic-bezier(0.65,0,0.35,1)] motion-reduce:transition-none';
                         return (
-                          <div className="h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden relative">
+                          <div
+                            className={`h-full w-full min-h-0 min-w-0 flex flex-col overflow-hidden relative ${stageDocking ? `transition-[padding-right] ${dockTransition}` : ''}`}
+                            style={stageReserve ? { paddingRight: stageReserve } : undefined}
+                          >
                   <ChatFindWidget
                     open={findOpen}
                     onClose={() => setFindOpen(false)}
@@ -7447,7 +7515,11 @@ export function ChatApp() {
                       }}
                     />
                   )}
-                  <div className="flex flex-1 min-h-0">
+                  <div
+                    ref={setChatRowEl}
+                    className={`flex flex-1 min-h-0 ${stageDocking ? `transition-[margin-right] ${dockTransition}` : ''}`}
+                    style={stageReserve ? { marginRight: -stageReserve } : undefined}
+                  >
                   {/* When a group is focused (sidebar click) but no session
                       inside it is selected, render the inline new-session
                       composer instead of the chat body. Otherwise mount the
@@ -7531,6 +7603,17 @@ export function ChatApp() {
                       client={client}
                       sessionId={activeId}
                       refreshKey={resourcesRefresh}
+                    />
+                  )}
+                  {/* Sub-agents drawer — opened from the Agents chip above. */}
+                  {agentsOpen && activeId && (
+                    <AgentsPanel
+                      open={agentsOpen}
+                      onClose={() => setAgentsOpen(false)}
+                      client={client}
+                      sessionId={activeId}
+                      tasks={sessionStates[activeId]?.tasks ?? {}}
+                      messages={sessionStates[activeId]?.messages ?? []}
                     />
                   )}
                   </div>
@@ -8394,7 +8477,9 @@ export function ChatApp() {
                         if (!(openTerminal && activeId)) return null;
                         return (
                           <div className="h-full w-full min-h-0 min-w-0 flex flex-col">
-                  <div className={`flex-1 flex flex-col min-w-0`}>
+                  {/* min-h-0, or long output grows this column past the tab
+                      instead of scrolling inside the <pre>. */}
+                  <div className={`flex-1 flex flex-col min-w-0 min-h-0`}>
                     <div className="flex items-center justify-between px-3 py-1 border-b border-border shrink-0 bg-surface" onDoubleClick={() => activeId && updateLocalState(activeId, s => ({ ...s, editorFullWidth: !s.editorFullWidth }))}>
                       <div className="flex items-center gap-1.5 truncate cursor-default">
                         <span className="text-[10px] text-zinc-500">$</span>
@@ -8605,7 +8690,7 @@ export function ChatApp() {
                           </div>
                           <button
                             type="button"
-                            onClick={() => setResourcesOpen(o => !o)}
+                            onClick={() => { setResourcesOpen(o => !o); setAgentsOpen(false); }}
                             title="Session resources"
                             className={`inline-flex items-center gap-1.5 h-[22px] pl-1.5 pr-2 rounded-md border text-[11px] font-semibold transition-colors ${
                               resourcesOpen
@@ -8619,6 +8704,35 @@ export function ChatApp() {
                               <span className="text-[9.5px] font-bold text-violet-300 bg-violet-500/18 rounded-full px-1.5 py-px leading-none">{resourceCount}</span>
                             )}
                           </button>
+                          {(() => {
+                            // Sub-agents of this session (Claude SDK tasks): a live
+                            // count while any runs, the finished total otherwise.
+                            const { running, done } = groupTasks(Object.values((activeId && sessionStates[activeId]?.tasks) || {}));
+                            const live = running.reduce((n, g) => n + g.tasks.length, 0);
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => { setAgentsOpen(o => !o); setResourcesOpen(false); }}
+                                title="Sub-agents in this session"
+                                className={`inline-flex items-center gap-1.5 h-[22px] pl-1.5 pr-2 rounded-md border text-[11px] font-semibold transition-colors ${
+                                  agentsOpen
+                                    ? 'bg-surface-lighter border-cyan-500 text-zinc-100'
+                                    : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-surface-light'
+                                }`}
+                              >
+                                <Bot size={13} className="text-cyan-300" />
+                                <span>Agents</span>
+                                {live > 0 ? (
+                                  <span className="inline-flex items-center gap-1 text-[9.5px] font-bold text-cyan-300 bg-cyan-500/16 rounded-full px-1.5 py-px leading-none">
+                                    <span className="w-[5px] h-[5px] rounded-full bg-cyan-300 animate-pulse" />
+                                    {live}
+                                  </span>
+                                ) : done.length > 0 ? (
+                                  <span className="text-[9.5px] font-bold text-zinc-400 bg-white/8 rounded-full px-1.5 py-px leading-none">{done.length}</span>
+                                ) : null}
+                              </button>
+                            );
+                          })()}
                           </>
                         );
                       }}

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { chunkForSpeech, hasStopIntent, isEcho, isStopCommand, repeats, toSpeakable, words } from './voice';
+import { chunkForSpeech, hasStopIntent, isEcho, isStopCommand, repeats, toSpeakable, turnTexts, words } from './voice';
+import type { ChatMessage } from '../session/state';
 
 describe('hasStopIntent', () => {
   test('explicit orders to stop', () => {
@@ -108,5 +109,69 @@ describe('chunkForSpeech', () => {
 
   test('empty text yields no chunks', () => {
     expect(chunkForSpeech('   ')).toEqual([]);
+  });
+});
+
+describe('turnTexts', () => {
+  const msg = (role: ChatMessage['role'], content: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
+    ({ id: Math.random().toString(36), role, content, timestamp: 0, ...extra }) as ChatMessage;
+
+  test('only what the session itself said since the last user message', () => {
+    const msgs = [
+      msg('user', 'old question'),
+      msg('assistant', 'old answer'),
+      msg('user', 'revisa el build'),
+      msg('assistant', 'Encontré dos errores.'),
+      msg('assistant', 'Running', { toolName: 'Bash' }),
+      // A workflow sub-agent: its text carries only an agentId.
+      msg('assistant', 'Sub-agent notes nobody should hear', { agentId: 'task-1' }),
+      msg('assistant', 'Classic sub-agent text', { parentToolUseId: 'tu-1' }),
+      msg('assistant', 'thinking…', { isThinking: true }),
+      msg('assistant', 'Listo, los arreglé.'),
+    ];
+    expect(turnTexts(msgs, 'Listo, los arreglé.')).toBe('Encontré dos errores.\n\nListo, los arreglé.');
+  });
+
+  test('adds the result when it was not streamed', () => {
+    expect(turnTexts([msg('user', 'q')], 'Final answer')).toBe('Final answer');
+  });
+});
+
+import { applyVoiceSettings, voiceSettingsView } from './voice';
+import { loadVoiceSettings, saveVoiceSettings } from '../session/storage';
+
+describe('voice settings: the ElevenLabs key is write-only', () => {
+  const KEY = 'el-test-abcdef0123456789';
+
+  test('the view reports configured and never the key', () => {
+    const before = loadVoiceSettings();
+    try {
+      saveVoiceSettings({ ...before, elevenlabs: { apiKey: KEY, voiceId: 'v1', modelId: 'eleven_flash_v2_5' } });
+      const view = voiceSettingsView();
+      expect(view.elevenlabs).toEqual({ voiceId: 'v1', modelId: 'eleven_flash_v2_5', configured: true });
+      expect(JSON.stringify(view)).not.toContain(KEY);
+    } finally { saveVoiceSettings(before); }
+  });
+
+  test('the form re-saving with an empty key field keeps the key; clearApiKey or null removes it', () => {
+    const before = loadVoiceSettings();
+    try {
+      saveVoiceSettings({ ...before, elevenlabs: { apiKey: KEY, voiceId: 'v1', modelId: 'eleven_flash_v2_5' } });
+      // Exactly what VoiceModeSection sends after loading a view without the key.
+      applyVoiceSettings({ ttsProvider: 'elevenlabs', ttsSpeed: 1.1, deepgramVoice: 'aura-2-diana-es', sendAfterMs: 900, fastAgent: true, elevenlabs: { apiKey: '', voiceId: 'v2', modelId: 'eleven_turbo_v2_5' } });
+      const after = loadVoiceSettings();
+      expect(after.elevenlabs).toEqual({ apiKey: KEY, voiceId: 'v2', modelId: 'eleven_turbo_v2_5' });
+      expect(after.ttsProvider).toBe('elevenlabs');
+      expect(after.ttsSpeed).toBe(1.1);
+      expect(after.sendAfterMs).toBe(900);
+
+      applyVoiceSettings({ elevenlabs: { apiKey: 'replacement' } });
+      expect(loadVoiceSettings().elevenlabs.apiKey).toBe('replacement');
+      applyVoiceSettings({ elevenlabs: { clearApiKey: true } });
+      expect(loadVoiceSettings().elevenlabs.apiKey).toBe('');
+      saveVoiceSettings({ ...loadVoiceSettings(), elevenlabs: { apiKey: KEY, voiceId: 'v1', modelId: 'm' } });
+      applyVoiceSettings({ elevenlabs: { apiKey: null } });
+      expect(loadVoiceSettings().elevenlabs.apiKey).toBe('');
+    } finally { saveVoiceSettings(before); }
   });
 });

@@ -513,11 +513,31 @@ body {
   display: none;                /* WebKit (Safari, Chrome) */
 }
 
-pre {
-  background: var(--color-surface) !important;
+/* Defaults for a bare <pre>, in the base layer so any Tailwind utility on a
+   <pre> overrides them: CSS outside a layer beats layered CSS whatever its
+   specificity, so unlayered these would win over `p-0`, `text-[11px]` or
+   `bg-transparent`. No !important: inside a layer it would beat even the
+   `!bg-…` utilities. */
+@layer base {
+  pre {
+    background: var(--color-surface);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+}
+
+/* Chat code blocks (Markdown.tsx fences, and DiffDoc's fallback that stands
+   in for one) look like the defaults above, not like the utilities they
+   carry (text-[11px], bg-[#0d0d0d], px-3 pt-6…), which they have never
+   rendered with. Unlayered, so it wins over those utilities. */
+[data-code-block] pre,
+pre.language-diff {
+  background: var(--color-surface);
   border-radius: 8px;
   padding: 12px;
-  overflow-x: auto;
   font-size: 13px;
   line-height: 1.5;
 }
@@ -1239,10 +1259,12 @@ html.light .dd-code .token.class-name { color: #8250df; }
 .ex-pending-bar:nth-child(2) { width: 78%; animation-delay: .18s; }
 .ex-pending-bar:nth-child(3) { width: 64%; animation-delay: .36s; }
 
+/* Surface, like the chat code blocks this fallback stands in for (see
+   `[data-code-block] pre`). */
 .ex-raw {
   margin: .5rem 0; padding: .5rem .75rem; overflow-x: auto;
   font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
-  background: #0d0d0d; border: 1px solid var(--color-border); border-radius: 4px;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px;
   color: var(--color-zinc-400, #a1a1aa); white-space: pre;
 }
 

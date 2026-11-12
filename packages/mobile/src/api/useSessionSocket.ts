@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { RECONNECTED, useSockets, type Frame, type SocketStatus } from './SocketProvider';
 import type { ChatMessage, PermissionRequest } from './types';
 import { parseLiveMessage } from './messages';
+import { parseTask, parseTasks, type SubagentTask } from '../lib/subagents';
 
 export type { SocketStatus };
 
@@ -65,6 +66,10 @@ export interface UseSessionSocketOptions {
    * chat se quedaba con el nombre que traía al abrirse.
    */
   readonly onMeta?: (meta: { readonly name: string }) => void;
+  /** Sub-agent tasks: the whole list from each `session_state`… */
+  readonly onTasks?: (tasks: Record<string, SubagentTask>) => void;
+  /** …and every change after it (`task_update`). */
+  readonly onTaskUpdate?: (task: SubagentTask) => void;
 }
 
 export function parsePermission(value: unknown): PermissionRequest | null {
@@ -127,6 +132,8 @@ export function useSessionSocket({
   onTotalMessages,
   onResync,
   onMeta,
+  onTasks,
+  onTaskUpdate,
 }: UseSessionSocketOptions): UseSessionSocketResult {
   const sockets = useSockets();
 
@@ -141,6 +148,8 @@ export function useSessionSocket({
     onTotalMessages,
     onResync,
     onMeta,
+    onTasks,
+    onTaskUpdate,
   });
   handlers.current = {
     onMessage,
@@ -151,6 +160,8 @@ export function useSessionSocket({
     onTotalMessages,
     onResync,
     onMeta,
+    onTasks,
+    onTaskUpdate,
   };
 
   /**
@@ -296,6 +307,17 @@ export function useSessionSocket({
           handlers.current.onPermission?.(parsePermission(record.permRequest));
           if (typeof record.totalMessages === 'number') {
             handlers.current.onTotalMessages?.(record.totalMessages);
+          }
+          // A bridge without sub-agent support sends no `tasks`: nothing to replace.
+          if (typeof record.tasks === 'object' && record.tasks !== null) {
+            handlers.current.onTasks?.(parseTasks(record.tasks));
+          }
+          return;
+        }
+        case 'task_update': {
+          const task = parseTask(frame.task);
+          if (task !== null) {
+            handlers.current.onTaskUpdate?.(task);
           }
           return;
         }

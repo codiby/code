@@ -29,7 +29,7 @@ import {
   SUGGEST_NEW_SESSION_TITLE,
 } from '../session/new-session-suggestion';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host/index';
-import { cdpRequest } from './browser-cdp';
+import { browserBackendFor, cdpRequest, closeHeadlessPreview, openHeadlessPreview, untrustedPageNote } from './browser-cdp';
 import { trackedProcesses } from '../handlers/processes';
 import { createTerminal, removeTerminal } from '../handlers/terminals';
 import type { TrackedProcess } from '../types';
@@ -239,6 +239,20 @@ function notOpen(name: string) {
     content: [{ type: 'text' as const, text: `No browser preview named "${name}" is open in this session. Call browser_open with name="${name}" first.` }],
     isError: true,
   };
+}
+/** A browser tool's error; one echoing the page's own exception ("The page threw: …") is page content. */
+export function browserToolError(sessionId: string, e: unknown) {
+  const text = e instanceof Error ? e.message : String(e);
+  return {
+    content: [{ type: 'text' as const, text: /\bthrew: /.test(text) ? untrustedPageNote(sessionId) + text : text }],
+    isError: true,
+  };
+}
+/** browser_handle_dialog's report: the dialog's message is the page's words. */
+export function dialogResultText(sessionId: string, name: string, accept: boolean, handled: { type: string; message: string } | null): string {
+  return handled
+    ? `${untrustedPageNote(sessionId)}${accept ? 'Accepted' : 'Dismissed'} ${handled.type} in "${name}": ${handled.message}`
+    : 'No dialog was pending.';
 }
 
 export type SdkToolDeps = {
@@ -553,6 +567,8 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           'Cookie isolation is controlled by `cookieJar`: previews sharing the same jar name share cookies / localStorage / cache, and different jar names are completely isolated. Omitting `cookieJar` puts the preview in the shared "default" jar. Use distinct jars (e.g. "qa-testing", "admin-account") when you need a separate logged-in identity.',
           '',
           'Use when the user is iterating on a real running app: previewing their local dev server, reviewing how a deployed page looks, or driving multiple flows in parallel.',
+          '',
+          'When no desktop app is watching this session (and always for the Codiby agent), the preview runs in a headless Chromium on the bridge host instead; every browser_* tool works the same either way.',
         ].join('\n'),
         {
           name: z.string().min(1).max(40).describe('Stable identifier for this browser preview within the session. Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Examples: "qa-admin-workflow", "checkout-flow", "docs". Reuse the same name across browser_* tools to drive the same preview.'),
@@ -574,6 +590,23 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             return { content: [{ type: 'text', text: `Invalid cookieJar "${args.cookieJar}". Letters/digits/dash/underscore only, 1–40 chars, must start with a letter or digit. Example: "qa-testing".` }], isError: true };
           }
           const title = (args.title || '').trim() || name;
+          if (browserBackendFor(sessionId, name) === 'headless') {
+            // No desktop preview is told about it: the headless tab is a
+            // different browser, and mirroring the URL there would fork the
+            // two into separate cookie jars and states. The preview is
+            // registered first because the headless browser drops tabs whose
+            // preview is gone.
+            const previous = getBrowserPreview(sessionId, name);
+            setBrowserPreview(sessionId, name, { url: target.toString(), title, cookieJar });
+            try {
+              const opened = await openHeadlessPreview(sessionId, name, { url: target.toString(), cookieJar });
+              const tail = opened.navigationError ? ` The page did not load: ${opened.navigationError}` : '';
+              return { content: [{ type: 'text', text: `Opened browser preview "${name}" (jar "${cookieJar}") in the headless browser on this host → ${target.toString()}.${tail}` }] };
+            } catch (e) {
+              setBrowserPreview(sessionId, name, previous);
+              return browserToolError(sessionId, e);
+            }
+          }
           setBrowserPreview(sessionId, name, { url: target.toString(), title, cookieJar });
           deps.broadcastToSession(sessionId, {
             type: 'open_browser',
@@ -597,26 +630,29 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!name) {
             return { content: [{ type: 'text', text: `Invalid browser name "${args.name}".` }], isError: true };
           }
-          const had = !!getBrowserPreview(sessionId, name);
+          const hadPreview = !!getBrowserPreview(sessionId, name);
+          const hadHeadless = await closeHeadlessPreview(sessionId, name).catch(() => false);
           setBrowserPreview(sessionId, name, null);
           deps.broadcastToSession(sessionId, { type: 'close_browser', sessionId, name });
-          return { content: [{ type: 'text', text: had ? `Closed browser preview "${name}".` : `No browser preview named "${name}" was open.` }] };
+          return { content: [{ type: 'text', text: hadPreview || hadHeadless ? `Closed browser preview "${name}".` : `No browser preview named "${name}" was open.` }] };
         },
       ),
       // ---------------------------------------------------------------------
-      // Playwright-cli-equivalent browser automation tools. Each round-trips:
-      //   bridge SDK tool → broadcastToSession('browser_request')
-      //   → desktop frontend WS → window.codiby.invoke('cdp_<action>')
-      //   → Electron main: webContents.debugger / CDP commands
-      //   → frontend respondBrowserRequest → bridge resolves the promise.
+      // Playwright-cli-equivalent browser automation tools. `cdpRequest`
+      // (provider/browser-cdp.ts) picks the backend per (session, name):
+      //   - desktop: broadcast a 'browser_request' to the subscribed Electron
+      //     renderer → window.codiby.invoke('cdp_<action>') → webContents
+      //     debugger → 'browser_response' resolves the promise;
+      //   - headless: the bridge's own Chromium (packages/core/browser), for
+      //     the agent session always and for any session no desktop app serves.
+      // Both return the same result shapes.
       //
       // Every tool takes a `name` identifying which preview within the session
       // to act on (must match what was passed to `browser_open`). `ref`
       // parameters are the `eN` handles returned by the most recent
       // `browser_snapshot(name=…)` against the SAME `name`. Refs stale on the
       // next snapshot or navigation; call snapshot again to refresh.
-      // Non-desktop viewers (browser, mobile PWA) don't service these — the
-      // call times out with a clear error.
+      // The desktop focus hint is only sent for desktop-backed previews.
       // ---------------------------------------------------------------------
       // Shared schema fragment + error helpers — every action tool has the
       // same preamble: validate the name, confirm a preview is open under it.
@@ -642,10 +678,10 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
             const r = (await cdpRequest(sessionId, name, 'snapshot', {}, deps.sendBrowserRequest)) as { url: string; title: string; yaml: string };
-            const head = `URL: ${r.url}\nTitle: ${r.title}\n\n`;
+            const head = `${untrustedPageNote(sessionId)}URL: ${r.url}\nTitle: ${r.title}\n\n`;
             return { content: [{ type: 'text', text: head + (r.yaml || '(empty accessibility tree)') }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -672,7 +708,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
               ],
             };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -689,13 +725,13 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'click', { ref: args.ref, button: args.button, doubleClick: args.doubleClick }, deps.sendBrowserRequest);
             const tag = (args.doubleClick ? 'double-' : '') + `${args.button ?? 'left'}-clicked`;
             return { content: [{ type: 'text', text: `${tag} ${args.ref} in "${name}".` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -710,12 +746,12 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'hover', { ref: args.ref }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: `Hovered ${args.ref} in "${name}".` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -736,13 +772,13 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'type', { ref: args.ref, text: args.text, submit: args.submit }, deps.sendBrowserRequest);
             const tail = args.submit ? ' and pressed Enter' : '';
             return { content: [{ type: 'text', text: `Typed ${JSON.stringify(args.text).slice(0, 80)} into ${args.ref} in "${name}"${tail}.` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -757,12 +793,12 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'press_key', { key: args.key }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: `Pressed ${args.key} in "${name}".` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -778,12 +814,12 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'select_option', { ref: args.ref, values: args.values }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: `Selected ${JSON.stringify(args.values)} on ${args.ref} in "${name}".` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -800,13 +836,13 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'scroll', { ref: args.ref, x: args.x, y: args.y }, deps.sendBrowserRequest);
             const where = args.ref ? `ref=${args.ref}` : `(${args.x ?? 0}, ${args.y ?? 0})`;
             return { content: [{ type: 'text', text: `Scrolled "${name}" to ${where}.` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -822,12 +858,12 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             await cdpRequest(sessionId, name, 'navigate', { action: args.action, url: args.url }, deps.sendBrowserRequest);
             return { content: [{ type: 'text', text: args.action === 'goto' ? `"${name}" navigating to ${args.url}.` : `"${name}" navigation: ${args.action}.` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -852,9 +888,9 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
             const r = (await cdpRequest(sessionId, name, 'evaluate', { function: args.function, ref: args.ref }, deps.sendBrowserRequest)) as { value: unknown };
-            return { content: [{ type: 'text', text: JSON.stringify(r.value, null, 2) ?? 'undefined' }] };
+            return { content: [{ type: 'text', text: untrustedPageNote(sessionId) + (JSON.stringify(r.value, null, 2) ?? 'undefined') }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -883,7 +919,7 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
             await cdpRequest(sessionId, name, 'wait_for', { text: args.text, textGone: args.textGone, time: args.time, timeoutMs: args.timeoutMs }, deps.sendBrowserRequest, (args.timeoutMs ?? 5000) + 2000);
             return { content: [{ type: 'text', text: `Wait condition met in "${name}".` }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -900,9 +936,9 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
             const r = await cdpRequest(sessionId, name, 'console_messages', { tail: args.tail ?? 50 }, deps.sendBrowserRequest);
-            return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+            return { content: [{ type: 'text', text: untrustedPageNote(sessionId) + JSON.stringify(r, null, 2) }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
@@ -919,16 +955,16 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
           try {
             const r = await cdpRequest(sessionId, name, 'network_requests', { tail: args.tail ?? 50 }, deps.sendBrowserRequest);
-            return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+            return { content: [{ type: 'text', text: untrustedPageNote(sessionId) + JSON.stringify(r, null, 2) }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),
       tool(
         'browser_handle_dialog',
         [
-          'Accept or dismiss a JavaScript dialog (alert/confirm/prompt/beforeunload) in a named browser preview. Call this after an action that triggered a dialog — Electron pauses the page until the dialog is handled.',
+          'Accept or dismiss a JavaScript dialog (alert/confirm/prompt/beforeunload) in a named browser preview. Call this after an action that triggered a dialog — the page stays paused (and other calls on it hang) until the dialog is handled.',
           '',
           'Pass `accept: true` to click OK; `accept: false` to click Cancel. For prompts, `promptText` becomes the value.',
         ].join('\n'),
@@ -941,15 +977,12 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
           const name = sanitizeBrowserName(args.name);
           if (!name) return invalidName(args.name);
           if (!getBrowserPreview(sessionId, name)) return notOpen(name);
-          maybeFocusBrowser(sessionId, name, deps);
+          if (browserBackendFor(sessionId, name) === 'electron') maybeFocusBrowser(sessionId, name, deps);
           try {
             const r = (await cdpRequest(sessionId, name, 'handle_dialog', { accept: args.accept, promptText: args.promptText }, deps.sendBrowserRequest)) as { ok: true; handled: { type: string; message: string } | null };
-            const text = r.handled
-              ? `${args.accept ? 'Accepted' : 'Dismissed'} ${r.handled.type} in "${name}": ${r.handled.message}`
-              : 'No dialog was pending.';
-            return { content: [{ type: 'text', text }] };
+            return { content: [{ type: 'text', text: dialogResultText(sessionId, name, args.accept, r.handled) }] };
           } catch (e) {
-            return { content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }], isError: true };
+            return browserToolError(sessionId, e);
           }
         },
       ),

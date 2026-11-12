@@ -43,6 +43,8 @@ import {
 import { fetchSuggestions, type Suggestion } from '../api/suggestions';
 import { directMessageText } from '../api/directChat';
 import { useSessionSocket } from '../api/useSessionSocket';
+import { useTaskFeed } from '../api/subagents';
+import { AgentsButton } from '../components/Subagents';
 import {
   BackIcon,
   Composer,
@@ -437,6 +439,10 @@ export function SessionChatScreen({
     });
   }, []);
 
+  // Sub-agent tasks bypass this screen's state: only the header chip and the
+  // Agents sheet repaint on each progress tick, not the whole thread.
+  const taskFeed = useTaskFeed();
+
   const {
     status: socketStatus,
     respondPermission,
@@ -498,6 +504,8 @@ export function SessionChatScreen({
       setIsResponding(false);
     },
     onTotalMessages,
+    onTasks: taskFeed.replace,
+    onTaskUpdate: taskFeed.upsert,
   });
 
   const answerPermission = useCallback(
@@ -772,6 +780,14 @@ export function SessionChatScreen({
             </View>
 
             </Pressable>
+
+          <AgentsButton
+            feed={taskFeed}
+            serverId={session.serverId}
+            sessionId={session.id}
+            baseUrl={baseUrl}
+            token={token}
+          />
         </View>
       )}
 

@@ -40,6 +40,9 @@ jest.mock('../src/api/SocketProvider', () => ({
 jest.mock('../src/api/useMessageCacheSync', () => ({
   useMessageCacheSync: () => undefined,
 }));
+jest.mock('../src/push', () => ({
+  PushBridge: () => null,
+}));
 jest.mock('../src/lib/drafts', () => ({
   loadDrafts: async () => ({}),
   saveDraft: async () => ({}),
@@ -69,6 +72,7 @@ test('volver abre conversaciones y el primer icono abre un chat directo nuevo', 
   expect(DEFAULT_TAB_ITEMS.map(t => t.label)).toEqual([
     'Direct',
     'Sessions',
+    'Agent',
     'Settings',
   ]);
   let tree!: ReactTestRenderer.ReactTestRenderer;
@@ -91,10 +95,11 @@ test('volver abre conversaciones y el primer icono abre un chat directo nuevo', 
     false,
     true,
     false,
+    false,
   ]);
   expect(tree.root.findAllByType(ChatScreen)).toHaveLength(0);
   await act(async () => {
-    tabs()[2]!.props.onPress();
+    tabs()[3]!.props.onPress();
   });
   expect(tree.root.findByProps({ testID: 'settings-screen' })).toBeDefined();
   await act(async () => {
@@ -126,7 +131,7 @@ test.each(['chat', 'settings'])(
               node.props.accessibilityRole === 'tab' &&
               typeof node.props.onPress === 'function',
             { deep: false },
-          )[2]!
+          )[3]!
           .props.onPress();
       });
       expect(

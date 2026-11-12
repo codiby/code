@@ -20,6 +20,7 @@ import { rootRepoOf } from './worktree';
 import { deleteSessionNotes } from './session-notes';
 import { removeSessionFromBoards } from '../boards/repository';
 import { parseDisposableTtl } from '../session/disposables';
+import { updateSessionState } from '../session/state';
 import type { Session } from '../types';
 
 /** True when `cwd` matches the worktree convention `<repo>/.worktrees/<branch>`
@@ -365,6 +366,8 @@ export async function handleClearSession(sessionId: string): Promise<Response> {
   // Wipe the on-disk message log and reset the provider session id. The
   // session record itself, its id, name, cwd, model, etc. stay put.
   clearMessages(sessionId);
+  // Its sub-agent tasks belonged to the dropped history; a new map also rewrites tasks.json.
+  updateSessionState(sessionId, s => ({ ...s, tasks: {} }));
   session.claudeSessionId = null;
   session.ready = false;
   session.replayDone = true;

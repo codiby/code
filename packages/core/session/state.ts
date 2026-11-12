@@ -5,10 +5,11 @@
  */
 
 import { randomUUID } from 'crypto';
-import { loadMessages, loadUIState, saveUIState, appendMessage } from './storage';
+import { loadMessages, loadTasks, loadUIState, saveTasks, saveUIState, appendMessage } from './storage';
 import { markUserMessage, touchSession, unarchiveSession } from './sessions';
 import { trackTurnState } from './interrupted';
-import type { ProviderModelInfo } from '../provider/types';
+import { pruneTasks, restoreStoredTasks } from './tasks';
+import type { ProviderModelInfo, SubagentTask } from '../provider/types';
 
 export interface ChatMessage {
   id: string;
@@ -27,6 +28,8 @@ export interface ChatMessage {
    * frontend groups every message sharing this id under the Agent card.
    */
   parentToolUseId?: string | null;
+  /** SDK agent id of the sub-agent that produced this message (= its task id). */
+  agentId?: string | null;
   autoApproved?: boolean;
   isError?: boolean;
   /**
@@ -63,6 +66,13 @@ export interface ChatMessage {
   durationMs?: number;
   usage?: { input_tokens?: number; output_tokens?: number };
   model?: string;
+  /** Agent session only: the channel a user message arrived from (badge in the UI). */
+  source?: {
+    channelType: string;
+    channelId: string;
+    peerName?: string;
+    trusted: boolean;
+  };
 }
 
 export interface PermissionRequest {
@@ -125,6 +135,11 @@ export interface SessionState {
    * falls back to its built-in list while it's still empty.
    */
   supportedModels: ProviderModelInfo[];
+  /**
+   * Sub-agent / workflow tasks by task id (see session/tasks.ts). Replace the
+   * map, never mutate it: a new map is what schedules its tasks.json write.
+   */
+  tasks?: Record<string, SubagentTask>;
   ui: SessionUIState;
 }
 
@@ -185,7 +200,14 @@ export function getSessionState(sessionId: string): SessionState {
     }
     const uiData = loadUIState(sessionId) as Partial<SessionUIState>;
     state.ui = { ...emptyUIState(), ...uiData };
+    // The Agents panel's records from the previous run. Whatever was still
+    // running died with that run's provider: it comes back stopped, and the
+    // settled copy is written back so its end time stays put.
+    const stored = loadTasks(sessionId);
+    const { tasks, settled } = restoreStoredTasks(stored.tasks, stored.savedAt);
+    if (Object.keys(tasks).length) state.tasks = tasks;
     sessionStates.set(sessionId, state);
+    if (settled) scheduleTaskSave(sessionId);
     // The bridge dying mid-tool leaves a tool_use on disk with no matching
     // tool_result — the UI keys "still running" off that pairing, so the
     // amber dot would stick forever after a restart. Synthesize an error
@@ -253,7 +275,56 @@ export function updateSessionState(sessionId: string, fn: (state: SessionState) 
   sessionStates.set(sessionId, next);
   // Mirror "mid-turn" to disk so a turn cut off by the bridge dying can be offered for resume.
   if (current.isStreaming !== next.isStreaming) trackTurnState(sessionId, next.isStreaming);
+  if (current.tasks !== next.tasks) scheduleTaskSave(sessionId);
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// tasks.json — the task map, mirrored to disk
+// ---------------------------------------------------------------------------
+
+/**
+ * At most one write per session per this long. A running workflow reports
+ * progress every second or so: a debounce that restarts on each event would
+ * never fire while it runs, so the first change arms the write and the ones
+ * after it ride along.
+ */
+const TASK_SAVE_MS = 1_000;
+const taskSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let exitFlushArmed = false;
+
+function writeTasks(sessionId: string): void {
+  const state = sessionStates.get(sessionId);
+  if (!state) return;
+  try {
+    saveTasks(sessionId, pruneTasks(state.tasks ?? {}));
+  } catch {
+    // Best effort: the in-memory map stays authoritative for this run.
+  }
+}
+
+function scheduleTaskSave(sessionId: string): void {
+  if (taskSaveTimers.has(sessionId)) return;
+  if (!exitFlushArmed) {
+    exitFlushArmed = true;
+    // A clean shutdown (SIGTERM → process.exit) writes what is still pending.
+    process.once('exit', flushTaskSaves);
+  }
+  const timer = setTimeout(() => {
+    taskSaveTimers.delete(sessionId);
+    writeTasks(sessionId);
+  }, TASK_SAVE_MS);
+  timer.unref?.();
+  taskSaveTimers.set(sessionId, timer);
+}
+
+/** Write every pending task map now (shutdown, tests). */
+export function flushTaskSaves(): void {
+  for (const [sessionId, timer] of [...taskSaveTimers]) {
+    clearTimeout(timer);
+    taskSaveTimers.delete(sessionId);
+    writeTasks(sessionId);
+  }
 }
 
 /** Last message or tool call per session, for the idle shutdown in
@@ -319,16 +390,36 @@ export function clearSessionState(sessionId: string) {
   messageIdSets.delete(sessionId);
   sessionSeqCounters.delete(sessionId);
   clearTimeout(saveTimers.get(sessionId));
+  clearTimeout(taskSaveTimers.get(sessionId));
+  taskSaveTimers.delete(sessionId);
 }
 
 const MAX_CLIENT_MESSAGES = 200;
+
+/**
+ * A sub-agent's own text and thinking (forwarded with `forwardSubagentText`).
+ * Kept in the transcript for the Agents window, but out of the chat's
+ * history window: one workflow agent writes hundreds of these and would push
+ * the actual conversation out of the last-200 slice. Its tool calls still
+ * count, as they always did — the Agent card nests them.
+ */
+export function isSubagentChatter(m: ChatMessage): boolean {
+  return !!(m.agentId || m.parentToolUseId) && !m.toolName && !m.isToolResult;
+}
+
+/** Everything one sub-agent produced, oldest first — for the Agents window. */
+export function getTaskMessages(sessionId: string, taskId: string, toolUseId?: string | null): ChatMessage[] {
+  return getSessionState(sessionId).messages.filter(m =>
+    m.agentId === taskId || (!m.agentId && !!toolUseId && m.parentToolUseId === toolUseId),
+  );
+}
 
 /** Page of history strictly older than `beforeSeq`, oldest-first. Backs the
  *  frontend's "Show older" paging: the client only holds a window of the
  *  transcript and pulls earlier slices from here on demand. */
 export function getOlderMessages(sessionId: string, beforeSeq: number, limit: number) {
   const older = getSessionState(sessionId).messages.filter(
-    m => typeof m.seq === 'number' && m.seq < beforeSeq,
+    m => typeof m.seq === 'number' && m.seq < beforeSeq && !isSubagentChatter(m),
   );
   const messages = older.slice(-limit);
   return { messages, hasMore: older.length > messages.length };
@@ -343,7 +434,7 @@ export function getOlderMessages(sessionId: string, beforeSeq: number, limit: nu
 export function getNewerMessages(sessionId: string, afterSeq: number, beforeSeq: number, limit: number) {
   const msgs = getSessionState(sessionId).messages;
   const newer = msgs.filter(
-    m => typeof m.seq === 'number' && m.seq > afterSeq && m.seq < beforeSeq,
+    m => typeof m.seq === 'number' && m.seq > afterSeq && m.seq < beforeSeq && !isSubagentChatter(m),
   );
   const gap = newer.length > limit;
   const messages = gap ? newer.slice(-limit) : newer;
@@ -354,10 +445,11 @@ export function getNewerMessages(sessionId: string, afterSeq: number, beforeSeq:
 
 export function getStateForClient(sessionId: string) {
   const state = getSessionState(sessionId);
-  const msgs = state.messages;
+  const msgs = state.messages.some(isSubagentChatter) ? state.messages.filter(m => !isSubagentChatter(m)) : state.messages;
   return {
     messages: msgs.length > MAX_CLIENT_MESSAGES ? msgs.slice(-MAX_CLIENT_MESSAGES) : msgs,
     totalMessages: msgs.length,
+    tasks: state.tasks ?? {},
     partialText: state.partialText,
     partialThinking: state.partialThinking,
     isStreaming: state.isStreaming,

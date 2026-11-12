@@ -1,4 +1,4 @@
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 
 import type { TabIconProps } from './types';
 
@@ -43,6 +43,17 @@ export function HomeIcon(props: TabIconProps) {
     <Stroke {...props}>
       <Path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
       <Path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1" />
+    </Stroke>
+  );
+}
+
+/** `bot`: the always-on agent. */
+export function AgentIcon(props: TabIconProps) {
+  return (
+    <Stroke {...props}>
+      <Path d="M12 8V4H8" />
+      <Rect width={16} height={12} x={4} y={8} rx={2} />
+      <Path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
     </Stroke>
   );
 }

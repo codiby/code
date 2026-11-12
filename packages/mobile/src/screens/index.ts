@@ -1,3 +1,5 @@
+export { AgentScreen } from './AgentScreen';
+export type { AgentScreenProps } from './AgentScreen';
 export { ChatScreen } from './ChatScreen';
 export { HomeScreen } from './HomeScreen';
 export { ScreenLayout } from './ScreenLayout';

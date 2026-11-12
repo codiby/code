@@ -22,7 +22,28 @@ import type {
 export const TRIGGER_TYPE_META: Record<AutomationTriggerType, { label: string; hint: string }> = {
   cron: { label: 'Schedule', hint: 'Runs on its own on the schedule you set.' },
   webhook: { label: 'Webhook', hint: 'Only runs when something calls its URL.' },
+  once: { label: 'Once', hint: 'Runs a single time at the date and time you pick, then turns itself off.' },
 };
+
+/** A one-shot automation that already fired (or was missed): its time has passed and it is off. */
+export function isFinishedOnce(a: { triggerType: AutomationTriggerType; enabled: boolean; runAt: number | null }, now: number = Date.now()): boolean {
+  return a.triggerType === 'once' && !a.enabled && !!a.runAt && a.runAt <= now;
+}
+
+/** Epoch millis → the value a `<input type="datetime-local">` shows (browser's zone). */
+export function toDateTimeLocal(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** The inverse of `toDateTimeLocal`, or null for an empty / malformed value. */
+export function fromDateTimeLocal(value: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!m) return null;
+  const ts = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+  return Number.isFinite(ts) ? ts : null;
+}
 
 /**
  * The URL an external watcher POSTs to in order to fire a webhook automation.
@@ -197,7 +218,8 @@ export const RUN_STATUS_META: Record<AutomationRunStatus, RunStatusMeta> = {
     tone: 'text-zinc-400',
     tick: 'bg-surface-lighter',
     // Without this the run looks like it silently vanished — it is the
-    // `concurrencyPolicy: 'skip'` behaviour, not a failure.
+    // `concurrencyPolicy: 'skip'` behaviour, not a failure. Newer runs carry
+    // their own reason (target busy, missed while offline) in `error`.
     hint: 'The previous run was still going when this one was due, so it was not started.',
   },
 };

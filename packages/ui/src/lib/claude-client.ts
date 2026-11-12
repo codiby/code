@@ -118,8 +118,20 @@ export type AutomationEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type AutomationRunStatus =
   | 'scheduled' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'skipped';
 export type AutomationRunTrigger = 'scheduled' | 'manual' | 'webhook';
-/** `cron` fires on a schedule; `webhook` only when its endpoint is POSTed to. */
-export type AutomationTriggerType = 'cron' | 'webhook';
+/** `cron` fires on a schedule; `webhook` only when its endpoint is POSTed to;
+ *  `once` a single time at `runAt`, after which it disables itself. */
+export type AutomationTriggerType = 'cron' | 'webhook' | 'once';
+
+/** Set on rows a feature owns (the agent's heartbeat, reminders): read-only here. */
+export interface AutomationManagedInfo {
+  by: string;
+  kind: string;
+  label: string;
+  /** Deleting it here is allowed (a reminder: delete = cancel). */
+  deletable?: boolean;
+  /** Where to edit it instead, e.g. "Agent › Heartbeat". */
+  editHint?: string;
+}
 
 export interface Automation {
   id: string;
@@ -140,6 +152,14 @@ export interface Automation {
   maxRuntimeMs: number | null;
   /** When the scheduler will fire next; null while disabled. */
   nextRunAt: number | null;
+  /** One-shot automations: when it fires (kept after it ran, for the record). */
+  runAt: number | null;
+  /** Runs inside this existing session instead of a fresh one. Its folder,
+   *  provider, model and permissions then come from the session. */
+  targetSessionId: string | null;
+  /** Display name of the target session, null when it no longer exists. */
+  targetSessionName: string | null;
+  managed: AutomationManagedInfo | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -173,10 +193,14 @@ export interface AutomationInput {
   triggerType?: AutomationTriggerType;
   /** Required for cron automations; omitted (or null) for webhook ones. */
   cronExpression?: string | null;
+  /** Required for one-shot automations (epoch millis). */
+  runAt?: number | null;
+  /** Continue this session instead of spawning one; `cwd` is then optional. */
+  targetSessionId?: string | null;
   timezone?: string;
   enabled?: boolean;
   prompt: string;
-  cwd: string;
+  cwd?: string;
   provider?: string;
   model?: string | null;
   permissionMode?: AutomationPermissionMode;
@@ -352,6 +376,8 @@ export interface ChatMessage {
    * result, and text bubble inside the Agent card.
    */
   parentToolUseId?: string | null;
+  /** SDK agent id of the sub-agent that produced this message (= its task id). */
+  agentId?: string | null;
   autoApproved?: boolean;
   isError?: boolean;
   /**
@@ -437,6 +463,12 @@ export interface ChatMessage {
    * button. Undefined once the message ships normally.
    */
   deliveryStatus?: 'sending' | 'failed';
+  /**
+   * Agent session only, set server-side: the channel a user message arrived
+   * on (Telegram, WhatsApp, webhook…). Rendered as a "via …" badge; untrusted
+   * messages (someone other than the owner) get a warning tint.
+   */
+  source?: { channelType: string; channelId: string; peerName?: string; trusted: boolean };
 }
 
 /**
@@ -567,8 +599,63 @@ export interface SupportedModel {
   description?: string;
 }
 
+/** A sub-agent / workflow / shell task the provider runs for a session
+ *  (Claude Agent SDK task_* events, folded server-side in session/tasks.ts). */
+export interface SubagentTask {
+  taskId: string;
+  toolUseId: string | null;
+  taskType: string;
+  description: string;
+  subagentType: string | null;
+  workflowName: string | null;
+  prompt: string | null;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'killed';
+  backgrounded: boolean;
+  spawnDepth: number;
+  startedAt: number;
+  endedAt: number | null;
+  totalTokens: number;
+  toolUses: number;
+  durationMs: number;
+  lastToolName: string | null;
+  progress: string | null;
+  summary: string | null;
+  error: string | null;
+}
+
+/** One agent inside a workflow task, read by the bridge from the SDK's
+ *  transcript files (packages/core/session/workflow-agents.ts). */
+export interface WorkflowAgent {
+  agentId: string;
+  label: string;
+  phase: string | null;
+  status: 'running' | 'completed' | 'stopped';
+  startedAt: number | null;
+  endedAt: number | null;
+  toolUses: number;
+  outputTokens: number;
+  lastToolName: string | null;
+  lastText: string | null;
+  summary: string | null;
+}
+
+export interface WorkflowAgentMessages {
+  agent: WorkflowAgent | null;
+  /** The brief the workflow gave the agent (not repeated in `messages`). */
+  prompt: string | null;
+  messages: ChatMessage[];
+  /** Messages in the whole transcript; `seq` runs 1…total. */
+  total: number;
+  /** Only the newest ones were sent. */
+  truncated: boolean;
+  /** `after_seq` fell before what the bridge keeps: replace, don't append. */
+  gap: boolean;
+}
+
 export interface SessionState {
   messages: ChatMessage[];
+  /** Sub-agent tasks by id — the Agents panel. */
+  tasks?: Record<string, SubagentTask>;
   /** Snapshot sent for a `lite` subscription: no history (`messages` is empty
    *  and means nothing), just the flags the sidebar needs. */
   lite?: boolean;
@@ -790,6 +877,10 @@ type ClientCallbacks = {
    *  the dock repopulates open terminals on connect. */
   onTerminalsSnapshot?: (sessionId: string, terminals: TerminalInfo[]) => void;
   onTodos: (sessionId: string, todos: { content: string; status: string; activeForm?: string }[]) => void;
+  /** A sub-agent task started, progressed or finished (Agents panel). */
+  onTaskUpdate?: (sessionId: string, task: SubagentTask) => void;
+  /** A sub-agent's own text/thinking — for the Agents window, never the chat list. */
+  onSubagentMessage?: (sessionId: string, msg: ChatMessage) => void;
   /** Requirements snapshot — pushed by the server before and after every check
    *  run, and on any mutation from either the agent's tools or the panel. */
   onRequirements?: (sessionId: string, snapshot: RequirementsSnapshot) => void;
@@ -1219,6 +1310,26 @@ export class ClaudeClient {
     this.callbacks.onSessions(mergeSessionsByOwner(this.sessionsByConn));
   }
 
+  /** Authenticated fetch against one host's bridge — `null` is the local
+   *  bridge, an id is that remote (through its tunnel). For host-scoped
+   *  screens like the Agent view, whose target never follows the focused tab. */
+  async hostFetch(remoteId: string | null, path: string, init?: RequestInit): Promise<Response> {
+    const url = await this.remoteUrl(`${this.serverUrl}${path}`, remoteId);
+    return authedFetch(url, init);
+  }
+
+  /** Configured remotes as the local bridge knows them (id + display name). */
+  async listRemoteHosts(): Promise<{ id: string; name: string }[]> {
+    try {
+      const resp = await authedFetch(`${this.serverUrl}/remotes`);
+      if (!resp.ok) return [];
+      const remotes = await resp.json() as { id: string; name?: string | null; host?: string | null }[];
+      return remotes.map(r => ({ id: r.id, name: r.name || r.host || r.id }));
+    } catch {
+      return [];
+    }
+  }
+
   /** Load the configured remotes from the local bridge and open a direct
    *  connection to each (discovering their sessions). `/remotes` CRUD +
    *  persistence still lives on the local bun sidecar. */
@@ -1322,6 +1433,12 @@ export class ClaudeClient {
         if (subs) for (const cb of subs) { try { cb(); } catch {} }
         break;
       }
+      case 'task_update':
+        this.callbacks.onTaskUpdate?.(sessionId, msg.task as SubagentTask);
+        break;
+      case 'subagent_message':
+        this.callbacks.onSubagentMessage?.(sessionId, msg.message as ChatMessage);
+        break;
       case 'todos':
         this.callbacks.onTodos(sessionId, msg.todos as any[]);
         break;
@@ -1542,6 +1659,42 @@ export class ClaudeClient {
 
   interrupt(sessionId: string) {
     this.send({ type: 'interrupt', sessionId });
+  }
+
+  /** Stop one sub-agent / workflow task (SDK `stopTask`). */
+  stopTask(sessionId: string, taskId: string) {
+    this.send({ type: 'task_stop', sessionId, taskId });
+  }
+
+  /** Move a foreground task to the background so the main turn continues. */
+  backgroundTask(sessionId: string, toolUseId?: string | null) {
+    this.send({ type: 'task_background', sessionId, toolUseId: toolUseId ?? undefined });
+  }
+
+  /** Everything one sub-agent produced — its text is not in the chat window. */
+  async fetchTaskMessages(sessionId: string, taskId: string, toolUseId?: string | null): Promise<{ task: SubagentTask | null; messages: ChatMessage[] }> {
+    const base = await this.sessionBase(sessionId);
+    const qs = toolUseId ? `?tool_use_id=${encodeURIComponent(toolUseId)}` : '';
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/messages${qs}`);
+    if (!resp.ok) throw new Error(`Couldn't load the agent's messages (${resp.status})`);
+    return resp.json();
+  }
+
+  /** The agents inside a workflow task; `found: false` until the bridge knows where its run lives. */
+  async fetchWorkflowAgents(sessionId: string, taskId: string): Promise<{ found: boolean; agents: WorkflowAgent[] }> {
+    const base = await this.sessionBase(sessionId);
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/agents`);
+    if (!resp.ok) throw new Error(`Couldn't load the workflow's agents (${resp.status})`);
+    return resp.json();
+  }
+
+  /** One workflow agent's conversation; `afterSeq` fetches only what is newer. */
+  async fetchWorkflowAgentMessages(sessionId: string, taskId: string, agentId: string, afterSeq?: number): Promise<WorkflowAgentMessages> {
+    const base = await this.sessionBase(sessionId);
+    const qs = typeof afterSeq === 'number' ? `?after_seq=${afterSeq}` : '';
+    const resp = await authedFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/agents/${encodeURIComponent(agentId)}/messages${qs}`);
+    if (!resp.ok) throw new Error(`Couldn't load the agent's messages (${resp.status})`);
+    return resp.json();
   }
 
   /**
@@ -2745,6 +2898,20 @@ export class ClaudeClient {
       { method: 'POST' },
     );
     return resp.json().catch(() => ({ ok: resp.ok }));
+  }
+
+  /** Sessions on the local bridge an automation can run inside (open ones first). */
+  async listAutomationTargets(): Promise<{ id: string; name: string; cwd: string; status: string }[]> {
+    try {
+      const resp = await authedFetch(`${this.serverUrl}/sessions`);
+      if (!resp.ok) return [];
+      const list = await resp.json() as { id: string; name: string; cwd: string; status?: string }[];
+      return list
+        .map(s => ({ id: s.id, name: s.name || s.id, cwd: s.cwd, status: s.status ?? 'open' }))
+        .sort((a, b) => Number(a.status !== 'open') - Number(b.status !== 'open') || a.name.localeCompare(b.name));
+    } catch {
+      return [];
+    }
   }
 
   // -------------------------------------------------------------------------

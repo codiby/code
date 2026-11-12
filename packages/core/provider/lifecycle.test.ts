@@ -31,7 +31,7 @@ test('effort respawn settles the old turn even when its exit arrives late', asyn
   });
   setBridgeDeps({
     broadcastToSession: (_id, msg) => broadcasts.push(msg),
-    broadcastSessionList() {}, sendBrowserRequest() {}, notifyTelegramIfMainSession() {},
+    broadcastSessionList() {}, sendBrowserRequest() {},
   });
   const session = {
     id: randomUUID(), cwd: '/tmp', provider: 'effort-restart-test',

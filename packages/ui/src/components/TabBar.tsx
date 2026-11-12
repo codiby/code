@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronRight, Search, Archive, X, Pin, History, Plus,
-  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch, LayoutGrid, SquareKanban, Repeat, Folder, FolderOpen, PanelLeftOpen, Inbox as InboxIcon,
+  SquarePen, Cog, Antenna, Sparkles, Settings, FolderPlus, FolderClosed, MoreHorizontal, Zap, Timer, Brain, FolderTree, Layers, GitBranch, LayoutGrid, SquareKanban, Repeat, Bot, Folder, FolderOpen, PanelLeftOpen, Inbox as InboxIcon,
   type LucideIcon,
 } from 'lucide-react';
 import { Button, TextField, Input } from '@heroui/react';
@@ -31,7 +31,7 @@ export interface ProjectSection {
 }
 
 /** Top-level views the sidebar can swap into the main pane. */
-export type NavView = 'overview' | 'inbox' | 'sessions' | 'sessions-board' | 'automations';
+export type NavView = 'overview' | 'inbox' | 'sessions' | 'sessions-board' | 'automations' | 'agent';
 
 interface Props {
   sessions: SessionInfo[];
@@ -1442,6 +1442,10 @@ export const TabBar = memo(function TabBar(props: Props) {
             onClick={() => onSelectNavView?.(activeNavView === 'automations' ? 'sessions' : 'automations')}>
             <Repeat size={16} strokeWidth={1.6} />
           </button>
+          <button type="button" title="Agent" aria-label="Agent" className={railBtn(activeNavView === 'agent')}
+            onClick={() => onSelectNavView?.(activeNavView === 'agent' ? 'sessions' : 'agent')}>
+            <Bot size={16} strokeWidth={1.6} />
+          </button>
           <div className="w-6 h-px bg-[var(--color-border)] my-1.5" />
           <button type="button" title="New session" aria-label="New session" className={railBtn(false)} onClick={onNew}>
             <Plus size={16} strokeWidth={1.6} />
@@ -1569,6 +1573,12 @@ export const TabBar = memo(function TabBar(props: Props) {
             label="Automations"
             active={activeNavView === 'automations'}
             onClick={() => onSelectNavView?.(activeNavView === 'automations' ? 'sessions' : 'automations')}
+          />
+          <NavItem
+            icon={Bot}
+            label="Agent"
+            active={activeNavView === 'agent'}
+            onClick={() => onSelectNavView?.(activeNavView === 'agent' ? 'sessions' : 'agent')}
           />
         </div>
         <div className="sidebar-section flex items-center justify-between pl-2 pr-0.5 pt-4 pb-1">

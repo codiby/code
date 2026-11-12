@@ -34,7 +34,9 @@ import {
 } from './config/ServerConfigContext';
 import { loadDrafts, saveDraft, type Drafts } from './lib/drafts';
 import * as PredictiveBack from './lib/predictiveBack';
+import { PushBridge, type PushOpenRequest } from './push';
 import {
+  AgentScreen,
   ChatScreen,
   HomeScreen,
   MockupViewer,
@@ -199,6 +201,41 @@ function AppContent() {
     [openSession, baseUrl, token, openSessionAnimated],
   );
 
+  /**
+   * Opens a session on a given host: a tap on a push notification, or "Open
+   * chat" in the Agent tab. Unlike a `codiby-session:` link, the request says
+   * which machine it belongs to.
+   */
+  const openOnServer = useCallback(
+    async (request: PushOpenRequest) => {
+      let target = findKnownSession(request.sessionId, request.serverId);
+      if (target === null) {
+        try {
+          const list = await fetchSessions(
+            request.baseUrl,
+            request.token,
+            request.serverId,
+          );
+          target =
+            list.find(session => session.id === request.sessionId) ?? null;
+        } catch {
+          target = null;
+        }
+      }
+      if (target === null) {
+        Alert.alert('Session not found', 'It may have been deleted.');
+        return;
+      }
+      if (openSession?.key === target.key) {
+        return;
+      }
+      setLayers([]);
+      setTotalMessages(null);
+      openSessionAnimated(target);
+    },
+    [openSession, openSessionAnimated],
+  );
+
   /** Se dispara cuando la conversación ya existe y está medida. */
   const startEnterAnimation = useCallback(() => {
     if (progress.value === 0) {
@@ -311,6 +348,7 @@ function AppContent() {
 
   return (
     <SessionLinkContext.Provider value={openSessionById}>
+    <PushBridge onOpen={openOnServer} />
     <View className="flex-1 bg-white">
       <Animated.View className="flex-1" style={homeStyle}>
         {/* El Home no se desmonta al cambiar de pestaña: desmontarlo tiraba su
@@ -324,6 +362,9 @@ function AppContent() {
             onOpenSession={openSessionAnimated}
             onBack={backToConversations}
           />
+        ) : null}
+        {activeTab === 'agent' ? (
+          <AgentScreen onOpenChat={openOnServer} />
         ) : null}
         {activeTab === 'settings' ? <SettingsScreen /> : null}
         {activeTab !== 'chat' ? (

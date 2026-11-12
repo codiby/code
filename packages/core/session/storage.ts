@@ -3,10 +3,11 @@
  *
  * ~/.codiby/ui-sessions/{session-id}/
  *   ├── messages.jsonl    # Append-only message log
- *   └── state.json        # UI state (input, panels, todos)
+ *   ├── state.json        # UI state (input, panels, todos)
+ *   └── tasks.json        # Sub-agent / workflow task records (Agents panel)
  */
 
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, existsSync, readdirSync, renameSync, statSync } from 'fs';
 import { join } from 'path';
 import { CODIBY_DIR } from '../config/config';
 
@@ -127,6 +128,36 @@ export function loadUIState(sessionId: string): Record<string, unknown> {
     return JSON.parse(readFileSync(join(sessionDir(sessionId), 'state.json'), 'utf-8'));
   } catch {
     return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-agent tasks (JSON) — the Agents panel's records (session/tasks.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a session's task map. Only into a folder that already exists: a save
+ * still pending when the session was purged must not bring the folder back.
+ * Temp file + rename, so a crash mid-write leaves the previous copy intact.
+ */
+export function saveTasks(sessionId: string, tasks: Record<string, unknown>, savedAt = Date.now()): boolean {
+  const dir = sessionDir(sessionId);
+  if (!existsSync(dir)) return false;
+  const file = join(dir, 'tasks.json');
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ savedAt, tasks }));
+  renameSync(tmp, file);
+  return true;
+}
+
+/** What saveTasks wrote, unvalidated (restoreStoredTasks checks it); empty when missing or unreadable. */
+export function loadTasks(sessionId: string): { savedAt: number | null; tasks: unknown } {
+  try {
+    const raw = JSON.parse(readFileSync(join(sessionDir(sessionId), 'tasks.json'), 'utf-8'));
+    const savedAt = typeof raw?.savedAt === 'number' && Number.isFinite(raw.savedAt) ? raw.savedAt : null;
+    return { savedAt, tasks: raw?.tasks ?? null };
+  } catch {
+    return { savedAt: null, tasks: null };
   }
 }
 

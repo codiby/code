@@ -88,6 +88,8 @@ export type AssistantToolUseBlock = {
    * can group sub-agent activity inside the Agent card.
    */
   parentToolUseId?: string | null;
+  /** SDK agent id of the sub-agent that made the call (equals its task id). */
+  agentId?: string | null;
 };
 export type AssistantThinkingBlock = {
   type: 'thinking';
@@ -97,8 +99,53 @@ export type AssistantThinkingBlock = {
    *  placeholder, the actual reasoning is encrypted for multi-turn replay. */
   redacted?: boolean;
   parentToolUseId?: string | null;
+  agentId?: string | null;
 };
 export type AssistantContentBlock = AssistantTextBlock | AssistantToolUseBlock | AssistantThinkingBlock;
+
+/**
+ * A background task the provider is running for the session — a sub-agent
+ * (Agent tool), a workflow, a shell. Built from the Claude Agent SDK's
+ * `task_started` / `task_progress` / `task_updated` / `task_notification`
+ * system messages (see session/tasks.ts for the reducer).
+ */
+export type SubagentTaskStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'killed';
+
+export type SubagentTask = {
+  /** SDK task id. For sub-agents it is also the agent id stamped on every message the agent produces. */
+  taskId: string;
+  /** The tool_use that started it (Agent / Workflow tool call), when known. */
+  toolUseId: string | null;
+  /** SDK discriminant: 'local_agent', 'local_workflow', 'local_bash', … */
+  taskType: string;
+  description: string;
+  subagentType: string | null;
+  workflowName: string | null;
+  prompt: string | null;
+  status: SubagentTaskStatus;
+  backgrounded: boolean;
+  /** 1 = started by the main agent, 2 = by one of its sub-agents… */
+  spawnDepth: number;
+  startedAt: number;
+  endedAt: number | null;
+  totalTokens: number;
+  toolUses: number;
+  durationMs: number;
+  lastToolName: string | null;
+  /** Live one-line progress (task_progress summary / description). */
+  progress: string | null;
+  /** What the task returned (task_notification summary). */
+  summary: string | null;
+  error: string | null;
+};
+
+/** One SDK task message, normalised by the adapter. */
+export type TaskEvent =
+  | { kind: 'started'; taskId: string; toolUseId?: string | null; taskType?: string; description?: string; subagentType?: string | null; workflowName?: string | null; prompt?: string | null; backgrounded?: boolean; spawnDepth?: number }
+  | { kind: 'progress'; taskId: string; toolUseId?: string | null; description?: string; subagentType?: string | null; totalTokens?: number; toolUses?: number; durationMs?: number; lastToolName?: string | null; summary?: string | null }
+  | { kind: 'updated'; taskId: string; status?: SubagentTaskStatus; description?: string; endTime?: number | null; error?: string | null; backgrounded?: boolean }
+  | { kind: 'notification'; taskId: string; toolUseId?: string | null; status: 'completed' | 'failed' | 'stopped'; summary?: string; totalTokens?: number; toolUses?: number; durationMs?: number }
+  | { kind: 'snapshot'; tasks: { taskId: string; taskType?: string; subagentType?: string | null; description?: string }[] };
 
 export type TokenUsage = {
   input_tokens?: number;
@@ -114,6 +161,15 @@ export type TurnCompleteInfo = {
   durationMs?: number;
   usage?: TokenUsage;
   model?: string;
+  /**
+   * The provider says the turn failed rather than answered (Claude: a result
+   * with `is_error`, or an `error_*` subtype). `resultText` is then the
+   * provider's error ("Not logged in · Please run /login"), not the model's
+   * words — the agent's dispatch relays it as a Codiby notice.
+   */
+  isError?: boolean;
+  /** Error details a failed turn carried (Claude's `result.errors`). */
+  errors?: string[];
 };
 
 /**
@@ -157,7 +213,7 @@ export interface ProviderEvents {
    *  prompt — without it the `/` picker is empty until the first message. */
   onSlashCommands?(commands: string[]): void;
   onAssistantDelta(text: string): void;
-  onAssistantText(text: string, meta?: { model?: string; usage?: TokenUsage; parentToolUseId?: string | null }): void;
+  onAssistantText(text: string, meta?: { model?: string; usage?: TokenUsage; parentToolUseId?: string | null; agentId?: string | null }): void;
   /**
    * Cumulative live-streaming thinking text. Fires multiple times per turn
    * as `thinking_delta` events arrive over the SDK's partial-message channel.
@@ -167,8 +223,10 @@ export interface ProviderEvents {
   onThinkingDelta(text: string): void;
   onThinking(block: AssistantThinkingBlock): void;
   onToolUse(tool: AssistantToolUseBlock): void;
-  onToolResult(result: { toolUseId?: string; content: unknown; isError?: boolean; parentToolUseId?: string | null }): void;
+  onToolResult(result: { toolUseId?: string; content: unknown; isError?: boolean; parentToolUseId?: string | null; agentId?: string | null }): void;
   onTodosUpdate(todos: unknown[]): void;
+  /** Sub-agent / workflow / shell task lifecycle (Claude SDK task_* messages). */
+  onTaskEvent?(event: TaskEvent): void;
   onModelsAvailable(models: ProviderModelInfo[]): void;
   onPermissionRequest(req: PermissionRequestDetail): Promise<PermissionDecision>;
   onTurnComplete(info: TurnCompleteInfo): void;
@@ -190,6 +248,10 @@ export interface ProviderSession {
   /** Follow a workspace change mid-session (see session/workspace.ts).
    *  Optional: a provider without it picks the change up on its next spawn. */
   setWorkspace?(workspace: { cwd: string; additionalDirectories: string[] }): Promise<void>;
+  /** Stop one background task (sub-agent, workflow…). Optional. */
+  stopTask?(taskId: string): Promise<void>;
+  /** Move a foreground task to the background so the turn continues. Optional. */
+  backgroundTask?(toolUseId?: string): Promise<boolean>;
   close(): Promise<void>;
 }
 

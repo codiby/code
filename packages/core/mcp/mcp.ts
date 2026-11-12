@@ -16,6 +16,7 @@ import { log } from '../lib/logger';
 import { sessions, sessionToJSON, saveSessions } from '../session/sessions';
 import { hasKnownPhone } from '../integrations/phone';
 import { executePhoneTool, isPhoneTool, PHONE_TOOLS } from './phone-tools';
+import { executeAgentTool, isAgentTool, listAgentToolsFor } from '../agent/tools';
 import { sessionNotesTool } from '../handlers/session-notes';
 import {
   addWorkingDirectories, describeWorkspace, removeWorkingDirectory, resolveDirectory, setWorkingDirectory,
@@ -34,7 +35,7 @@ import {
   handleRenameSession,
   handleDeleteSession,
 } from '../handlers/sessions';
-import { addMessage, getSessionState } from '../session/state';
+import { addMessage, getSessionState, isSubagentChatter } from '../session/state';
 import type { ChatMessage } from '../session/state';
 import { createWorktree, applyWorktreeSetup } from '../handlers/worktree';
 import { randomUUID } from 'crypto';
@@ -281,17 +282,29 @@ function automationWebhookUrl(id: string): string {
 
 /** Compact one-line rendering of an automation, used by every automation tool. */
 function describeAutomation(a: any): string {
-  const state = a.enabled ? 'enabled' : 'paused';
+  const state = a.enabled ? 'enabled' : a.triggerType === 'once' && a.runAt && a.runAt <= Date.now() ? 'done' : 'paused';
   const trigger = a.triggerType === 'webhook'
     ? `webhook → POST ${automationWebhookUrl(a.id)}`
-    : `cron "${a.cronExpression}" (${a.timezone})${a.nextRunAt ? `, next ${new Date(a.nextRunAt).toISOString()}` : ''}`;
+    : a.triggerType === 'once'
+      ? `once at ${a.runAt ? new Date(a.runAt).toISOString() : '—'}`
+      : `cron "${a.cronExpression}" (${a.timezone})${a.nextRunAt ? `, next ${new Date(a.nextRunAt).toISOString()}` : ''}`;
   const agent = [a.provider, a.model, a.effort && `effort ${a.effort}`].filter(Boolean).join(' · ');
   return [
-    `${a.id}  ${a.name}  [${state}]`,
+    `${a.id}  ${a.name}  [${state}]${a.managed ? `  (managed by the ${a.managed.by}${a.managed.editHint ? ` — edit in ${a.managed.editHint}` : ''})` : ''}`,
     `  trigger: ${trigger}`,
-    `  cwd: ${a.cwd}`,
-    `  agent: ${agent} · permissions ${a.permissionMode}`,
+    // A targeted automation runs with its session's own folder and agent.
+    a.targetSessionId
+      ? `  runs in session: ${a.targetSessionName ?? '(missing)'} (${a.targetSessionId})`
+      : `  cwd: ${a.cwd}\n  agent: ${agent} · permissions ${a.permissionMode}`,
   ].join('\n');
+}
+
+/**
+ * `targetSessionId: "self"` is the calling session — a model rarely knows its
+ * own id, and "continue this conversation later" is the common case.
+ */
+function withSelfTarget(args: Record<string, unknown>, uiSessionId: string): Record<string, unknown> {
+  return args.targetSessionId === 'self' ? { ...args, targetSessionId: uiSessionId || null } : args;
 }
 
 /** Shared JSON-schema fragments for the automation tools. */
@@ -300,19 +313,27 @@ const AUTOMATION_FIELDS = {
   description: { type: 'string', description: 'Optional one-line explanation of what it is for.' },
   triggerType: {
     type: 'string',
-    enum: ['cron', 'webhook'],
-    description: 'How it fires. "cron" runs on a schedule; "webhook" only runs when something POSTs to its URL (returned on create). Defaults to "cron".',
+    enum: ['cron', 'webhook', 'once'],
+    description: 'How it fires. "cron" runs on a schedule; "webhook" only runs when something POSTs to its URL (returned on create); "once" runs a single time at `runAt`, then disables itself. Defaults to "cron".',
   },
   cronExpression: {
     type: 'string',
-    description: 'Standard 5-field cron, e.g. "0 9 * * *" (daily 09:00) or "*/15 * * * *". Required when triggerType is "cron"; ignored for webhooks.',
+    description: 'Standard 5-field cron, e.g. "0 9 * * *" (daily 09:00) or "*/15 * * * *". Required when triggerType is "cron"; ignored otherwise.',
+  },
+  runAt: {
+    type: 'string',
+    description: 'When a "once" automation fires: ISO-8601 with an offset, e.g. "2026-11-12T09:30:00-06:00" (or epoch millis). Required when triggerType is "once".',
+  },
+  targetSessionId: {
+    type: 'string',
+    description: 'Run inside this existing session instead of spawning a new one ("self" = the session calling this tool). The session keeps its own folder, provider, model and permissions, so cwd/provider/model/permissionMode/effort are ignored. A run is skipped when the session is mid-turn. Pass null on update to go back to fresh sessions.',
   },
   timezone: { type: 'string', description: 'IANA timezone the cron is evaluated in, e.g. "America/Mexico_City". Defaults to "UTC".' },
   prompt: {
     type: 'string',
     description: 'What the agent should do. It runs headless with nobody watching, so be explicit about what it must NOT touch, and about what to do when there is nothing to do.',
   },
-  cwd: { type: 'string', description: 'Absolute path to the working directory the spawned session runs in.' },
+  cwd: { type: 'string', description: 'Absolute path to the working directory the spawned session runs in. Required unless targetSessionId is set.' },
   provider: { type: 'string', description: 'Provider to spawn: "claude", "codex" or "opencode". Defaults to "claude".' },
   model: { type: 'string', description: 'Model id for the provider, e.g. "opus". Omit for the provider default.' },
   permissionMode: {
@@ -337,6 +358,8 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Only once a phone has dialled in: nobody without the Android app should
     // pay for six more tools in every session's context.
     ...(hasKnownPhone() ? PHONE_TOOLS : []),
+    // Codiby Agent tools (packages/core/agent): most are agent-session only.
+    ...listAgentToolsFor(uiSessionId),
     { name: 'ui_list_hosts', description: 'Discover hosts configured on this Bun server and their MCP coordination permissions. Works without Electron. Remote sessions are addressed by host_id plus session_id. Disabled or unreachable hosts are reported individually.', inputSchema: { type: 'object' as const, properties: {} } },
     {
       name: 'ui_search',
@@ -992,34 +1015,37 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'ui_list_automations',
-      description: 'List every automation defined on this bridge, with its trigger, target folder, agent and next run. Call this before creating one so you extend or reuse an existing automation instead of adding a near-duplicate.',
+      description: 'List every automation defined on this bridge, with its trigger, target folder or session, agent and next run. Call this before creating one so you extend or reuse an existing automation instead of adding a near-duplicate. Rows marked "managed by the agent" (heartbeat, reminders) are read-only here.',
       inputSchema: { type: 'object' as const, properties: {} },
     },
     {
       name: 'ui_create_automation',
       description: [
-        'Create an automation: a prompt the bridge runs on its own, in a fresh session, with no user watching.',
+        'Create an automation: a prompt the bridge runs on its own, with no user watching —',
+        'in a fresh session each time, or inside an existing one (`targetSessionId`).',
         '',
-        'Two ways to fire it, chosen with `triggerType`:',
+        'Three ways to fire it, chosen with `triggerType`:',
         '  • "cron"    — runs on a schedule you give in `cronExpression` + `timezone`.',
         '  • "webhook" — never runs on its own; the response gives you a local URL that',
         '                anything (a file watcher, a CI hook, a script) can POST to in order',
         '                to fire it. Use this when the trigger is an event, not a time.',
+        '  • "once"    — runs a single time at `runAt`, then disables itself. Use it to',
+        '                "come back to this later", e.g. with targetSessionId "self".',
         '',
-        'Because it runs unattended, `permissionMode` decides whether it can actually do',
-        'its job: the default stops at the first permission prompt and the run stalls until',
-        'it times out. Write the prompt so it is safe to run repeatedly and says what to do',
-        'when there is nothing to do.',
+        'Because it runs unattended, `permissionMode` decides whether a fresh session can',
+        'actually do its job: the default stops at the first permission prompt and the run',
+        'stalls until it times out. A targeted run uses its session\'s own permissions. Write',
+        'the prompt so it is safe to run repeatedly and says what to do when there is nothing to do.',
       ].join('\n'),
       inputSchema: {
         type: 'object' as const,
         properties: { ...AUTOMATION_FIELDS },
-        required: ['name', 'prompt', 'cwd'],
+        required: ['name', 'prompt'],
       },
     },
     {
       name: 'ui_update_automation',
-      description: 'Patch an existing automation — pass only the fields you want to change. Use it to pause/resume (`enabled`), retune the schedule, or switch a cron automation over to a webhook and back. Switching to "cron" requires a `cronExpression` if the automation does not already have one.',
+      description: 'Patch an existing automation — pass only the fields you want to change. Use it to pause/resume (`enabled`), retune the schedule, or switch between cron, webhook and once. Switching to "cron" requires a `cronExpression` if the automation does not already have one; re-enabling a "once" that already ran needs a new future `runAt`.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -1042,7 +1068,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'ui_run_automation',
-      description: 'Fire an automation once, right now, regardless of its trigger — the way to smoke-test one you just created. It spawns a real session and spends real tokens. Returns immediately with a run id; poll ui_list_automation_runs for the outcome.',
+      description: 'Fire an automation once, right now, regardless of its trigger — the way to smoke-test one you just created. It spawns a real session (or sends the prompt into its target session) and spends real tokens. Returns immediately with a run id; poll ui_list_automation_runs for the outcome.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -1098,6 +1124,12 @@ export async function executeLocalMcpTool(
   try {
     if (isPhoneTool(name)) {
       return await executePhoneTool(name, args ?? {}, {
+        sessionId: uiSessionId,
+        sessionName: sessions.get(uiSessionId)?.name ?? 'An agent',
+      });
+    }
+    if (isAgentTool(name)) {
+      return await executeAgentTool(name, args ?? {}, {
         sessionId: uiSessionId,
         sessionName: sessions.get(uiSessionId)?.name ?? 'An agent',
       });
@@ -1212,18 +1244,20 @@ export async function executeLocalMcpTool(
         return { content: [{ type: 'text', text: list.map(describeAutomation).join('\n\n') }] };
       }
       case 'ui_create_automation': {
-        const { ok, status, body } = await apiResult('/automations', jsonBody('POST', args));
+        const { ok, status, body } = await apiResult('/automations', jsonBody('POST', withSelfTarget(args ?? {}, uiSessionId)));
         if (!ok) {
           return { content: [{ type: 'text', text: `Could not create the automation (HTTP ${status}): ${body?.error ?? 'unknown error'}` }], isError: true };
         }
         const created = body.automation;
         const tail = created.triggerType === 'webhook'
           ? `\n\nNothing fires it on a timer. Have your watcher run:\n  curl -X POST ${automationWebhookUrl(created.id)}`
-          : '\n\nIt is now scheduled. Use ui_run_automation to smoke-test it without waiting.';
+          : created.triggerType === 'once'
+            ? '\n\nIt will run once at that time, then disable itself.'
+            : '\n\nIt is now scheduled. Use ui_run_automation to smoke-test it without waiting.';
         return { content: [{ type: 'text', text: `Created:\n${describeAutomation(created)}${tail}` }] };
       }
       case 'ui_update_automation': {
-        const { id, ...patch } = (args ?? {}) as Record<string, unknown>;
+        const { id, ...patch } = withSelfTarget(args ?? {}, uiSessionId);
         if (!id) return { content: [{ type: 'text', text: 'id is required' }], isError: true };
         if (!Object.keys(patch).length) {
           return { content: [{ type: 'text', text: 'Pass at least one field to change besides `id`.' }], isError: true };
@@ -1249,7 +1283,8 @@ export async function executeLocalMcpTool(
         const { ok, status, body } = await apiResult(`/automations/${encodeURIComponent(id)}/run`, { method: 'POST' });
         // 409 + a `skipped` run is the concurrency policy working, not a failure.
         if (body?.run?.status === 'skipped') {
-          return { content: [{ type: 'text', text: `Not started: ${id} already has a run in flight, so this one was skipped.` }] };
+          const why = body.run.error ? ` (${body.run.error})` : ' (it already has a run in flight)';
+          return { content: [{ type: 'text', text: `Not started: this run of ${id} was skipped${why}.` }] };
         }
         if (!ok) {
           return { content: [{ type: 'text', text: `Could not run ${id} (HTTP ${status}): ${body?.error ?? 'unknown error'}` }], isError: true };
@@ -1589,7 +1624,8 @@ export async function executeLocalMcpTool(
         const maxChars = typeof args!.max_chars_per_message === 'number' ? args!.max_chars_per_message : 500;
 
         const state = getSessionState(sessionId);
-        let msgs: ChatMessage[] = state.messages;
+        // Sub-agents' own text lives in the Agents window, not in the conversation.
+        let msgs: ChatMessage[] = state.messages.filter(m => !isSubagentChatter(m));
         if (sinceSeq !== undefined) msgs = msgs.filter(m => (m.seq ?? 0) > sinceSeq);
         if (!includeTools) msgs = msgs.filter(m => !m.toolName && !m.isToolResult);
         const available = msgs.length;
@@ -1886,7 +1922,6 @@ export async function executeLocalMcpTool(
           broadcastToSession: _deps!.broadcastToSession,
           sendBrowserRequest: _deps!.broadcastToSession,
           broadcastSessionList: _deps!.broadcastSessionList,
-          notifyTelegramIfMainSession: () => {},
         }, {
           requestId: randomUUID(),
           toolName: 'ExitPlanMode',

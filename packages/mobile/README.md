@@ -65,3 +65,38 @@ and confirm the message. Both platforms show the same React Native session rows
 and chat composer used in the app. Android receives native share intents; iOS
 embeds that React Native screen in its Share Extension. Open Codiby Code once after installing so the share picker can
 use your configured hosts. See [image sharing and iOS signing setup](../../docs/image-sharing.md).
+
+## Push notifications
+
+The **Agent** tab shows the agent host's status and pending approvals, and the
+app receives its approvals and messages as push notifications through Firebase
+Cloud Messaging (Android directly, iOS through APNs). Approvals carry
+**Approve** / **Deny** buttons that answer the host without opening the app.
+The bridge side and the setup checklist live in Codiby Code → Agent → Devices.
+
+Until the Firebase files below exist, both platforms build exactly as before
+and the Agent tab says push isn't set up in this build.
+
+1. In the [Firebase console](https://console.firebase.google.com), add Firebase
+   to the Google Cloud project the agent already uses, then add two apps:
+   Android `com.codiby.code` and iOS `com.codiby.code`.
+2. **Android:** save `google-services.json` as `android/app/google-services.json`.
+   `android/app/build.gradle` applies the Google services plugin only when that
+   file exists. Rebuild with `bun run mobile:android`.
+3. **iOS:** save `GoogleService-Info.plist` as `ios/CodibyCode/GoogleService-Info.plist`.
+   A build phase copies it into the app, and `react-native.config.js` and
+   `ios/Podfile` then link React Native Firebase and the notification module,
+   with the dynamic frameworks Firebase's Swift packages require. Run
+   `bun run mobile:pods` and commit the updated `ios/Podfile.lock`.
+4. **APNs:** in the Apple Developer portal, enable **Push Notifications** for the
+   `com.codiby.code` App ID, regenerate the App Store provisioning profile and
+   update `IOS_PROVISIONING_PROFILE_BASE64`. Until then the TestFlight lane removes
+   `aps-environment` and ships a build without push instead of failing to sign it.
+   Create an APNs authentication key (`.p8`) and upload it in Firebase → Project
+   settings → Cloud Messaging → Apple app configuration.
+5. In Firebase → Project settings → Service accounts, generate a private key and
+   upload the JSON in Codiby Code → Agent → Devices on the agent host.
+
+Open the Agent tab once on the phone: it asks for notification permission and
+registers the phone with every host whose agent is on. **Send test push** checks
+the whole path.

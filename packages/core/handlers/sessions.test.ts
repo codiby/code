@@ -5,7 +5,7 @@ import { setBridgeDeps } from '../provider/lifecycle';
 import { registerProvider } from '../provider/registry';
 
 test('failed provider creation returns its cause and leaves no ghost session', async () => {
-  setBridgeDeps({ broadcastToSession() {}, broadcastSessionList() {}, sendBrowserRequest() {}, notifyTelegramIfMainSession() {} });
+  setBridgeDeps({ broadcastToSession() {}, broadcastSessionList() {}, sendBrowserRequest() {} });
   registerProvider({ name: 'broken-test', spawn() { throw new Error('CLI missing'); } });
   const before = [...sessions.keys()];
   for (let i = 0; i < 2; i++) {

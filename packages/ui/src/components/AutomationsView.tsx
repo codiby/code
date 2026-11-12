@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Zap, Plus, Clock, Play, Trash2, X, Pencil, Copy, AlertTriangle,
-  Loader2, ArrowUpRight, RotateCw, Webhook, Check,
+  Loader2, ArrowUpRight, RotateCw, Webhook, Check, CalendarClock, Lock, MessageSquare,
 } from 'lucide-react';
 import type {
   Automation,
@@ -23,12 +23,15 @@ import {
   formatCost,
   formatDuration,
   formatTokens,
+  fromDateTimeLocal,
   humanizeCron,
+  isFinishedOnce,
   nextCronRuns,
   relativeFuture,
   relativePast,
   shortPath,
   shortStamp,
+  toDateTimeLocal,
   RUN_TRIGGER_LABEL,
   TRIGGER_TYPE_META,
   webhookCurl,
@@ -138,19 +141,29 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
     }
   }, [load]);
 
-  const handleToggle = (a: Automation) => mutate(a.id, async () => {
-    const res = await client?.updateAutomation(a.id, { enabled: !a.enabled });
-    if (res && 'error' in res) setNotice(res.error);
-  });
+  const handleToggle = (a: Automation) => {
+    // Managed rows follow their owner's settings; flipping them here would be undone.
+    if (a.managed) {
+      setNotice(`“${a.name}” is managed by the Agent${a.managed.editHint ? ` — change it in ${a.managed.editHint}` : ''}.`);
+      return;
+    }
+    return mutate(a.id, async () => {
+      const res = await client?.updateAutomation(a.id, { enabled: !a.enabled });
+      if (res && 'error' in res) setNotice(res.error);
+    });
+  };
 
   const handleRunNow = (a: Automation) => mutate(a.id, async () => {
     const res = await client?.runAutomation(a.id);
-    if (res?.skipped) setNotice(`"${a.name}" already had a run in progress, so this one was skipped.`);
+    if (res?.skipped) setNotice(`“${a.name}” was skipped: ${res.run?.error || 'a run was already in progress'}.`);
     else if (res?.error) setNotice(res.error);
   });
 
   const handleDelete = (a: Automation) => {
-    if (!window.confirm(`Delete “${a.name}”? Its run history will no longer be shown.`)) return;
+    const question = a.managed?.kind === 'reminder'
+      ? `Cancel the reminder “${a.name}”?`
+      : `Delete “${a.name}”? Its run history will no longer be shown.`;
+    if (!window.confirm(question)) return;
     if (selectedId === a.id) setSelectedId(null);
     return mutate(a.id, async () => { await client?.deleteAutomation(a.id); });
   };
@@ -164,7 +177,9 @@ export function AutomationsView({ client, defaultCwd, onOpenSession }: Props) {
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-surface">
+    // min-h-0: a flex column child otherwise grows to its content's height,
+    // and the list below never gets a height of its own to scroll in.
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-surface">
       <div className="h-12 border-b border-border flex items-center justify-between px-5 shrink-0">
         <h1 className="text-[15px] font-semibold text-zinc-200 flex items-center gap-2">
           <Zap size={16} strokeWidth={2} className="text-indigo-400" />
@@ -292,7 +307,7 @@ function StatusPill({ automation, runs }: { automation: Automation; runs: Automa
     return <span className={`${base} text-indigo-400 bg-indigo-500/12 border-indigo-400/35`}>Running</span>;
   }
   if (!automation.enabled) {
-    return <span className={`${base} text-zinc-500 bg-zinc-500/10 border-zinc-500/30`}>Paused</span>;
+    return <span className={`${base} text-zinc-500 bg-zinc-500/10 border-zinc-500/30`}>{isFinishedOnce(automation) ? 'Done' : 'Paused'}</span>;
   }
   const last = runs.find(r => r.status !== 'scheduled');
   if (last && FAILING_STATUSES.includes(last.status)) {
@@ -320,13 +335,13 @@ function RunStrip({ runs }: { runs: AutomationRun[] }) {
   );
 }
 
-function Toggle({ on, onClick, disabled }: { on: boolean; onClick: () => void; disabled?: boolean }) {
+function Toggle({ on, onClick, disabled, title }: { on: boolean; onClick: () => void; disabled?: boolean; title?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={on ? 'Pause' : 'Enable'}
+      title={title ?? (on ? 'Pause' : 'Enable')}
       aria-label={on ? 'Pause automation' : 'Enable automation'}
       className={`relative w-[34px] h-[19px] rounded-full shrink-0 border transition-colors disabled:opacity-50 ${
         on ? 'bg-indigo-400/40 border-transparent' : 'bg-surface-lighter border-border-light'
@@ -348,6 +363,7 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
   const last = runs.find(r => r.status !== 'scheduled' && r.status !== 'running');
   const running = runs.some(r => r.status === 'running');
   const isWebhook = automation.triggerType === 'webhook';
+  const isOnce = automation.triggerType === 'once';
   const humanized = automation.cronExpression ? humanizeCron(automation.cronExpression) : '';
 
   return (
@@ -359,17 +375,20 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
       className={`group flex items-center gap-3.5 bg-surface border border-border rounded-lg px-3.5 py-3 cursor-pointer hover:border-border-light hover:bg-surface-light transition-colors ${automation.enabled ? '' : 'opacity-60'}`}
     >
       <div className={`w-8 h-8 rounded-md grid place-items-center shrink-0 ${automation.enabled ? 'bg-indigo-500/12 text-indigo-400' : 'bg-zinc-500/12 text-zinc-500'}`}>
-        {isWebhook ? <Webhook size={16} strokeWidth={2} /> : <Clock size={16} strokeWidth={2} />}
+        <TriggerIcon type={automation.triggerType} size={16} />
       </div>
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 text-[13px] font-medium text-zinc-200">
           <span className="truncate">{automation.name}</span>
           <StatusPill automation={automation} runs={runs} />
+          {automation.managed && <ManagedPill automation={automation} />}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-zinc-500 mt-1">
           {isWebhook ? (
             <span>When its webhook is called</span>
+          ) : isOnce ? (
+            <span>Once · {automation.runAt ? shortStamp(automation.runAt) : '—'}</span>
           ) : (
             <>
               {/* `humanizeCron` echoes the expression back when it can't read it —
@@ -384,9 +403,15 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
             </>
           )}
           <span className="text-zinc-700">·</span>
-          <span className="font-mono text-[10.5px] truncate max-w-[220px]">{shortPath(automation.cwd)}</span>
-          <span className="text-zinc-700">·</span>
-          <span>{automation.provider}{automation.model ? ` · ${automation.model}` : ''}</span>
+          {automation.targetSessionId ? (
+            <TargetLabel automation={automation} />
+          ) : (
+            <>
+              <span className="font-mono text-[10.5px] truncate max-w-[220px]">{shortPath(automation.cwd)}</span>
+              <span className="text-zinc-700">·</span>
+              <span>{automation.provider}{automation.model ? ` · ${automation.model}` : ''}</span>
+            </>
+          )}
         </div>
       </div>
 
@@ -416,7 +441,7 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
             <b className="block text-zinc-400 font-medium">
               {automation.enabled ? relativeFuture(automation.nextRunAt) : '—'}
             </b>
-            {automation.enabled ? shortStamp(automation.nextRunAt) : 'paused'}
+            {automation.enabled ? shortStamp(automation.nextRunAt) : isFinishedOnce(automation) ? 'ran once' : 'paused'}
           </>
         )}
       </div>
@@ -432,9 +457,50 @@ function AutomationRow({ automation, runs, busy, onOpen, onToggle, onRunNow }: {
         >
           {busy ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} strokeWidth={2} fill="currentColor" />}
         </button>
-        <Toggle on={automation.enabled} onClick={onToggle} disabled={busy} />
+        <Toggle
+          on={automation.enabled}
+          onClick={onToggle}
+          disabled={busy || !!automation.managed}
+          title={automation.managed ? managedHint(automation) : undefined}
+        />
       </div>
     </div>
+  );
+}
+
+function TriggerIcon({ type, size }: { type: AutomationTriggerType; size: number }) {
+  if (type === 'webhook') return <Webhook size={size} strokeWidth={2} />;
+  if (type === 'once') return <CalendarClock size={size} strokeWidth={2} />;
+  return <Clock size={size} strokeWidth={2} />;
+}
+
+function managedHint(automation: Automation): string {
+  const where = automation.managed?.editHint ? ` — change it in ${automation.managed.editHint}` : '';
+  return `Managed by the ${automation.managed?.by === 'agent' ? 'Agent' : automation.managed?.by}${where}`;
+}
+
+/** Rows a feature owns (heartbeat, reminders) are read-only here. */
+function ManagedPill({ automation }: { automation: Automation }) {
+  return (
+    <span
+      title={managedHint(automation)}
+      className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border whitespace-nowrap text-indigo-300 border-indigo-400/30 bg-indigo-400/10"
+    >
+      <Lock size={9} strokeWidth={2.4} />
+      {automation.managed?.by === 'agent' ? 'Managed by the Agent' : `Managed by ${automation.managed?.by}`}
+    </span>
+  );
+}
+
+/** "in <session>" for an automation that continues an existing session. */
+function TargetLabel({ automation }: { automation: Automation }) {
+  return (
+    <span className="inline-flex items-center gap-1 min-w-0" title={automation.targetSessionId ?? undefined}>
+      <MessageSquare size={11} className="shrink-0" />
+      <span className="truncate max-w-[220px]">
+        in {automation.targetSessionName ?? <span className="text-amber-400">a session that no longer exists</span>}
+      </span>
+    </span>
   );
 }
 
@@ -565,7 +631,10 @@ function AutomationDrawer({
   };
 
   const isWebhook = automation.triggerType === 'webhook';
+  const isOnce = automation.triggerType === 'once';
   const humanized = automation.cronExpression ? humanizeCron(automation.cronExpression) : '';
+  const managed = automation.managed;
+  const canDelete = !managed || !!managed.deletable;
 
   return (
     <>
@@ -576,15 +645,26 @@ function AutomationDrawer({
         <div className="px-[18px] pt-4 pb-3.5 border-b border-border shrink-0">
           <div className="flex items-start gap-2.5">
             <div className="w-[30px] h-[30px] rounded-md grid place-items-center shrink-0 bg-indigo-500/12 text-indigo-400">
-              <Clock size={15} strokeWidth={2} />
+              <TriggerIcon type={automation.triggerType} size={15} />
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="text-[15px] font-semibold text-zinc-200 truncate">{automation.name}</h2>
               {automation.description && (
                 <div className="text-[12px] text-zinc-500 mt-1">{automation.description}</div>
               )}
+              {managed && (
+                <div className="text-[11px] text-indigo-300/90 mt-1.5 flex items-center gap-1.5">
+                  <Lock size={11} className="shrink-0" />
+                  {managedHint(automation)}.
+                </div>
+              )}
             </div>
-            <Toggle on={automation.enabled} onClick={onToggle} disabled={busy} />
+            <Toggle
+              on={automation.enabled}
+              onClick={onToggle}
+              disabled={busy || !!managed}
+              title={managed ? managedHint(automation) : undefined}
+            />
             <button
               type="button"
               onClick={onClose}
@@ -605,18 +685,21 @@ function AutomationDrawer({
               {busy ? <Loader2 size={12} className="animate-spin" /> : <Play size={11} fill="currentColor" />}
               Run now
             </button>
-            <DrawerAction icon={Pencil} label="Edit" onClick={onEdit} />
-            <DrawerAction icon={Copy} label="Duplicate" onClick={onDuplicate} />
+            {/* Managed rows are edited where their owner keeps its settings. */}
+            {!managed && <DrawerAction icon={Pencil} label="Edit" onClick={onEdit} />}
+            {!managed && <DrawerAction icon={Copy} label="Duplicate" onClick={onDuplicate} />}
             <div className="flex-1" />
-            <button
-              type="button"
-              onClick={onDelete}
-              aria-label="Delete"
-              title="Delete"
-              className="w-[26px] h-[26px] grid place-items-center rounded-md text-zinc-600 hover:text-red-400 hover:bg-red-500/10"
-            >
-              <Trash2 size={14} />
-            </button>
+            {canDelete && (
+              <button
+                type="button"
+                onClick={onDelete}
+                aria-label={managed?.kind === 'reminder' ? 'Cancel reminder' : 'Delete'}
+                title={managed?.kind === 'reminder' ? 'Cancel reminder' : 'Delete'}
+                className="w-[26px] h-[26px] grid place-items-center rounded-md text-zinc-600 hover:text-red-400 hover:bg-red-500/10"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -628,6 +711,8 @@ function AutomationDrawer({
                 value={automation.enabled ? 'Webhook' : 'Paused'}
                 sub={automation.enabled ? 'waiting for a call' : 'not answering calls'}
               />
+            ) : isFinishedOnce(automation) ? (
+              <Kpi label="Next" value="Done" sub={`was due ${shortStamp(automation.runAt)}`} />
             ) : (
               <Kpi label="Next" value={automation.enabled ? relativeFuture(automation.nextRunAt) : 'Paused'}
                 sub={automation.enabled ? shortStamp(automation.nextRunAt) : 'not scheduled'} />
@@ -675,6 +760,8 @@ function AutomationDrawer({
               <dd className="text-zinc-400">
                 {isWebhook ? (
                   'Webhook — only runs when something calls its URL'
+                ) : isOnce ? (
+                  <>Once — {automation.runAt ? shortStamp(automation.runAt) : '—'}, then it turns itself off</>
                 ) : (
                   <>
                     {humanized !== automation.cronExpression && `${humanized} · `}
@@ -682,19 +769,41 @@ function AutomationDrawer({
                   </>
                 )}
               </dd>
-              <dt className="text-zinc-600 whitespace-nowrap">Folder</dt>
-              <dd className="text-zinc-400 font-mono text-[11px] truncate">{automation.cwd}</dd>
-              <dt className="text-zinc-600 whitespace-nowrap">Agent</dt>
-              <dd className="text-zinc-400">
-                {automation.provider}
-                {automation.model ? ` · ${automation.model}` : ''}
-                {automation.effort ? ` · effort ${EFFORT_LABEL[automation.effort]}` : ''}
-              </dd>
-              <dt className="text-zinc-600 whitespace-nowrap">Permissions</dt>
-              <dd className="text-zinc-400">
-                {PERMISSION_MODE_META[automation.permissionMode].label}
-                <span className="text-zinc-600"> — {PERMISSION_MODE_META[automation.permissionMode].hint}</span>
-              </dd>
+              {automation.targetSessionId ? (
+                <>
+                  <dt className="text-zinc-600 whitespace-nowrap">Runs in</dt>
+                  <dd className="text-zinc-400 flex items-center gap-2 min-w-0">
+                    <TargetLabel automation={automation} />
+                    {automation.targetSessionName && onOpenSession && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenSession(automation.targetSessionId!)}
+                        className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:underline shrink-0"
+                      >
+                        Open <ArrowUpRight size={11} />
+                      </button>
+                    )}
+                  </dd>
+                  <dt className="text-zinc-600 whitespace-nowrap">Agent</dt>
+                  <dd className="text-zinc-500">The session's own folder, model and permissions</dd>
+                </>
+              ) : (
+                <>
+                  <dt className="text-zinc-600 whitespace-nowrap">Folder</dt>
+                  <dd className="text-zinc-400 font-mono text-[11px] truncate">{automation.cwd}</dd>
+                  <dt className="text-zinc-600 whitespace-nowrap">Agent</dt>
+                  <dd className="text-zinc-400">
+                    {automation.provider}
+                    {automation.model ? ` · ${automation.model}` : ''}
+                    {automation.effort ? ` · effort ${EFFORT_LABEL[automation.effort]}` : ''}
+                  </dd>
+                  <dt className="text-zinc-600 whitespace-nowrap">Permissions</dt>
+                  <dd className="text-zinc-400">
+                    {PERMISSION_MODE_META[automation.permissionMode].label}
+                    <span className="text-zinc-600"> — {PERMISSION_MODE_META[automation.permissionMode].hint}</span>
+                  </dd>
+                </>
+              )}
               <dt className="text-zinc-600 whitespace-nowrap">Limits</dt>
               <dd className="text-zinc-400">
                 {automation.maxRuntimeMs
@@ -702,7 +811,9 @@ function AutomationDrawer({
                   // run-duration format, which reads oddly as a limit ("10m 00s").
                   ? `stops after ${RUNTIME_PRESETS.find(p => p.ms === automation.maxRuntimeMs)?.label ?? formatDuration(automation.maxRuntimeMs)}`
                   : 'no time limit'}
-                {' · if one is already running, '}<b className="font-medium text-zinc-300">it is skipped</b>
+                {automation.targetSessionId
+                  ? <>{' · if the session is busy, '}<b className="font-medium text-zinc-300">{isOnce ? 'it retries every minute (10 times)' : 'it is skipped'}</b></>
+                  : <>{' · if one is already running, '}<b className="font-medium text-zinc-300">it is skipped</b></>}
               </dd>
             </dl>
           </Section>
@@ -892,7 +1003,9 @@ function RunRow({ run, open, onToggle, onCancel, onOpenSession }: {
           <div className="pt-2.5 border-t border-border">
             {(run.error || run.resultText || meta.hint) && (
               <pre className={`text-[11px] leading-[1.6] whitespace-pre-wrap font-sans rounded border px-2.5 py-2 max-h-[180px] overflow-auto ${
-                run.error
+                // A skipped run's `error` is its reason (target busy, missed
+                // while offline) — an explanation, not a failure.
+                run.error && run.status !== 'skipped'
                   ? 'text-red-300 border-red-400/25 bg-red-500/5'
                   : 'text-zinc-400 border-border bg-surface'
               }`}>
@@ -934,6 +1047,10 @@ interface Draft {
   description: string;
   triggerType: AutomationTriggerType;
   cronExpression: string;
+  /** `datetime-local` value for one-shot automations (browser's zone). */
+  runAt: string;
+  /** '' = a fresh session each run. */
+  targetSessionId: string;
   timezone: string;
   cwd: string;
   prompt: string;
@@ -957,6 +1074,14 @@ const TIMEZONES: string[] = (() => {
   return [...new Set(['UTC', LOCAL_TZ, 'America/Mexico_City', 'America/New_York', 'Europe/Madrid'])];
 })();
 
+/** Next whole hour, at least 30 minutes out — a sensible first guess for "once". */
+function defaultRunAt(now = Date.now()): number {
+  const d = new Date(now + 30 * 60_000);
+  d.setMinutes(0, 0, 0);
+  d.setHours(d.getHours() + 1);
+  return d.getTime();
+}
+
 function draftFrom(source: Automation | undefined, mode: 'create' | 'edit', defaultCwd?: string | null): Draft {
   if (source) {
     return {
@@ -967,6 +1092,9 @@ function draftFrom(source: Automation | undefined, mode: 'create' | 'edit', defa
       // Keep a usable default so flipping a webhook automation over to cron
       // lands on a valid expression rather than an empty box.
       cronExpression: source.cronExpression ?? '0 9 * * *',
+      // A duplicated one-shot gets a fresh time: its original one has passed.
+      runAt: toDateTimeLocal(source.runAt && (mode === 'edit' || source.runAt > Date.now()) ? source.runAt : defaultRunAt()),
+      targetSessionId: source.targetSessionId ?? '',
       timezone: source.timezone,
       cwd: source.cwd,
       prompt: source.prompt,
@@ -983,6 +1111,8 @@ function draftFrom(source: Automation | undefined, mode: 'create' | 'edit', defa
     description: '',
     triggerType: 'cron',
     cronExpression: '0 9 * * *',
+    runAt: toDateTimeLocal(defaultRunAt()),
+    targetSessionId: '',
     timezone: LOCAL_TZ,
     cwd: defaultCwd ?? '',
     prompt: '',
@@ -1007,7 +1137,14 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
   const [draft, setDraft] = useState<Draft>(() => draftFrom(source, mode, defaultCwd));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [targets, setTargets] = useState<{ id: string; name: string; cwd: string; status: string }[]>([]);
   const nameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void client?.listAutomationTargets().then(list => { if (alive) setTargets(list); });
+    return () => { alive = false; };
+  }, [client]);
 
   useEffect(() => { nameRef.current?.focus(); }, []);
   useEffect(() => {
@@ -1019,10 +1156,19 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft(d => ({ ...d, [key]: value }));
 
   const isWebhook = draft.triggerType === 'webhook';
+  const isOnce = draft.triggerType === 'once';
+  const targeted = !!draft.targetSessionId;
   const preview = useMemo(() => nextCronRuns(draft.cronExpression, 3), [draft.cronExpression]);
   const cronValid = preview.length > 0;
-  const canSave = draft.name.trim() && draft.prompt.trim() && draft.cwd.trim()
-    && (isWebhook || draft.cronExpression.trim());
+  const runAtTs = fromDateTimeLocal(draft.runAt);
+  const runAtValid = runAtTs !== null && runAtTs > Date.now();
+  // Keep a target the list no longer has (e.g. a deleted session) selectable,
+  // so editing doesn't silently retarget the automation.
+  const targetOptions = draft.targetSessionId && !targets.some(t => t.id === draft.targetSessionId)
+    ? [{ id: draft.targetSessionId, name: source?.targetSessionName ?? `${draft.targetSessionId} (missing)`, cwd: '', status: 'open' }, ...targets]
+    : targets;
+  const canSave = draft.name.trim() && draft.prompt.trim() && (targeted || draft.cwd.trim())
+    && (isWebhook || (isOnce ? runAtValid : draft.cronExpression.trim()));
 
   const submit = async () => {
     if (!canSave || saving) return;
@@ -1032,13 +1178,17 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
       name: draft.name.trim(),
       description: draft.description.trim() || null,
       triggerType: draft.triggerType,
-      // A webhook automation must clear any cron it used to carry, otherwise the
-      // server would keep scheduling the expression left behind by the switch.
-      cronExpression: isWebhook ? null : draft.cronExpression.trim(),
+      // Only a cron automation keeps an expression, otherwise the server would
+      // keep scheduling the one left behind by a switch.
+      cronExpression: draft.triggerType === 'cron' ? draft.cronExpression.trim() : null,
+      runAt: isOnce ? runAtTs : null,
+      targetSessionId: draft.targetSessionId || null,
       timezone: draft.timezone,
       enabled: draft.enabled,
       prompt: draft.prompt.trim(),
-      cwd: draft.cwd.trim(),
+      // A targeted run uses its session's folder: on create the server records
+      // that one, on edit the stored folder is left alone.
+      ...(targeted ? {} : { cwd: draft.cwd.trim() }),
       provider: draft.provider,
       model: draft.model.trim() || null,
       permissionMode: draft.permissionMode,
@@ -1080,7 +1230,7 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
           <div className="mb-3">
             <label className={LABEL_CLASS}>Trigger type</label>
             <div className="flex gap-1.5">
-              {(['cron', 'webhook'] as AutomationTriggerType[]).map(t => (
+              {(['cron', 'once', 'webhook'] as AutomationTriggerType[]).map(t => (
                 <button
                   key={t}
                   type="button"
@@ -1091,7 +1241,7 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
                       : 'border-border text-zinc-500 hover:text-zinc-200'
                   }`}
                 >
-                  {t === 'cron' ? <Clock size={12} /> : <Webhook size={12} />}
+                  <TriggerIcon type={t} size={12} />
                   {TRIGGER_TYPE_META[t].label}
                 </button>
               ))}
@@ -1111,6 +1261,23 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
                   you will see it here and in its details, ready to copy.
                 </div>
               )}
+            </div>
+          ) : isOnce ? (
+            <div className="mb-3">
+              <label className={LABEL_CLASS}>Date and time</label>
+              <input
+                type="datetime-local"
+                className={`${INPUT_CLASS} [color-scheme:dark]`}
+                value={draft.runAt}
+                onChange={e => set('runAt', e.target.value)}
+              />
+              <div className={`text-[11px] mt-1.5 ${runAtValid ? 'text-zinc-600' : 'text-amber-400'}`}>
+                {runAtTs === null
+                  ? 'Pick a date and time.'
+                  : runAtValid
+                    ? `Runs ${relativeFuture(runAtTs)} (${shortStamp(runAtTs)}, your time), then turns itself off. If the bridge is offline then, it still runs when it comes back within 6 hours.`
+                    : 'That time has passed — pick a future one.'}
+              </div>
             </div>
           ) : (
           <>
@@ -1191,10 +1358,34 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
           <GroupDivider title="What it does" />
 
           <div className="mb-3">
-            <label className={LABEL_CLASS}>Working directory</label>
-            <input className={`${INPUT_CLASS} font-mono`} value={draft.cwd}
-              placeholder="/path/to/project" onChange={e => set('cwd', e.target.value)} />
+            <label className={LABEL_CLASS}>Runs in</label>
+            <select
+              className={INPUT_CLASS}
+              value={draft.targetSessionId}
+              onChange={e => set('targetSessionId', e.target.value)}
+            >
+              <option value="">A new session each time</option>
+              {targetOptions.map(t => (
+                <option key={t.id} value={t.id}>
+                  {t.name}{t.status !== 'open' ? ' (archived)' : ''}
+                </option>
+              ))}
+            </select>
+            {targeted && (
+              <div className="text-[11px] text-zinc-500 mt-1.5">
+                The prompt is sent into this session, which keeps its own folder, model and permissions.
+                If it is in the middle of a turn when the run is due, the run is skipped
+                {isOnce ? ' (a one-shot retries every minute, up to 10 times)' : ''}.
+              </div>
+            )}
           </div>
+          {!targeted && (
+            <div className="mb-3">
+              <label className={LABEL_CLASS}>Working directory</label>
+              <input className={`${INPUT_CLASS} font-mono`} value={draft.cwd}
+                placeholder="/path/to/project" onChange={e => set('cwd', e.target.value)} />
+            </div>
+          )}
           <div className="mb-3">
             <label className={LABEL_CLASS}>Prompt</label>
             <textarea
@@ -1205,6 +1396,7 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
             />
           </div>
 
+          {!targeted && <>
           <GroupDivider title="Which agent" />
 
           <div className="grid grid-cols-3 gap-2 mb-3">
@@ -1255,6 +1447,7 @@ function AutomationEditor({ mode, source, client, defaultCwd, onCancel, onSave }
               </span>
             </div>
           </div>
+          </>}
 
           <div className="grid grid-cols-2 gap-2.5">
             <div>

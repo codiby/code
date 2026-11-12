@@ -26,6 +26,10 @@ export const automations = sqliteTable('automations', {
   concurrencyPolicy: text('concurrency_policy').notNull().default('skip'),
   maxRuntimeMs: integer('max_runtime_ms'),
   nextRunAt: integer('next_run_at'),
+  /** Run inside this existing session (e.g. the agent's) instead of a new one. */
+  targetSessionId: text('target_session_id'),
+  /** One-shot automations (`trigger_type = 'once'`): when to fire. */
+  runAt: integer('run_at'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
   deletedAt: integer('deleted_at'),
@@ -262,3 +266,134 @@ export const inboxItems = sqliteTable('inbox_items', {
 ]);
 
 export type InboxItemRecord = typeof inboxItems.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Codiby Agent (packages/core/agent). Raw DDL + migrations in database/index.ts.
+// ---------------------------------------------------------------------------
+
+/** Every message the agent's channels received or sent. */
+export const agentMessages = sqliteTable('agent_messages', {
+  id: text('id').primaryKey(),
+  /** 'in' | 'out' */
+  direction: text('direction').notNull(),
+  channelId: text('channel_id').notNull(),
+  channelType: text('channel_type').notNull(),
+  /** Channel-native address (chat id, JID…). */
+  peer: text('peer').notNull(),
+  peerName: text('peer_name'),
+  /** Inbound: sender verified as the owner. Outbound: sent to the owner. */
+  trusted: integer('trusted', { mode: 'boolean' }).notNull().default(false),
+  /** 'text' | 'file' | 'approval' | 'voice' */
+  kind: text('kind').notNull().default('text'),
+  text: text('text').notNull().default(''),
+  /** JSON array of { kind, mime, path?, name? } — never inline payloads. */
+  media: text('media').notNull().default('[]'),
+  externalId: text('external_id'),
+  /** in: 'received' | 'delivered' | 'consumed' · out: 'queued' | 'sent' | 'failed' */
+  status: text('status').notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  error: text('error'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  /** Untrusted inbound: when the owner (or the agent, on request) looked at it. */
+  handledAt: integer('handled_at'),
+}, (table) => [
+  index('agent_messages_created_idx').on(table.createdAt),
+  index('agent_messages_peer_idx').on(table.channelId, table.peer, table.createdAt),
+]);
+
+/** Each tool call the agent made and how it was decided. */
+export const agentActivity = sqliteTable('agent_activity', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  requestId: text('request_id'),
+  toolName: text('tool_name').notNull(),
+  /** read | write | shell | network | send_external | mail | calendar | purchase | credentials | destructive | interaction | other */
+  category: text('category').notNull(),
+  summary: text('summary').notNull().default(''),
+  /** Truncated JSON of the tool input. */
+  input: text('input').notNull().default('{}'),
+  /** auto_allowed | asked | approved | denied | blocked | expired */
+  decision: text('decision').notNull(),
+  decidedVia: text('decided_via'),
+  ruleId: text('rule_id'),
+  reason: text('reason'),
+  createdAt: integer('created_at').notNull(),
+  decidedAt: integer('decided_at'),
+}, (table) => [
+  index('agent_activity_created_idx').on(table.createdAt),
+  index('agent_activity_request_idx').on(table.requestId),
+]);
+
+/** Policy rules: allow / ask / deny by tool glob, input pattern or category. */
+export const agentRules = sqliteTable('agent_rules', {
+  id: text('id').primaryKey(),
+  /** Lower wins. Defaults sit at 1000+, user rules at 100. */
+  priority: integer('priority').notNull().default(100),
+  toolGlob: text('tool_glob').notNull().default('*'),
+  /** Regex tested against the tool's summarised input (command, path, recipient…). */
+  pattern: text('pattern'),
+  category: text('category'),
+  /** 'allow' | 'ask' | 'deny' */
+  action: text('action').notNull(),
+  note: text('note'),
+  /** 'default' | 'user' | 'always_allow' */
+  source: text('source').notNull().default('user'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+/** Long-term memory. Full-text search lives in the `agent_memory_fts` FTS5 table. */
+export const agentMemory = sqliteTable('agent_memory', {
+  id: text('id').primaryKey(),
+  /** profile | preference | person | fact | note | task */
+  kind: text('kind').notNull(),
+  content: text('content').notNull(),
+  /** Space-separated tags. */
+  tags: text('tags').notNull().default(''),
+  source: text('source'),
+  pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  lastUsedAt: integer('last_used_at'),
+  deletedAt: integer('deleted_at'),
+});
+
+/** People the owner talks about, with their handle on each channel. */
+export const agentPeople = sqliteTable('agent_people', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  /** Comma-separated nicknames ("esposita, Ana"). */
+  aliases: text('aliases').notNull().default(''),
+  relation: text('relation'),
+  /** JSON: { whatsapp?: string[], telegram?: string[], email?: string[], phone?: string[] } */
+  handles: text('handles').notNull().default('{}'),
+  notes: text('notes').notNull().default(''),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  deletedAt: integer('deleted_at'),
+});
+
+/** Push targets (FCM registration tokens). */
+export const agentDevices = sqliteTable('agent_devices', {
+  id: text('id').primaryKey(),
+  /** 'android' | 'ios' */
+  platform: text('platform').notNull(),
+  token: text('token').notNull(),
+  name: text('name'),
+  appVersion: text('app_version'),
+  createdAt: integer('created_at').notNull(),
+  lastSeenAt: integer('last_seen_at').notNull(),
+  disabledAt: integer('disabled_at'),
+  lastError: text('last_error'),
+}, (table) => [
+  uniqueIndex('agent_devices_token_idx').on(table.token),
+]);
+
+export type AgentMessageRecord = typeof agentMessages.$inferSelect;
+export type AgentActivityRecord = typeof agentActivity.$inferSelect;
+export type AgentRuleRecord = typeof agentRules.$inferSelect;
+export type AgentMemoryRecord = typeof agentMemory.$inferSelect;
+export type AgentPersonRecord = typeof agentPeople.$inferSelect;
+export type AgentDeviceRecord = typeof agentDevices.$inferSelect;

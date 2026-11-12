@@ -13,7 +13,7 @@
  */
 
 import { log, logError } from '../lib/logger';
-import { loadDeepgramSettings } from '../session/storage';
+import { loadDeepgramSettings, saveDeepgramSettings } from '../session/storage';
 
 export interface TranscribeOptions {
   /** Override persisted API key (e.g. tests). */
@@ -155,11 +155,30 @@ export async function transcribeAudioFromUrl(
   url: string,
   opts: TranscribeOptions = {},
 ): Promise<TranscribeResult> {
-  const res = await fetch(url);
+  // No part of `url` goes into a log line or an error: a Telegram file URL is
+  // `https://api.telegram.org/file/bot<TOKEN>/…`, and its first 80 characters
+  // are mostly the bot token. Errors are rebuilt from the message alone, since
+  // a network error can carry the URL along in its own fields.
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    throw new Error(`Failed to download audio: ${err instanceof Error ? redactUrl(err.message, url) : 'network error'}`);
+  }
   if (!res.ok) throw new Error(`Failed to download audio: ${res.status} ${res.statusText}`);
   const buf = new Uint8Array(await res.arrayBuffer());
-  log(`[deepgram] Downloaded ${buf.byteLength} bytes from ${url.slice(0, 80)}…, sending to Deepgram`);
+  log(`[deepgram] Downloaded ${buf.byteLength} bytes of audio, sending to Deepgram`);
   return transcribeAudioBuffer(buf, opts);
+}
+
+/** `message` with every occurrence of `url` (and its path) cut out. */
+function redactUrl(message: string, url: string): string {
+  let out = message.split(url).join('<audio url>');
+  try {
+    const { pathname } = new URL(url);
+    if (pathname.length > 1) out = out.split(pathname).join('<path>');
+  } catch {}
+  return out;
 }
 
 export interface AuraVoice {
@@ -210,4 +229,47 @@ export async function listAuraVoices(): Promise<AuraVoice[]> {
 /** Whether the user has configured an API key (used to gate UI badges). */
 export function isDeepgramConfigured(): boolean {
   return Boolean(loadDeepgramSettings().apiKey);
+}
+
+export interface DeepgramSettingsView {
+  /** An API key is saved. The key itself is write-only. */
+  configured: boolean;
+  model: string;
+  language: string;
+}
+
+/**
+ * What GET /deepgram/settings shows. Any caller on this machine can read that
+ * route — the agent's own shell included — so it says whether a key is
+ * saved, never which one (like /telegram/settings' `hasToken`).
+ */
+export function deepgramSettingsView(): DeepgramSettingsView {
+  const s = loadDeepgramSettings();
+  return { configured: Boolean(s.apiKey), model: s.model, language: s.language };
+}
+
+/**
+ * Whether a write-only key field changes: a non-empty string replaces the
+ * key; `clear: true` or an explicit `null` removes it; absent or empty — what
+ * a form that never saw the key sends back — keeps the saved one.
+ */
+export function nextSecretValue(current: string, incoming: unknown, clear: unknown): string {
+  if (clear === true || incoming === null) return '';
+  if (typeof incoming === 'string' && incoming.trim()) return incoming.trim();
+  return current;
+}
+
+/** Apply a PUT /deepgram/settings body (see nextSecretValue for the key). */
+export function applyDeepgramSettings(body: unknown): { ok: true; configured: boolean } {
+  const b = (body && typeof body === 'object' ? body : {}) as { apiKey?: unknown; clearApiKey?: unknown; model?: unknown; language?: unknown };
+  const current = loadDeepgramSettings();
+  const text = (v: unknown, fallback: string) => (typeof v === 'string' ? v.trim() || fallback : fallback);
+  const apiKey = nextSecretValue(current.apiKey, b.apiKey, b.clearApiKey);
+  saveDeepgramSettings({
+    apiKey,
+    // Absent keeps what's saved; an emptied field falls back to the default.
+    model: b.model === undefined ? current.model : text(b.model, 'nova-3'),
+    language: b.language === undefined ? current.language : text(b.language, 'multi'),
+  });
+  return { ok: true, configured: Boolean(apiKey) };
 }

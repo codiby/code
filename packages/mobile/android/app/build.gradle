@@ -125,3 +125,10 @@ dependencies {
     // androidx.activity 1.8; React Native no la trae como dependencia directa.
     implementation("androidx.activity:activity-ktx:1.9.3")
 }
+
+// Push notifications (Firebase Cloud Messaging). The plugin turns
+// google-services.json into the resources Firebase starts from; without the
+// file the app still builds and simply has no push (see the Agent tab).
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
+}

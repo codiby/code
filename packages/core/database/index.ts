@@ -3,6 +3,7 @@ import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 import { CODIBY_DIR } from '../config/config';
+import { ensureMemorySearchIndex } from './memory-fts';
 import * as schema from './schema';
 
 // Opening the handle here means the first module to import this file fixes the
@@ -134,7 +135,53 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS board_session_events_session_idx
     ON board_session_events (session_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS agent_messages (
+    id TEXT PRIMARY KEY NOT NULL, direction TEXT NOT NULL,
+    channel_id TEXT NOT NULL, channel_type TEXT NOT NULL,
+    peer TEXT NOT NULL, peer_name TEXT, trusted INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'text', text TEXT NOT NULL DEFAULT '',
+    media TEXT NOT NULL DEFAULT '[]', external_id TEXT, status TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, handled_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS agent_messages_created_idx ON agent_messages (created_at DESC);
+  CREATE INDEX IF NOT EXISTS agent_messages_peer_idx ON agent_messages (channel_id, peer, created_at DESC);
+  CREATE TABLE IF NOT EXISTS agent_activity (
+    id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL, request_id TEXT,
+    tool_name TEXT NOT NULL, category TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
+    input TEXT NOT NULL DEFAULT '{}', decision TEXT NOT NULL, decided_via TEXT,
+    rule_id TEXT, reason TEXT, created_at INTEGER NOT NULL, decided_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS agent_activity_created_idx ON agent_activity (created_at DESC);
+  CREATE INDEX IF NOT EXISTS agent_activity_request_idx ON agent_activity (request_id);
+  CREATE TABLE IF NOT EXISTS agent_rules (
+    id TEXT PRIMARY KEY NOT NULL, priority INTEGER NOT NULL DEFAULT 100,
+    tool_glob TEXT NOT NULL DEFAULT '*', pattern TEXT, category TEXT,
+    action TEXT NOT NULL, note TEXT, source TEXT NOT NULL DEFAULT 'user',
+    enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS agent_memory (
+    id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '', source TEXT, pinned INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_used_at INTEGER, deleted_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS agent_people (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '',
+    relation TEXT, handles TEXT NOT NULL DEFAULT '{}', notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS agent_devices (
+    id TEXT PRIMARY KEY NOT NULL, platform TEXT NOT NULL, token TEXT NOT NULL,
+    name TEXT, app_version TEXT, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
+    disabled_at INTEGER, last_error TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS agent_devices_token_idx ON agent_devices (token);
 `);
+// Its own exec, after everything else: a SQLite built without FTS5 fails on
+// it, and inside the block above that error stopped every later table from
+// being created and the bridge from starting at all.
+ensureMemorySearchIndex(sqlite);
 
 // ---------------------------------------------------------------------------
 // Additive migrations for databases created before a column existed. The
@@ -188,7 +235,18 @@ function columnsOf(table: string): ColumnInfo[] {
     })();
     sqlite.exec('PRAGMA foreign_keys = ON;');
   }
+
+  // Agent: automations that continue an existing session, and one-shot runs.
+  const after = columnsOf('automations');
+  if (!after.some(c => c.name === 'target_session_id')) {
+    sqlite.exec('ALTER TABLE automations ADD COLUMN target_session_id TEXT');
+  }
+  if (!after.some(c => c.name === 'run_at')) {
+    sqlite.exec('ALTER TABLE automations ADD COLUMN run_at INTEGER');
+  }
 }
 
 export const database = drizzle(sqlite, { schema });
 export function closeDatabase(): void { sqlite.close(); }
+/** Raw handle for what drizzle can't express (FTS5 queries in agent/memory). */
+export const sqliteHandle = sqlite;

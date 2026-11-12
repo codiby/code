@@ -8,7 +8,13 @@ require Pod::Executable.execute_command('node', ['-p',
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
-linkage = ENV['USE_FRAMEWORKS']
+# Push notifications: React Native Firebase is linked on iOS only once
+# CodibyCode/GoogleService-Info.plist exists (see react-native.config.js), and
+# it resolves the Firebase SDK through Swift Package Manager, which requires
+# dynamic frameworks.
+firebase_ios = File.exist?(File.join(__dir__, 'CodibyCode', 'GoogleService-Info.plist'))
+
+linkage = ENV['USE_FRAMEWORKS'] || (firebase_ios ? 'dynamic' : nil)
 if linkage != nil
   Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
   use_frameworks! :linkage => linkage.to_sym

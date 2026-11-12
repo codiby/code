@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import * as repository from './repository';
 import * as scheduler from './scheduler';
 import { promptWithPayload } from './runner';
-import { automationPatchSchema } from './types';
+import { automationInputSchema, automationPatchSchema, parseInstant } from './types';
 
 // The sandbox database these run against comes from scripts/test-preload.ts:
 // setting CODIBY_DATABASE_FILE here instead would lose the race to any suite
@@ -28,7 +28,8 @@ describe('automation persistence', () => {
     }, 1_000);
 
     expect(repository.getAutomation(automation.id)?.name).toBe('Daily review');
-    expect(repository.listAutomations()).toHaveLength(1);
+    // Other suites share this database, so look for the row rather than count them.
+    expect(repository.listAutomations().some(a => a.id === automation.id)).toBe(true);
     expect(repository.updateAutomation(automation.id, { name: 'Morning review' })?.name).toBe('Morning review');
 
     const run = repository.createRun(automation, 'manual', null)!;
@@ -64,6 +65,26 @@ describe('patch validation', () => {
 
   test('still rejects an empty patch', () => {
     expect(() => automationPatchSchema.parse({})).toThrow();
+  });
+});
+
+describe('one-shot and targeted input', () => {
+  const base = { name: 'Later', prompt: 'Do it' };
+
+  test('a one-shot needs runAt, given as epoch millis or ISO-8601 with an offset', () => {
+    expect(() => automationInputSchema.parse({ ...base, cwd: '/tmp', triggerType: 'once' })).toThrow();
+    const parsed = automationInputSchema.parse({ ...base, cwd: '/tmp', triggerType: 'once', runAt: '2026-11-12T09:30:00-06:00' });
+    expect(parsed.runAt).toBe(Date.parse('2026-11-12T15:30:00Z'));
+    // A bare local time is ambiguous on a bridge in another zone.
+    expect(() => automationInputSchema.parse({ ...base, cwd: '/tmp', triggerType: 'once', runAt: '2026-11-12T09:30' })).toThrow();
+    expect(parseInstant('2026-11-12T09:30:00Z')).toBe(Date.parse('2026-11-12T09:30:00Z'));
+  });
+
+  test('the folder is only optional when the run happens in a target session', () => {
+    expect(() => automationInputSchema.parse({ ...base, cronExpression: '0 9 * * *' })).toThrow();
+    const parsed = automationInputSchema.parse({ ...base, cronExpression: '0 9 * * *', targetSessionId: 'main-session' });
+    expect(parsed.targetSessionId).toBe('main-session');
+    expect(parsed.cwd).toBeUndefined();
   });
 });
 

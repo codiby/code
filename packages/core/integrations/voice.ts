@@ -27,8 +27,9 @@
  */
 
 import { log, logError } from '../lib/logger';
-import { loadDeepgramSettings, loadVoiceSettings } from '../session/storage';
-import { getSessionState } from '../session/state';
+import { loadDeepgramSettings, loadVoiceSettings, saveVoiceSettings, type VoiceSettings } from '../session/storage';
+import { getSessionState, isSubagentChatter, type ChatMessage } from '../session/state';
+import { nextSecretValue } from './deepgram';
 import { startTts, TTS_SAMPLE_RATE, type TtsJob } from './tts';
 import { CONTEXT_MESSAGES, FastVoiceAgent, parseFront, type VoiceLine } from './voice-agent';
 
@@ -77,6 +78,42 @@ function broadcastVoiceState(sessionId: string) {
 
 let deps: VoiceDeps | null = null;
 export function setVoiceDeps(d: VoiceDeps) { deps = d; }
+
+/** GET /voice/settings without the ElevenLabs key: it is write-only, like Deepgram's (deepgram.ts). */
+export function voiceSettingsView() {
+  const s = loadVoiceSettings();
+  const { apiKey, ...elevenlabs } = s.elevenlabs;
+  return { ...s, elevenlabs: { ...elevenlabs, configured: Boolean(apiKey) } };
+}
+
+type VoiceSettingsBody = Partial<Omit<VoiceSettings, 'elevenlabs'>> & {
+  elevenlabs?: { apiKey?: string | null; clearApiKey?: boolean; voiceId?: string; modelId?: string };
+};
+
+/**
+ * Apply a PUT /voice/settings body over what's saved. The ElevenLabs key
+ * follows nextSecretValue: the settings form never sees the saved key, so
+ * the empty field it sends back keeps it.
+ */
+export function applyVoiceSettings(body: VoiceSettingsBody): void {
+  const current = loadVoiceSettings();
+  const speed = Number(body.ttsSpeed);
+  const el = body.elevenlabs ?? {};
+  saveVoiceSettings({
+    ttsProvider: body.ttsProvider === 'elevenlabs' ? 'elevenlabs' : body.ttsProvider === 'deepgram' ? 'deepgram' : current.ttsProvider,
+    ttsSpeed: Number.isFinite(speed) && speed > 0 ? speed : current.ttsSpeed,
+    deepgramVoice: (body.deepgramVoice ?? '').trim() || current.deepgramVoice,
+    sendAfterMs: Number.isFinite(Number(body.sendAfterMs)) && Number(body.sendAfterMs) >= 0
+      ? Math.round(Number(body.sendAfterMs))
+      : current.sendAfterMs,
+    fastAgent: typeof body.fastAgent === 'boolean' ? body.fastAgent : current.fastAgent,
+    elevenlabs: {
+      apiKey: nextSecretValue(current.elevenlabs.apiKey, el.apiKey, el.clearApiKey),
+      voiceId: (el.voiceId ?? current.elevenlabs.voiceId).trim(),
+      modelId: (el.modelId ?? '').trim() || current.elevenlabs.modelId,
+    },
+  });
+}
 
 const bridges = new Map<ClientSocket, VoiceBridge>();
 
@@ -187,6 +224,25 @@ export function repeats(summary: string, alreadySaid: string[]): boolean {
 }
 
 /** Two session messages carrying the same text, give or take formatting. */
+/**
+ * What a session wrote since the user's last message, for the voice agent to
+ * relay. Sub-agents' own text stays out: a workflow agent that only carries an
+ * `agentId` (no `parentToolUseId`) would otherwise be read aloud as if the
+ * session had said it.
+ */
+export function turnTexts(msgs: ChatMessage[], result: string): string {
+  let i = msgs.length - 1;
+  while (i >= 0 && msgs[i]!.role !== 'user') i--;
+  const texts = msgs.slice(i + 1)
+    .filter((m) => m.role === 'assistant' && !m.toolName && !m.isToolResult && !m.isThinking && !isSubagentChatter(m))
+    .map((m) => m.content.trim())
+    .filter(Boolean);
+  // The SDK's result is normally the last message already; add it if not.
+  const last = texts[texts.length - 1];
+  if (result.trim() && !(last && sameContent(last, result))) texts.push(result.trim());
+  return texts.join('\n\n');
+}
+
 export function sameContent(a: string, b: string): boolean {
   const wa = words(toSpeakable(a));
   const wb = new Set(words(toSpeakable(b)));
@@ -603,17 +659,7 @@ class VoiceBridge {
    * the way as well as the closing answer, which alone often just says "listo".
    */
   private turnTexts(result: string): string {
-    const msgs = getSessionState(this.sessionId).messages;
-    let i = msgs.length - 1;
-    while (i >= 0 && msgs[i]!.role !== 'user') i--;
-    const texts = msgs.slice(i + 1)
-      .filter((m) => m.role === 'assistant' && !m.toolName && !m.isToolResult && !m.isThinking && !m.parentToolUseId)
-      .map((m) => m.content.trim())
-      .filter(Boolean);
-    // The SDK's result is normally the last message already; add it if not.
-    const last = texts[texts.length - 1];
-    if (result.trim() && !(last && sameContent(last, result))) texts.push(result.trim());
-    return texts.join('\n\n');
+    return turnTexts(getSessionState(this.sessionId).messages, result);
   }
 
   private async relayTurn(turn: number, text: string) {

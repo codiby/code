@@ -141,8 +141,12 @@ function quote(value: string | undefined, max = 120): string {
   return JSON.stringify(flat.length > max ? `${flat.slice(0, max)}…` : flat);
 }
 
-/** One line per element: `[12] Button "Send" · tap · @980,2200`. */
+/** One line per element: `[12] Button "Send" · tap · @980,2200`. The banner comes first: even the app label is the phone's. */
 export function formatScreen(raw: unknown, phoneName: string): string {
+  return [UNTRUSTED, '', ...screenLines(raw, phoneName)].join('\n');
+}
+
+function screenLines(raw: unknown, phoneName: string): string[] {
   const screen = (raw ?? {}) as Screen;
   const app = screen.app?.label
     ? `${screen.app.label}${screen.app.package ? ` (${screen.app.package})` : ''}`
@@ -150,7 +154,7 @@ export function formatScreen(raw: unknown, phoneName: string): string {
   const size = screen.screen?.width && screen.screen?.height ? ` · ${screen.screen.width}×${screen.screen.height}` : '';
   const lines = [`Phone: ${phoneName} · ${app}${size}`];
   if (screen.locked) lines.push('The phone is locked: the user has to unlock it before anything can be done.');
-  lines.push(UNTRUSTED, '');
+  lines.push('');
   for (const node of screen.nodes ?? []) {
     const label = [quote(node.text), node.desc && node.desc !== node.text ? `desc ${quote(node.desc, 80)}` : '']
       .filter(Boolean)
@@ -175,7 +179,7 @@ export function formatScreen(raw: unknown, phoneName: string): string {
   }
   if ((screen.nodes ?? []).length === 0) lines.push('(nothing readable on screen)');
   if (screen.truncated) lines.push('… more elements were cut; scroll or read again for the rest.');
-  return lines.join('\n');
+  return lines;
 }
 
 function screenContent(raw: unknown, phoneName: string, withImage: boolean): CallToolResult['content'] {
@@ -223,14 +227,15 @@ export async function executePhoneTool(
       case 'phone_read_screen':
         return { content: screenContent(result, phoneName, args.screenshot === true) };
       case 'phone_act': {
+        // "Tap "<label>" in <app>" quotes the screen too, so the banner goes before it.
         const outcome = (result ?? {}) as { done?: string; screen?: unknown };
-        const content: CallToolResult['content'] = [{ type: 'text', text: outcome.done || 'Done.' }];
-        if (outcome.screen) content.push(...screenContent(outcome.screen, phoneName, false));
-        return { content };
+        const lines = [UNTRUSTED, '', outcome.done || 'Done.'];
+        if (outcome.screen) lines.push('', ...screenLines(outcome.screen, phoneName));
+        return textResult(lines.join('\n'));
       }
       case 'phone_list_apps': {
         const apps = ((result as { apps?: { label?: string; package?: string }[] })?.apps ?? []);
-        return textResult(apps.length ? apps.map(a => `${a.label} — ${a.package}`).join('\n') : 'No matching apps.');
+        return textResult(apps.length ? [UNTRUSTED, '', ...apps.map(a => `${a.label} — ${a.package}`)].join('\n') : 'No matching apps.');
       }
       case 'phone_notifications': {
         const list = ((result as { notifications?: Record<string, unknown>[] })?.notifications ?? []);

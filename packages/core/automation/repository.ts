@@ -3,7 +3,7 @@ import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
 import { database } from '../database';
 import { automationRuns, automations, type AutomationRecord, type AutomationRunRecord } from '../database/schema';
 import type { TurnCompleteInfo } from '../provider/types';
-import type { AutomationInput, AutomationPatch, AutomationRunStatus, AutomationRunTrigger } from './types';
+import type { AutomationCreate, AutomationPatch, AutomationRunStatus, AutomationRunTrigger } from './types';
 
 const activeAutomation = isNull(automations.deletedAt);
 
@@ -21,13 +21,20 @@ export function getAutomation(id: string): AutomationRecord | null {
     .where(and(eq(automations.id, id), activeAutomation)).get() ?? null;
 }
 
-export function createAutomation(input: AutomationInput, nextRunAt: number | null): AutomationRecord {
+/** Including soft-deleted rows — for questions about a run whose automation may be gone. */
+export function getAutomationRecord(id: string): AutomationRecord | null {
+  return database.select().from(automations).where(eq(automations.id, id)).get() ?? null;
+}
+
+export function createAutomation(input: AutomationCreate, nextRunAt: number | null): AutomationRecord {
   const now = Date.now();
   const record = {
     id: `aut_${randomUUID()}`,
     ...input,
     description: input.description ?? null,
     cronExpression: input.cronExpression ?? null,
+    runAt: input.runAt ?? null,
+    targetSessionId: input.targetSessionId ?? null,
     model: input.model ?? null,
     effort: input.effort ?? null,
     maxRuntimeMs: input.maxRuntimeMs ?? null,
@@ -72,11 +79,17 @@ export function hasActiveRun(automationId: string): boolean {
   )).get();
 }
 
+/**
+ * Insert a run. `reason` is stored as the run's `error` — for a `skipped` run
+ * it says why it never started (target busy, missed while offline…), which
+ * the history would otherwise show as an unexplained gap.
+ */
 export function createRun(
   automation: AutomationRecord,
   trigger: AutomationRunTrigger,
   scheduledFor: number | null,
   status: AutomationRunStatus = 'scheduled',
+  reason?: string,
 ): AutomationRunRecord | null {
   const now = Date.now();
   const record = {
@@ -86,6 +99,7 @@ export function createRun(
     trigger,
     scheduledFor,
     status,
+    error: reason ?? null,
     finishedAt: status === 'skipped' ? now : null,
     durationMs: status === 'skipped' ? 0 : null,
     createdAt: now,
@@ -99,19 +113,21 @@ export function createRun(
   }
 }
 
-export function startRun(runId: string, sessionId: string): AutomationRunRecord | null {
+/** `sessionId` is null for runs handled in code (a reminder delivered verbatim). */
+export function startRun(runId: string, sessionId: string | null): AutomationRunRecord | null {
   database.update(automationRuns).set({ sessionId, status: 'running', startedAt: Date.now() })
     .where(and(eq(automationRuns.id, runId), eq(automationRuns.status, 'scheduled'))).run();
   return getRunById(runId);
 }
 
-export function finishRunBySession(
-  sessionId: string,
-  status: Extract<AutomationRunStatus, 'succeeded' | 'failed'>,
+/** Settle a running run with its turn's outcome. No-op when it already finished (timed out, cancelled). */
+export function completeRun(
+  runId: string,
+  status: Extract<AutomationRunStatus, 'succeeded' | 'failed' | 'cancelled'>,
   info: TurnCompleteInfo & { error?: string },
 ): AutomationRunRecord | null {
-  const run = getActiveRunBySession(sessionId);
-  if (!run) return null;
+  const run = getRunById(runId);
+  if (!run || run.status !== 'running') return null;
   const finishedAt = Date.now();
   database.update(automationRuns).set({
     status,
@@ -125,6 +141,15 @@ export function finishRunBySession(
     outputTokens: info.usage?.output_tokens ?? null,
   }).where(and(eq(automationRuns.id, run.id), eq(automationRuns.status, 'running'))).run();
   return getRunById(run.id);
+}
+
+export function finishRunBySession(
+  sessionId: string,
+  status: Extract<AutomationRunStatus, 'succeeded' | 'failed'>,
+  info: TurnCompleteInfo & { error?: string },
+): AutomationRunRecord | null {
+  const run = getActiveRunBySession(sessionId);
+  return run ? completeRun(run.id, status, info) : null;
 }
 
 export function finishRun(
@@ -166,6 +191,10 @@ export function listRuns(automationId: string, options: { limit: number; before?
   if (options.status) filters.push(eq(automationRuns.status, options.status));
   return database.select().from(automationRuns).where(and(...filters))
     .orderBy(desc(automationRuns.createdAt)).limit(options.limit).all();
+}
+
+export function latestRun(automationId: string): AutomationRunRecord | null {
+  return listRuns(automationId, { limit: 1 })[0] ?? null;
 }
 
 export function failInterruptedRuns(): number {

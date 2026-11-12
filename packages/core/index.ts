@@ -13,7 +13,8 @@ import { randomUUID } from 'crypto';
 import { PORT, HOST, CLAUDE_BIN, corsHeaders, CWD, CODIBY_DIR, loadOrCreateMobileToken, getLanIp, resolveTls } from './config/config';
 import { handleMobilePair, handleMobilePairRegenerate, handleMobileNotifyTest } from './handlers/mobile';
 import { notifyPermissionResolved } from './integrations/notify';
-import { log, registerGlobalErrorHandlers } from './lib/logger';
+import { log, logError, registerGlobalErrorHandlers } from './lib/logger';
+import { startupLogLines } from './lib/startup-log';
 import { sessions, loadSessions, saveSessions, sessionToJSON, setStatusBroadcaster } from './session/sessions';
 import { grantAttachedPaths } from './session/granted-paths';
 import { loadRemotes, getRemote } from './network/remotes';
@@ -38,6 +39,7 @@ import {
   registerClientOrigin,
 } from './network/client-origin';
 import type { ClientOrigin } from './network/client-origin';
+import { OWNER_VERIFICATION_ERROR, callerInput, isLocalUiRequest, isLocalhostRequest as isLocalhostCaller, isOwnerVerifiedRequest, isProxiedRequest, presentsToken } from './network/local-trust';
 import { viewerLocationReminder } from './network/remote-viewer';
 import { setPortForwardListener } from './network/port-forward';
 import {
@@ -127,7 +129,7 @@ import { DEFAULT_PROVIDER } from './provider/registry';
 import type { Session } from './types';
 import { effectiveModel, getDefaultModels } from './provider/default-model';
 import { resolvePermissionDecision, clearPendingDecisionsForSession } from './provider/bridge';
-import { handleBrowserResponse } from './provider/browser-cdp';
+import { handleBrowserResponse, setDesktopBrowserProbe } from './provider/browser-cdp';
 import { handleViewerForwardResponse } from './network/viewer-forward';
 import { handleListDirs, handleListFiles, handleFileIndex, handleDeletePath, handleRenamePath, handleCreateFile, handleCreateDir, handleRevealInFinder } from './handlers/files';
 import { handleListSkills, handleGetSkill, handleCreateSkill, handleUpdateSkill, handleDeleteSkill } from './handlers/skills';
@@ -159,7 +161,8 @@ import { dedupePreferenceGroups } from './config/group-dedupe';
 import { getOrCreateLsp, sendToLsp, addLspClient, removeLspClient, killSessionLsp, supportedLanguages } from './handlers/lsp';
 import { discoverTargets, connectToTarget, getConnection, disconnectTarget, addCdpClient, removeCdpClient, sendCdpMessage } from './handlers/cdp';
 import { registerShutdownHandlers } from './lib/shutdown';
-import { startTelegramBot, notifyTelegramIfMainSession, restartTelegramBot, isTelegramBotRunning, setTelegramBroadcaster } from './integrations/telegram';
+import { telegramSettingsView, applyTelegramSettings } from './integrations/telegram';
+import { startAgent, handleAgentRoute } from './agent';
 import { ensureMcpConfig } from './mcp/ensure-mcp-config';
 import * as pluginHost from './plugin-host/index';
 import { getHostIdentity } from './network/host-identity';
@@ -178,19 +181,20 @@ import {
   getOlderMessages,
   clearSessionState,
   getLastActivityAt,
+  getTaskMessages,
+  isSubagentChatter,
 } from './session/state';
 import type { ChatMessage } from './session/state';
-import { loadPRLinks, addPRLink, setPRLinks, removePRLink, getPRLinks, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTelegramSettings, saveTelegramSettings, loadDeepgramSettings, saveDeepgramSettings, loadTailscaleSettings, saveTailscaleSettings } from './session/storage';
+import { loadPRLinks, addPRLink, setPRLinks, removePRLink, getPRLinks, loadPreferences, savePreferences, loadKeybindings, saveKeybindings, loadTailscaleSettings, saveTailscaleSettings } from './session/storage';
 import type { PRLink } from './session/storage';
 import { handleMobileHome } from './handlers/mobile-home';
 import { readClaudeHooks, writeClaudeHooks, type ClaudeHooks } from './config/claude-settings';
 import { createDocsApp } from './api/swagger';
 import { Hono } from 'hono';
-import { transcribeAudioBuffer, listAuraVoices } from './integrations/deepgram';
-import { openVoice, voiceMessage, closeVoice, speakTurnResult, setVoiceDeps, voiceStateOf } from './integrations/voice';
+import { transcribeAudioBuffer, listAuraVoices, deepgramSettingsView, applyDeepgramSettings } from './integrations/deepgram';
+import { openVoice, voiceMessage, closeVoice, speakTurnResult, setVoiceDeps, voiceStateOf, voiceSettingsView, applyVoiceSettings } from './integrations/voice';
 import { openPhone, phoneMessage, closePhone } from './integrations/phone';
 import { listElevenLabsVoices, SPEED_RANGE } from './integrations/tts';
-import { loadVoiceSettings, saveVoiceSettings, type VoiceSettings } from './session/storage';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './network/tailscale';
 
 // ---------------------------------------------------------------------------
@@ -306,6 +310,14 @@ function sendBrowserRequest(sessionId: string, msg: object) {
     }
   }
 }
+
+// Sessions nobody can serve from a desktop app fall back to the bridge's headless browser.
+setDesktopBrowserProbe((sessionId) => {
+  for (const [ws, subs] of subscriptions) {
+    if (subs.has(sessionId) && browserCdpClients.has(ws)) return true;
+  }
+  return false;
+});
 
 /** Build the merged local + cached-remote session list the frontend
  *  consumes. Local entries get `remoteId: null`; remote entries are flattened
@@ -663,7 +675,7 @@ async function sendMessageToSession(
   sessionId: string,
   text: string,
   images?: { media_type: string; data: string }[],
-  opts: { bargeIn?: boolean } = {},
+  opts: { bargeIn?: boolean; source?: ChatMessage['source'] } = {},
 ): Promise<{ ok: boolean; error?: string }> {
   const session = sessions.get(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
@@ -687,6 +699,7 @@ async function sendMessageToSession(
     content: text,
     timestamp: Date.now(),
     images,
+    ...(opts.source ? { source: opts.source } : {}),
   };
   if (addMessage(sessionId, userMsg)) {
     broadcastToSession(sessionId, { type: 'message', sessionId, message: userMsg });
@@ -717,7 +730,6 @@ setBridgeDeps({
   broadcastToSession,
   sendBrowserRequest,
   broadcastSessionList,
-  notifyTelegramIfMainSession,
   onTurnComplete: (sessionId, info) => {
     completeAutomationRun(sessionId, info);
     speakTurnResult(sessionId, info.resultText);
@@ -1057,6 +1069,22 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     return;
   }
 
+  // ---- task_stop / task_background (Agents panel) --------------------------
+  // Controls for the SDK's background tasks: stop one sub-agent, or move a
+  // foreground one to the background so the main turn carries on.
+  if (type === 'task_stop' || type === 'task_background') {
+    const { sessionId, taskId, toolUseId } = msg as { sessionId?: string; taskId?: string; toolUseId?: string };
+    const provider = sessionId ? sessions.get(sessionId)?.providerSession : null;
+    if (!provider) return;
+    try {
+      if (type === 'task_stop' && taskId) await provider.stopTask?.(taskId);
+      if (type === 'task_background') await provider.backgroundTask?.(toolUseId || undefined);
+    } catch (err) {
+      log(`[${sessionId!.slice(0, 8)}] ${type} failed: ${err instanceof Error ? err.message : err}`);
+    }
+    return;
+  }
+
   // ---- permission_response -------------------------------------------------
   if (type === 'permission_response') {
     const { sessionId, requestId, allow, updatedInput } = msg as {
@@ -1074,6 +1102,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       allow
         ? { allow: true, updatedInput: updatedInput || {} }
         : { allow: false, interrupt: true },
+      'app',
     );
 
     // When user denies a tool, also interrupt so the model stops retrying.
@@ -1309,13 +1338,26 @@ loadOrCreateMobileToken();
 /**
  * Treat the request as "trusted" if it comes from localhost. The Electron
  * desktop app always uses localhost, so this preserves zero-config desktop
- * usage while requiring the bearer token from any LAN client.
+ * usage while requiring the bearer token from any LAN client. The rules (Host,
+ * socket peer, Origin, proxy headers) live in network/local-trust.ts.
  */
-function isLocalhostRequest(req: Request): boolean {
-  const host = req.headers.get('host') || '';
-  // Strip port; accept both IPv4/IPv6 loopback
-  const hostname = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+function isLocalhostRequest(req: Request, peer: string | null | undefined): boolean {
+  const h = req.headers;
+  return isLocalhostCaller({ host: h.get('host'), peer, origin: h.get('origin'), proxied: isProxiedRequest(h) });
+}
+
+/**
+ * The bearer token, or the bridge's own UI on this machine — never a bare
+ * localhost CLI. Gates owner changes the agent's own shell must not make with
+ * a `curl localhost:…` (see network/local-trust.ts and agent/routes.ts).
+ */
+function isOwnerVerified(req: Request, url: URL, peer: string | null | undefined): boolean {
+  return isOwnerVerifiedRequest(callerInput(req, url, peer), loadOrCreateMobileToken());
+}
+
+/** The desktop UI on this machine (not a CLI): what may read or rotate the phone token. */
+function isLocalUiPage(req: Request, peer: string | null | undefined): boolean {
+  return isLocalhostRequest(req, peer) && isLocalUiRequest(req.headers.get('origin'), req.headers.get('sec-fetch-site'));
 }
 
 /** Routes that must remain reachable without the bearer token. */
@@ -1342,25 +1384,13 @@ function isPublicRoute(pathname: string): boolean {
   return false;
 }
 
-function authCheck(req: Request, url: URL): boolean {
-  if (isLocalhostRequest(req)) return true;
+function authCheck(req: Request, url: URL, peer: string | null | undefined): boolean {
+  if (isLocalhostRequest(req, peer)) return true;
   if (isPublicRoute(url.pathname)) return true;
   // Read the current token live so rotation takes effect without a restart.
-  const token = loadOrCreateMobileToken();
-  // Token sources, in priority order:
-  //   1. Authorization: Bearer <token>
-  //   2. ?t=<token> query string
-  //   3. Sec-WebSocket-Protocol: <token>   (the only header browsers allow on WS upgrade)
-  const auth = req.headers.get('authorization');
-  if (auth) {
-    const m = auth.match(/^Bearer\s+(.+)$/i);
-    if (m && m[1].trim() === token) return true;
-  }
-  const qt = url.searchParams.get('t');
-  if (qt && qt === token) return true;
-  const wsProto = req.headers.get('sec-websocket-protocol');
-  if (wsProto && wsProto.split(',').map(s => s.trim()).includes(token)) return true;
-  return false;
+  // Accepted as `Authorization: Bearer`, `?t=`, or `Sec-WebSocket-Protocol`
+  // (the only header browsers allow on a WS upgrade).
+  return presentsToken(callerInput(req, url, peer), loadOrCreateMobileToken());
 }
 
 // Serve built static files (desktop + mobile UI) from `dist/`. Produced by
@@ -1857,8 +1887,12 @@ app.get('/sessions/:id/suggestions', async (c) => {
   const messages = getSessionState(sessionId).messages;
   let lastText = '';
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i] as { role?: string; content?: unknown; toolName?: unknown };
+    const m = messages[i]!;
     if (m.role !== 'assistant' || m.toolName) continue;
+    // Not tool output, and not a sub-agent's own text (it belongs to the
+    // Agents window): a background one can write after the final answer, and
+    // the suggestions would reply to it instead.
+    if (m.isToolResult || m.isThinking || isSubagentChatter(m)) continue;
     if (typeof m.content === 'string' && m.content.trim().length > 0) {
       lastText = m.content;
       break;
@@ -1891,6 +1925,56 @@ app.get('/sessions/:id/messages', (c) => {
     return Response.json(getNewerMessages(sessionId, afterSeq, beforeSeq, limit), { headers: corsHeaders });
   }
   return Response.json(getOlderMessages(sessionId, beforeSeq, limit), { headers: corsHeaders });
+});
+
+// One sub-agent's whole conversation (prompt, thoughts, text, tools) for the
+// Agents window. Its own text is kept out of the chat window, so this is the
+// only place it is served from.
+app.get('/sessions/:id/tasks/:taskId/messages', (c) => {
+  const sessionId = c.req.param('id');
+  if (!sessions.has(sessionId)) {
+    return Response.json({ error: 'session not found' }, { status: 404, headers: corsHeaders });
+  }
+  const taskId = c.req.param('taskId');
+  const task = getSessionState(sessionId).tasks?.[taskId] ?? null;
+  const toolUseId = task?.toolUseId ?? new URL(c.req.url).searchParams.get('tool_use_id');
+  return Response.json({ task, messages: getTaskMessages(sessionId, taskId, toolUseId) }, { headers: corsHeaders });
+});
+
+// The agents inside a workflow task. The SDK streams a workflow as one task,
+// so they are read from its own transcript files (session/workflow-agents.ts);
+// `found: false` while the Workflow tool has not said where those live yet.
+app.get('/sessions/:id/tasks/:taskId/agents', async (c) => {
+  const sessionId = c.req.param('id');
+  if (!sessions.has(sessionId)) {
+    return Response.json({ error: 'session not found' }, { status: 404, headers: corsHeaders });
+  }
+  const task = getSessionState(sessionId).tasks?.[c.req.param('taskId')];
+  if (!task) return Response.json({ error: 'task not found' }, { status: 404, headers: corsHeaders });
+  const { listWorkflowAgents, resolveWorkflowDir } = await import('./session/workflow-agents');
+  const dir = resolveWorkflowDir(sessionId, task, { messages: getSessionState(sessionId).messages });
+  if (!dir) return Response.json({ found: false, agents: [] }, { headers: corsHeaders });
+  return Response.json({ found: true, agents: await listWorkflowAgents(dir, task.status) }, { headers: corsHeaders });
+});
+
+// One workflow agent's conversation. `?after_seq=N` returns only what came
+// after N — the window polls with it while the agent runs.
+app.get('/sessions/:id/tasks/:taskId/agents/:agentId/messages', async (c) => {
+  const sessionId = c.req.param('id');
+  if (!sessions.has(sessionId)) {
+    return Response.json({ error: 'session not found' }, { status: 404, headers: corsHeaders });
+  }
+  const task = getSessionState(sessionId).tasks?.[c.req.param('taskId')];
+  if (!task) return Response.json({ error: 'task not found' }, { status: 404, headers: corsHeaders });
+  const { listWorkflowAgents, readWorkflowAgentMessages, resolveWorkflowDir } = await import('./session/workflow-agents');
+  const dir = resolveWorkflowDir(sessionId, task, { messages: getSessionState(sessionId).messages });
+  const agentId = c.req.param('agentId');
+  const raw = new URL(c.req.url).searchParams.get('after_seq');
+  const afterSeq = raw === null ? undefined : Number(raw);
+  const transcript = dir ? await readWorkflowAgentMessages(dir, agentId, { afterSeq }) : null;
+  if (!dir || !transcript) return Response.json({ error: 'agent not found' }, { status: 404, headers: corsHeaders });
+  const [agent] = await listWorkflowAgents(dir, task.status, { only: agentId });
+  return Response.json({ agent: agent ?? null, ...transcript }, { headers: corsHeaders });
 });
 
 // List every terminal for a session. The UI fetches this as soon as it
@@ -1958,7 +2042,8 @@ app.post('/sessions/:id/messages', async (c) => {
 // Sessions the previous run left mid-turn (see session/interrupted.ts). The
 // UI asks once on launch; restoring sends a plain "continue", which also
 // respawns the provider with its resume id.
-const RESUME_PROMPT = 'Continue.';
+// Shared with agent/dispatch.ts, which recognises a resumed turn by this exact text.
+import { RESUME_PROMPT } from './agent/dispatch';
 
 app.get('/interrupted-sessions', () => {
   const list = getInterruptedTurns().flatMap(({ sessionId, at }) => {
@@ -2429,64 +2514,27 @@ app.post('/worktree', (c) => handleCreateWorktree(c.req.raw));
 app.post('/worktree/remove', (c) => handleRemoveWorktree(c.req.raw));
 
 // ── Telegram ──────────────────────────────────────────────────────────────────
-app.get('/telegram/settings', () => {
-  const settings = loadTelegramSettings();
-  return Response.json({
-    botToken: settings.botToken,
-    chatId: settings.chatId,
-    running: isTelegramBotRunning(),
-  }, { headers: corsHeaders });
-});
+// Mapped onto the agent's first Telegram channel; the token is write-only.
+app.get('/telegram/settings', () => Response.json(telegramSettingsView(), { headers: corsHeaders }));
 app.put('/telegram/settings', async (c) => {
-  const body = await c.req.raw.json() as { botToken?: string; chatId?: string };
-  saveTelegramSettings({
-    botToken: (body.botToken ?? '').trim(),
-    chatId: (body.chatId ?? '').trim(),
-  });
-  restartTelegramBot();
-  return Response.json({ ok: true, running: isTelegramBotRunning() }, { headers: corsHeaders });
+  const body = await c.req.raw.json().catch(() => ({}));
+  const res = await applyTelegramSettings(body);
+  return Response.json(res, { status: res.ok ? 200 : 400, headers: corsHeaders });
 });
 
 // ── Deepgram ──────────────────────────────────────────────────────────────────
-app.get('/deepgram/settings', () => {
-  const settings = loadDeepgramSettings();
-  return Response.json({
-    apiKey: settings.apiKey,
-    model: settings.model,
-    language: settings.language,
-    configured: Boolean(settings.apiKey),
-  }, { headers: corsHeaders });
-});
+// API keys are write-only, like the Telegram token: any localhost caller (the
+// agent's own shell included) can read these GETs. An empty key on PUT keeps
+// the saved one; `clearApiKey: true` removes it.
+app.get('/deepgram/settings', () => Response.json(deepgramSettingsView(), { headers: corsHeaders }));
 app.put('/deepgram/settings', async (c) => {
-  const body = await c.req.raw.json() as { apiKey?: string; model?: string; language?: string };
-  const apiKey = (body.apiKey ?? '').trim();
-  const model = (body.model ?? '').trim() || 'nova-3';
-  const language = (body.language ?? '').trim() || 'multi';
-  saveDeepgramSettings({ apiKey, model, language });
-  return Response.json({ ok: true, configured: Boolean(apiKey) }, { headers: corsHeaders });
+  const body = await c.req.raw.json().catch(() => ({}));
+  return Response.json(applyDeepgramSettings(body), { headers: corsHeaders });
 });
-app.get('/voice/settings', () => {
-  const s = loadVoiceSettings();
-  return Response.json({ ...s, speedRange: SPEED_RANGE }, { headers: corsHeaders });
-});
+app.get('/voice/settings', () => Response.json({ ...voiceSettingsView(), speedRange: SPEED_RANGE }, { headers: corsHeaders }));
 app.put('/voice/settings', async (c) => {
-  const body = await c.req.raw.json() as Partial<VoiceSettings>;
-  const current = loadVoiceSettings();
-  const speed = Number(body.ttsSpeed);
-  saveVoiceSettings({
-    ttsProvider: body.ttsProvider === 'elevenlabs' ? 'elevenlabs' : body.ttsProvider === 'deepgram' ? 'deepgram' : current.ttsProvider,
-    ttsSpeed: Number.isFinite(speed) && speed > 0 ? speed : current.ttsSpeed,
-    deepgramVoice: (body.deepgramVoice ?? '').trim() || current.deepgramVoice,
-    sendAfterMs: Number.isFinite(Number(body.sendAfterMs)) && Number(body.sendAfterMs) >= 0
-      ? Math.round(Number(body.sendAfterMs))
-      : current.sendAfterMs,
-    fastAgent: typeof body.fastAgent === 'boolean' ? body.fastAgent : current.fastAgent,
-    elevenlabs: {
-      apiKey: (body.elevenlabs?.apiKey ?? current.elevenlabs.apiKey).trim(),
-      voiceId: (body.elevenlabs?.voiceId ?? current.elevenlabs.voiceId).trim(),
-      modelId: (body.elevenlabs?.modelId ?? '').trim() || current.elevenlabs.modelId,
-    },
-  });
+  const body = await c.req.raw.json().catch(() => ({}));
+  applyVoiceSettings(body && typeof body === 'object' ? body : {});
   return Response.json({ ok: true }, { headers: corsHeaders });
 });
 app.get('/elevenlabs/voices', async () => {
@@ -2691,15 +2739,33 @@ const server = Bun.serve({
 
   async fetch(req, server) {
     const url = new URL(req.url);
+    // The socket's real peer — what localhost trust is decided on (see isLocalhostRequest).
+    const peerAddress = server.requestIP(req)?.address;
 
     // CORS preflight (always allowed; auth header is checked on the actual request)
     if (req.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
+    // Codiby Agent (packages/core/agent). Its webhook and OAuth routes are
+    // public and authenticate themselves, so this runs before the token check.
+    if (url.pathname.startsWith('/agent/')) {
+      const agentResponse = await handleAgentRoute(req, url, {
+        authenticated: authCheck(req, url, peerAddress),
+        ownerVerified: isOwnerVerified(req, url, peerAddress),
+      });
+      if (agentResponse) return agentResponse;
+    }
+
     // Mobile bearer-token auth (no-op for localhost / public routes)
-    if (!authCheck(req, url)) {
+    if (!authCheck(req, url, peerAddress)) {
       return new Response('Unauthorized', { status: 401, headers: corsHeaders });
+    }
+
+    // The legacy Telegram form adds owner chats — an owner change, held to
+    // the same bar as the agent's own settings (agent/routes.ts).
+    if (url.pathname === '/telegram/settings' && req.method === 'PUT' && !isOwnerVerified(req, url, peerAddress)) {
+      return Response.json({ error: OWNER_VERIFICATION_ERROR }, { status: 403, headers: corsHeaders });
     }
 
     // Bridge-to-bridge project replication. Same trust as /peer/tools: a real
@@ -2799,14 +2865,17 @@ const server = Bun.serve({
 
     // Mobile pair endpoints — restricted to localhost so only the desktop user
     // can read/rotate the token.
+    // The page asking must be the desktop UI itself: the token is the key to
+    // everything owner-verified, and a localhost CLI (the agent's own shell
+    // among them) could otherwise read it with one curl and present it.
     if (url.pathname === '/mobile/pair' && req.method === 'GET') {
-      if (!isLocalhostRequest(req)) {
+      if (!isLocalUiPage(req, peerAddress)) {
         return new Response('Forbidden', { status: 403, headers: corsHeaders });
       }
       return handleMobilePair();
     }
     if (url.pathname === '/mobile/pair/regenerate' && req.method === 'POST') {
-      if (!isLocalhostRequest(req)) {
+      if (!isLocalUiPage(req, peerAddress)) {
         return new Response('Forbidden', { status: 403, headers: corsHeaders });
       }
       const res = await handleMobilePairRegenerate();
@@ -2834,7 +2903,8 @@ const server = Bun.serve({
       url.pathname !== '/file-index' &&
       url.pathname !== '/git-modified'
     ) {
-      log(`${req.method} ${url.pathname}${url.search}`);
+      // Clients pass the bearer token as ?t=…; the log keeps the request, never the token.
+      log(`${req.method} ${url.pathname}${url.search.replace(/([?&])t=[^&]*/g, '$1t=••••')}`);
     }
 
     // -----------------------------------------------------------------------
@@ -3120,20 +3190,17 @@ process.on('exit', () => { try { unlinkSync(PORT_FILE); } catch {} });
 process.on('SIGINT', () => { try { unlinkSync(PORT_FILE); } catch {}; process.exit(0); });
 process.on('SIGTERM', () => { try { unlinkSync(PORT_FILE); } catch {}; process.exit(0); });
 
-{
-  const scheme = TLS ? 'https' : 'http';
-  log(`Bridge server listening on ${scheme}://localhost:${server.port} (host=${HOST}, tls=${!!TLS})`);
-  log(`Swagger docs: ${scheme}://localhost:${server.port}/docs`);
-  log(`Claude binary: ${CLAUDE_BIN}`);
-  log(`Working directory: ${CWD}`);
-  log(`Spawn mode: ${SPAWN_MODE}`);
-  const lanIp = getLanIp();
-  if (lanIp && lanIp !== '127.0.0.1') {
-    log(`Mobile URL: ${scheme}://${lanIp}:${server.port}/m#t=${loadOrCreateMobileToken()}`);
-  } else {
-    log('Mobile URL: (no LAN IP detected — connect to a WiFi network)');
-  }
-}
+// No secrets in these lines (see lib/startup-log.ts): the mobile token is masked.
+for (const line of startupLogLines({
+  scheme: TLS ? 'https' : 'http',
+  port: server.port ?? PORT,
+  host: HOST,
+  tls: !!TLS,
+  claudeBin: CLAUDE_BIN,
+  cwd: CWD,
+  spawnMode: SPAWN_MODE,
+  lanIp: getLanIp(),
+})) log(line);
 console.log(`BRIDGE_SERVER_PORT:${server.port}`);
 setMcpDeps({
   port: server.port,
@@ -3157,7 +3224,9 @@ setMcpDeps({
   },
 });
 startPairingMaintenance(server.port!, broadcastRemoteList);
-configureAutomationRunner({ port: server.port!, sendMessage: sendMessageToSession, broadcastSessionList });
+// interruptSession: a targeted run (one aimed at an existing session such as
+// the agent's) is timed out or cancelled by stopping its turn, not the session.
+configureAutomationRunner({ port: server.port!, sendMessage: sendMessageToSession, broadcastSessionList, interruptSession });
 startAutomationScheduler();
 // Inbox sources: Slack in real time over Socket Mode, PRs polled with gh.
 {
@@ -3174,8 +3243,13 @@ startAutomationScheduler();
   startSlack();
   startPullRequestPolling();
 }
-setTelegramBroadcaster(broadcastToSession);
-startTelegramBot(server.port);
+void startAgent({
+  port: server.port!,
+  sendMessage: (sessionId, text, images, opts) => sendMessageToSession(sessionId, text, images, { source: opts?.source }),
+  interruptSession,
+  broadcastToSession,
+  broadcastSessionList,
+}).catch(err => logError(`[agent] start failed: ${err instanceof Error ? err.stack || err.message : err}`));
 
 /** Never talked to and not running: its provider waits for the first message. */
 function isFreshSession(session: Session): boolean {

@@ -7,7 +7,6 @@ const deps: BridgeDeps = {
   broadcastToSession: () => {},
   sendBrowserRequest: () => {},
   broadcastSessionList: () => {},
-  notifyTelegramIfMainSession: () => {},
 };
 
 function session(id: string): Session {

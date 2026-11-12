@@ -1097,21 +1097,152 @@ export const openApiSpec: OpenApiSpec = {
 
     // ───────────────────────── Integrations ─────────────────────────
     '/telegram/settings': {
-      get: { tags: ['Integrations'], summary: 'Get Telegram bot settings', responses: { 200: corsResponse } },
+      get: {
+        tags: ['Integrations'],
+        summary: 'Get Telegram bot settings',
+        description: 'Legacy view of the first Telegram channel of the Codiby Agent. The bot token is write-only: `botToken` is always empty and `hasToken` says whether one is stored.',
+        responses: {
+          200: {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    botToken: { type: 'string', enum: [''], description: 'Always empty — the token is never read back' },
+                    hasToken: { type: 'boolean', description: 'A bot token is stored for the channel' },
+                    chatId: { type: 'string', description: 'First paired owner chat (legacy field); empty when none' },
+                    chatIds: { type: 'array', items: { type: 'string' }, description: 'Every Telegram chat id the agent takes orders from' },
+                    running: { type: 'boolean' },
+                    botUsername: { type: 'string', nullable: true, description: 'The bot\'s @username once it has connected' },
+                    channelId: { type: 'string', nullable: true, description: 'Agent channel id backing these settings; null before one exists' },
+                    agentEnabled: { type: 'boolean', description: 'The Codiby Agent is enabled on this host' },
+                  },
+                  required: ['botToken', 'hasToken', 'chatId', 'chatIds', 'running', 'botUsername', 'channelId', 'agentEnabled'],
+                },
+              },
+            },
+          },
+        },
+      },
       put: {
         tags: ['Integrations'],
         summary: 'Update Telegram bot settings (restarts the bot)',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { botToken: { type: 'string' }, chatId: { type: 'string' } } } } } },
-        responses: { 200: corsResponse },
+        description: 'Owner change: needs the bearer token or the bridge\'s own UI; a bare localhost caller gets 403. An empty `botToken` keeps the stored one.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  botToken: { type: 'string', description: 'New token from @BotFather; empty keeps the current one' },
+                  clearToken: { type: 'boolean', description: 'Remove the stored token (ignored when botToken is set)' },
+                  chatId: { type: 'string', description: 'Chat id to add to the owner chats' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Saved', content: { 'application/json': { schema: { type: 'object', properties: { ok: { type: 'boolean' }, running: { type: 'boolean' } }, required: ['ok', 'running'] } } } },
+          400: { description: 'Invalid token or chat id', content: { 'application/json': { schema: { type: 'object', properties: { ok: { type: 'boolean' }, running: { type: 'boolean' }, error: { type: 'string' } } } } } },
+          403: errorResponse('Not the bridge token nor the bridge UI'),
+        },
       },
     },
     '/deepgram/settings': {
-      get: { tags: ['Integrations'], summary: 'Get Deepgram transcription settings', responses: { 200: corsResponse } },
+      get: {
+        tags: ['Integrations'],
+        summary: 'Get Deepgram transcription settings',
+        description: 'The API key is write-only: the response says whether one is saved (`configured`), never the key.',
+        responses: {
+          200: {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    configured: { type: 'boolean', description: 'An API key is saved' },
+                    model: { type: 'string', example: 'nova-3' },
+                    language: { type: 'string', example: 'multi' },
+                  },
+                  required: ['configured', 'model', 'language'],
+                },
+              },
+            },
+          },
+        },
+      },
       put: {
         tags: ['Integrations'],
         summary: 'Update Deepgram settings',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { apiKey: { type: 'string' }, model: { type: 'string', default: 'nova-3' }, language: { type: 'string', default: 'multi' } } } } } },
-        responses: { 200: corsResponse },
+        description: 'A non-empty `apiKey` replaces the saved key; an empty or missing one keeps it; `clearApiKey: true` (or `apiKey: null`) removes it. A missing `model`/`language` keeps the saved value.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  apiKey: { type: 'string', nullable: true, description: 'New key; empty keeps the current one, null removes it' },
+                  clearApiKey: { type: 'boolean', description: 'Remove the saved key' },
+                  model: { type: 'string', default: 'nova-3' },
+                  language: { type: 'string', default: 'multi' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'OK',
+            content: { 'application/json': { schema: { type: 'object', properties: { ok: { type: 'boolean' }, configured: { type: 'boolean' } }, required: ['ok', 'configured'] } } },
+          },
+        },
+      },
+    },
+    '/voice/settings': {
+      get: {
+        tags: ['Integrations'],
+        summary: 'Get voice mode settings',
+        description: 'Spoken-reply provider, voice, speed and pacing. The ElevenLabs API key is write-only: `elevenlabs.configured` says whether one is saved.',
+        responses: {
+          200: {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ttsProvider: { type: 'string', enum: ['deepgram', 'elevenlabs'] },
+                    ttsSpeed: { type: 'number' },
+                    deepgramVoice: { type: 'string' },
+                    sendAfterMs: { type: 'integer' },
+                    fastAgent: { type: 'boolean' },
+                    elevenlabs: {
+                      type: 'object',
+                      properties: {
+                        configured: { type: 'boolean', description: 'An ElevenLabs API key is saved' },
+                        voiceId: { type: 'string' },
+                        modelId: { type: 'string' },
+                      },
+                    },
+                    speedRange: { type: 'object', additionalProperties: { type: 'object', properties: { min: { type: 'number' }, max: { type: 'number' } } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      put: {
+        tags: ['Integrations'],
+        summary: 'Update voice mode settings',
+        description: 'Partial update. `elevenlabs.apiKey` follows the Deepgram key rules: non-empty replaces, empty or missing keeps, `elevenlabs.clearApiKey: true` (or `apiKey: null`) removes.',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 200: okResponse },
       },
     },
     '/deepgram/transcribe': {
@@ -1215,19 +1346,19 @@ export const openApiSpec: OpenApiSpec = {
     '/mobile/pair': {
       get: {
         tags: ['Mobile'],
-        summary: 'Get the pairing token + QR (localhost only)',
-        description: 'Restricted to localhost so only the desktop user can read the token.',
+        summary: 'Get the pairing token + QR (desktop UI only)',
+        description: 'Restricted to a page of the bridge\'s own UI on this machine (loopback Host, peer and Origin, or `Sec-Fetch-Site: same-origin`), so only the desktop user can read the token — not a CLI or the agent\'s own shell on localhost.',
         security: [{}],
-        responses: { 200: corsResponse, 403: { description: 'Forbidden (non-localhost)' } },
+        responses: { 200: corsResponse, 403: { description: 'Forbidden (not the desktop UI)' } },
       },
     },
     '/mobile/pair/regenerate': {
       post: {
         tags: ['Mobile'],
-        summary: 'Rotate the pairing token (localhost only)',
-        description: 'Kicks all authenticated WebSockets so they reconnect with the new token.',
+        summary: 'Rotate the pairing token (desktop UI only)',
+        description: 'Same restriction as GET /mobile/pair. Kicks all authenticated WebSockets so they reconnect with the new token.',
         security: [{}],
-        responses: { 200: corsResponse, 403: { description: 'Forbidden (non-localhost)' } },
+        responses: { 200: corsResponse, 403: { description: 'Forbidden (not the desktop UI)' } },
       },
     },
     '/mobile/notify-test': {

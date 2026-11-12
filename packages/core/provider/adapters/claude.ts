@@ -28,6 +28,7 @@ import type {
   ProviderSession,
   SpawnOptions,
   TokenUsage,
+  TurnCompleteInfo,
 } from '../types';
 import { Adapter } from '../adapter';
 import { AsyncQueue } from '../async-queue';
@@ -83,6 +84,30 @@ function buildUserMessage(text: string, images?: ImageInput[], sessionId?: strin
     message: { role: 'user', content: content as any },
     parent_tool_use_id: null,
     session_id: sessionId,
+  };
+}
+
+/**
+ * Map an SDK `result` message to the turn-complete info. A result flagged
+ * `is_error`, or with any subtype other than `success` (`error_max_turns`,
+ * `error_during_execution`…), is a failed turn: `isError` marks it so the
+ * agent's dispatch relays it as a notice instead of as the model's words.
+ * Only string entries of `errors` are kept.
+ */
+export function turnCompleteFromResult(msg: unknown): TurnCompleteInfo {
+  const result = (msg ?? {}) as Record<string, any>;
+  const isError = result.is_error === true
+    || (typeof result.subtype === 'string' && result.subtype !== 'success');
+  return {
+    stopReason: result.stop_reason ?? null,
+    resultText: typeof result.result === 'string' ? result.result : undefined,
+    costUsd: result.total_cost_usd as number | undefined,
+    durationMs: result.duration_ms as number | undefined,
+    usage: result.usage as TokenUsage | undefined,
+    isError,
+    errors: Array.isArray(result.errors)
+      ? result.errors.filter((e: unknown): e is string => typeof e === 'string')
+      : undefined,
   };
 }
 
@@ -160,6 +185,12 @@ class ClaudeSession extends ProviderSessionBase {
       // bubble dark forever. `display: 'summarized'` (the default) returns
       // the human-readable summary; `omitted` would only return signatures.
       thinking: { type: 'adaptive', display: 'summarized' },
+      // The Agents panel shows each sub-agent's whole conversation, so forward
+      // their text and thinking too (stamped with parent_tool_use_id and
+      // agent_id), and let the SDK summarise running sub-agents every ~30s
+      // for its progress line. Both are SDK-native; nothing is read from disk.
+      forwardSubagentText: true,
+      agentProgressSummaries: true,
       // Keep the Claude Code preset (built-in tool/git/cwd context still
       // applies) and append the shared Codiby Code steering — see
       // provider/system-prompt.ts, which every adapter now reads from.
@@ -260,6 +291,9 @@ class ClaudeSession extends ProviderSessionBase {
     // only arrives once the block is fully complete, which would make the
     // "Thought" bubble pop in all at once after seconds of silence.
     if (msg.type === 'stream_event') {
+      // Sub-agent partials would land in the main thread's live preview;
+      // their committed blocks arrive as regular messages anyway.
+      if ((msg as any).parent_tool_use_id) return;
       const event = (msg as any).event;
       const eType = event?.type;
       if (eType === 'content_block_start') {
@@ -287,6 +321,8 @@ class ClaudeSession extends ProviderSessionBase {
     }
 
     // System init — capture session id and basic info.
+    if (msg.type === 'system' && this.dispatchTaskMessage(msg as any)) return;
+
     if (msg.type === 'system' && (msg as any).subtype === 'init') {
       const init = msg as any;
       this.providerSessionId = init.session_id as string;
@@ -317,6 +353,9 @@ class ClaudeSession extends ProviderSessionBase {
       // Non-null for messages produced by a sub-agent; identifies the parent
       // Agent tool_use so the UI can nest these under the Agent card.
       const parentToolUseId = (assistant.parent_tool_use_id as string | null | undefined) ?? null;
+      // Set on everything a sub-agent produces (with forwardSubagentText); equals its task id.
+      const agentId = (assistant.agent_id as string | null | undefined) ?? null;
+      const isSubagent = !!parentToolUseId || !!agentId;
 
       // Diagnostic: surface every block type so we can confirm whether the
       // SDK is delivering thinking blocks. Cheap (one short line per
@@ -331,7 +370,7 @@ class ClaudeSession extends ProviderSessionBase {
           // Thinking blocks always precede text/tool_use within a Message, so
           // flush any pending text first to keep the UI ordering stable.
           if (partialText.trim()) {
-            this.events.onAssistantText(partialText, { model: assistant.message?.model, parentToolUseId });
+            this.events.onAssistantText(partialText, { model: assistant.message?.model, parentToolUseId, agentId });
             partialText = '';
           }
           const isRedacted = block.type === 'redacted_thinking';
@@ -344,11 +383,12 @@ class ClaudeSession extends ProviderSessionBase {
               text,
               redacted: isRedacted || undefined,
               parentToolUseId,
+              agentId,
             });
           }
         } else if (block.type === 'tool_use') {
           if (partialText.trim()) {
-            this.events.onAssistantText(partialText, { model: assistant.message?.model, parentToolUseId });
+            this.events.onAssistantText(partialText, { model: assistant.message?.model, parentToolUseId, agentId });
             partialText = '';
           }
           const tool: AssistantToolUseBlock = {
@@ -357,6 +397,7 @@ class ClaudeSession extends ProviderSessionBase {
             name: block.name as string,
             input: (block.input as Record<string, unknown>) ?? {},
             parentToolUseId,
+            agentId,
           };
           if (tool.name === 'TodoWrite') {
             // Legacy snapshot tool — still handled for older sessions/presets.
@@ -372,6 +413,15 @@ class ClaudeSession extends ProviderSessionBase {
 
       const stopReason = assistant.message?.stop_reason as string | null | undefined;
       const usage = assistant.message?.usage as TokenUsage | undefined;
+
+      // A sub-agent finishing its own turn is not the session's turn ending:
+      // commit its text and keep going — only the main thread completes turns.
+      if (isSubagent) {
+        if (partialText.trim()) {
+          this.events.onAssistantText(partialText, { model: assistant.message?.model, usage, parentToolUseId, agentId });
+        }
+        return;
+      }
 
       if (stopReason === 'end_turn' || stopReason === 'max_tokens') {
         if (partialText.trim()) {
@@ -389,6 +439,7 @@ class ClaudeSession extends ProviderSessionBase {
       const content = user.message?.content;
       if (!Array.isArray(content)) return;
       const parentToolUseId = (user.parent_tool_use_id as string | null | undefined) ?? null;
+      const agentId = (user.agent_id as string | null | undefined) ?? null;
       for (const block of content) {
         if (block.type === 'tool_result') {
           const toolUseId = block.tool_use_id as string | undefined;
@@ -409,6 +460,7 @@ class ClaudeSession extends ProviderSessionBase {
             content: block.content,
             isError: block.is_error as boolean | undefined,
             parentToolUseId,
+            agentId,
           });
         }
       }
@@ -416,14 +468,7 @@ class ClaudeSession extends ProviderSessionBase {
     }
 
     if (msg.type === 'result') {
-      const result = msg as any;
-      this.events.onTurnComplete({
-        stopReason: result.stop_reason ?? null,
-        resultText: typeof result.result === 'string' ? result.result : undefined,
-        costUsd: result.total_cost_usd as number | undefined,
-        durationMs: result.duration_ms as number | undefined,
-        usage: result.usage as TokenUsage | undefined,
-      });
+      this.events.onTurnComplete(turnCompleteFromResult(msg));
       return;
     }
   }
@@ -561,6 +606,92 @@ class ClaudeSession extends ProviderSessionBase {
   async sendUserMessage(input: { text: string; images?: ImageInput[] }): Promise<void> {
     if (this.closed) return;
     this.prompts.push(buildUserMessage(input.text, input.images, this.providerSessionId ?? undefined));
+  }
+
+  /**
+   * Fold one task_* system message into a TaskEvent for the bridge. Returns
+   * true when the message was a task message (handled or ignored).
+   */
+  private dispatchTaskMessage(m: Record<string, any>): boolean {
+    const sub = m.subtype as string | undefined;
+    const emit = this.events.onTaskEvent?.bind(this.events);
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+    switch (sub) {
+      case 'task_started':
+        emit?.({
+          kind: 'started',
+          taskId: String(m.task_id),
+          toolUseId: m.tool_use_id ?? null,
+          taskType: m.task_type,
+          description: m.description,
+          subagentType: m.subagent_type ?? null,
+          workflowName: m.workflow_name ?? null,
+          prompt: typeof m.prompt === 'string' ? m.prompt : null,
+          backgrounded: !!m.is_backgrounded,
+          spawnDepth: num(m.spawn_depth),
+        });
+        return true;
+      case 'task_progress':
+        emit?.({
+          kind: 'progress',
+          taskId: String(m.task_id),
+          toolUseId: m.tool_use_id ?? null,
+          description: m.description,
+          subagentType: m.subagent_type ?? null,
+          totalTokens: num(m.usage?.total_tokens),
+          toolUses: num(m.usage?.tool_uses),
+          durationMs: num(m.usage?.duration_ms),
+          lastToolName: m.last_tool_name ?? null,
+          summary: m.summary ?? null,
+        });
+        return true;
+      case 'task_updated':
+        emit?.({
+          kind: 'updated',
+          taskId: String(m.task_id),
+          status: m.patch?.status,
+          description: m.patch?.description,
+          endTime: num(m.patch?.end_time) ?? null,
+          error: m.patch?.error ?? null,
+          backgrounded: typeof m.patch?.is_backgrounded === 'boolean' ? m.patch.is_backgrounded : undefined,
+        });
+        return true;
+      case 'task_notification':
+        emit?.({
+          kind: 'notification',
+          taskId: String(m.task_id),
+          toolUseId: m.tool_use_id ?? null,
+          status: m.status,
+          summary: m.summary,
+          totalTokens: num(m.usage?.total_tokens),
+          toolUses: num(m.usage?.tool_uses),
+          durationMs: num(m.usage?.duration_ms),
+        });
+        return true;
+      case 'background_tasks_changed':
+        emit?.({
+          kind: 'snapshot',
+          tasks: (Array.isArray(m.tasks) ? m.tasks : []).map((t: any) => ({
+            taskId: String(t.task_id),
+            taskType: t.task_type,
+            subagentType: t.subagent_type ?? null,
+            description: t.description,
+          })),
+        });
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    if (this.closed || !this.runtime) return;
+    await this.runtime.stopTask(taskId);
+  }
+
+  async backgroundTask(toolUseId?: string): Promise<boolean> {
+    if (this.closed || !this.runtime) return false;
+    return this.runtime.backgroundTasks(toolUseId);
   }
 
   async interrupt(): Promise<void> {

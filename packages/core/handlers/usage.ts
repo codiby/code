@@ -91,41 +91,110 @@ export async function getUsageSnapshot(force = false): Promise<UsageSnapshot> {
 type ClaudeCredentials = { accessToken: string; subscriptionType?: string | null; rateLimitTier?: string | null; expiresAt?: number };
 
 /**
+ * Upper bound on the keychain lookup. `spawnSync` blocks the bridge's event
+ * loop while it runs, and `security` can hang (a locked keychain waiting on
+ * a prompt nobody sees), so it's killed after this long.
+ */
+export const KEYCHAIN_TIMEOUT_MS = 5000;
+
+type KeychainSpawnResult = {
+  exitCode: number | null;
+  exitedDueToTimeout?: boolean;
+  signalCode?: string | null;
+  stdout: { toString(): string };
+};
+type KeychainSpawn = (cmd: string[], opts: { timeout: number; stdout: 'pipe'; stderr: 'pipe' }) => KeychainSpawnResult;
+
+/**
+ * `missing` — no usable item (not found, access denied, unparseable).
+ * `unavailable` — the lookup timed out or couldn't run, so it says nothing
+ * about whether the user is logged in.
+ */
+export type KeychainRead =
+  | { status: 'ok'; raw: unknown }
+  | { status: 'missing' }
+  | { status: 'unavailable'; reason: string };
+
+export type ClaudeCredentialDeps = {
+  spawn?: KeychainSpawn;
+  env?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  credentialsFile?: string;
+};
+
+export function readClaudeKeychain(spawn: KeychainSpawn = Bun.spawnSync as unknown as KeychainSpawn): KeychainRead {
+  let out: KeychainSpawnResult;
+  try {
+    out = spawn(['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'], {
+      timeout: KEYCHAIN_TIMEOUT_MS,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+  } catch (err) {
+    return { status: 'unavailable', reason: `could not run security: ${err instanceof Error ? err.message : err}` };
+  }
+  // Checked before the exit code: a killed process has none.
+  if (out.exitedDueToTimeout) return { status: 'unavailable', reason: `the keychain did not answer within ${KEYCHAIN_TIMEOUT_MS / 1000}s` };
+  if (out.exitCode == null) return { status: 'unavailable', reason: `security was killed by ${out.signalCode || 'a signal'}` };
+  if (out.exitCode !== 0) return { status: 'missing' };
+  try {
+    return { status: 'ok', raw: JSON.parse(out.stdout.toString()) };
+  } catch {
+    return { status: 'missing' };
+  }
+}
+
+/**
  * The CLI writes its OAuth blob to the login keychain on macOS and to a
  * dotfile everywhere else. Read both, newest wins — a machine that once ran
  * an older CLI can still have a stale (empty-token) dotfile lying around.
+ * `keychain` reports how the keychain lookup went, so a hung keychain isn't
+ * mistaken for a logged-out user.
  */
-export function readClaudeCredentials(): ClaudeCredentials | null {
-  const fromEnv = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
-  if (fromEnv) return { accessToken: fromEnv };
+export function loadClaudeCredentials(deps: ClaudeCredentialDeps = {}): { credentials: ClaudeCredentials | null; keychain: KeychainRead | null } {
+  const env = deps.env ?? process.env;
+  const fromEnv = env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (fromEnv) return { credentials: { accessToken: fromEnv }, keychain: null };
 
   const candidates: unknown[] = [];
-  if (process.platform === 'darwin') {
-    try {
-      const out = Bun.spawnSync(['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w']);
-      if (out.exitCode === 0) candidates.push(JSON.parse(out.stdout.toString()));
-    } catch {}
+  let keychain: KeychainRead | null = null;
+  if ((deps.platform ?? process.platform) === 'darwin') {
+    keychain = readClaudeKeychain(deps.spawn);
+    if (keychain.status === 'ok') candidates.push(keychain.raw);
   }
   try {
-    candidates.push(JSON.parse(readFileSync(join(homedir(), '.claude', '.credentials.json'), 'utf-8')));
+    candidates.push(JSON.parse(readFileSync(deps.credentialsFile ?? join(homedir(), '.claude', '.credentials.json'), 'utf-8')));
   } catch {}
 
   for (const raw of candidates) {
     const oauth = (raw as any)?.claudeAiOauth;
     if (oauth && typeof oauth.accessToken === 'string' && oauth.accessToken.length > 0) {
       return {
-        accessToken: oauth.accessToken,
-        subscriptionType: oauth.subscriptionType ?? null,
-        rateLimitTier: oauth.rateLimitTier ?? null,
-        expiresAt: oauth.expiresAt,
+        credentials: {
+          accessToken: oauth.accessToken,
+          subscriptionType: oauth.subscriptionType ?? null,
+          rateLimitTier: oauth.rateLimitTier ?? null,
+          expiresAt: oauth.expiresAt,
+        },
+        keychain,
       };
     }
   }
-  return null;
+  return { credentials: null, keychain };
 }
 
-async function readClaudeUsage(): Promise<ProviderUsage> {
-  const creds = readClaudeCredentials();
+export function readClaudeCredentials(deps: ClaudeCredentialDeps = {}): ClaudeCredentials | null {
+  return loadClaudeCredentials(deps).credentials;
+}
+
+/** Exported for tests; `deps` only affects how credentials are read. */
+export async function readClaudeUsage(deps: ClaudeCredentialDeps = {}): Promise<ProviderUsage> {
+  const { credentials: creds, keychain } = loadClaudeCredentials(deps);
+  if (!creds && keychain?.status === 'unavailable') {
+    // Not "logged out": the popover hides logged-out providers, and the
+    // login may well be there behind a keychain that didn't answer.
+    return { provider: 'claude', status: 'error', windows: [], error: `Claude login unavailable: ${keychain.reason}` };
+  }
   if (!creds) return { provider: 'claude', status: 'logged_out', windows: [] };
   try {
     const resp = await fetch('https://api.anthropic.com/api/oauth/usage', {

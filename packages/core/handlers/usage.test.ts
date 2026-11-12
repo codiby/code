@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'bun:test';
-import { formatClaudePlan, formatCodexPlan, normalizeClaudeUsage, normalizeCodexUsage } from './usage';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  KEYCHAIN_TIMEOUT_MS,
+  formatClaudePlan,
+  formatCodexPlan,
+  loadClaudeCredentials,
+  normalizeClaudeUsage,
+  normalizeCodexUsage,
+  readClaudeKeychain,
+  readClaudeUsage,
+} from './usage';
 
 // Trimmed copies of real payloads: the shapes below are what
 // api.anthropic.com/api/oauth/usage and codex's account/* methods return.
@@ -90,5 +102,66 @@ describe('plan labels', () => {
     expect(formatCodexPlan('prolite')).toBe('Pro Lite');
     expect(formatCodexPlan('some_new_plan')).toBe('Some new plan');
     expect(formatCodexPlan(null)).toBeNull();
+  });
+});
+
+describe('Claude keychain lookup', () => {
+  type Call = { cmd: string[]; opts: { timeout: number } };
+  const fakeSpawn = (result: { exitCode: number | null; exitedDueToTimeout?: boolean; signalCode?: string | null; stdout?: string }, calls: Call[] = []) =>
+    (cmd: string[], opts: { timeout: number; stdout: 'pipe'; stderr: 'pipe' }) => {
+      calls.push({ cmd, opts });
+      return { ...result, stdout: Buffer.from(result.stdout ?? '') };
+    };
+  const blob = JSON.stringify({ claudeAiOauth: { accessToken: 'tok', subscriptionType: 'max' } });
+  const noFile = join(tmpdir(), 'codiby-usage-test-missing', '.credentials.json');
+
+  it('bounds the security call with a timeout', () => {
+    const calls: Call[] = [];
+    expect(readClaudeKeychain(fakeSpawn({ exitCode: 0, stdout: blob }, calls)).status).toBe('ok');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.cmd.slice(0, 2)).toEqual(['security', 'find-generic-password']);
+    expect(calls[0]!.opts.timeout).toBe(KEYCHAIN_TIMEOUT_MS);
+    expect(KEYCHAIN_TIMEOUT_MS).toBe(5000);
+  });
+
+  it('reports a timed-out or killed lookup as unavailable, not missing', () => {
+    expect(readClaudeKeychain(fakeSpawn({ exitCode: null, exitedDueToTimeout: true })).status).toBe('unavailable');
+    expect(readClaudeKeychain(fakeSpawn({ exitCode: null, signalCode: 'SIGTERM' })).status).toBe('unavailable');
+    expect(readClaudeKeychain(() => { throw new Error('ENOENT'); }).status).toBe('unavailable');
+    expect(readClaudeKeychain(fakeSpawn({ exitCode: 44 })).status).toBe('missing');
+    expect(readClaudeKeychain(fakeSpawn({ exitCode: 0, stdout: 'not json' })).status).toBe('missing');
+  });
+
+  it('falls back to the dotfile when the keychain times out', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codiby-usage-'));
+    try {
+      const file = join(dir, '.credentials.json');
+      writeFileSync(file, blob);
+      const read = loadClaudeCredentials({ env: {}, platform: 'darwin', credentialsFile: file, spawn: fakeSpawn({ exitCode: null, exitedDueToTimeout: true }) });
+      expect(read.credentials?.accessToken).toBe('tok');
+      expect(read.keychain?.status).toBe('unavailable');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a timed-out keychain with no other login is an error, not logged out', async () => {
+    const usage = await readClaudeUsage({ env: {}, platform: 'darwin', credentialsFile: noFile, spawn: fakeSpawn({ exitCode: null, exitedDueToTimeout: true }) });
+    expect(usage.status).toBe('error');
+    expect(usage.error).toContain('unavailable');
+    expect(usage.windows).toEqual([]);
+  });
+
+  it('no keychain item and no dotfile is logged out', async () => {
+    const usage = await readClaudeUsage({ env: {}, platform: 'darwin', credentialsFile: noFile, spawn: fakeSpawn({ exitCode: 44 }) });
+    expect(usage.status).toBe('logged_out');
+  });
+
+  it('skips the keychain off macOS', () => {
+    const calls: Call[] = [];
+    const read = loadClaudeCredentials({ env: {}, platform: 'linux', credentialsFile: noFile, spawn: fakeSpawn({ exitCode: 0, stdout: blob }, calls) });
+    expect(calls).toHaveLength(0);
+    expect(read.credentials).toBeNull();
+    expect(read.keychain).toBeNull();
   });
 });

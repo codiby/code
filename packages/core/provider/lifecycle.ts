@@ -15,6 +15,7 @@ import { effectiveModel } from './default-model';
 import { startSessionWatcher } from '../session/watcher';
 import { remoteViewerSystemPrompt } from '../network/remote-viewer';
 import { sharedMemoryPrompt } from './shared-memory';
+import { agentSystemPrompt } from '../agent/prompt';
 import { additionalDirsFor, spawnCwdFor, workspacePrompt } from '../session/workspace';
 import type { Session } from '../types';
 import type { EffortLevel, McpServerSpec, PermissionMode, SpawnOptions } from './types';
@@ -89,6 +90,8 @@ export function startProviderSession(session: Session, port: number, resumeSessi
     // The shared-memory block carries the other agents' memory files, which
     // this provider would never load on its own.
     extraSystemPrompt: [
+      // Persona, profile and memory — the agent session only (agent/prompt.ts).
+      agentSystemPrompt(session),
       remoteViewerSystemPrompt(session.id),
       sharedMemoryPrompt(session.provider, session.cwd),
       workspacePrompt(session, spawnCwd),
