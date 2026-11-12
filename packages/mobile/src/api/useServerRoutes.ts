@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { RoutePath, ServerEntry } from '../config/servers';
+import { useAppActive } from './useAppActive';
 
 /** Por dónde entró cada servidor la última vez, para no empezar a ciegas. */
 const LAST_ROUTES_KEY = 'codiby.last-routes';
@@ -18,8 +19,12 @@ const LOCAL_TIMEOUT_MS = 1_500;
 /** El respaldo sale a internet, así que merece más paciencia. */
 const REMOTE_TIMEOUT_MS = 6_000;
 
-/** Cada cuánto se reintenta la local cuando ya se cayó al respaldo. */
-const RECHECK_MS = 30_000;
+/**
+ * Cada cuánto se reintenta la local cuando ya se cayó al respaldo. Solo con la
+ * app al frente: en segundo plano nadie mira la ruta, y cada sonda despierta
+ * el radio.
+ */
+export const RECHECK_MS = 30_000;
 
 export interface ServerRoute {
   readonly server: ServerEntry;
@@ -117,9 +122,12 @@ export function useServerRoutes(
 
   const serversRef = useRef(servers);
   serversRef.current = servers;
+  // Al volver al frente el efecto corre de nuevo y sondea enseguida: la red
+  // pudo cambiar mientras la app estaba cerrada.
+  const active = useAppActive();
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !active) {
       return;
     }
     let cancelled = false;
@@ -237,7 +245,7 @@ export function useServerRoutes(
         clearTimeout(timer);
       }
     };
-  }, [signature, enabled, nonce]);
+  }, [signature, enabled, nonce, active]);
 
   return { routes, refresh };
 }

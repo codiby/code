@@ -8,9 +8,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { AppState } from 'react-native';
-
 import { toSocketUrl } from './client';
+import { useAppActive } from './useAppActive';
 import { useServers } from '../config/ServerConfigContext';
 
 export type SocketStatus = 'connecting' | 'open' | 'closed';
@@ -71,6 +70,10 @@ function liteSubscribe(sessionId: string): string {
  */
 export function SocketProvider({ children }: { children: ReactNode }) {
   const { routes } = useServers();
+  // En segundo plano no hay sockets: Phone access mantiene vivo el proceso y,
+  // con ellos abiertos, la app seguía bajando las respuestas de todas las
+  // sesiones con la pantalla apagada.
+  const active = useAppActive();
 
   const sockets = useRef(new Map<string, WebSocket>());
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -94,7 +97,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const openSockets = sockets.current;
     const openTimers = timers.current;
+    const openAttempts = attempts.current;
     let disposed = false;
+    if (!active) {
+      return;
+    }
 
     const targets = new Map(
       wiring
@@ -202,30 +209,18 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    /**
-     * Android congela el proceso al bloquear la pantalla y mata los sockets sin
-     * entregar siempre el `close`: quedan medio abiertos y no hay evento que
-     * dispare la reconexión. Volver a primer plano es la única señal fiable.
-     */
-    const appState = AppState.addEventListener('change', next => {
-      if (next !== 'active' || disposed) {
-        return;
-      }
-      for (const [serverId, target] of targets) {
-        drop(serverId);
-        attempts.current.set(serverId, 0);
-        connect(serverId, target.baseUrl, target.token);
-      }
-    });
-
+    // Pasar a segundo plano desmonta todo aquí (`active` cambia) y volver lo
+    // abre de cero, con los intentos en cero y las suscripciones repetidas en
+    // el `onopen`. Eso también cubre lo que antes resolvía un reinicio al
+    // volver: Android deja sockets medio abiertos al bloquear la pantalla.
     return () => {
       disposed = true;
-      appState.remove();
       for (const serverId of [...openSockets.keys()]) {
         drop(serverId);
+        openAttempts.set(serverId, 0);
       }
     };
-  }, [wiring, bump]);
+  }, [wiring, bump, active]);
 
   const subscribe = useCallback(
     /**
