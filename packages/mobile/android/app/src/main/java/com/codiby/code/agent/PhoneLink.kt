@@ -80,18 +80,29 @@ class PhoneLink(
                 return
             }
             socket = client.newWebSocket(request, object : WebSocketListener() {
+                // OkHttp runs these on its own threads, where an uncaught
+                // exception takes the whole app down: nothing may escape.
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     if (stopped) { webSocket.close(1000, null); return }
-                    connected = true
-                    attempt = 0
-                    webSocket.send(hello().toString())
-                    Log.i(TAG, "Linked to $name")
-                    onChange()
+                    try {
+                        connected = true
+                        attempt = 0
+                        webSocket.send(hello().toString())
+                        Log.i(TAG, "Linked to $name")
+                        onChange()
+                    } catch (error: Exception) {
+                        Log.e(TAG, "Could not greet $name", error)
+                        webSocket.close(1011, null)
+                    }
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
-                    val frame = try { JSONObject(text) } catch (_: Exception) { return }
-                    if (frame.optString("type") == "command") onCommand(this@Link, frame)
+                    try {
+                        val frame = JSONObject(text)
+                        if (frame.optString("type") == "command") onCommand(this@Link, frame)
+                    } catch (error: Exception) {
+                        Log.w(TAG, "Dropped a frame from $name", error)
+                    }
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

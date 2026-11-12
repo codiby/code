@@ -22,6 +22,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Base64
+import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -55,7 +56,9 @@ class PhoneAgentService : AccessibilityService() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // Held as fields: SharedPreferences keeps its listeners weakly.
-    private val agentPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> applySwitches() }
+    private val agentPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        try { applySwitches() } catch (error: Exception) { Log.e(TAG, "Could not apply the switches", error) }
+    }
     private val hostsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "config") link?.sync()
     }
@@ -70,14 +73,30 @@ class PhoneAgentService : AccessibilityService() {
         instance = this
         reader = ScreenReader(this)
         confirm = ConfirmOverlay(this)
-        PhoneAgentPrefs.prefs(this).registerOnSharedPreferenceChangeListener(agentPrefsListener)
-        getSharedPreferences("share-targets", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(hostsListener)
-        ContextCompat.registerReceiver(this, offReceiver, IntentFilter(ACTION_TURN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
-        val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { link?.kick() }
-        }.also { connectivity.registerDefaultNetworkCallback(it) }
-        applySwitches()
+        // Everything here runs in the app's process: a throw would crash the
+        // whole app on every launch while the service stays switched on.
+        try {
+            PhoneAgentPrefs.prefs(this).registerOnSharedPreferenceChangeListener(agentPrefsListener)
+            getSharedPreferences("share-targets", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(hostsListener)
+            ContextCompat.registerReceiver(this, offReceiver, IntentFilter(ACTION_TURN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
+        } catch (error: Exception) {
+            Log.e(TAG, "Phone access could not start its listeners", error)
+        }
+        try {
+            val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) { link?.kick() }
+            }.also { connectivity.registerDefaultNetworkCallback(it) }
+        } catch (error: Exception) {
+            // Only speeds up reconnecting; the backoff still gets there.
+            networkCallback = null
+            Log.w(TAG, "No network callback", error)
+        }
+        try {
+            applySwitches()
+        } catch (error: Exception) {
+            Log.e(TAG, "Phone access could not start", error)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
@@ -161,7 +180,7 @@ class PhoneAgentService : AccessibilityService() {
         val args = frame.optJSONObject("args") ?: JSONObject()
         val who = frame.optJSONObject("requester")?.optString("sessionName")?.takeIf { it.isNotBlank() } ?: "An agent"
         if (worker.isShutdown) return
-        worker.execute {
+        try { worker.execute {
             var summary = command
             val reply = JSONObject().put("type", "result").put("id", id)
             try {
@@ -176,6 +195,8 @@ class PhoneAgentService : AccessibilityService() {
                 PhoneAgentPrefs.append(this, target.name, who, command, describeArgs(command, args), outcome)
             }
             target.send(reply)
+        } } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // The service is shutting down; the bridge times the request out.
         }
     }
 
@@ -522,6 +543,7 @@ class PhoneAgentService : AccessibilityService() {
         var instance: PhoneAgentService? = null
             private set
 
+        private const val TAG = "PhoneAgent"
         private const val ACTION_TURN_OFF = "com.codiby.code.PHONE_ACCESS_OFF"
         private const val STATUS_CHANNEL = "phone_access"
         private const val STATUS_NOTIFICATION = 7301
