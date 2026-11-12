@@ -1629,7 +1629,7 @@ app.get('/sessions', () => {
 });
 
 // One compact, gzipped, ETagged snapshot for the Android Home.
-app.get('/mobile/home', (c) => handleMobileHome(c.req.raw, buildFullSessionList(), loadPreferences()));
+app.get('/mobile/home', (c) => handleMobileHome(c.req.raw, buildFullSessionList(), loadPreferences(), getHostIdentity().hostId));
 
 app.post('/sessions', async (c) => {
   const req = c.req.raw;

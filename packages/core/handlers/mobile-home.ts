@@ -16,7 +16,7 @@ function asRecord(value: unknown): Json {
   return typeof value === 'object' && value !== null ? (value as Json) : {};
 }
 
-export function buildMobileHome(sessionList: unknown[], prefs: Json) {
+export function buildMobileHome(sessionList: unknown[], prefs: Json, hostId: string | null = null) {
   const sessions = sessionList.map(raw => {
     const s = asRecord(raw);
     return {
@@ -39,9 +39,30 @@ export function buildMobileHome(sessionList: unknown[], prefs: Json) {
     tabGroups[id] = { name: g.name, color: g.color, parentId: g.parentId };
   }
 
+  // Projects as the phone needs them: name, colour and folders by host
+  // identity. Tombstones stay behind — the phone never replicates.
+  const projects: Record<string, Json> = {};
+  for (const [id, raw] of Object.entries(asRecord(prefs.projects))) {
+    const p = asRecord(raw);
+    if (p.deleted || typeof p.name !== 'string') continue;
+    projects[id] = {
+      name: p.name,
+      color: p.color,
+      updatedAt: p.updatedAt,
+      folders: (Array.isArray(p.folders) ? p.folders : []).map(f => {
+        const folder = asRecord(f);
+        return { path: folder.path, hostId: folder.hostId };
+      }),
+    };
+  }
+
   return {
     sessions,
+    // Which machine this is, so the phone can match a project's folders to
+    // this bridge's sessions.
+    hostId,
     preferences: {
+      projects,
       tabGroups,
       tabGroupMap: asRecord(prefs.tabGroupMap),
       pinnedSessionIds: Array.isArray(prefs.pinnedSessionIds) ? prefs.pinnedSessionIds : [],
@@ -52,8 +73,8 @@ export function buildMobileHome(sessionList: unknown[], prefs: Json) {
   };
 }
 
-export function handleMobileHome(req: Request, sessionList: unknown[], prefs: Json): Response {
-  const body = JSON.stringify(buildMobileHome(sessionList, prefs));
+export function handleMobileHome(req: Request, sessionList: unknown[], prefs: Json, hostId: string | null = null): Response {
+  const body = JSON.stringify(buildMobileHome(sessionList, prefs, hostId));
   const etag = `"${Bun.hash(body).toString(36)}"`;
 
   if (req.headers.get('if-none-match') === etag) {

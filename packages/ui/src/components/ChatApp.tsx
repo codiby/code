@@ -35,6 +35,8 @@ import { ResourcesPanel } from './ResourcesPanel';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { chordTokens, matchCommand, resolveBindings, type KeybindingOverrides } from '../lib/keybindings';
 import { ArchiveSuggestionPill } from './ArchiveSuggestionPill';
+import { NewSessionSuggestionCard } from './NewSessionSuggestionCard';
+import { seededPrompt, type NewSessionSuggestion } from '../lib/new-session-suggestion';
 import { SessionDeleteToast, type PendingSessionDelete } from './SessionDeleteToast';
 import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
@@ -803,6 +805,44 @@ export function ChatApp() {
     } catch (err) {
       console.error('[ChatApp] Failed to start a session next to another:', err);
     }
+  };
+
+  /** "Create session" on the agent's new-session card: a sibling of
+   *  `sourceId` (same host, provider and model, filed beside it), named and
+   *  seeded with the agent's brief, which is sent as its first message.
+   *  Throws so the card can show the failure. */
+  const handleSuggestedSession = async (sourceId: string, suggestion: NewSessionSuggestion) => {
+    const c = clientRef.current;
+    const source = sessions.find(s => s.id === sourceId);
+    if (!c || !source) throw new Error('Not connected. Please retry.');
+    const cwd = suggestion.cwd || source.cwd;
+    if (!cwd) throw new Error('This session has no folder to open the new one in.');
+    const remoteId = source.remoteId ?? null;
+    const groupId = sidebarGroupMap[sourceId] ?? null;
+    const remoteGroup = groupId && isRemoteGroupKey(groupId);
+    const bridgeGroupId = !groupId ? undefined
+      : remoteGroup ? (remoteOfGroupKey(groupId) === remoteId ? groupIdOfRemoteKey(groupId) ?? undefined : undefined)
+      : remoteId ? undefined : groupId;
+    const session = await c.createSession(cwd, {
+      name: suggestion.title,
+      provider: source.provider, model: source.model, effort: source.effort,
+      permissionMode: source.permission_mode,
+      remoteId, groupId: bridgeGroupId, ungrouped: !groupId,
+    });
+    if (groupId && remoteId && !remoteGroup) {
+      const newMap = { ...tabGroupMap, [session.id]: groupId };
+      setTabGroupMap(newMap);
+      persistPrefs({ tabGroupMap: newMap });
+    } else if (groupId && !remoteGroup) {
+      setTabGroupMap(prev => ({ ...prev, [session.id]: groupId }));
+    }
+    if (groupId) setExpandedGroupIds(prev => new Set([...prev, groupId, ...ancestorChain(sidebarGroups, groupId)]));
+    c.subscribe(session.id);
+    subscribedRef.current.add(session.id);
+    setSelectedGroupId(null);
+    setActiveNavView('sessions');
+    setActiveId(session.id);
+    c.sendMessage(session.id, seededPrompt(suggestion, { id: source.id, name: source.name }));
   };
 
   /** Branch a session: the bridge copies its transcript and forks the
@@ -6100,6 +6140,13 @@ export function ChatApp() {
         typing={!!s.input.trim()}
         chord={kbBindings['archive-session'] ?? null}
         onArchive={() => handleCloseTab(sid)}
+        className="-mb-1"
+      />}
+      {!opts?.inline && <NewSessionSuggestionCard
+        messages={s.messages}
+        streaming={s.isStreaming}
+        onCreate={suggestion => handleSuggestedSession(sid, suggestion)}
+        onContinue={() => clientRef.current?.sendMessage(sid, 'Continue here, in this session.')}
         className="-mb-1"
       />}
       <ChatComposer

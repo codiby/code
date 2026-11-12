@@ -130,6 +130,10 @@ export const ALWAYS_AUTO_APPROVE_TOOLS = new Set([
   // archiving itself still takes the user's click or shortcut.
   'mcp__codiby-code__ui_suggest_archive',
   'mcp__codiby-code-sdk__suggest_archive',
+  // Same for offering a new session: it shows a card, and creating the
+  // session takes the user's click.
+  'mcp__codiby-code__ui_suggest_new_session',
+  'mcp__codiby-code-sdk__suggest_new_session',
 ]);
 
 /**

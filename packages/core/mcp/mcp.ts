@@ -20,6 +20,13 @@ import {
 } from '../session/workspace';
 import { SUGGEST_ARCHIVE_DESCRIPTION, SUGGEST_ARCHIVE_REASON } from '../session/archive-suggestion';
 import {
+  SUGGEST_NEW_SESSION_CWD,
+  SUGGEST_NEW_SESSION_DESCRIPTION,
+  SUGGEST_NEW_SESSION_PROMPT,
+  SUGGEST_NEW_SESSION_REASON,
+  SUGGEST_NEW_SESSION_TITLE,
+} from '../session/new-session-suggestion';
+import {
   handleCreateSession,
   handleRestartSession,
   handleRenameSession,
@@ -888,6 +895,20 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           reason: { type: 'string', minLength: 1, maxLength: 120, description: SUGGEST_ARCHIVE_REASON },
         },
         required: ['reason'],
+      },
+    },
+    {
+      name: 'ui_suggest_new_session',
+      description: SUGGEST_NEW_SESSION_DESCRIPTION,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          title: { type: 'string', minLength: 1, maxLength: 40, description: SUGGEST_NEW_SESSION_TITLE },
+          reason: { type: 'string', minLength: 1, maxLength: 120, description: SUGGEST_NEW_SESSION_REASON },
+          prompt: { type: 'string', minLength: 1, maxLength: 1500, description: SUGGEST_NEW_SESSION_PROMPT },
+          cwd: { type: 'string', description: SUGGEST_NEW_SESSION_CWD },
+        },
+        required: ['title', 'reason', 'prompt'],
       },
     },
     {
@@ -1961,6 +1982,12 @@ export async function executeLocalMcpTool(
         const reason = typeof args?.reason === 'string' ? args.reason.trim() : '';
         if (!reason) return { content: [{ type: 'text', text: 'reason is required' }], isError: true };
         return { content: [{ type: 'text', text: `Suggested archiving the session: ${reason}` }] };
+      }
+      case 'ui_suggest_new_session': {
+        const title = typeof args?.title === 'string' ? args.title.trim() : '';
+        const prompt = typeof args?.prompt === 'string' ? args.prompt.trim() : '';
+        if (!title || !prompt) return { content: [{ type: 'text', text: 'title and prompt are required' }], isError: true };
+        return { content: [{ type: 'text', text: `Offered a new session "${title}". The user decides from the card; end your turn now and do not start the work here.` }] };
       }
       case 'ui_post_image_to_session': {
         if (!_deps) return { content: [{ type: 'text', text: 'MCP deps not initialized' }], isError: true };

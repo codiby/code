@@ -21,6 +21,13 @@ import type { ChatMessage } from '../session/state';
 import { saveResource } from '../handlers/resources';
 import { sessions, saveSessions } from '../session/sessions';
 import { SUGGEST_ARCHIVE_DESCRIPTION, SUGGEST_ARCHIVE_REASON } from '../session/archive-suggestion';
+import {
+  SUGGEST_NEW_SESSION_CWD,
+  SUGGEST_NEW_SESSION_DESCRIPTION,
+  SUGGEST_NEW_SESSION_PROMPT,
+  SUGGEST_NEW_SESSION_REASON,
+  SUGGEST_NEW_SESSION_TITLE,
+} from '../session/new-session-suggestion';
 import { getSdkToolDefs as getPluginSdkToolDefs } from '../plugin-host/index';
 import { cdpRequest } from './browser-cdp';
 import { trackedProcesses } from '../handlers/processes';
@@ -358,6 +365,19 @@ export function buildSessionSdkMcpServer(sessionId: string, deps: SdkToolDeps) {
         },
         async (args) => ({
           content: [{ type: 'text', text: `Suggested archiving the session: ${args.reason.trim()}` }],
+        }),
+      ),
+      tool(
+        'suggest_new_session',
+        SUGGEST_NEW_SESSION_DESCRIPTION,
+        {
+          title: z.string().min(1).max(40).describe(SUGGEST_NEW_SESSION_TITLE),
+          reason: z.string().min(1).max(120).describe(SUGGEST_NEW_SESSION_REASON),
+          prompt: z.string().min(1).max(1500).describe(SUGGEST_NEW_SESSION_PROMPT),
+          cwd: z.string().optional().describe(SUGGEST_NEW_SESSION_CWD),
+        },
+        async (args) => ({
+          content: [{ type: 'text', text: `Offered a new session "${args.title.trim()}". The user decides from the card; end your turn now and do not start the work here.` }],
         }),
       ),
       tool(
