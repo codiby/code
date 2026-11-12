@@ -149,3 +149,33 @@ export function MoreIcon({ size, color }: TabIconProps) {
     </Svg>
   );
 }
+
+/** Flecha del selector de proyecto del encabezado. */
+export function ChevronDownIcon({ size, color }: TabIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path
+        d="m7 10 5 5 5-5"
+        stroke={color}
+        strokeWidth={2.2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
+}
+
+/** «Todos los proyectos» en el selector. */
+export function GridIcon({ size, color }: TabIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path
+        d="M6 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm9 0h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2ZM6 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2Zm9 0h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2Z"
+        stroke={color}
+        strokeWidth={1.9}
+        fill="none"
+      />
+    </Svg>
+  );
+}

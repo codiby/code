@@ -21,6 +21,8 @@ export type { ThinkingBlockProps } from './ThinkingBlock';
 export { Composer } from './Composer';
 export type { ComposerProps } from './Composer';
 export { MessageBubble } from './MessageBubble';
+export { NewSessionCard } from './NewSessionCard';
+export type { NewSessionCardProps } from './NewSessionCard';
 export { PermissionCard } from './PermissionCard';
 export type { PermissionCardProps } from './PermissionCard';
 export { StreamingPreview } from './StreamingPreview';

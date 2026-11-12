@@ -1,6 +1,8 @@
 export {
   ArchiveIcon,
+  ChevronDownIcon,
   CloseIcon,
+  GridIcon,
   MoreIcon,
   MoveToGroupIcon,
   PinIcon,

@@ -33,12 +33,21 @@ jest.mock('../src/api/messageStore', () => ({
   lastSeqOf: () => 1,
   mergeNewer: (current: unknown) => current,
 }));
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(() => Promise.resolve(null)),
+  setItem: jest.fn(() => Promise.resolve()),
+  removeItem: jest.fn(() => Promise.resolve()),
+}));
+jest.mock('../src/api/sessions', () => ({
+  createSession: jest.fn(),
+}));
 jest.mock('../src/components/Chat', () => ({
   Composer: jest.fn(() => null),
   MessageBubble: jest.fn(() => null),
   BackIcon: () => null,
   SuggestionRow: () => null,
   StreamingPreview: () => null,
+  NewSessionCard: () => null,
 }));
 
 const message: ChatMessage = {

@@ -49,6 +49,7 @@ import {
   MessageBubble,
   MockupCard,
   AskQuestionCard,
+  NewSessionCard,
   isAskQuestion,
   PermissionCard,
   StreamingPreview,
@@ -57,12 +58,21 @@ import {
 } from '../components/Chat';
 import { buildChatItems } from '../lib/chatItems';
 import {
+  loadAnsweredSuggestions,
+  pendingNewSessionSuggestion,
+  saveAnsweredSuggestion,
+  seededPrompt,
+  type NewSessionSuggestion,
+} from '../lib/newSessionSuggestion';
+import { createSession } from '../api/sessions';
+import {
   replyFromMessage,
   withReply,
   type MessageReply,
 } from '../lib/messageReply';
 import { useRouteFor } from '../config/ServerConfigContext';
 import { avatarColorFor, initialsOf } from '../lib/format';
+import { useInk } from '../theme';
 
 const OPTIMISTIC_PREFIX = 'local-';
 
@@ -99,6 +109,8 @@ export interface SessionChatScreenProps {
   readonly onOpenInfo?: () => void;
   /** Del `session_state`; lo necesita la ficha y aquí ya llega. */
   readonly onTotalMessages?: (total: number) => void;
+  /** Abre otra sesión; la usa la tarjeta de «nueva sesión». */
+  readonly onOpenSession?: (session: SessionSummary) => void;
 }
 
 export function SessionChatScreen({
@@ -111,7 +123,9 @@ export function SessionChatScreen({
   onOpenMockup,
   onOpenInfo,
   onTotalMessages,
+  onOpenSession,
 }: SessionChatScreenProps) {
+  const ink = useInk();
   // El borrador se guarda al desmontar, no en cada tecla: escribir no debería
   // provocar una escritura en disco por carácter.
   const draftRef = useRef(draft);
@@ -169,6 +183,13 @@ export function SessionChatScreen({
   // Un solo mensaje puede enseñar su hora, así que el id vive aquí y no en
   // cada burbuja: es lo que hace que abrir uno cierre el anterior.
   const [stampedId, setStampedId] = useState<string | null>(null);
+  /** Ofertas de sesión nueva ya contestadas, de cualquier conversación. */
+  const [answered, setAnswered] = useState<string[]>([]);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  useEffect(() => {
+    loadAnsweredSuggestions().then(setAnswered);
+  }, []);
   const [replyTo, setReplyTo] = useState<MessageReply | null>(null);
   const selectReply = useCallback((message: ChatMessage) => {
     setReplyTo(replyFromMessage(message));
@@ -598,6 +619,54 @@ export function SessionChatScreen({
     [baseUrl, session.id, token, sync, socketStatus, setSendState, replyTo],
   );
 
+  /** La oferta de sesión nueva que sigue en pie, si nadie la contestó. */
+  const newSession = useMemo(() => {
+    const pending = pendingNewSessionSuggestion(messages);
+    return pending !== null && !answered.includes(pending.id) ? pending : null;
+  }, [messages, answered]);
+
+  const answerSuggestion = useCallback((suggestion: NewSessionSuggestion) => {
+    setAnswered(current => [...current, suggestion.id]);
+    saveAnsweredSuggestion(suggestion.id).catch(() => undefined);
+  }, []);
+
+  /**
+   * «Create session»: en la misma máquina, con el mismo proveedor y modelo, y
+   * con el encargo del agente como primer mensaje. El bridge la agrupa por su
+   * carpeta, como cualquier sesión nueva.
+   */
+  const createSuggestedSession = useCallback(
+    async (suggestion: NewSessionSuggestion) => {
+      setIsCreatingSession(true);
+      setCreateError(null);
+      try {
+        const created = await createSession(baseUrl, token, session.serverId, {
+          cwd: suggestion.cwd ?? session.cwd,
+          name: suggestion.title,
+          provider: session.provider ?? 'claude',
+          model: session.model ?? null,
+        });
+        await sendMessage(
+          baseUrl,
+          created.id,
+          token,
+          seededPrompt(suggestion, { id: session.id, name }),
+        );
+        answerSuggestion(suggestion);
+        onOpenSession?.(created);
+      } catch (failure) {
+        setCreateError(
+          failure instanceof Error
+            ? failure.message
+            : 'Could not create the session',
+        );
+      } finally {
+        setIsCreatingSession(false);
+      }
+    },
+    [baseUrl, token, session, name, answerSuggestion, onOpenSession],
+  );
+
   /** Quita la burbuja fallida y la vuelve a mandar tal cual. */
   const retrySend = useCallback(
     (message: ChatMessage) => {
@@ -629,13 +698,13 @@ export function SessionChatScreen({
   );
 
   return (
-    <View className="flex-1 bg-slate-100">
+    <View className="flex-1 bg-white">
       {directChat ? (
         directChat.header
       ) : (
         <View
-          style={{ paddingTop: insets.top + 8 }}
-          className="flex-row items-center gap-2.5 border-b border-slate-200 bg-white px-2 pb-2.5"
+          style={{ paddingTop: insets.top + 4 }}
+          className="flex-row items-center gap-2.5 border-b border-slate-200 bg-white pb-1.5 pl-1.5 pr-2.5"
         >
           <Pressable
             accessibilityRole="button"
@@ -643,7 +712,7 @@ export function SessionChatScreen({
             onPress={onClose}
             className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
           >
-            <BackIcon size={24} color="#0f172a" />
+            <BackIcon size={22} color={ink('#0f172a')} />
           </Pressable>
 
           <Pressable
@@ -654,9 +723,9 @@ export function SessionChatScreen({
           >
             <View
               style={{ backgroundColor: avatarColorFor(session.id) }}
-              className="h-[34px] w-[34px] items-center justify-center rounded-full"
+              className="h-9 w-9 items-center justify-center rounded-full"
             >
-              <Text className="text-xs font-semibold text-white">
+              <Text className="text-[12px] font-semibold text-white">
                 {initialsOf(session.name)}
               </Text>
             </View>
@@ -664,7 +733,7 @@ export function SessionChatScreen({
             <View className="flex-1">
               <Text
                 numberOfLines={1}
-                className="text-[14px] font-semibold text-slate-900"
+                className="text-[15.5px] font-semibold tracking-[-0.3px] text-slate-900"
               >
                 {name}
               </Text>
@@ -675,18 +744,22 @@ export function SessionChatScreen({
                 {permission !== null ? (
                   <View className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                 ) : isLive ? (
-                  <View className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <View className="h-1.5 w-1.5 rounded-full bg-[#19c37d]" />
                 ) : null}
                 <Text
                   numberOfLines={1}
-                  className={`flex-1 text-[11px] ${
-                    permission !== null ? 'text-amber-700' : 'text-slate-500'
+                  className={`flex-1 text-[11.5px] ${
+                    permission !== null
+                      ? 'text-amber-700'
+                      : isStreaming
+                      ? 'font-medium text-[#19c37d]'
+                      : 'text-slate-500'
                   }`}
                 >
                   {permission !== null
                     ? 'waiting for permission'
                     : isStreaming
-                    ? 'typing…'
+                    ? 'working…'
                     : isSyncing
                     ? 'syncing…'
                     : isLive
@@ -698,8 +771,7 @@ export function SessionChatScreen({
               </View>
             </View>
 
-            <Text className="text-[13px] text-slate-300">›</Text>
-          </Pressable>
+            </Pressable>
         </View>
       )}
 
@@ -714,7 +786,7 @@ export function SessionChatScreen({
         <Animated.View className="flex-1" style={keyboardShift}>
           {isLoading ? (
             <View className="flex-1 items-center justify-center">
-              <ActivityIndicator color="#64748b" />
+              <ActivityIndicator color={ink('#64748b')} />
             </View>
           ) : (
             <FlatList
@@ -777,6 +849,17 @@ export function SessionChatScreen({
                       onRespond={answerPermission}
                       isBusy={isResponding}
                     />
+                  ) : newSession !== null && !isStreaming && !directChat ? (
+                    <NewSessionCard
+                      suggestion={newSession}
+                      isBusy={isCreatingSession}
+                      error={createError}
+                      onCreate={() => createSuggestedSession(newSession)}
+                      onContinue={() => {
+                        answerSuggestion(newSession);
+                        handleSend('Continue here, in this session.', [], null);
+                      }}
+                    />
                   ) : (
                     <StreamingPreview
                       text={
@@ -800,7 +883,7 @@ export function SessionChatScreen({
               ListFooterComponent={
                 hasMore ? (
                   <View className="py-4">
-                    <ActivityIndicator size="small" color="#94a3b8" />
+                    <ActivityIndicator size="small" color={ink('#94a3b8')} />
                   </View>
                 ) : undefined
               }
@@ -819,7 +902,6 @@ export function SessionChatScreen({
               invertida se dibuja abajo. */}
           <View
             pointerEvents="box-none"
-            style={{ paddingBottom: insets.bottom }}
             className="absolute inset-x-0 bottom-0"
             onLayout={event =>
               setComposerHeight(event.nativeEvent.layout.height)
@@ -856,10 +938,6 @@ export function SessionChatScreen({
               }
               placeholder={directChat ? 'What do you want to do?' : undefined}
               disabled={isLoading || baseUrl.length === 0 || directChat?.busy}
-              // Misma condición que el escritorio: respondiendo y sin permiso
-              // pendiente. Con permiso hay una tarjeta ámbar que ya lo dice, y
-              // dos señales a la vez compiten.
-              isStreaming={isStreaming && permission === null}
               initialText={draft}
               insertText={insert.text}
               insertNonce={insert.nonce}
@@ -868,6 +946,7 @@ export function SessionChatScreen({
                 setHasDraftText(next.trim().length > 0);
               }}
             />
+            <View style={{ height: insets.bottom }} className="bg-white" />
           </View>
         </Animated.View>
       </View>

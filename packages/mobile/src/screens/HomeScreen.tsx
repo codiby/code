@@ -3,10 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   Pressable,
   RefreshControl,
   ScrollView,
+  SectionList,
   Text,
   TextInput,
   View,
@@ -27,6 +27,7 @@ import {
   savePinned,
   savePinnedGroups,
   type GroupAssignment,
+  type ProjectDef,
   type TabGroup,
 } from '../api/preferences';
 import {
@@ -44,6 +45,7 @@ import { usePrefetchChats } from '../api/usePrefetchChats';
 import { useSessionPreviews } from '../api/useSessionPreviews';
 import {
   ArchiveIcon,
+  ChevronDownIcon,
   CloseIcon,
   MoreIcon,
   MoveToGroupIcon,
@@ -71,7 +73,9 @@ import {
 import { HomeMenu } from './HomeMenu';
 import { MoveToGroupSheet } from './MoveToGroupSheet';
 import { NewSessionSheet } from './NewSessionSheet';
+import { ProjectPickerSheet, type ProjectOption } from './ProjectPickerSheet';
 import { ServerSheet } from './ServerSheet';
+import { useInk } from '../theme';
 
 /** Alto de la GlassTabBar flotante más su separación. */
 const TAB_BAR_CLEARANCE = 120;
@@ -101,8 +105,9 @@ function Chip({ label, isActive, onPress, color }: ChipProps) {
       accessibilityRole="button"
       accessibilityState={{ selected: isActive }}
       onPress={onPress}
-      className={`flex-row items-center gap-1.5 rounded-full px-2.5 py-1.5 active:opacity-70 ${
-        isActive ? 'bg-slate-900' : 'bg-slate-200'
+      style={isActive ? undefined : CHIP_SHADOW}
+      className={`h-[30px] flex-row items-center gap-[5px] rounded-[15px] px-[13px] active:opacity-70 ${
+        isActive ? 'bg-accent' : 'bg-white'
       }`}
     >
       {color !== undefined ? (
@@ -112,8 +117,8 @@ function Chip({ label, isActive, onPress, color }: ChipProps) {
         />
       ) : null}
       <Text
-        className={`text-[11px] font-semibold ${
-          isActive ? 'text-white' : 'text-slate-600'
+        className={`text-[12px] ${
+          isActive ? 'font-semibold text-on-accent' : 'font-medium text-slate-500'
         }`}
       >
         {label}
@@ -130,14 +135,15 @@ function Chip({ label, isActive, onPress, color }: ChipProps) {
  * entre ellos.
  */
 function NewSessionButton({ onPress }: { readonly onPress: () => void }) {
+  const ink = useInk();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel="New session"
       onPress={onPress}
-      className="h-[34px] w-[34px] items-center justify-center rounded-full bg-slate-900 active:opacity-80"
+      className="h-[34px] w-[34px] items-center justify-center rounded-full bg-slate-100 active:opacity-70"
     >
-      <PlusIcon size={19} color="#ffffff" />
+      <PlusIcon size={17} color={ink('#0b7d5c')} />
     </Pressable>
   );
 }
@@ -188,6 +194,7 @@ function GroupChipButton({
   onPress,
   onLongPress,
 }: GroupChipProps) {
+  const ink = useInk();
   return (
     <Pressable
       accessibilityRole="button"
@@ -204,21 +211,20 @@ function GroupChipButton({
       accessibilityState={{ selected: isActive }}
       onPress={onPress}
       onLongPress={onLongPress ?? undefined}
-      className={`flex-row items-center gap-1.5 rounded-full border px-2.5 py-1.5 active:opacity-70 ${
-        isActive
-          ? 'border-slate-900 bg-slate-900'
-          : 'border-slate-200 bg-white'
+      style={isActive ? undefined : CHIP_SHADOW}
+      className={`h-[30px] flex-row items-center gap-[5px] rounded-[15px] px-[13px] active:opacity-70 ${
+        isActive ? 'bg-accent' : 'bg-white'
       }`}
     >
       {chip.depth > 0 ? (
         // Marca de subgrupo: en una sola fila, es lo que dice que cuelga del
         // chip de la izquierda.
-        <Text className={`text-[11px] ${isActive ? 'text-slate-400' : 'text-slate-300'}`}>
+        <Text className={`text-[11px] ${isActive ? 'text-on-accent' : 'text-slate-400'}`}>
           {'↳'}
         </Text>
       ) : null}
       {chip.isPinned ? (
-        <PinIcon size={11} color={isActive ? '#ffffff' : '#475569'} />
+        <PinIcon size={11} color={isActive ? ink('#ffffff') : ink('#6a707a')} />
       ) : null}
       <View
         style={chip.color === null ? UNGROUPED_DOT : { backgroundColor: chip.color }}
@@ -226,25 +232,28 @@ function GroupChipButton({
       />
       <Text
         numberOfLines={1}
-        className={`max-w-[160px] text-[11px] font-semibold ${
-          isActive ? 'text-white' : 'text-slate-700'
+        className={`max-w-[160px] text-[12px] ${
+          isActive ? 'font-semibold text-on-accent' : 'font-medium text-slate-500'
         }`}
       >
         {chip.title}
       </Text>
       <Text
-        className={`text-[10px] font-semibold ${
-          isActive ? 'text-slate-300' : 'text-slate-400'
+        className={`text-[10.5px] font-bold opacity-75 ${
+          isActive ? 'text-on-accent' : 'text-slate-500'
         }`}
       >
         {chip.count}
       </Text>
       {chip.working > 0 ? (
-        <View className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        <View className="h-1.5 w-1.5 rounded-full bg-[#19c37d]" />
       ) : null}
     </Pressable>
   );
 }
+
+/** Sombra de 1 px de los chips sin elegir, la misma de la app de chats. */
+const CHIP_SHADOW = { boxShadow: '0px 1px 2px rgba(13, 15, 18, 0.06)' } as const;
 
 /** Punto de «Sin grupo». Fuera del JSX por `no-inline-styles`. */
 const UNGROUPED_DOT = { backgroundColor: '#94a3b8' } as const;
@@ -265,6 +274,60 @@ const UNGROUPED_KEY = '__ungrouped';
 
 /** Qué chips de grupo dejaste elegidos. Es de este teléfono, no del proyecto. */
 const GROUP_FILTER_KEY = 'codiby.group-filter';
+
+/**
+ * Proyecto elegido en el encabezado (clave de un grupo de primer nivel). Sin
+ * guardar = «All projects», que es como abre la primera vez.
+ */
+const PROJECT_KEY = 'codiby.project';
+
+/** Dónde guarda el teléfono los últimos proyectos, para pintar el título al abrir. */
+const PROJECT_DEFS_KEY = 'codiby.project-defs';
+
+const trimSlash = (path: string) =>
+  path.length > 1 ? path.replace(/[\\/]+$/, '') : path;
+
+/**
+ * El proyecto de una sesión, con la regla del escritorio (`project-scope`):
+ * corre dentro de una de sus carpetas, en la máquina de esa carpeta. Si dos
+ * encajan, gana la carpeta más larga: un proyecto anidado manda sobre el que
+ * lo rodea (`~/src/codiby` dentro de `~/`).
+ */
+function projectOf(
+  cwd: string,
+  hostId: string | null,
+  defs: readonly ProjectDef[],
+): string | null {
+  const path = trimSlash(cwd);
+  if (path.length === 0 || hostId === null) {
+    return null;
+  }
+  let best: { id: string; length: number } | null = null;
+  for (const def of defs) {
+    for (const folder of def.folders) {
+      if (folder.hostId !== hostId) {
+        continue;
+      }
+      const inside =
+        path === folder.path ||
+        path.startsWith(`${folder.path}/`) ||
+        path.startsWith(`${folder.path}\\`);
+      if (inside && (best === null || folder.path.length > best.length)) {
+        best = { id: def.id, length: folder.path.length };
+      }
+    }
+  }
+  return best?.id ?? null;
+}
+
+/** Sección de la lista: un grupo dentro del proyecto, o la lista entera. */
+interface SessionSection {
+  readonly key: string;
+  /** `null` = sin encabezado (vista «All projects»). */
+  readonly title: string | null;
+  readonly count: number;
+  readonly data: SessionSummary[];
+}
 
 /**
  * Dónde guardaba el teléfono los grupos anclados antes de que pasaran al
@@ -304,6 +367,7 @@ interface GroupChip {
 const ACTIVE_FILTER: Filter = { kind: 'active' };
 
 export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
+  const ink = useInk();
   const { servers, routes, isLoaded, refreshRoutes } = useServers();
   // `revision` cambia con cada suscripción o cambio de estado, así que
   // consumir el contexto basta para que la lista se repinte sola.
@@ -324,6 +388,17 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
   const [query, setQuery] = useState('');
   /** Chips de grupo elegidos. Vacío = sin filtro, se ve todo. */
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
+  /** Id del proyecto del escritorio que se está viendo; `null` = todos. */
+  const [project, setProject] = useState<string | null>(null);
+  /** `null` hasta que algún bridge los mande. */
+  const [projectDefs, setProjectDefs] = useState<ProjectDef[] | null>(null);
+  /** serverId → identidad de su máquina, para casar carpetas de proyecto. */
+  const [hostByServer, setHostByServer] = useState<
+    Record<string, string | null>
+  >({});
+  const [isPickingProject, setIsPickingProject] = useState(false);
+  /** Secciones plegadas dentro del proyecto. Solo en memoria. */
+  const [collapsed, setCollapsed] = useState<string[]>([]);
   /**
    * Grupos anclados, **en orden de anclaje**: la posición en el arreglo es el
    * dato, no un adorno. Cada bridge guarda los suyos; aquí van por nombre
@@ -423,12 +498,16 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
       return;
     }
     const seq = ++prefsSeq.current;
+    const hostIds: Record<string, string | null> = {};
     Promise.all(
       reachable.map(route =>
         // Misma petición que la lista (`fetchHome` la comparte): una sola
         // ida y vuelta por máquina trae las dos cosas.
         fetchHome(route.baseUrl, route.token, route.server.id)
-          .then(home => home.preferences)
+          .then(home => {
+            hostIds[route.server.id] = home.hostId;
+            return home.preferences;
+          })
           .catch(() => null),
       ),
     ).then(results => {
@@ -510,6 +589,27 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
         maps.push({ serverId: serverIdAt(index), map });
       }
 
+      // Proyectos: cada máquina guarda una copia de los suyos; gana la versión
+      // más nueva de cada uno.
+      const projectById = new Map<string, ProjectDef>();
+      let sawProjects = false;
+      for (const prefs of results) {
+        if (prefs === null || prefs.projects === null) {
+          continue;
+        }
+        sawProjects = true;
+        for (const def of prefs.projects) {
+          const known = projectById.get(def.id);
+          if (known === undefined || def.updatedAt > known.updatedAt) {
+            projectById.set(def.id, def);
+          }
+        }
+      }
+      if (sawProjects) {
+        setProjectDefs([...projectById.values()]);
+      }
+      setHostByServer(current => ({ ...current, ...hostIds }));
+
       hasLivePrefs.current = true;
       setGroups([...byName.values()]);
       setServerMaps(maps);
@@ -568,6 +668,36 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
       .catch(() => {
         // Sin memoria, sin filtro: es el estado inofensivo.
       });
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.getItem(PROJECT_KEY)
+      .then(raw => {
+        if (raw !== null && raw.length > 0) {
+          setProject(raw);
+        }
+      })
+      .catch(() => {
+        // Sin memoria se abre en «All projects».
+      });
+  }, []);
+
+  /**
+   * Cambiar de proyecto deja los chips en «All»: los subgrupos elegidos del
+   * anterior no existen en el nuevo y dejarían la lista vacía sin motivo.
+   */
+  const chooseProject = useCallback((key: string | null) => {
+    setIsPickingProject(false);
+    setProject(key);
+    setSelectedGroups([]);
+    setCollapsed([]);
+    AsyncStorage.removeItem(GROUP_FILTER_KEY).catch(() => undefined);
+    (key === null
+      ? AsyncStorage.removeItem(PROJECT_KEY)
+      : AsyncStorage.setItem(PROJECT_KEY, key)
+    ).catch(() => {
+      // Perderlo solo cuesta abrir en «All projects» la próxima vez.
+    });
   }, []);
 
   /**
@@ -709,6 +839,26 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
     [all, serverMaps],
   );
 
+  /** clave de sesión → id de su proyecto (las que no son de ninguno, fuera). */
+  const projectBySession = useMemo(() => {
+    const out: Record<string, string> = {};
+    if (projectDefs === null) {
+      return out;
+    }
+    for (const item of all) {
+      const id = projectOf(item.cwd, hostByServer[item.serverId] ?? null, projectDefs);
+      if (id !== null) {
+        out[item.key] = id;
+      }
+    }
+    return out;
+  }, [all, projectDefs, hostByServer]);
+
+  /** Los proyectos ya llegaron y se sabe la máquina de cada servidor. */
+  const canScope =
+    projectDefs !== null &&
+    Object.values(hostByServer).some(hostId => hostId !== null);
+
   /**
    * Lo que de verdad filtra: de cada rama elegida, lo más profundo. Con
    * «utilityprofit» y su «Out of cycle» elegidos se ve solo el subgrupo; con
@@ -742,6 +892,15 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           ) {
             return false;
           }
+          // El proyecto del encabezado acota todo lo demás: chips, cuentas
+          // y la propia lista solo ven lo que cuelga de él.
+          if (
+            project !== null &&
+            canScope &&
+            projectBySession[session.key] !== project
+          ) {
+            return false;
+          }
           if (filter.kind === 'archived') {
             return !session.isOpen;
           }
@@ -763,7 +922,49 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           return b.lastSentAt - a.lastSentAt;
         })
     );
-  }, [all, filter, pinnedIds, query]);
+  }, [all, filter, pinnedIds, query, project, projectBySession, canScope]);
+
+  // Un proyecto que se borró o renombró en el escritorio ya no tiene a dónde
+  // apuntar: se vuelve a «All projects» en vez de enseñar una lista vacía.
+  useEffect(() => {
+    if (
+      project !== null &&
+      projectDefs !== null &&
+      !projectDefs.some(def => def.id === project)
+    ) {
+      chooseProject(null);
+    }
+  }, [projectDefs, project, chooseProject]);
+
+  // Los proyectos se recuerdan para que el título salga bien al abrir, antes
+  // de que conteste la red.
+  useEffect(() => {
+    AsyncStorage.getItem(PROJECT_DEFS_KEY)
+      .then(raw => {
+        const saved = JSON.parse(raw ?? 'null') as {
+          defs?: unknown;
+          hosts?: unknown;
+        } | null;
+        if (Array.isArray(saved?.defs)) {
+          setProjectDefs(current => current ?? (saved.defs as ProjectDef[]));
+        }
+        if (saved?.hosts !== null && typeof saved?.hosts === 'object') {
+          setHostByServer(current => ({
+            ...(saved.hosts as Record<string, string | null>),
+            ...current,
+          }));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    if (projectDefs !== null) {
+      AsyncStorage.setItem(
+        PROJECT_DEFS_KEY,
+        JSON.stringify({ defs: projectDefs, hosts: hostByServer }),
+      ).catch(() => undefined);
+    }
+  }, [projectDefs, hostByServer]);
 
   const sessions = useMemo(() => {
     if (visibleGroups.length === 0) {
@@ -785,6 +986,27 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
   );
 
   const archivedCount = all.length - activeCount;
+
+  /** Las cuentas de «All» y «Archived», acotadas al proyecto si hay uno. */
+  const scoped = useMemo(() => {
+    if (project === null) {
+      return { active: activeCount, archived: archivedCount };
+    }
+    let active = 0;
+    let archived = 0;
+    for (const item of all) {
+      const key = groupBySession[item.key];
+      if (key === undefined || !isWithin(key, project)) {
+        continue;
+      }
+      if (item.isOpen) {
+        active += 1;
+      } else {
+        archived += 1;
+      }
+    }
+    return { active, archived };
+  }, [all, project, groupBySession, activeCount, archivedCount]);
 
   const selectedSessions = useMemo(
     () => all.filter(session => selectedIds.includes(session.key)),
@@ -1212,6 +1434,8 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
         })
         .map(entry => chipOf(entry.key));
 
+    // Con un proyecto elegido `baseSessions` ya viene acotada, así que los
+    // grupos sin sesiones suyas se caen solos, como en el escritorio.
     const top = ordered(children.get(null) ?? []);
     if (loose.length > 0 || selectedGroups.includes(UNGROUPED_KEY)) {
       top.push({
@@ -1252,6 +1476,198 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
     live,
   ]);
 
+  /**
+   * Proyectos del selector, los del escritorio, con lo que tienen abierto.
+   * Cuentan sobre todas las sesiones abiertas, no sobre el proyecto elegido:
+   * si no, los demás saldrían vacíos.
+   */
+  const projects = useMemo<ProjectOption[]>(() => {
+    if (projectDefs === null) {
+      return [];
+    }
+    const groupName = new Map(groups.map(group => [group.id, group.name]));
+    return projectDefs
+      .map(def => {
+        const members = all.filter(
+          item => item.isOpen && projectBySession[item.key] === def.id,
+        );
+        /** Grupo de primer nivel → su sesión más reciente, para el orden. */
+        const tops = new Map<string, number>();
+        for (const item of members) {
+          const key = groupBySession[item.key];
+          if (key !== undefined) {
+            const top = key.split('/')[0] ?? key;
+            tops.set(top, Math.max(tops.get(top) ?? 0, item.lastSentAt));
+          }
+        }
+        const hostNames = new Set<string>();
+        for (const folder of def.folders) {
+          const server = servers.find(
+            entry => hostByServer[entry.id] === folder.hostId,
+          );
+          if (server !== undefined && server.name.length > 0) {
+            hostNames.add(server.name);
+          }
+        }
+        return {
+          key: def.id,
+          title: def.name,
+          color: GROUP_COLORS[def.color] ?? GROUP_COLORS.slate!,
+          count: members.length,
+          working: members.filter(
+            item =>
+              !live[item.key]?.pendingTool &&
+              (live[item.key]?.isStreaming === true || item.isRunning),
+          ).length,
+          waiting: members.filter(item => !!live[item.key]?.pendingTool).length,
+          servers: [...hostNames],
+          subgroups: [...tops.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([key]) => groupName.get(key) ?? key),
+          isPinned: false,
+          lastAt: members.reduce((max, item) => Math.max(max, item.lastSentAt), 0),
+        };
+      })
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }, [projectDefs, all, projectBySession, groupBySession, groups, servers, hostByServer, live]);
+
+  const currentProject = useMemo(
+    () => projects.find(entry => entry.key === project) ?? null,
+    [projects, project],
+  );
+
+  /**
+   * Con un proyecto elegido, la lista se parte por sus grupos, en el orden de
+   * los chips; lo que no está en ningún grupo va al final. Si todas sus
+   * sesiones caen bajo un mismo grupo, se baja un nivel: un proyecto que vive
+   * entero en «utilityprofit» se lee por sus subgrupos, no como una sola
+   * sección. Sin proyecto es una sola sección sin encabezado: la lista de
+   * siempre.
+   */
+  const sections = useMemo<SessionSection[]>(() => {
+    if (project === null) {
+      return [{ key: 'all', title: null, count: sessions.length, data: sessions }];
+    }
+    let level: string | null = null;
+    for (;;) {
+      const prefix: string | null = level;
+      const under = sessions.map(item => groupBySession[item.key]);
+      if (under.some(key => key === undefined || key === prefix)) {
+        break;
+      }
+      const next = new Set(
+        under.map(key => {
+          const rest = prefix === null ? key! : key!.slice(prefix.length + 1);
+          const head = rest.split('/')[0]!;
+          return prefix === null ? head : `${prefix}/${head}`;
+        }),
+      );
+      if (next.size !== 1) {
+        break;
+      }
+      const only: string = [...next][0]!;
+      if (sessions.every(item => groupBySession[item.key] === only)) {
+        level = only;
+        break;
+      }
+      level = only;
+    }
+
+    const byChild = new Map<string, SessionSummary[]>();
+    for (const item of sessions) {
+      const key = groupBySession[item.key];
+      let child = UNGROUPED_KEY;
+      if (key !== undefined && (level === null || isWithin(key, level)) && key !== level) {
+        const rest = level === null ? key : key.slice(level.length + 1);
+        const head = rest.split('/')[0]!;
+        child = level === null ? head : `${level}/${head}`;
+      }
+      byChild.set(child, [...(byChild.get(child) ?? []), item]);
+    }
+    const chipOrder = chips.map(chip => chip.key);
+    const order = [...byChild.keys()]
+      .filter(key => key !== UNGROUPED_KEY)
+      .sort((a, b) => {
+        const ia = chipOrder.indexOf(a);
+        const ib = chipOrder.indexOf(b);
+        return (ia === -1 ? Infinity : ia) - (ib === -1 ? Infinity : ib) ||
+          (byChild.get(b)![0]!.lastSentAt - byChild.get(a)![0]!.lastSentAt);
+      });
+    if (byChild.has(UNGROUPED_KEY)) {
+      order.push(UNGROUPED_KEY);
+    }
+    const names = new Map(groups.map(group => [group.id, group.name]));
+    // Un solo bloque no necesita encabezado: sería repetir el título.
+    if (order.length === 1 && level === null) {
+      return [{ key: 'all', title: null, count: sessions.length, data: sessions }];
+    }
+    return order.map(key => {
+      const data = byChild.get(key) ?? [];
+      return {
+        key,
+        title:
+          key === UNGROUPED_KEY
+            ? level === null
+              ? 'No group'
+              : names.get(level) ?? 'Other'
+            : names.get(key) ?? key.split('/').pop() ?? key,
+        count: data.length,
+        data: collapsed.includes(key) ? [] : data,
+      };
+    });
+  }, [project, sessions, groupBySession, chips, groups, collapsed]);
+
+  const toggleSection = useCallback((key: string) => {
+    setCollapsed(current =>
+      current.includes(key)
+        ? current.filter(other => other !== key)
+        : [...current, key],
+    );
+  }, []);
+
+  /**
+   * Dónde abrir una sesión nueva dentro del proyecto: la carpeta del proyecto
+   * en la máquina de su sesión más reciente. La raíz de la carpeta, no la de
+   * esa sesión, que suele ser un worktree de un ticket.
+   */
+  const projectSeed = useMemo(() => {
+    const def = projectDefs?.find(entry => entry.id === project);
+    if (def === undefined) {
+      return undefined;
+    }
+    const latest = all
+      .filter(item => projectBySession[item.key] === def.id)
+      .sort((a, b) => b.lastSentAt - a.lastSentAt)[0];
+    const folder =
+      latest === undefined
+        ? undefined
+        : def.folders
+            .filter(
+              entry =>
+                entry.hostId === hostByServer[latest.serverId] &&
+                (latest.cwd === entry.path ||
+                  latest.cwd.startsWith(`${entry.path}/`)),
+            )
+            .sort((a, b) => b.path.length - a.path.length)[0];
+    const fallback =
+      folder === undefined
+        ? def.folders
+            .map(entry => ({
+              entry,
+              serverId: servers.find(
+                server => hostByServer[server.id] === entry.hostId,
+              )?.id,
+            }))
+            .find(candidate => candidate.serverId !== undefined)
+        : undefined;
+    const serverId = folder !== undefined ? latest!.serverId : fallback?.serverId;
+    const cwd = folder?.path ?? fallback?.entry.path;
+    if (serverId === undefined || cwd === undefined) {
+      return undefined;
+    }
+    return { serverId, cwd, name: '', text: '', images: [] };
+  }, [projectDefs, project, all, projectBySession, hostByServer, servers]);
+
   /** Nombre del grupo de cada fila: sin secciones, lo tiene que decir ella. */
   const groupNames = useMemo(
     () => new Map(groups.map(group => [group.id, group.name])),
@@ -1268,10 +1684,10 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
   const isSelectionMode = selectedIds.length > 0;
 
   return (
-    <View className="flex-1 bg-slate-100">
+    <View className="flex-1 bg-white">
       <View
-        style={{ paddingTop: insets.top + 14 }}
-        className="bg-white px-[18px] pb-[11px]"
+        style={{ paddingTop: insets.top + 4 }}
+        className="border-b border-slate-200 bg-white px-4"
       >
         {isSelectionMode ? (
           // Barra contextual: sustituye al encabezado mientras hay selección.
@@ -1282,7 +1698,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
               onPress={() => setSelectedIds([])}
               className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
             >
-              <CloseIcon size={20} color="#0f172a" />
+              <CloseIcon size={20} color={ink('#0f172a')} />
             </Pressable>
 
             <Text
@@ -1295,7 +1711,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
             </Text>
 
             {isWorking ? (
-              <ActivityIndicator size="small" color="#64748b" />
+              <ActivityIndicator size="small" color={ink('#64748b')} />
             ) : (
               <>
                 {/* Anclar solo tiene sentido sobre una: con varias, el orden
@@ -1308,7 +1724,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                       onPress={() => setIsRenaming(true)}
                       className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
                     >
-                      <RenameIcon size={20} color="#475569" />
+                      <RenameIcon size={20} color={ink('#475569')} />
                     </Pressable>
 
                     <Pressable
@@ -1325,8 +1741,8 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                         size={20}
                         color={
                           pinnedIds.includes(selectedIds[0]!)
-                            ? '#0f172a'
-                            : '#475569'
+                            ? ink('#0f172a')
+                            : ink('#475569')
                         }
                       />
                     </Pressable>
@@ -1339,7 +1755,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   onPress={() => setIsMoving(true)}
                   className="h-9 w-9 items-center justify-center rounded-full bg-slate-100 active:bg-slate-200"
                 >
-                  <MoveToGroupIcon size={20} color="#0f172a" />
+                  <MoveToGroupIcon size={20} color={ink('#0f172a')} />
                 </Pressable>
 
                 <Pressable
@@ -1350,7 +1766,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                 >
                   <ArchiveIcon
                     size={20}
-                    color={allArchived ? '#0f172a' : '#475569'}
+                    color={allArchived ? ink('#0f172a') : ink('#475569')}
                   />
                 </Pressable>
 
@@ -1360,14 +1776,39 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   onPress={confirmDelete}
                   className="h-9 w-9 items-center justify-center rounded-full active:bg-rose-50"
                 >
-                  <TrashIcon size={20} color="#be123c" />
+                  <TrashIcon size={20} color={ink('#be123c')} />
                 </Pressable>
               </>
             )}
           </View>
         ) : (
-          <View className="flex-row items-center gap-2">
-            <Text className="text-[23px] font-bold tracking-tight text-slate-900">Conversations</Text>
+          <View className="h-12 flex-row items-center gap-2">
+            {/* El título es el selector de proyecto: siempre a la vista, y
+                tocarlo abre la hoja. Se encoge (no empuja) al abrir la
+                búsqueda, para que el campo tenga sitio. */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Project: ${currentProject?.title ?? 'All projects'}`}
+              accessibilityHint="Choose which project to show"
+              onPress={() => setIsPickingProject(true)}
+              className={`-ml-1.5 min-w-0 flex-row items-center gap-[7px] rounded-xl px-1.5 py-1 active:bg-slate-100 ${
+                isSearching ? 'max-w-[45%] shrink' : 'shrink'
+              }`}
+            >
+              {currentProject !== null ? (
+                <View
+                  style={{ backgroundColor: currentProject.color }}
+                  className="h-2.5 w-2.5 rounded-full"
+                />
+              ) : null}
+              <Text
+                numberOfLines={1}
+                className="shrink text-[23px] font-bold tracking-[-0.9px] text-slate-900"
+              >
+                {currentProject?.title ?? 'All projects'}
+              </Text>
+              <ChevronDownIcon size={18} color={ink('#94a3b8')} />
+            </Pressable>
 
             {isSearching ? (
               <>
@@ -1375,7 +1816,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   value={query}
                   onChangeText={setQuery}
                   placeholder="Search…"
-                  placeholderTextColor="#94a3b8"
+                  placeholderTextColor={ink('#94a3b8')}
                   autoFocus
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -1383,7 +1824,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   // Sin altura fija y con relleno vertical: en Android un
                   // `TextInput` con `height` recorta la línea de base, porque
                   // el campo no reserva el hueco del descendente.
-                  className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] leading-5 text-slate-900"
+                  className="flex-1 rounded-[20px] bg-slate-100 px-[14px] py-2 text-[13.5px] leading-5 text-slate-900"
                 />
                 <Pressable
                   accessibilityRole="button"
@@ -1394,7 +1835,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   }}
                   className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
                 >
-                  <CloseIcon size={18} color="#475569" />
+                  <CloseIcon size={18} color={ink('#475569')} />
                 </Pressable>
                 <NewSessionButton onPress={() => setIsCreating(true)} />
               </>
@@ -1408,7 +1849,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   // ese hueco y el título se queda donde estaba.
                   className="ml-auto h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
                 >
-                  <SearchIcon size={20} color="#475569" />
+                  <SearchIcon size={20} color={ink('#475569')} />
                 </Pressable>
                 <NewSessionButton onPress={() => setIsCreating(true)} />
                 <Pressable
@@ -1417,7 +1858,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   onPress={() => setIsMenuOpen(true)}
                   className="-mr-1.5 h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
                 >
-                  <MoreIcon size={20} color="#475569" />
+                  <MoreIcon size={20} color={ink('#475569')} />
                 </Pressable>
               </>
             )}
@@ -1480,18 +1921,18 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           horizontal
           showsHorizontalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
-          className="mt-2.5 grow-0"
-          contentContainerClassName="items-center gap-2 pr-4"
+          className="-mx-4 mt-1 grow-0 bg-slate-100"
+          contentContainerClassName="items-center gap-1.5 px-[13px] pb-2.5 pt-2"
         >
           <Chip
-            label={`All${activeCount > 0 ? ` · ${activeCount}` : ''}`}
+            label={`All${scoped.active > 0 ? ` · ${scoped.active}` : ''}`}
             isActive={filter.kind === 'active'}
             onPress={() => setFilter(ACTIVE_FILTER)}
           />
 
           <Chip
             label={`Archived${
-              archivedCount > 0 ? ` · ${archivedCount}` : ''
+              scoped.archived > 0 ? ` · ${scoped.archived}` : ''
             }`}
             isActive={filter.kind === 'archived'}
             onPress={() => setFilter({ kind: 'archived' })}
@@ -1504,9 +1945,10 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
               accessibilityRole="button"
               accessibilityLabel="Clear group filter"
               onPress={clearGroupFilter}
-              className="h-[30px] w-[30px] items-center justify-center rounded-full bg-slate-200 active:bg-slate-300"
+              style={CHIP_SHADOW}
+              className="h-[30px] w-[30px] items-center justify-center rounded-full bg-white active:opacity-70"
             >
-              <CloseIcon size={14} color="#475569" />
+              <CloseIcon size={14} color={ink('#475569')} />
             </Pressable>
           ) : null}
 
@@ -1553,12 +1995,39 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
 
       {isFirstLoad ? (
         <View className="flex-1 items-center justify-center">
-          {snapshot === undefined ? null : <ActivityIndicator color="#64748b" />}
+          {snapshot === undefined ? null : <ActivityIndicator color={ink('#64748b')} />}
         </View>
       ) : (
-        <FlatList
-          data={sessions}
+        <SectionList
+          sections={sections}
           keyExtractor={session => session.key}
+          stickySectionHeadersEnabled={false}
+          renderSectionHeader={({ section }) =>
+            section.title === null ? null : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${section.title}, ${section.count} ${
+                  section.count === 1 ? 'session' : 'sessions'
+                }`}
+                accessibilityState={{ expanded: !collapsed.includes(section.key) }}
+                onPress={() => toggleSection(section.key)}
+                className="flex-row items-center gap-[7px] px-4 pb-1.5 pt-3.5 active:opacity-60"
+              >
+                <Text className="text-[10px] text-slate-400">
+                  {collapsed.includes(section.key) ? '▸' : '▾'}
+                </Text>
+                <Text
+                  numberOfLines={1}
+                  className="shrink text-[11.5px] font-semibold tracking-[-0.1px] text-slate-500"
+                >
+                  {section.title}
+                </Text>
+                <Text className="ml-auto text-[11px] text-slate-400">
+                  {section.count}
+                </Text>
+              </Pressable>
+            )
+          }
           renderItem={({ item }) => {
             const server = serverOf(item);
             const route = routeOf(item);
@@ -1586,8 +2055,10 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                 // Sin secciones, la fila es la que dice de qué grupo es. Con un
                 // solo grupo elegido sería repetir el chip.
                 groupName={
-                  visibleGroups.length === 1 &&
-                  visibleGroups[0] === groupBySession[item.key]
+                  // Dentro de un proyecto la sección ya dice el subgrupo.
+                  project !== null ||
+                  (visibleGroups.length === 1 &&
+                    visibleGroups[0] === groupBySession[item.key])
                     ? null
                     : groupNames.get(groupBySession[item.key] ?? '') ?? null
                 }
@@ -1606,7 +2077,7 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                 refresh();
                 loadPreferences();
               }}
-              tintColor="#64748b"
+              tintColor={ink('#64748b')}
             />
           }
           ListEmptyComponent={
@@ -1618,6 +2089,8 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
                   ? `Nothing matches "${query.trim()}".`
                   : visibleGroups.length > 0
                   ? 'No sessions in the selected groups.'
+                  : currentProject !== null && filter.kind === 'active'
+                  ? `No open sessions in ${currentProject.title}.`
                   : filter.kind === 'archived'
                   ? 'No archived sessions.'
                   : 'No active sessions.'}
@@ -1661,9 +2134,11 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
         // `all`, no la lista filtrada: las carpetas recientes no deberían
         // depender de si estás mirando activas o archivadas.
         sessions={all}
+        initial={projectSeed}
         onCancel={() => setIsCreating(false)}
         onCreated={session => {
           setIsCreating(false);
+          // La sesión es del proyecto por su carpeta: no hay que moverla.
           // Primero refrescar y luego abrir: al volver de la conversación la
           // fila ya tiene que estar en la lista, y el bridge la acaba de
           // añadir a su `/sessions`.
@@ -1671,6 +2146,16 @@ export function HomeScreen({ onOpenSession, drafts }: HomeScreenProps) {
           loadPreferences();
           onOpenSession(session);
         }}
+      />
+
+      <ProjectPickerSheet
+        visible={isPickingProject}
+        projects={projects}
+        current={project}
+        totalOpen={activeCount}
+        serverCount={servers.length}
+        onSelect={chooseProject}
+        onClose={() => setIsPickingProject(false)}
       />
 
       <ServerSheet

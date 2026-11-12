@@ -1,4 +1,4 @@
-import { ServerError } from './client';
+import { ServerError, requestJson } from './client';
 import { fetchPreferences, parsePreferences, type Preferences } from './preferences';
 import { fetchSessions, parseSessionList } from './sessions';
 import type { SessionSummary } from './types';
@@ -7,6 +7,8 @@ import type { SessionSummary } from './types';
 export interface HomeData {
   readonly sessions: SessionSummary[];
   readonly preferences: Preferences;
+  /** Identidad de la máquina (`host_…`); `null` si no se pudo saber. */
+  readonly hostId: string | null;
 }
 
 const TIMEOUT_MS = 8_000;
@@ -73,10 +75,12 @@ async function fetchCompact(
     const body = (await response.json()) as {
       sessions?: unknown;
       preferences?: unknown;
+      hostId?: unknown;
     };
     const data: HomeData = {
       sessions: parseSessionList(body.sessions, serverId),
       preferences: parsePreferences(body.preferences),
+      hostId: typeof body.hostId === 'string' ? body.hostId : null,
     };
     const etag = response.headers.get('etag');
     if (etag !== null) {
@@ -120,14 +124,28 @@ export function fetchHome(
     if (!legacy.has(baseUrl)) {
       const compact = await fetchCompact(baseUrl, token, serverId);
       if (compact !== null) {
-        return compact;
+        if (compact.preferences.projects !== null && compact.hostId !== null) {
+          return compact;
+        }
+        // Bridge anterior a los proyectos en `/mobile/home`: se completan
+        // aparte, sin tirar lo demás si eso falla.
+        const extra = await fetchProjectsFallback(baseUrl, token);
+        return {
+          ...compact,
+          hostId: compact.hostId ?? extra.hostId,
+          preferences: {
+            ...compact.preferences,
+            projects: compact.preferences.projects ?? extra.projects,
+          },
+        };
       }
     }
-    const [sessions, preferences] = await Promise.all([
+    const [sessions, preferences, host] = await Promise.all([
       fetchSessions(baseUrl, token, serverId),
       fetchPreferences(baseUrl, token),
+      fetchHostId(baseUrl, token).catch(() => null),
     ]);
-    return { sessions, preferences };
+    return { sessions, preferences, hostId: host };
   })();
   inflight.set(baseUrl, run);
   run.then(
@@ -138,4 +156,52 @@ export function fetchHome(
     () => inflight.delete(baseUrl),
   );
   return run;
+}
+
+/**
+ * Proyectos y máquina de un bridge que no los manda en `/mobile/home`. Se
+ * guardan un rato: `/preferences` pesa ~90 KB y casi nunca cambia.
+ */
+const FALLBACK_MS = 5 * 60_000;
+const fallbackCache = new Map<
+  string,
+  {
+    readonly at: number;
+    readonly hostId: string | null;
+    readonly projects: Preferences['projects'];
+  }
+>();
+
+async function fetchProjectsFallback(
+  baseUrl: string,
+  token: string,
+): Promise<{ hostId: string | null; projects: Preferences['projects'] }> {
+  const cached = fallbackCache.get(baseUrl);
+  if (cached !== undefined && Date.now() - cached.at < FALLBACK_MS) {
+    return cached;
+  }
+  const [hostId, prefs] = await Promise.all([
+    fetchHostId(baseUrl, token).catch(() => null),
+    fetchPreferences(baseUrl, token).catch(() => null),
+  ]);
+  const entry = {
+    at: Date.now(),
+    hostId,
+    projects: prefs?.projects ?? null,
+  };
+  fallbackCache.set(baseUrl, entry);
+  return entry;
+}
+
+/** `GET /host`: la identidad estable de la máquina. */
+function fetchHostId(baseUrl: string, token: string): Promise<string | null> {
+  return requestJson(
+    baseUrl,
+    '/host',
+    body => {
+      const hostId = (body as { hostId?: unknown } | null)?.hostId;
+      return typeof hostId === 'string' && hostId.length > 0 ? hostId : null;
+    },
+    token,
+  );
 }

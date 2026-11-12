@@ -12,7 +12,30 @@ export interface TabGroup {
   readonly parentId: string | null;
 }
 
+/** Carpeta de un proyecto: una ruta en una máquina concreta. */
+export interface ProjectFolder {
+  readonly path: string;
+  /** Identidad estable de la máquina (`host_…`), la de `/host`. */
+  readonly hostId: string | null;
+}
+
+/**
+ * Proyecto del escritorio: nombre, color y carpetas en una o varias
+ * máquinas. No es un grupo: una sesión es del proyecto si corre dentro de
+ * una de sus carpetas, en la máquina de esa carpeta.
+ */
+export interface ProjectDef {
+  readonly id: string;
+  readonly name: string;
+  /** Nombre de color del escritorio (`green`, `blue`…). */
+  readonly color: string;
+  readonly folders: ProjectFolder[];
+  readonly updatedAt: number;
+}
+
 export interface Preferences {
+  /** `null` = el bridge no los mandó (versión vieja), distinto de «ninguno». */
+  readonly projects: ProjectDef[] | null;
   readonly groups: TabGroup[];
   /** sessionId → groupId */
   readonly groupBySession: Record<string, string>;
@@ -82,7 +105,51 @@ export function parsePreferences(body: unknown): Preferences {
     ? prefs.pinnedGroupIds.filter((id): id is string => typeof id === 'string')
     : null;
 
-  return { groups, groupBySession, pinnedIds, pinnedGroupIds };
+  return {
+    projects: parseProjects(prefs.projects),
+    groups,
+    groupBySession,
+    pinnedIds,
+    pinnedGroupIds,
+  };
+}
+
+/** `projects` de las preferencias; `null` si la clave no vino. */
+export function parseProjects(raw: unknown): ProjectDef[] | null {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  return Object.entries(asRecord(raw)).flatMap(([id, value]) => {
+    const project = asRecord(value);
+    if (
+      project.deleted === true ||
+      typeof project.name !== 'string' ||
+      project.name.trim().length === 0
+    ) {
+      return [];
+    }
+    const folders = (Array.isArray(project.folders) ? project.folders : [])
+      .map(asRecord)
+      .filter(
+        folder => typeof folder.path === 'string' && folder.path.trim().length > 0,
+      )
+      .map(folder => ({
+        path: (folder.path as string).trim().replace(/(.)[\\/]+$/, '$1'),
+        hostId:
+          typeof folder.hostId === 'string' && folder.hostId.length > 0
+            ? folder.hostId
+            : null,
+      }));
+    return [
+      {
+        id,
+        name: project.name.trim(),
+        color: typeof project.color === 'string' ? project.color : 'slate',
+        folders,
+        updatedAt: typeof project.updatedAt === 'number' ? project.updatedAt : 0,
+      },
+    ];
+  });
 }
 
 /**

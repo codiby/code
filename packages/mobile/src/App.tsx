@@ -52,6 +52,11 @@ type Layer =
   | { readonly kind: 'mockup'; readonly name: string };
 
 import './global.css';
+import { useIsDark } from './theme';
+import { applyThemePreference, loadThemePreference } from './themePreference';
+
+// Antes del primer render que importe: así no parpadea el tema del sistema.
+loadThemePreference().then(applyThemePreference);
 
 /** Cuánto se desplaza la pantalla de atrás, como paralaje. */
 const PARALLAX = 0.28;
@@ -84,6 +89,11 @@ function CacheSync() {
   return null;
 }
 
+function ThemedStatusBar() {
+  const dark = useIsDark();
+  return <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} />;
+}
+
 function App() {
   return (
     // Lo exige `react-native-gesture-handler`: sin esta raíz, los gestos del
@@ -94,7 +104,7 @@ function App() {
           {/* Dentro del de servidores: necesita sus rutas para saber a qué
               máquinas conectarse. */}
           <SocketProvider>
-            <StatusBar barStyle="dark-content" />
+            <ThemedStatusBar />
             <CacheSync />
             <AppContent />
           </SocketProvider>
@@ -301,7 +311,7 @@ function AppContent() {
 
   return (
     <SessionLinkContext.Provider value={openSessionById}>
-    <View className="flex-1 bg-slate-100">
+    <View className="flex-1 bg-white">
       <Animated.View className="flex-1" style={homeStyle}>
         {/* El Home no se desmonta al cambiar de pestaña: desmontarlo tiraba su
             estado y al volver pedía todo otra vez a las dos máquinas. Se
@@ -347,6 +357,11 @@ function AppContent() {
               onOpenInfo={() => push({ kind: 'info' })}
               onOpenMockup={name => push({ kind: 'mockup', name })}
               onTotalMessages={setTotalMessages}
+              onOpenSession={target => {
+                setLayers([]);
+                setTotalMessages(null);
+                openSessionAnimated(target);
+              }}
             />
           </Animated.View>
 
