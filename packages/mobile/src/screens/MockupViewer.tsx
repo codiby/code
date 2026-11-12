@@ -11,6 +11,7 @@ import { WebView } from 'react-native-webview';
 
 import { fetchResources, resourceUrl } from '../api/resources';
 import { CloseIcon } from '../components/SessionList';
+import { useInk } from '../theme';
 
 const styles = StyleSheet.create({ web: { flex: 1 } });
 
@@ -37,6 +38,7 @@ export function MockupViewer({
   name,
   onClose,
 }: MockupViewerProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const [uri, setUri] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +80,7 @@ export function MockupViewer({
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
         >
-          <CloseIcon size={20} color="#0f172a" />
+          <CloseIcon size={20} color={ink('#0f172a')} />
         </Pressable>
         <Text
           numberOfLines={1}
@@ -94,7 +96,7 @@ export function MockupViewer({
         </View>
       ) : uri === null ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator color="#64748b" />
+          <ActivityIndicator color={ink('#64748b')} />
         </View>
       ) : (
         <WebView

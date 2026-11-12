@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-nativ
 
 import type { PermissionRequest } from '../../api/types';
 import { CheckIcon } from './icons';
+import { useInk } from '../../theme';
 
 /** Una pregunta tal cual la manda la herramienta. */
 export interface AskQuestion {
@@ -79,6 +80,7 @@ function OptionRow({
   isDashed = false,
   onPress,
 }: OptionRowProps) {
+  const ink = useInk();
   return (
     <Pressable
       accessibilityRole={isMulti ? 'checkbox' : 'radio'}
@@ -100,7 +102,7 @@ function OptionRow({
       >
         {isPicked ? (
           <View className="flex-1 items-center justify-center">
-            <CheckIcon size={8} color="#ffffff" />
+            <CheckIcon size={8} color={ink('#ffffff')} />
           </View>
         ) : null}
       </View>
@@ -134,6 +136,7 @@ function OptionRow({
  * pantalla, y al vivir dentro de la lista no hay forma de desplazarla sola.
  */
 export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardProps) {
+  const ink = useInk();
   const questions = useMemo(() => parseQuestions(request.input), [request.input]);
 
   /** índice → etiqueta elegida, o `OTHER` mientras se escribe la respuesta. */
@@ -264,7 +267,7 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
                   }`}
                 >
                   {answered ? (
-                    <CheckIcon size={9} color="#ffffff" />
+                    <CheckIcon size={9} color={ink('#ffffff')} />
                   ) : (
                     <Text
                       className={`text-[9px] font-bold ${
@@ -335,7 +338,7 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
                       value={custom[index] ?? ''}
                       onChangeText={text => setCustom({ ...custom, [index]: text })}
                       placeholder="Your answer…"
-                      placeholderTextColor="#94a3b8"
+                      placeholderTextColor={ink('#94a3b8')}
                       autoFocus
                       multiline
                       className="mb-1.5 rounded-[10px] border-[1.5px] border-indigo-600 bg-white px-2.5 py-2 text-[11.5px] leading-[16px] text-slate-900"
@@ -388,11 +391,11 @@ export function AskQuestionCard({ request, isBusy, onSubmit }: AskQuestionCardPr
             }`}
           >
             {isBusy ? (
-              <ActivityIndicator size="small" color="#ffffff" />
+              <ActivityIndicator size="small" color={ink('#f8fafc')} />
             ) : (
               <Text
                 className={`text-[12px] font-semibold ${
-                  allAnswered ? 'text-white' : 'text-slate-400'
+                  allAnswered ? 'text-slate-50' : 'text-slate-400'
                 }`}
               >
                 Send answers

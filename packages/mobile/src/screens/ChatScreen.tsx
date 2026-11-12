@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,10 +25,16 @@ import {
 import { invalidateHome } from '../api/home';
 import { sendMessage } from '../api/messages';
 import { PROVIDERS } from '../api/providers';
-import { createSession, setSessionStatus } from '../api/sessions';
+import {
+  createSession,
+  fetchSessions,
+  keepSession,
+  setSessionStatus,
+} from '../api/sessions';
 import type { ChatMessage, MessageImage, SessionSummary } from '../api/types';
 import { BackIcon, Composer, SparkIcon } from '../components/Chat';
 import { useServers } from '../config/ServerConfigContext';
+import { useInk } from '../theme';
 import { NewSessionSheet, type NewSessionSheetProps } from './NewSessionSheet';
 import { SessionChatScreen } from './SessionChatScreen';
 
@@ -37,22 +43,49 @@ interface ChatScreenProps {
   readonly onBack: () => void;
 }
 
+async function savedProvider() {
+  const saved = await AsyncStorage.getItem('codiby.new-session-provider').catch(
+    () => null,
+  );
+  return PROVIDERS.find(p => p === saved) ?? 'claude';
+}
+
 interface StartedChat {
   readonly session: SessionSummary;
   readonly context: DirectContext;
 }
 
-/** El agente recomienda; solo un toque del usuario transfiere la petición. */
+/**
+ * El agente decide y la app ejecuta: una ruta válida al cerrar el turno se
+ * aplica sola. La tarjeta solo queda como respaldo si ese envío falla.
+ */
 function Destination({
   messages,
   context,
   busy,
+  failed,
+  hereServerId,
+  onAuto,
+  onDeliver,
   onContinue,
   onNew,
 }: {
+  onDeliver: (
+    recommendation: DirectRecommendation,
+    messages: ChatMessage[],
+  ) => Promise<boolean>;
   messages: ChatMessage[];
   context: DirectContext;
   busy: boolean;
+  /** IDs de respuestas cuya ruta automática ya falló una vez. */
+  failed: ReadonlySet<string>;
+  /** Host del chat temporal: donde se queda una ruta «here». */
+  hereServerId: string;
+  onAuto: (
+    messageId: string,
+    recommendation: DirectRecommendation,
+    messages: ChatMessage[],
+  ) => void;
   onContinue: (
     session: SessionSummary,
     messages: ChatMessage[],
@@ -62,6 +95,7 @@ function Destination({
     messages: ChatMessage[],
   ) => void;
 }) {
+  const ink = useInk();
   const [showOthers, setShowOthers] = useState(false);
   const [query, setQuery] = useState('');
   // Una nueva respuesta invalida la propuesta anterior, incluso si no trae ruta.
@@ -74,60 +108,81 @@ function Destination({
         !m.isToolResult &&
         !m.isThinking,
     );
+  const recommendation = last
+    ? parseDirectRecommendation(last.content, context)
+    : null;
+  const autoId = recommendation && last ? last.id : null;
+  useEffect(() => {
+    if (autoId && recommendation) {
+      onAuto(autoId, recommendation, messages);
+    }
+    // Solo una respuesta nueva dispara el ruteo; `onAuto` evita repetirlo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoId]);
   if (!last) {
     return null;
   }
-  const recommendation = parseDirectRecommendation(last.content, context);
+  const routing = !!autoId && !failed.has(autoId);
   const serverId =
     recommendation?.kind === 'continue'
       ? recommendation.session.serverId
-      : recommendation?.serverId;
+      : recommendation?.kind === 'new'
+      ? recommendation.serverId
+      : hereServerId;
   const host = context.hosts.find(h => h.id === serverId);
   const title =
     recommendation?.kind === 'continue'
       ? recommendation.session.name
       : recommendation?.title;
   return (
-    <View className="mx-4 my-2.5">
+    <View className="mx-4 my-3">
       {recommendation ? (
-        <View className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          <View className="flex-row items-center gap-2 bg-slate-50 px-3 py-2.5">
-            <SparkIcon size={14} color="#475569" />
-            <Text className="flex-1 text-[11px] font-semibold text-slate-600">
+        <View className="overflow-hidden rounded-[20px] bg-slate-100">
+          <View className="flex-row items-center gap-2 px-3.5 pt-3">
+            <SparkIcon size={14} color={ink('#475569')} />
+            <Text className="flex-1 text-[11px] font-semibold text-slate-500">
               {recommendation.kind === 'continue'
                 ? 'Continue conversation'
+                : recommendation.kind === 'here'
+                ? 'Keep this conversation'
                 : 'New conversation'}
             </Text>
-            <Text className="text-[10px] text-slate-400">Recommended</Text>
+            <Text className="text-[11px] font-semibold text-accent">
+              {routing ? 'Moving your request…' : 'Could not move it'}
+            </Text>
           </View>
-          <View className="p-[13px]">
-            <Text className="text-[13px] font-semibold text-slate-900">
+          <View className="px-3.5 pb-3.5 pt-2">
+            <Text className="text-[14.5px] font-semibold tracking-[-0.3px] text-slate-900">
               {title}
             </Text>
-            <Text className="mt-2 text-[11px] text-slate-500">
-              {host?.name} ·{' '}
+            <Text className="mt-0.5 text-[12px] text-slate-500">
+              {host?.name}
               {recommendation.kind === 'continue'
-                ? recommendation.session.folder
-                : recommendation.cwd}
+                ? ` · ${recommendation.session.folder}`
+                : recommendation.kind === 'new'
+                ? ` · ${recommendation.cwd}`
+                : ''}
             </Text>
-            <Text className="my-3 text-[12px] leading-[18px] text-slate-500">
+            <Text className="my-2.5 text-[12.8px] leading-[18px] text-slate-500">
               {recommendation.reason}
             </Text>
             <Pressable
               accessibilityRole="button"
               disabled={busy}
-              onPress={() =>
-                recommendation.kind === 'continue'
-                  ? onContinue(recommendation.session, messages)
-                  : onNew(recommendation, messages)
-              }
-              className="min-h-11 flex-row items-center justify-center gap-2 rounded-xl bg-slate-900 px-3 py-3 active:opacity-70"
+              onPress={() => onDeliver(recommendation, messages)}
+              className="h-11 flex-row items-center justify-center gap-2 rounded-[22px] bg-accent px-4 active:opacity-80"
             >
-              {busy ? <ActivityIndicator size="small" color="#ffffff" /> : null}
-              <Text className="text-[12px] font-semibold text-white">
-                {recommendation.kind === 'continue'
-                  ? 'Continue here →'
-                  : `Create on ${host?.name ?? 'this host'} →`}
+              {busy ? <ActivityIndicator size="small" color={ink('#ffffff')} /> : null}
+              <Text className="text-[13px] font-semibold text-on-accent">
+                {routing
+                  ? recommendation.kind === 'continue'
+                    ? 'Continuing here…'
+                    : recommendation.kind === 'here'
+                    ? 'Saving this conversation…'
+                    : `Creating on ${host?.name ?? 'this host'}…`
+                  : recommendation.kind === 'new'
+                  ? `Create on ${host?.name ?? 'this host'} →`
+                  : 'Try again →'}
               </Text>
             </Pressable>
             {recommendation.kind === 'continue' ? (
@@ -135,7 +190,7 @@ function Destination({
                 accessibilityRole="button"
                 disabled={busy}
                 onPress={() => onNew(recommendation, messages)}
-                className="mt-2 min-h-11 items-center justify-center rounded-xl border border-slate-200 p-3"
+                className="mt-2 h-11 items-center justify-center rounded-[22px] bg-white"
               >
                 <Text className="text-[12px] font-medium text-slate-600">
                   ＋ Create a new conversation
@@ -149,7 +204,7 @@ function Destination({
           accessibilityRole="button"
           disabled={busy}
           onPress={() => onNew(null, messages)}
-          className="rounded-xl border border-slate-200 bg-white p-3"
+          className="h-11 items-center justify-center rounded-[22px] bg-slate-100"
         >
           <Text className="text-center text-[12px] font-medium text-slate-600">
             Create a conversation with this request
@@ -166,14 +221,14 @@ function Destination({
         </Text>
       </Pressable>
       {showOthers ? (
-        <View className="rounded-2xl border border-slate-200 bg-white p-3">
+        <View className="rounded-[20px] bg-slate-100 p-3">
           <TextInput
             value={query}
             onChangeText={setQuery}
             placeholder="Search conversations or projects"
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={ink('#94a3b8')}
             accessibilityLabel="Search for another conversation"
-            className="mb-2 rounded-xl bg-slate-100 px-3 py-2 text-[12px] text-slate-900"
+            className="mb-2 rounded-[20px] bg-white px-3.5 py-2.5 text-[13.5px] text-slate-900"
           />
           {context.sessions
             .filter(s =>
@@ -186,12 +241,12 @@ function Destination({
                 accessibilityRole="button"
                 disabled={busy}
                 onPress={() => onContinue(s, messages)}
-                className="border-b border-slate-100 py-3"
+                className="border-b border-slate-200 py-3"
               >
-                <Text className="text-[12px] font-semibold text-slate-700">
+                <Text className="text-[14px] font-medium tracking-[-0.2px] text-slate-900">
                   {s.name}
                 </Text>
-                <Text className="mt-1 text-[10px] text-slate-400">
+                <Text className="mt-0.5 text-[11.5px] text-slate-500">
                   {context.hosts.find(h => h.id === s.serverId)?.name} ·{' '}
                   {s.folder}
                 </Text>
@@ -200,14 +255,15 @@ function Destination({
         </View>
       ) : null}
       <Text className="mt-2 text-center text-[10px] leading-4 text-slate-400">
-        This chat is temporary. Your request will be taken to the conversation
-        you choose.
+        The agent decides: it moves your request to another conversation, or
+        keeps this one.
       </Text>
     </View>
   );
 }
 
 export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const [headerHeight, setHeaderHeight] = useState(insets.top + 72);
   const { servers, routes, isLoaded } = useServers();
@@ -220,6 +276,9 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
   const [serverId, setServerId] = useState('');
   const [showHosts, setShowHosts] = useState(false);
   const [initial, setInitial] = useState<NewSessionSheetProps['initial']>();
+  const attempted = useRef(new Set<string>());
+  const createdNew = useRef(new Map<string, SessionSummary>());
+  const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const reachable = servers.filter(s => !!routes[s.id]?.baseUrl);
   const selected = reachable.find(s => s.id === serverId) ?? reachable[0];
 
@@ -251,15 +310,11 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
             "Could not read the host's folder. Try again.",
           );
         }
-        const saved = await AsyncStorage.getItem(
-          'codiby.new-session-provider',
-        ).catch(() => null);
-        const provider = PROVIDERS.find(p => p === saved) ?? 'claude';
         setStage('Opening your temporary agent…');
         const session = await createSession(host.baseUrl, host.token, host.id, {
           cwd: host.home,
           name: 'Direct chat',
-          provider,
+          provider: await savedProvider(),
           model: null,
           disposableTtlMs: DIRECT_TTL_MS,
         });
@@ -276,7 +331,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
         route.baseUrl,
         pending.session.id,
         route.token,
-        directPrompt(text, pending.context),
+        directPrompt(text, pending.context, pending.session.serverId),
         images,
       );
       setChat(pending);
@@ -308,23 +363,71 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
     onOpenSession(session);
   };
 
-  const continueIn = async (
-    session: SessionSummary,
+  /**
+   * El chat temporal ya hizo el trabajo: se conserva tal cual —mismo agente,
+   * mismo historial— y se abre como una sesión normal, sin archivarlo.
+   */
+  const keepHere = async (temp: SessionSummary, title: string) => {
+    const route = routes[temp.serverId];
+    if (!route?.baseUrl) {
+      throw new Error("The conversation's host isn't responding");
+    }
+    await keepSession(route.baseUrl, route.token, temp.id, title);
+    // El agente pudo cambiar de carpeta con `ui_set_working_directory`.
+    const fresh = await fetchSessions(route.baseUrl, route.token, temp.serverId)
+      .then(list => list.find(s => s.id === temp.id))
+      .catch(() => undefined);
+    started.current = null;
+    finish(fresh ?? { ...temp, name: title, disposableTtlMs: null });
+  };
+
+  /** Lleva la petición al destino. Sin chat temporal vivo no hay qué mover. */
+  const deliver = async (
+    recommendation: DirectRecommendation,
     messages: ChatMessage[],
-  ) => {
-    if (busyRef.current) {
-      return;
+  ): Promise<boolean> => {
+    if (busyRef.current || !started.current) {
+      return false;
     }
     busyRef.current = true;
     setBusy(true);
     try {
-      const route = routes[session.serverId];
+      if (recommendation.kind === 'here') {
+        await keepHere(started.current.session, recommendation.title);
+        return true;
+      }
+      const destinationId =
+        recommendation.kind === 'continue'
+          ? recommendation.session.serverId
+          : recommendation.serverId;
+      const route = routes[destinationId];
       if (!route?.baseUrl) {
-        throw new Error("The conversation's host isn't responding");
+        throw new Error("The destination's host isn't responding");
       }
       const handoff = directHandoff(messages);
-      if (!session.isOpen) {
-        await setSessionStatus(route.baseUrl, route.token, session.id, 'open');
+      let session: SessionSummary;
+      if (recommendation.kind === 'continue') {
+        session = { ...recommendation.session, isOpen: true };
+        if (!recommendation.session.isOpen) {
+          await setSessionStatus(
+            route.baseUrl,
+            route.token,
+            session.id,
+            'open',
+          );
+        }
+      } else {
+        // Si el primer envío falla, el reintento reusa la sesión ya creada.
+        const key = `${destinationId}\n${recommendation.cwd}\n${recommendation.title}`;
+        session =
+          createdNew.current.get(key) ??
+          (await createSession(route.baseUrl, route.token, destinationId, {
+            cwd: recommendation.cwd,
+            name: recommendation.title,
+            provider: await savedProvider(),
+            model: null,
+          }));
+        createdNew.current.set(key, session);
       }
       await sendMessage(
         route.baseUrl,
@@ -333,16 +436,47 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
         handoff.text,
         handoff.images,
       );
-      finish({ ...session, isOpen: true });
+      createdNew.current.clear();
+      finish(session);
+      return true;
     } catch (error) {
       Alert.alert(
-        'Could not continue',
+        recommendation.kind === 'continue'
+          ? 'Could not continue'
+          : recommendation.kind === 'here'
+          ? 'Could not keep the conversation'
+          : 'Could not create the conversation',
         error instanceof Error ? error.message : 'Try again',
       );
+      return false;
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
+  };
+
+  /** La decisión del agente se ejecuta una sola vez por respuesta. */
+  const autoRoute = (
+    messageId: string,
+    recommendation: DirectRecommendation,
+    messages: ChatMessage[],
+  ) => {
+    if (attempted.current.has(messageId)) {
+      return;
+    }
+    attempted.current.add(messageId);
+    deliver(recommendation, messages).then(ok => {
+      if (!ok) {
+        setFailed(current => new Set(current).add(messageId));
+      }
+    });
+  };
+
+  const continueIn = async (
+    session: SessionSummary,
+    messages: ChatMessage[],
+  ) => {
+    await deliver({ kind: 'continue', session, reason: '' }, messages);
   };
 
   const newConversation = (
@@ -380,7 +514,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
       onPress={() => setShowHosts(true)}
       className="min-h-10 flex-row items-center gap-1"
     >
-      <SparkIcon size={13} color="#64748b" />
+      <SparkIcon size={13} color={ink('#64748b')} />
       <Text
         numberOfLines={1}
         className="flex-shrink text-[11px] text-slate-500"
@@ -396,9 +530,9 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
   );
   const header = (
     <View
-      style={{ paddingTop: insets.top + 8 }}
+      style={{ paddingTop: insets.top + 4 }}
       onLayout={event => setHeaderHeight(event.nativeEvent.layout.height)}
-      className="flex-row items-center gap-2.5 border-b border-slate-200 bg-white px-2 pb-2.5"
+      className="flex-row items-center gap-1 border-b border-slate-200 bg-white pb-1.5 pl-1.5 pr-4"
     >
       <Pressable
         accessibilityRole="button"
@@ -406,16 +540,13 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
         onPress={onBack}
         className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
       >
-        <BackIcon size={24} color="#0f172a" />
+        <BackIcon size={22} color={ink('#0f172a')} />
       </Pressable>
-      <View className="h-[34px] w-[34px] items-center justify-center rounded-full bg-slate-900">
-        <SparkIcon size={20} color="#ffffff" />
-      </View>
-      <View className="flex-1">
-        <Text className="text-[14px] font-semibold text-slate-900">
-          Direct chat
+      <View className="h-12 flex-1 justify-center">
+        <Text className="text-[23px] font-bold leading-7 tracking-[-0.9px] text-slate-900">
+          Direct
         </Text>
-        <Text className="mt-1 text-[11px] text-slate-500">
+        <Text className="text-[11.5px] text-slate-500">
           Temporary agent · ends after 1 h idle
         </Text>
       </View>
@@ -423,7 +554,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
   );
 
   return (
-    <View className="flex-1 bg-slate-100">
+    <View className="flex-1 bg-white">
       {chat ? (
         <SessionChatScreen
           key={chat.session.key}
@@ -438,6 +569,10 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
                 messages={messages}
                 context={chat.context}
                 busy={busy}
+                failed={failed}
+                hereServerId={chat.session.serverId}
+                onAuto={autoRoute}
+                onDeliver={deliver}
                 onContinue={continueIn}
                 onNew={newConversation}
               />
@@ -455,25 +590,25 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
             >
               <ScrollView
                 keyboardShouldPersistTaps="handled"
-                contentContainerClassName="grow px-[21px] pt-[34px] pb-5"
+                contentContainerClassName="grow px-5 pt-8 pb-5"
               >
-                <View className="mb-[19px] h-10 w-10 items-center justify-center rounded-[14px] border border-slate-200 bg-white">
-                  <SparkIcon size={21} color="#475569" />
+                <View className="mb-4 h-11 w-11 items-center justify-center rounded-full bg-tint">
+                  <SparkIcon size={20} color={ink('#0b7d5c')} />
                 </View>
-                <Text className="text-[26px] font-bold leading-8 tracking-tight text-slate-900">
+                <Text className="text-[23px] font-bold leading-7 tracking-[-0.9px] text-slate-900">
                   What are we doing today?
                 </Text>
-                <Text className="mt-3 text-[13px] leading-[22px] text-slate-500">
-                  Tell me your idea. I'll check whether there's already a
-                  conversation worth continuing, and on which host.
+                <Text className="mt-2 text-[13.5px] leading-5 text-slate-500">
+                  Tell me your idea. If a conversation already covers it, I'll
+                  take it there; if it's new, I'll start on it right here.
                 </Text>
                 <Text className="mt-[18px] text-[11px] leading-[18px] text-slate-400">
-                  Conversations you open or create are saved on their host.
-                  This chat is disposable.
+                  New work stays in this chat and becomes a regular
+                  conversation. Otherwise it expires after 1 h idle.
                 </Text>
                 {busy ? (
                   <View className="mt-7 flex-row items-center gap-3">
-                    <ActivityIndicator color="#64748b" />
+                    <ActivityIndicator color={ink('#64748b')} />
                     <Text className="flex-1 text-[12px] text-slate-500">
                       {stage}
                     </Text>
@@ -505,13 +640,13 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
           accessibilityRole="button"
           accessibilityLabel="Close host picker"
           onPress={() => setShowHosts(false)}
-          className="flex-1 bg-slate-900/40"
+          className="flex-1 bg-black/40"
         />
         <View
           style={{ paddingBottom: insets.bottom + 24 }}
-          className="rounded-t-3xl bg-white p-5"
+          className="rounded-t-[26px] bg-white p-5"
         >
-          <Text className="mb-4 text-lg font-bold text-slate-900">
+          <Text className="mb-2 text-[20px] font-bold tracking-[-0.6px] text-slate-900">
             Temporary agent host
           </Text>
           <Text className="mb-4 text-[12px] leading-5 text-slate-500">
@@ -527,9 +662,9 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
                 setServerId(s.id);
                 setShowHosts(false);
               }}
-              className="mb-2 flex-row items-center justify-between rounded-xl border border-slate-200 p-4"
+              className="mb-2 h-12 flex-row items-center justify-between rounded-[22px] bg-slate-100 px-4"
             >
-              <Text className="text-[13px] text-slate-700">{s.name}</Text>
+              <Text className="text-[14px] font-medium text-slate-900">{s.name}</Text>
               <Text className="text-slate-500">
                 {serverId === s.id ? '✓' : ''}
               </Text>

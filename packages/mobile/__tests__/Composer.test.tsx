@@ -6,9 +6,6 @@ import { Composer } from '../src/components/Chat/Composer';
 jest.mock('react-native-image-picker', () => ({
   launchImageLibrary: jest.fn(),
 }));
-jest.mock('../src/components/Chat/ComposerSpots', () => ({
-  ComposerSpots: () => null,
-}));
 
 const button = (tree: ReactTestRenderer.ReactTestRenderer, label: string) =>
   tree.root.findAllByProps({ accessibilityLabel: label })[0]!;

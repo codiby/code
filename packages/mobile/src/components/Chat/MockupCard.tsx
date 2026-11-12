@@ -1,5 +1,6 @@
 import { Pressable, Text, View } from 'react-native';
 import Svg, { Path, Rect } from 'react-native-svg';
+import { useInk } from '../../theme';
 
 export interface MockupCardProps {
   readonly name: string;
@@ -36,6 +37,7 @@ function ScreenIcon({ color }: { readonly color: string }) {
  * correcta para encontrar el botón.
  */
 export function MockupCard({ name, onOpen }: MockupCardProps) {
+  const ink = useInk();
   return (
     <Pressable
       accessibilityRole="button"
@@ -44,7 +46,7 @@ export function MockupCard({ name, onOpen }: MockupCardProps) {
       disabled={onOpen === undefined}
       className="my-1 flex-row items-center gap-2.5 self-start rounded-2xl border border-slate-200 bg-white px-3 py-2 active:bg-slate-50"
     >
-      <ScreenIcon color="#7c3aed" />
+      <ScreenIcon color={ink('#7c3aed')} />
       <View>
         <Text className="text-[9.5px] font-bold uppercase tracking-widest text-violet-500">
           Mockup
@@ -53,7 +55,7 @@ export function MockupCard({ name, onOpen }: MockupCardProps) {
       </View>
       {onOpen !== undefined ? (
         <View className="ml-1 rounded-full bg-slate-900 px-2.5 py-1">
-          <Text className="text-[10px] font-bold text-white">View</Text>
+          <Text className="text-[10px] font-bold text-slate-50">View</Text>
         </View>
       ) : null}
     </Pressable>

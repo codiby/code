@@ -26,6 +26,7 @@ import { createSession } from '../api/sessions';
 import type { MessageImage, SessionSummary } from '../api/types';
 import { useServers } from '../config/ServerConfigContext';
 import { ROUTE_DOT, routeState } from '../config/servers';
+import { useInk } from '../theme';
 
 /** Qué máquina y qué agente usaste la última vez. Es de este teléfono. */
 const LAST_SERVER_KEY = 'codiby.new-session-server';
@@ -99,7 +100,7 @@ function Option({ label, isActive, onPress, dotColor, disabled }: OptionProps) {
       <Text
         numberOfLines={1}
         className={`max-w-[190px] text-xs font-semibold ${
-          isActive ? 'text-white' : 'text-slate-600'
+          isActive ? 'text-slate-50' : 'text-slate-600'
         }`}
       >
         {label}
@@ -130,6 +131,7 @@ export function NewSessionSheet({
   onCancel,
   onCreated,
 }: NewSessionSheetProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const { servers, routes } = useServers();
@@ -401,7 +403,7 @@ export function NewSessionSheet({
         accessibilityRole="button"
         accessibilityLabel="Cancel"
         onPress={close}
-        className="flex-1 bg-slate-900/40"
+        className="flex-1 bg-black/40"
       />
       <View
         style={{ paddingBottom: insets.bottom + 12 }}
@@ -471,7 +473,7 @@ export function NewSessionSheet({
             value={cwd}
             onChangeText={setCwd}
             placeholder="/path/to/project"
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={ink('#94a3b8')}
             autoCapitalize="none"
             autoCorrect={false}
             spellCheck={false}
@@ -558,7 +560,7 @@ export function NewSessionSheet({
             value={name}
             onChangeText={setName}
             placeholder="Optional — the bridge numbers it if left empty"
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={ink('#94a3b8')}
             className="mx-5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[14px] leading-5 text-slate-900"
           />
 
@@ -567,7 +569,7 @@ export function NewSessionSheet({
             value={prompt}
             onChangeText={setPrompt}
             placeholder="Optional. If you write one, the session starts working right away."
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={ink('#94a3b8')}
             multiline
             className="mx-5 mb-4 h-[76px] rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[14px] leading-5 text-slate-900"
           />
@@ -600,11 +602,11 @@ export function NewSessionSheet({
             }`}
           >
             {isCreating ? (
-              <ActivityIndicator size="small" color="#ffffff" />
+              <ActivityIndicator size="small" color={ink('#f8fafc')} />
             ) : null}
             <Text
               className={`text-[14.5px] font-bold ${
-                canCreate ? 'text-white' : 'text-slate-400'
+                canCreate ? 'text-slate-50' : 'text-slate-400'
               }`}
             >
               {prompt.trim().length > 0 ? 'Create and send' : 'Create session'}

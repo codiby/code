@@ -134,6 +134,25 @@ export function renameSession(
 }
 
 /**
+ * «Conservar» una desechable: deja de expirar, sale de la carpeta de
+ * desechables y queda como cualquier otra sesión, con su nombre definitivo.
+ */
+export function keepSession(
+  baseUrl: string,
+  token: string,
+  sessionId: string,
+  name: string,
+): Promise<void> {
+  return requestJson(
+    baseUrl,
+    `/sessions/${encodeURIComponent(sessionId)}`,
+    () => undefined,
+    token,
+    { method: 'PATCH', body: { disposable: false, name } },
+  );
+}
+
+/**
  * Archivar es reversible: solo cambia `status`. El mismo endpoint sirve para
  * desarchivar pasando `'open'`.
  */

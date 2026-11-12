@@ -18,10 +18,12 @@ import {
 } from '../api/usage';
 import { useUsage } from '../api/useUsage';
 import { useServers } from '../config/ServerConfigContext';
+import { useInk } from '../theme';
 
 const COLORS = { normal: '#7c3aed', warning: '#d97706', critical: '#dc2626' };
 
 export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
+  const ink = useInk();
   const [open, setOpen] = useState(false);
   const { entries, refresh } = useUsage(open);
   const { servers } = useServers();
@@ -42,7 +44,7 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
   const hasError = results.some(
     r => r.error || r.snapshot?.providers.some(p => p.status === 'error'),
   );
-  const color = headline ? COLORS[headline.severity] : '#64748b';
+  const color = ink(headline ? COLORS[headline.severity] : '#64748b');
 
   return (
     <>
@@ -81,7 +83,7 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
         animationType="slide"
         onRequestClose={() => setOpen(false)}
       >
-        <View className="flex-1 justify-end bg-slate-900/45">
+        <View className="flex-1 justify-end bg-black/45">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Close plan usage"
@@ -111,7 +113,7 @@ export function UsageIndicator({ disabled = false }: { disabled?: boolean }) {
                 className="min-h-11 justify-center px-3 active:opacity-60"
               >
                 {loading ? (
-                  <ActivityIndicator size="small" color="#7c3aed" />
+                  <ActivityIndicator size="small" color={ink('#7c3aed')} />
                 ) : (
                   <Text className="text-xs font-semibold text-violet-700">
                     Refresh
@@ -232,6 +234,7 @@ function ProviderDetails({ usage }: { usage: ProviderUsage }) {
 }
 
 function Meter({ window: w }: { window: UsageWindow }) {
+  const ink = useInk();
   const label =
     w.kind === 'session'
       ? 'Session'
@@ -253,7 +256,7 @@ function Meter({ window: w }: { window: UsageWindow }) {
           {detail ? ` · ${detail}` : ''}
         </Text>
         <Text
-          style={{ color: COLORS[w.severity] }}
+          style={{ color: ink(COLORS[w.severity]) }}
           className="text-xs font-bold"
         >
           {w.percent}%

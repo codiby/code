@@ -136,8 +136,8 @@ export const DiffDocView = memo(function DiffDocFigure({ source }: DiffDocViewPr
   // Malformado: mejor el bloque plano que una figura rota.
   if (block.error !== undefined) {
     return (
-      <View className="my-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
-        <Text className="px-2.5 py-2 font-mono text-[11px] leading-[17px] text-slate-200">
+      <View className="my-1 overflow-hidden rounded-lg border border-[#26282c] bg-[#141517]">
+        <Text className="px-2.5 py-2 font-mono text-[11px] leading-[17px] text-[#dcdcdc]">
           {source.trim()}
         </Text>
       </View>

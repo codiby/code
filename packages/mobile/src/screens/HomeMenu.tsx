@@ -1,5 +1,6 @@
 import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useInk } from '../theme';
 
 export interface HomeMenuProps {
   readonly visible: boolean;
@@ -24,6 +25,7 @@ export function HomeMenu({
   onClose,
   onAutoGroup,
 }: HomeMenuProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const enabled = loose > 0 && !isWorking;
 
@@ -64,7 +66,7 @@ export function HomeMenu({
                   } by folder`}
             </Text>
           </View>
-          {isWorking ? <ActivityIndicator size="small" color="#64748b" /> : null}
+          {isWorking ? <ActivityIndicator size="small" color={ink('#64748b')} /> : null}
         </Pressable>
       </View>
     </Modal>

@@ -198,12 +198,12 @@ function CodeBlock({ lang, value }: { readonly lang: string; readonly value: str
   };
 
   return (
-    <View className="my-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+    <View className="my-1 overflow-hidden rounded-[10px] border border-[#26282c] bg-[#141517]">
       {/* La barra existe siempre, aunque no haya lenguaje: en el escritorio el
           botón aparece al pasar el ratón y aquí no hay hover, así que necesita
           un sitio fijo donde vivir sin taparle la primera línea al código. */}
-      <View className="flex-row items-center justify-between border-b border-slate-800 bg-slate-800/60 py-1 pl-2.5 pr-1">
-        <Text className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+      <View className="flex-row items-center justify-between border-b border-[#26282c] bg-[#26282c]/60 py-1 pl-2.5 pr-1">
+        <Text className="text-[10px] font-semibold uppercase tracking-wide text-[#8b8d92]">
           {lang.length > 0 ? lang : 'code'}
         </Text>
         <Pressable
@@ -213,16 +213,16 @@ function CodeBlock({ lang, value }: { readonly lang: string; readonly value: str
           // El área táctil se agranda sin agrandar el dibujo: el botón mide
           // menos que los 44 px que pide una diana cómoda.
           hitSlop={10}
-          className="flex-row items-center gap-1 rounded px-1.5 py-1 active:bg-slate-700"
+          className="flex-row items-center gap-1 rounded px-1.5 py-1 active:bg-[#2a2c30]"
         >
           {isCopied ? (
-            <CheckIcon size={11} color="#4ade80" />
+            <CheckIcon size={11} color={'#4ade80'} />
           ) : (
-            <CopyIcon size={11} color="#94a3b8" />
+            <CopyIcon size={11} color={'#8b8d92'} />
           )}
           <Text
             className={`text-[10px] ${
-              isCopied ? 'text-green-400' : 'text-slate-400'
+              isCopied ? 'text-green-400' : 'text-[#8b8d92]'
             }`}
           >
             {isCopied ? 'Copied' : 'Copy'}
@@ -230,7 +230,7 @@ function CodeBlock({ lang, value }: { readonly lang: string; readonly value: str
         </Pressable>
       </View>
 
-      <Text className="px-2.5 py-2 font-mono text-[11px] leading-[17px] text-slate-200">
+      <Text className="px-2.5 py-2 font-mono text-[11px] leading-[17px] text-[#dcdcdc]">
         {shown}
       </Text>
 
@@ -238,9 +238,9 @@ function CodeBlock({ lang, value }: { readonly lang: string; readonly value: str
         <Pressable
           accessibilityRole="button"
           onPress={() => setIsExpanded(true)}
-          className="border-t border-slate-800 px-2.5 py-1.5 active:bg-slate-800"
+          className="border-t border-[#26282c] px-2.5 py-1.5 active:bg-[#26282c]"
         >
-          <Text className="text-[10px] text-slate-400">
+          <Text className="text-[10px] text-[#8b8d92]">
             {`▾ Show ${lines.length - MAX_CODE_LINES} more lines`}
           </Text>
         </Pressable>
@@ -325,7 +325,7 @@ function Block({ block }: { readonly block: MarkdownBlock }) {
       );
     case 'paragraph':
       return (
-        <Text className="text-[13px] leading-5 text-slate-800">
+        <Text className="text-[14.5px] leading-[22px] text-slate-800">
           <Inline nodes={block.content} />
         </Text>
       );
@@ -349,7 +349,7 @@ function Block({ block }: { readonly block: MarkdownBlock }) {
         <View className="my-1">
           {block.items.map((item, index) => (
             <View key={index} className="flex-row items-start gap-1.5">
-              <Text className="mt-px w-4 text-right text-[13px] leading-5 text-slate-400">
+              <Text className="mt-px w-4 text-right text-[14.5px] leading-[22px] text-slate-400">
                 {item.checked !== null
                   ? item.checked
                     ? '☑'
@@ -363,7 +363,7 @@ function Block({ block }: { readonly block: MarkdownBlock }) {
                   alto con otro distinto al final — la lista se salía de la
                   burbuja y se encimaba con los mensajes de abajo. */}
               <Text
-                className={`min-w-0 shrink text-[13px] leading-5 ${
+                className={`min-w-0 shrink text-[14.5px] leading-[22px] ${
                   item.checked === true
                     ? 'text-slate-400 line-through'
                     : 'text-slate-800'

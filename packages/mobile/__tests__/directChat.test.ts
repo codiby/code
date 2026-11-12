@@ -126,7 +126,7 @@ test('respuestas incompletas o de forma incorrecta no crean acciones', () => {
 });
 
 test('el contexto del agente omite credenciales y el mensaje visible conserva la petición', () => {
-  const prompt = directPrompt('Quiero rediseñar la navegación', context);
+  const prompt = directPrompt('Quiero rediseñar la navegación', context, 'a');
   expect(prompt).toContain('/b/app');
   expect(prompt).not.toContain('secret-a');
   expect(prompt).not.toContain('secret-b');
@@ -140,7 +140,7 @@ test('el contexto del agente omite credenciales y el mensaje visible conserva la
 test('la transferencia conserva peticiones y adjuntos, omite instrucciones internas y envíos fallidos', () => {
   const image = { mediaType: 'image/png', data: 'abc' };
   const handoff = directHandoff([
-    { ...msg(directPrompt('Primera petición', context)), images: [image] },
+    { ...msg(directPrompt('Primera petición', context, 'a')), images: [image] },
     msg('Respuesta del agente', 'assistant'),
     msg('Segunda petición'),
     { ...msg('No se envió'), sendState: 'failed' },
@@ -197,4 +197,19 @@ test('consulta ambos hosts y conserva resultados cuando uno no responde', async 
   expect(loaded.failed).toEqual(['b']);
   expect(loaded.sessions.map(s => s.key)).toEqual(['a:same-id']);
   expect(loaded.excerpts).toHaveLength(1);
+});
+
+test('una ruta «here» conserva el chat con un título, sin pedir host ni carpeta', () => {
+  expect(
+    parseDirectRecommendation(
+      block({ kind: 'here', title: '  Rediseño  ', reason: 'Trabajo nuevo' }),
+      context,
+    ),
+  ).toEqual({ kind: 'here', title: 'Rediseño', reason: 'Trabajo nuevo' });
+  expect(
+    parseDirectRecommendation(
+      block({ kind: 'here', title: ' ', reason: 'Sin nombre' }),
+      context,
+    ),
+  ).toBeNull();
 });

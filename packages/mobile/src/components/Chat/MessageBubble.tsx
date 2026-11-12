@@ -4,7 +4,6 @@ import { Pressable, Text, View } from 'react-native';
 
 import type { ChatMessage } from '../../api/types';
 import { formatFullTimestamp } from '../../lib/format';
-import { hasWideTable } from '../../lib/markdown';
 import type { GroupEntry } from '../../lib/chatItems';
 import { readReply } from '../../lib/messageReply';
 import { Markdown } from '../Markdown';
@@ -76,7 +75,6 @@ export function MessageBubble({
 
   const isClipped = content.length > MAX_CHARS;
   const text = isClipped ? content.slice(0, MAX_CHARS) : content;
-  const isWide = !isUser && hasWideTable(text);
   const canReply =
     Boolean(onReply) && message.role !== 'system' && !message.sendState;
 
@@ -98,7 +96,9 @@ export function MessageBubble({
 
   return (
     <SwipeToReply onReply={canReply ? () => onReply?.(message) : undefined}>
-      <View className={`px-3 py-1 ${isUser ? 'items-end' : 'items-start'}`}>
+      <View
+        className={`py-1.5 ${isUser ? 'items-end px-3' : 'items-start px-[18px]'}`}
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={
@@ -118,15 +118,13 @@ export function MessageBubble({
           onPress={() => onSelect?.(message.id)}
           onLongPress={copy}
           delayLongPress={350}
-          className={`rounded-2xl px-3 py-2 ${
-            // Una tabla ancha necesita todo el ancho disponible; el 88% que da
-            // aire al resto de las burbujas aquí solo aprieta las columnas.
-            isWide ? 'w-full' : 'max-w-[88%]'
-          } ${
+          // Solo lo tuyo va en burbuja: la respuesta del agente se lee sobre
+          // la página, como un documento, sin una columna de tarjetas.
+          className={
             isUser
-              ? 'rounded-br-md bg-emerald-100'
-              : 'rounded-bl-md border border-slate-200 bg-white'
-          }`}
+              ? 'max-w-[80%] rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2'
+              : 'w-full'
+          }
         >
           {parsed.reply ? (
             <View className="mb-2">
@@ -138,7 +136,9 @@ export function MessageBubble({
           {content.length === 0 ? null : isUser ? (
             // Lo que escribe el usuario se muestra literal: si escribió
             // asteriscos, quiso asteriscos.
-            <Text className="text-[13px] leading-5 text-slate-800">{text}</Text>
+            <Text className="text-[14.5px] leading-[21px] text-on-bubble">
+              {text}
+            </Text>
           ) : (
             <Markdown text={text} />
           )}

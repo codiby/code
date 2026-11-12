@@ -6,10 +6,12 @@ import {
   summarizeGroup,
   summarizeResult,
   summarizeTool,
-  THINKING_LABEL,
   type GroupEntry,
   type ResultTone,
 } from '../../lib/chatItems';
+import Svg, { Path } from 'react-native-svg';
+
+import { useInk } from '../../theme';
 import { ChatImages } from './ChatImage';
 import { ThinkingBlock } from './ThinkingBlock';
 
@@ -22,29 +24,26 @@ export interface ToolGroupProps {
   readonly variant?: 'standalone' | 'footer';
 }
 
-/** Un color por familia. El razonamiento tiene el suyo, igual que el destello. */
-const KIND_COLORS: Record<string, string> = {
-  Bash: '#0f172a',
-  Edit: '#7c3aed',
-  Write: '#15803d',
-  Read: '#0369a1',
-  Grep: '#b45309',
-  Glob: '#b45309',
-  [THINKING_LABEL]: '#a78bfa',
-};
-
-const DEFAULT_COLOR = '#94a3b8';
-
 const TONE_CLASS: Record<ResultTone, string> = {
   ok: 'text-emerald-600',
   bad: 'text-rose-600',
   muted: 'text-slate-400',
 };
 
-const MAX_DOTS = 5;
-
-function colorFor(kind: string): string {
-  return KIND_COLORS[kind] ?? DEFAULT_COLOR;
+/** Un solo icono gris: el color se reserva para lo que de verdad importa. */
+function ToolsIcon({ size, color }: { size: number; color: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 16 16">
+      <Path
+        d="M2.5 4.5 6 7.5l-3.5 3M8 11.5h5.5"
+        stroke={color}
+        strokeWidth={1.6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
 }
 
 function ToolRow({
@@ -68,11 +67,8 @@ function ToolRow({
         onPress={() => setIsOpen(current => !current)}
         className="flex-row items-center gap-2 py-1 active:opacity-60"
       >
-        <View
-          style={{ backgroundColor: colorFor(entry.call.toolName ?? '') }}
-          className="h-2 w-2 rounded-sm"
-        />
-        <Text numberOfLines={1} className="min-w-0 flex-1 text-[11.5px] text-slate-500">
+        <View className="h-1 w-1 rounded-full bg-slate-400" />
+        <Text numberOfLines={1} className="min-w-0 flex-1 text-[12px] text-slate-500">
           {title}
         </Text>
         {result !== null ? (
@@ -109,8 +105,9 @@ function ToolRow({
  * dice. Los nombres, en vez de un conteo, permiten saltárselo sin abrirlo.
  */
 export function ToolGroup({ entries, variant = 'standalone' }: ToolGroupProps) {
+  const ink = useInk();
   const [isOpen, setIsOpen] = useState(false);
-  const { label, kinds, elapsed, failures } = summarizeGroup(entries);
+  const { label, phrase, elapsed, failures } = summarizeGroup(entries);
 
   const meta = [elapsed, failures > 0 ? `${failures} failed` : null].filter(
     (part): part is string => part !== null,
@@ -119,9 +116,7 @@ export function ToolGroup({ entries, variant = 'standalone' }: ToolGroupProps) {
   return (
     <View
       className={
-        variant === 'footer'
-          ? 'mt-1.5 border-t border-slate-100 pt-0.5'
-          : 'px-3 py-0.5'
+        variant === 'footer' ? 'mt-1.5' : 'px-[18px] py-1'
       }
     >
       <Pressable
@@ -129,29 +124,29 @@ export function ToolGroup({ entries, variant = 'standalone' }: ToolGroupProps) {
         accessibilityLabel={label}
         accessibilityState={{ expanded: isOpen }}
         onPress={() => setIsOpen(current => !current)}
-        className="flex-row items-center gap-1.5 py-1 active:opacity-60"
+        className="flex-row items-center gap-2 py-1 active:opacity-60"
       >
-        <View className="flex-row gap-[3px]">
-          {kinds.slice(0, MAX_DOTS).map(kind => (
-            <View
-              key={kind}
-              style={{ backgroundColor: colorFor(kind) }}
-              className="h-2 w-2 rounded-sm opacity-80"
-            />
-          ))}
-        </View>
-
-        <Text numberOfLines={1} className="min-w-0 flex-1 text-[11px] text-slate-400">
-          {label}
+        <ToolsIcon size={14} color={ink('#94a3b8')} />
+        <Text
+          numberOfLines={1}
+          className="min-w-0 flex-1 text-[12.5px] text-slate-500"
+        >
+          {phrase}
         </Text>
 
         {meta.length > 0 ? (
-          <Text className="text-[10px] text-slate-300">{meta.join(' · ')}</Text>
+          <Text
+            className={`text-[11.5px] ${
+              failures > 0 ? 'text-rose-600' : 'text-slate-400'
+            }`}
+          >
+            {meta.join(' · ')}
+          </Text>
         ) : null}
       </Pressable>
 
       {isOpen ? (
-        <View className="border-l border-slate-200 pl-2.5">
+        <View className="ml-[6px] border-l border-slate-200 pl-3">
           {entries.map((entry, index) =>
             entry.kind === 'thinking' ? (
               <ThinkingBlock

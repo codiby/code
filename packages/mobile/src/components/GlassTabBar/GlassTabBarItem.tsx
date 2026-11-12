@@ -1,12 +1,9 @@
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, Text } from 'react-native';
 
+import { useInk } from '../../theme';
 import type { TabItem } from './types';
 
 const ICON_SIZE = 20;
-// Sobre vidrio oscuro el activo es el que va claro; el inactivo baja a gris
-// medio en vez de a blanco translúcido, que sobre el desenfoque se ensucia.
-const ACTIVE_COLOR = '#ffffff';
-const INACTIVE_COLOR = '#8a94a6';
 
 export interface GlassTabBarItemProps {
   readonly item: TabItem;
@@ -14,11 +11,16 @@ export interface GlassTabBarItemProps {
   readonly onPress: () => void;
 }
 
+/**
+ * Pestaña de 42 px: solo la activa enseña su nombre, sobre el verde tenue;
+ * las demás se quedan en icono. Mismas medidas que el dock de la app de chats.
+ */
 export function GlassTabBarItem({
   item,
   isActive,
   onPress,
 }: GlassTabBarItemProps) {
+  const ink = useInk();
   const { Icon, label } = item;
 
   return (
@@ -27,17 +29,18 @@ export function GlassTabBarItem({
       accessibilityLabel={label}
       accessibilityState={{ selected: isActive }}
       onPress={onPress}
-      className={`h-11 flex-row items-center justify-center rounded-full active:opacity-60 ${
-        isActive ? 'gap-2 px-3.5' : 'w-11'
+      className={`h-[42px] min-w-[46px] flex-row items-center justify-center rounded-[21px] px-[13px] active:opacity-70 ${
+        isActive ? 'bg-tint' : ''
       }`}
     >
-      {/* Pastilla del estado activo: otra capa de vidrio, más densa. */}
+      <Icon
+        size={ICON_SIZE}
+        color={isActive ? ink('#0b7d5c') : ink('#6a707a')}
+      />
       {isActive ? (
-        <View className="absolute inset-0 rounded-full border border-white/10 bg-white/[0.09]" />
-      ) : null}
-      <Icon size={ICON_SIZE} color={isActive ? ACTIVE_COLOR : INACTIVE_COLOR} />
-      {isActive ? (
-        <Text className="text-[11px] font-semibold text-white">{label}</Text>
+        <Text className="pl-[7px] text-[12.5px] font-semibold tracking-[-0.2px] text-accent">
+          {label}
+        </Text>
       ) : null}
     </Pressable>
   );

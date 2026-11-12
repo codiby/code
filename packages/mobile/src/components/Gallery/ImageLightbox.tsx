@@ -18,6 +18,7 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CloseIcon } from '../SessionList';
+import { useInk } from '../../theme';
 
 export interface LightboxItem {
   readonly id: string;
@@ -205,6 +206,7 @@ export function ImageLightbox({
   initialIndex,
   onClose,
 }: ImageLightboxProps) {
+  const ink = useInk();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
@@ -264,7 +266,7 @@ export function ImageLightbox({
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-white/15"
         >
-          <CloseIcon size={20} color="#ffffff" />
+          <CloseIcon size={20} color={ink('#ffffff')} />
         </Pressable>
         <Text numberOfLines={1} className="flex-1 text-[13px] text-white/80">
           {items[index]?.name ?? ''}

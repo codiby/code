@@ -1,11 +1,22 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Keyboard, Pressable, Text, View } from 'react-native';
 
 import { HostCard } from '../components/HostCard';
+import {
+  loadThemePreference,
+  saveThemePreference,
+  type ThemePreference,
+} from '../themePreference';
 import { useServers } from '../config/ServerConfigContext';
 import { emptyServer, normalizeUrl, type ServerEntry } from '../config/servers';
 import { HostEditorSheet } from './HostEditorSheet';
 import { ScreenLayout } from './ScreenLayout';
+
+const THEMES: [ThemePreference, string][] = [
+  ['system', 'System'],
+  ['light', 'Light'],
+  ['dark', 'Dark'],
+];
 
 export function SettingsScreen() {
   const { servers, routes, upsertServer, removeServer, refreshRoutes } =
@@ -14,6 +25,14 @@ export function SettingsScreen() {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
+  const [theme, setTheme] = useState<ThemePreference>('system');
+  useEffect(() => {
+    loadThemePreference().then(setTheme);
+  }, []);
+  const chooseTheme = (value: ThemePreference) => {
+    setTheme(value);
+    saveThemePreference(value);
+  };
   const connected = servers.filter(server =>
     Boolean(routes[server.id]?.baseUrl),
   ).length;
@@ -126,7 +145,7 @@ export function SettingsScreen() {
           accessibilityRole="button"
           accessibilityLabel="Add host"
           onPress={() => openEditor(emptyServer(servers.length))}
-          className="mb-3 min-h-11 items-center justify-center rounded-[14px] border border-dashed border-slate-300 bg-white px-3 py-2.5 active:bg-slate-50"
+          className="mb-3 h-11 items-center justify-center rounded-[22px] border border-dashed border-slate-300 px-3 active:bg-slate-100"
         >
           <Text className="text-xs font-semibold text-slate-600">
             ＋ Add host
@@ -135,12 +154,37 @@ export function SettingsScreen() {
         <Pressable
           accessibilityRole="button"
           onPress={refreshRoutes}
-          className="min-h-11 items-center justify-center rounded-xl border border-slate-200 px-3 py-2.5 active:bg-slate-50"
+          className="h-11 items-center justify-center rounded-[22px] bg-slate-100 px-3 active:opacity-70"
         >
           <Text className="text-xs font-semibold text-slate-600">
             Test connections
           </Text>
         </Pressable>
+        <Text className="mb-2 mt-7 text-[11px] font-semibold uppercase tracking-widest text-slate-500">
+          Appearance
+        </Text>
+        <View className="flex-row rounded-[22px] bg-slate-100 p-1">
+          {THEMES.map(([value, label]) => (
+            <Pressable
+              key={value}
+              accessibilityRole="button"
+              accessibilityState={{ selected: theme === value }}
+              accessibilityLabel={`${label} theme`}
+              onPress={() => chooseTheme(value)}
+              className={`h-9 flex-1 items-center justify-center rounded-[18px] ${
+                theme === value ? 'bg-tint' : ''
+              }`}
+            >
+              <Text
+                className={`text-[12.5px] font-semibold ${
+                  theme === value ? 'text-accent' : 'text-slate-500'
+                }`}
+              >
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
       </ScreenLayout>
       <HostEditorSheet
         server={editing}

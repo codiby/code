@@ -123,7 +123,7 @@ export function RenameDialog({
               canSubmit ? 'bg-slate-900 active:opacity-70' : 'bg-slate-300'
             }`}
           >
-            <Text className="text-sm font-semibold text-white">Save</Text>
+            <Text className="text-sm font-semibold text-slate-50">Save</Text>
           </Pressable>
         </View>
       </Animated.View>

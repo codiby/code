@@ -14,6 +14,7 @@ import type { TabGroup } from '../api/preferences';
 import type { SessionSummary } from '../api/types';
 import { CheckIcon } from '../components/Chat';
 import { SERVER_COLORS, colorHex } from '../config/servers';
+import { useInk } from '../theme';
 
 export interface MoveToGroupSheetProps {
   readonly visible: boolean;
@@ -50,6 +51,7 @@ export function MoveToGroupSheet({
   onCancel,
   onConfirm,
 }: MoveToGroupSheetProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   /**
    * `undefined` es «no has elegido», distinto de `null`, que es «sin grupo».
@@ -110,7 +112,7 @@ export function MoveToGroupSheet({
         accessibilityRole="button"
         accessibilityLabel="Cancel"
         onPress={close}
-        className="flex-1 bg-slate-900/40"
+        className="flex-1 bg-black/40"
       />
       <View
         style={{ paddingBottom: insets.bottom + 12 }}
@@ -167,7 +169,7 @@ export function MoveToGroupSheet({
                     style={{ backgroundColor: colorHex(group.color) }}
                     className="h-[19px] w-[19px] items-center justify-center rounded-full"
                   >
-                    <CheckIcon size={11} color="#ffffff" />
+                    <CheckIcon size={11} color={ink('#ffffff')} />
                   </View>
                 ) : (
                   <View className="h-[19px] w-[19px] rounded-full border-[1.75px] border-slate-300" />
@@ -201,7 +203,7 @@ export function MoveToGroupSheet({
           </View>
           {!isNew && choice === null ? (
             <View className="h-[19px] w-[19px] items-center justify-center rounded-full bg-slate-900">
-              <CheckIcon size={11} color="#ffffff" />
+              <CheckIcon size={11} color={ink('#f8fafc')} />
             </View>
           ) : (
             <View className="h-[19px] w-[19px] rounded-full border-[1.75px] border-slate-300" />
@@ -237,7 +239,7 @@ export function MoveToGroupSheet({
             }}
             onFocus={() => setIsNew(true)}
             placeholder="New group…"
-            placeholderTextColor="#a3aec0"
+            placeholderTextColor={ink('#a3aec0')}
             className={`flex-1 rounded-xl px-3 py-2 text-[14px] text-slate-900 ${
               isNew
                 ? 'border-[1.5px] border-slate-900'
@@ -298,9 +300,9 @@ export function MoveToGroupSheet({
             }`}
           >
             {isWorking ? (
-              <ActivityIndicator size="small" color="#ffffff" />
+              <ActivityIndicator size="small" color={ink('#f8fafc')} />
             ) : (
-              <Text className="text-[14.5px] font-semibold text-white">
+              <Text className="text-[14.5px] font-semibold text-slate-50">
                 {confirmLabel}
               </Text>
             )}

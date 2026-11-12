@@ -27,6 +27,7 @@ import {
 } from '../components/SessionList';
 import { sessionMedia } from '../lib/chatMedia';
 import { avatarColorFor, formatFullTimestamp, initialsOf } from '../lib/format';
+import { useInk } from '../theme';
 
 export interface SessionInfoScreenProps {
   readonly session: SessionSummary;
@@ -64,6 +65,7 @@ export function SessionInfoScreen({
   onOpenMockup,
   onGone,
 }: SessionInfoScreenProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
 
   const [resources, setResources] = useState<SessionResource[] | null>(null);
@@ -172,7 +174,7 @@ export function SessionInfoScreen({
   );
 
   return (
-    <View className="absolute inset-0 bg-slate-100">
+    <View className="absolute inset-0 bg-white">
       <View
         style={{ paddingTop: insets.top + 8 }}
         className="flex-row items-center gap-2 border-b border-slate-200 bg-white px-2 pb-3"
@@ -183,12 +185,12 @@ export function SessionInfoScreen({
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
         >
-          <CloseIcon size={20} color="#0f172a" />
+          <CloseIcon size={20} color={ink('#0f172a')} />
         </Pressable>
         <Text className="flex-1 text-base font-semibold text-slate-900">
           Session info
         </Text>
-        {isWorking ? <ActivityIndicator size="small" color="#64748b" /> : null}
+        {isWorking ? <ActivityIndicator size="small" color={ink('#64748b')} /> : null}
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
@@ -209,7 +211,7 @@ export function SessionInfoScreen({
             className="mt-2.5 flex-row items-center gap-1.5 active:opacity-60"
           >
             <Text className="text-lg font-bold text-slate-900">{name}</Text>
-            <RenameIcon size={13} color="#cbd5e1" />
+            <RenameIcon size={13} color={ink('#cbd5e1')} />
           </Pressable>
 
           <Text className="mt-0.5 font-mono text-[11px] text-slate-400">
@@ -239,7 +241,7 @@ export function SessionInfoScreen({
 
         {resources === null ? (
           <View className="items-center py-8">
-            <ActivityIndicator size="small" color="#94a3b8" />
+            <ActivityIndicator size="small" color={ink('#94a3b8')} />
           </View>
         ) : (
           <>
@@ -325,7 +327,7 @@ export function SessionInfoScreen({
                       onPress={() => onOpenMockup(mockupName(item))}
                       className="rounded-full bg-slate-900 px-3 py-1 active:opacity-70"
                     >
-                      <Text className="text-[11px] font-bold text-white">
+                      <Text className="text-[11px] font-bold text-slate-50">
                         View
                       </Text>
                     </Pressable>
@@ -385,7 +387,7 @@ export function SessionInfoScreen({
             onPress={togglePin}
             className="flex-row items-center gap-3 px-4 py-3 active:bg-slate-50"
           >
-            <PinIcon size={18} color={isPinned ? '#0f172a' : '#475569'} />
+            <PinIcon size={18} color={isPinned ? ink('#0f172a') : ink('#475569')} />
             <Text className="text-[13.5px] text-slate-700">
               {isPinned ? 'Unpin from top' : 'Pin to top'}
             </Text>
@@ -396,7 +398,7 @@ export function SessionInfoScreen({
             onPress={toggleArchive}
             className="flex-row items-center gap-3 border-t border-slate-100 px-4 py-3 active:bg-slate-50"
           >
-            <ArchiveIcon size={18} color="#475569" />
+            <ArchiveIcon size={18} color={ink('#475569')} />
             <Text className="text-[13.5px] text-slate-700">
               {session.isOpen ? 'Archive' : 'Unarchive'}
             </Text>
@@ -407,7 +409,7 @@ export function SessionInfoScreen({
             onPress={confirmDelete}
             className="flex-row items-center gap-3 border-t border-slate-100 px-4 py-3 active:bg-rose-50"
           >
-            <TrashIcon size={18} color="#be123c" />
+            <TrashIcon size={18} color={ink('#be123c')} />
             <Text className="text-[13.5px] text-rose-700">
               Delete session
             </Text>

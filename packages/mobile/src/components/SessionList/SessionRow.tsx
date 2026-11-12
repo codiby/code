@@ -1,8 +1,13 @@
 import { Pressable, Text, View } from 'react-native';
 
 import type { SessionSummary } from '../../api/types';
-import { formatChatTimestamp, initialsOf } from '../../lib/format';
+import {
+  avatarColorFor,
+  formatChatTimestamp,
+  initialsOf,
+} from '../../lib/format';
 import { PinIcon } from './icons';
+import { useInk } from '../../theme';
 
 /** Gris del texto cuando el servidor de esa sesión no responde. */
 const OFFLINE_LABEL = '#cbd5e1';
@@ -51,6 +56,7 @@ export function SessionRow({
   isOffline = false,
   isLive = false,
 }: SessionRowProps) {
+  const ink = useInk();
   const isWaiting =
     !isOffline && pendingTool !== undefined && pendingTool.length > 0;
   const hasDraft = draft !== undefined && draft.trim().length > 0;
@@ -75,26 +81,27 @@ export function SessionRow({
       onPress={() => onPress?.(session)}
       onLongPress={() => onLongPress?.(session)}
       delayLongPress={350}
-      className={`flex-row items-center gap-2.5 px-[18px] py-3 ${
-        isSelected ? 'bg-slate-200' : 'bg-white active:bg-slate-100'
+      className={`flex-row items-center gap-[11px] px-4 py-2 ${
+        isSelected ? 'bg-slate-100' : 'bg-white active:bg-slate-100'
       }`}
     >
       <View className="relative">
-        {/* El host conserva su color en la etiqueta; el avatar queda neutro. */}
+        {/* Color estable por sesión, como los contactos de la app de chats. */}
         <View
-          className={`h-9 w-9 items-center justify-center rounded-full bg-slate-200 ${
+          style={{ backgroundColor: avatarColorFor(session.id) }}
+          className={`h-11 w-11 items-center justify-center rounded-full ${
             isOffline ? 'opacity-40' : ''
           }`}
         >
-          <Text className="text-xs font-semibold text-slate-600">
+          <Text className="text-[13px] font-semibold text-white">
             {initialsOf(session.name)}
           </Text>
         </View>
         {/* Ámbar en vez de verde: es la señal que se lee sin leer nada. */}
         {isWaiting ? (
-          <View className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-amber-500" />
+          <View className="absolute bottom-0 right-0 h-[13px] w-[13px] rounded-full border-2 border-white bg-amber-500" />
         ) : !isOffline && (isStreaming || session.isRunning) ? (
-          <View className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" />
+          <View className="absolute bottom-0 right-0 h-[13px] w-[13px] rounded-full border-2 border-white bg-[#19c37d]" />
         ) : null}
       </View>
 
@@ -102,15 +109,21 @@ export function SessionRow({
         <View className="flex-row items-center justify-between">
           <Text
             numberOfLines={1}
-            className={`mr-2 flex-1 text-[13px] font-semibold leading-[18px] ${
+            className={`mr-2 flex-1 text-[14.5px] font-medium leading-5 tracking-[-0.3px] ${
               isOffline ? 'text-slate-400' : 'text-slate-900'
             }`}
           >
             {session.name}
           </Text>
           <View className="flex-row items-center gap-1">
-            {isPinned ? <PinIcon size={11} color="#94a3b8" /> : null}
-            <Text className="text-[10px] text-slate-400">
+            {isPinned ? <PinIcon size={12} color={ink('#94a3b8')} /> : null}
+            <Text
+              className={`text-[11px] ${
+                isStreaming && !isOffline
+                  ? 'font-semibold text-accent'
+                  : 'text-slate-400'
+              }`}
+            >
               {formatChatTimestamp(session.updatedAt)}
             </Text>
           </View>
@@ -120,14 +133,14 @@ export function SessionRow({
           {isOffline ? (
             <Text
               numberOfLines={1}
-              className="mr-2 flex-1 text-[12px] leading-[18px] text-slate-300"
+              className="mr-2 flex-1 text-[12.8px] leading-[18px] text-slate-300"
             >
               {`Can't reach ${serverName ?? 'the server'}`}
             </Text>
           ) : isWaiting ? (
             <Text
               numberOfLines={1}
-              className="mr-2 flex-1 text-[12px] leading-[18px] font-semibold text-amber-700"
+              className="mr-2 flex-1 text-[12.8px] font-medium leading-[18px] text-amber-700"
             >
               {`Needs permission · ${pendingTool}`}
             </Text>
@@ -136,16 +149,16 @@ export function SessionRow({
             // lo último que se dijo: es lo único que puede cambiar solo.
             <Text
               numberOfLines={1}
-              className="mr-2 flex-1 text-[12px] leading-[18px] font-semibold text-emerald-700"
+              className="mr-2 flex-1 text-[12.8px] font-medium leading-[18px] text-accent"
             >
               {activity !== null ? `Working · ${activity}` : 'Working…'}
             </Text>
           ) : hasDraft ? (
             <Text
               numberOfLines={1}
-              className="mr-2 flex-1 text-[12px] leading-[18px]"
+              className="mr-2 flex-1 text-[12.8px] leading-[18px]"
             >
-              <Text className="text-rose-500">Draft: </Text>
+              <Text className="font-medium text-orange-700">Draft: </Text>
               <Text className="text-slate-500">
                 {draft.replace(/\n/g, ' ')}
               </Text>
@@ -153,7 +166,7 @@ export function SessionRow({
           ) : (
             <Text
               numberOfLines={1}
-              className="mr-2 flex-1 text-[12px] leading-[18px] text-slate-500"
+              className="mr-2 flex-1 text-[12.8px] leading-[18px] text-slate-500"
             >
               {subtitle}
             </Text>
@@ -167,21 +180,21 @@ export function SessionRow({
                   en el avatar porque ahí el verde ya significa «trabajando»,
                   y son cosas distintas. */}
               {isLive && !isOffline ? (
-                <View className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                <View className="h-1.5 w-1.5 rounded-full bg-[#19c37d]" />
               ) : null}
               <Text
-                style={{ color: isOffline ? OFFLINE_LABEL : serverColor }}
-                className="text-[10px] font-medium"
+                style={{ color: ink(isOffline ? OFFLINE_LABEL : serverColor) }}
+                className="text-[10.5px] font-medium"
               >
                 {serverName}
               </Text>
             </View>
           ) : groupName !== null ? (
-            <Text className="text-[10px] uppercase tracking-wide text-slate-400">
+            <Text className="text-[10.5px] text-slate-400">
               {groupName}
             </Text>
           ) : session.isOpen ? null : (
-            <Text className="text-[10px] uppercase tracking-wide text-slate-400">
+            <Text className="text-[10.5px] text-slate-400">
               archived
             </Text>
           )}
@@ -193,5 +206,6 @@ export function SessionRow({
 
 /** Separador compartido con el inicio y el selector de imágenes. */
 export function SessionRowSeparator() {
-  return <View className="ml-16 h-px bg-slate-100" />;
+  // Empieza donde termina el avatar (16 + 44 + 11), como en la app de chats.
+  return <View className="ml-[71px] h-px bg-slate-200" />;
 }

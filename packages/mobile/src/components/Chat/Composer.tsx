@@ -19,14 +19,9 @@ import type { MessageImage } from '../../api/types';
 import type { MessageReply } from '../../lib/messageReply';
 import { ReplyQuote } from './ReplyQuote';
 import { AttachIcon, CloseIcon, SendIcon } from './icons';
+import { useInk } from '../../theme';
 
 export interface ComposerProps {
-  /**
-   * La sesión está respondiendo. Enciende las luces del marco, igual que en el
-   * escritorio — y como allá, NO bloquea el envío: se puede seguir escribiendo
-   * y encolar el siguiente mensaje.
-   */
-  readonly isStreaming?: boolean;
   readonly onSend: (text: string, images: MessageImage[]) => Promise<void>;
   readonly disabled?: boolean;
   /** Solo bloquea Enviar; el mensaje se puede preparar antes de elegir chat. */
@@ -80,8 +75,8 @@ export function Composer({
   onTextChange,
   insertText,
   insertNonce = 0,
-  isStreaming = false,
 }: ComposerProps) {
+  const ink = useInk();
   const [text, setText] = useState(initialText);
   const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
   useEffect(() => {
@@ -103,7 +98,6 @@ export function Composer({
   const [images, setImages] = useState<MessageImage[]>(initialImages);
   const [isSending, setIsSending] = useState(false);
   const sendingRef = useRef(false);
-  const [frameHeight, setFrameHeight] = useState(44);
   const [error, setError] = useState<string | null>(null);
 
   const trimmed = text.trim();
@@ -170,13 +164,8 @@ export function Composer({
       });
   };
 
-  // Las animaciones del chat se cargan solo cuando se necesitan; compartir no las monta.
-  const Spots = isStreaming
-    ? (require('./ComposerSpots') as typeof import('./ComposerSpots'))
-        .ComposerSpots
-    : null;
   return (
-    <View pointerEvents="box-none" className="px-3 pb-2 pt-1">
+    <View pointerEvents="box-none" className="bg-white px-3 pb-3 pt-2">
       {error !== null ? (
         <View className="mb-1.5 self-start rounded-full bg-rose-100 px-3 py-1">
           <Text className="text-[11px] font-medium text-rose-700">{error}</Text>
@@ -202,68 +191,73 @@ export function Composer({
                 onPress={() => removeImage(index)}
                 className="absolute -right-1.5 -top-1.5 h-5 w-5 items-center justify-center rounded-full bg-slate-900 active:opacity-70"
               >
-                <CloseIcon size={11} color="#ffffff" />
+                <CloseIcon size={11} color={ink('#f8fafc')} />
               </Pressable>
             </View>
           ))}
         </ScrollView>
       ) : null}
 
-      <View
-        onLayout={event => setFrameHeight(event.nativeEvent.layout.height)}
-        className="overflow-hidden rounded-[20px] border border-slate-200 bg-white"
-      >
-        {Spots ? <Spots height={frameHeight} /> : null}
-        {replyTo ? (
-          <View className="mx-2 mt-2">
-            <ReplyQuote reply={replyTo} onCancel={onCancelReply} />
-          </View>
-        ) : null}
-        <TextInput
-          ref={inputRef}
-          value={text}
-          onChangeText={next => {
-            setText(next);
-            onTextChange?.(next);
-          }}
-          placeholder={placeholder}
-          accessibilityLabel="Message"
-          placeholderTextColor="#94a3b8"
-          multiline
-          maxLength={8000}
-          editable={!disabled && !isSending}
-          className="max-h-32 min-h-10 bg-transparent px-3.5 pb-1.5 pt-2.5 text-[14px] leading-5 text-slate-900"
-        />
-        <View className="flex-row items-center gap-2 px-2 pb-2">
-          {allowAttachments ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Attach image"
-              onPress={pickImages}
-              disabled={disabled || isSending}
-              className="h-10 w-10 items-center justify-center rounded-full active:bg-slate-100"
-            >
-              <AttachIcon size={20} color="#64748b" />
-            </Pressable>
+      {/* Mismo lenguaje que la barra del visor en la app de chats: campo
+          redondo de 44 px y un botón circular aparte para enviar. */}
+      <View className="flex-row items-end gap-2">
+        <View className="min-h-11 flex-1 overflow-hidden rounded-[22px] bg-slate-100">
+          {replyTo ? (
+            <View className="mx-2 mt-2">
+              <ReplyQuote reply={replyTo} onCancel={onCancelReply} />
+            </View>
           ) : null}
-          <View className="flex-1">{context}</View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Send"
-            accessibilityState={{ disabled: !canSend }}
-            onPress={submit}
-            disabled={!canSend}
-            className={`h-10 w-10 items-center justify-center rounded-xl ${
-              canSend ? 'bg-slate-900 active:opacity-70' : 'bg-slate-200'
-            }`}
-          >
-            {isSending ? (
-              <ActivityIndicator size="small" color="#64748b" />
-            ) : (
-              <SendIcon size={19} color={canSend ? '#ffffff' : '#94a3b8'} />
-            )}
-          </Pressable>
+          <View className="flex-row items-end">
+            {allowAttachments ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Attach image"
+                onPress={pickImages}
+                disabled={disabled || isSending}
+                className="mb-1 ml-1 h-9 w-9 items-center justify-center rounded-full active:bg-slate-200"
+              >
+                <AttachIcon size={19} color={ink('#6a707a')} />
+              </Pressable>
+            ) : null}
+            <TextInput
+              ref={inputRef}
+              value={text}
+              onChangeText={next => {
+                setText(next);
+                onTextChange?.(next);
+              }}
+              placeholder={placeholder}
+              accessibilityLabel="Message"
+              placeholderTextColor={ink('#a2a8b2')}
+              multiline
+              maxLength={8000}
+              editable={!disabled && !isSending}
+              className={`max-h-32 min-h-11 flex-1 bg-transparent py-3 pr-3.5 text-[14.5px] leading-5 text-slate-900 ${
+                allowAttachments ? 'pl-1' : 'pl-4'
+              }`}
+            />
+          </View>
+          {context ? <View className="px-3 pb-2">{context}</View> : null}
         </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Send"
+          accessibilityState={{ disabled: !canSend }}
+          onPress={submit}
+          disabled={!canSend}
+          className={`h-11 w-11 items-center justify-center rounded-full ${
+            canSend ? 'bg-accent active:opacity-80' : 'bg-slate-100'
+          }`}
+        >
+          {isSending ? (
+            <ActivityIndicator size="small" color={ink('#6a707a')} />
+          ) : (
+            <SendIcon
+              size={19}
+              color={canSend ? ink('#ffffff') : ink('#a2a8b2')}
+            />
+          )}
+        </Pressable>
       </View>
     </View>
   );

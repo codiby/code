@@ -3,6 +3,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useServers } from '../config/ServerConfigContext';
 import { colorHex, ROUTE_DOT, routeState, shortUrl } from '../config/servers';
+import { useInk } from '../theme';
 
 export interface ServerSheetProps {
   readonly visible: boolean;
@@ -18,6 +19,7 @@ export interface ServerSheetProps {
  * verlo todo junto.
  */
 export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
+  const ink = useInk();
   const { servers, routes } = useServers();
   const insets = useSafeAreaInsets();
 
@@ -32,7 +34,7 @@ export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
         accessibilityRole="button"
         accessibilityLabel="Close"
         onPress={onClose}
-        className="flex-1 bg-slate-900/45"
+        className="flex-1 bg-black/45"
       />
       <View
         style={{ paddingBottom: insets.bottom + 18 }}
@@ -62,7 +64,7 @@ export function ServerSheet({ visible, onClose, onRetry }: ServerSheetProps) {
               <View style={ROUTE_DOT[state.dot]} className="h-2 w-2 rounded-full" />
               <View className="flex-1">
                 <Text
-                  style={{ color: colorHex(server.color) }}
+                  style={{ color: ink(colorHex(server.color)) }}
                   className="text-sm font-semibold"
                 >
                   {server.name.length > 0 ? server.name : 'Untitled'}

@@ -4,6 +4,11 @@ import { BackHandler } from 'react-native';
 
 // La prueba de navegación no necesita motores nativos, red ni disco.
 jest.mock('../src/global.css', () => ({}));
+jest.mock('../src/themePreference', () => ({
+  loadThemePreference: jest.fn(async () => 'system'),
+  applyThemePreference: jest.fn(),
+  saveThemePreference: jest.fn(async () => undefined),
+}));
 jest.mock('react-native-gesture-handler', () => ({
   GestureHandlerRootView: require('react-native').View,
 }));
@@ -62,8 +67,8 @@ import { DEFAULT_TAB_ITEMS } from '../src/components/GlassTabBar/GlassTabBar';
 
 test('volver abre conversaciones y el primer icono abre un chat directo nuevo', async () => {
   expect(DEFAULT_TAB_ITEMS.map(t => t.label)).toEqual([
-    'New chat',
-    'Conversations',
+    'Direct',
+    'Sessions',
     'Settings',
   ]);
   let tree!: ReactTestRenderer.ReactTestRenderer;

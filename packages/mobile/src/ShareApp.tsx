@@ -33,12 +33,22 @@ import {
   type ShareChats,
 } from './lib/incomingShare';
 import './global.css';
+import { useIsDark } from './theme';
+import { applyThemePreference, loadThemePreference } from './themePreference';
+import { useInk } from './theme';
+
+loadThemePreference().then(applyThemePreference);
+
+function ThemedStatusBar() {
+  const dark = useIsDark();
+  return <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} />;
+}
 
 export default function ShareApp({ requestId = '' }: { requestId?: string }) {
   return (
     <View className="flex-1">
       <SafeAreaProvider>
-        <StatusBar barStyle="dark-content" />
+        <ThemedStatusBar />
         <ShareScreen requestId={requestId} />
       </SafeAreaProvider>
     </View>
@@ -46,6 +56,7 @@ export default function ShareApp({ requestId = '' }: { requestId?: string }) {
 }
 
 export function ShareScreen({ requestId = '' }: { requestId?: string }) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const [payload, setPayload] = useState<IncomingShare | null>(null);
   const [chats, setChats] = useState<ShareChats | null>(null);
@@ -171,7 +182,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
   };
 
   return (
-    <KeyboardAvoidingView behavior="padding" className="flex-1 bg-slate-100">
+    <KeyboardAvoidingView behavior="padding" className="flex-1 bg-white">
       <View
         style={{ paddingTop: insets.top + 14 }}
         className="bg-white px-[18px] pb-[11px]"
@@ -184,7 +195,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
             disabled={sending}
             className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
           >
-            <BackIcon size={20} color="#475569" />
+            <BackIcon size={20} color={ink('#475569')} />
           </Pressable>
           <Text className="flex-1 text-[23px] font-bold tracking-tight text-slate-900">
             Send to…
@@ -202,9 +213,9 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
             className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
           >
             {searching ? (
-              <CloseIcon size={18} color="#475569" />
+              <CloseIcon size={18} color={ink('#475569')} />
             ) : (
-              <SearchIcon size={20} color="#475569" />
+              <SearchIcon size={20} color={ink('#475569')} />
             )}
           </Pressable>
         </View>
@@ -214,7 +225,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
             onChangeText={setQuery}
             placeholder="Search…"
             accessibilityLabel="Search chats"
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={ink('#94a3b8')}
             autoFocus
             autoCapitalize="none"
             autoCorrect={false}
@@ -277,7 +288,7 @@ export function ShareScreen({ requestId = '' }: { requestId?: string }) {
             ListEmptyComponent={
               <View className="items-center gap-3 px-6 py-12">
                 {!error && (!payload || refreshing) ? (
-                  <ActivityIndicator color="#64748b" />
+                  <ActivityIndicator color={ink('#64748b')} />
                 ) : null}
                 <Text className="text-center text-sm text-slate-500">
                   {error

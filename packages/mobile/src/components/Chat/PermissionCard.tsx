@@ -102,7 +102,7 @@ export function PermissionCard({
               isBusy ? 'bg-slate-400' : 'bg-slate-900 active:opacity-70'
             }`}
           >
-            <Text className="text-[12.5px] font-semibold text-white">
+            <Text className="text-[12.5px] font-semibold text-slate-50">
               Allow
             </Text>
           </Pressable>

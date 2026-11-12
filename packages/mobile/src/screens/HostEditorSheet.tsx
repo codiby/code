@@ -18,6 +18,7 @@ import {
   type RouteMode,
   type ServerEntry,
 } from '../config/servers';
+import { useInk } from '../theme';
 
 /** Fuera del JSX: un literal ahí dentro dispara `no-inline-styles`. */
 const MONO = { fontFamily: 'monospace' } as const;
@@ -47,6 +48,7 @@ function Field({
   mono,
   secure = false,
 }: FieldProps) {
+  const ink = useInk();
   return (
     <View className="mt-[13px]">
       <Text className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-slate-500">
@@ -58,7 +60,7 @@ function Field({
         secureTextEntry={secure}
         onChangeText={onChange}
         placeholder={placeholder}
-        placeholderTextColor="#94a3b8"
+        placeholderTextColor={ink('#94a3b8')}
         autoCapitalize="none"
         autoCorrect={false}
         keyboardType={secure ? 'default' : 'url'}
@@ -86,6 +88,7 @@ function ServerEditor({
   readonly onRemove: () => void;
   readonly canRemove: boolean;
 }) {
+  const ink = useInk();
   const { routes } = useServers();
   const route = routes[server.id];
   const state = routeState(
@@ -106,7 +109,7 @@ function ServerEditor({
           accessibilityLabel="Host name"
           onChangeText={name => onChange({ ...server, name })}
           placeholder="Name"
-          placeholderTextColor="#cbd5e1"
+          placeholderTextColor={ink('#cbd5e1')}
           className="flex-1 text-[14px] font-semibold text-slate-900"
         />
         <Text
@@ -239,6 +242,7 @@ export function HostEditorSheet({
   onClose,
   onRemove,
 }: HostEditorSheetProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const canSave =
@@ -254,7 +258,7 @@ export function HostEditorSheet({
     >
       <KeyboardAvoidingView
         behavior="padding"
-        className="flex-1 justify-end bg-slate-900/40"
+        className="flex-1 justify-end bg-black/40"
       >
         <Pressable
           accessibilityRole="button"
@@ -322,11 +326,11 @@ export function HostEditorSheet({
               }`}
             >
               {isBusy ? (
-                <ActivityIndicator size="small" color="#ffffff" />
+                <ActivityIndicator size="small" color={ink('#f8fafc')} />
               ) : null}
               <Text
                 className={`text-[13px] font-semibold ${
-                  canSave || isBusy ? 'text-white' : 'text-slate-400'
+                  canSave || isBusy ? 'text-slate-50' : 'text-slate-400'
                 }`}
               >
                 {isBusy ? 'Saving…' : 'Save'}

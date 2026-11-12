@@ -294,7 +294,9 @@ export const THINKING_LABEL = 'thought';
 export interface GroupSummary {
   /** `Bash ×2 · Edit · pensó`, en orden de aparición. */
   readonly label: string;
-  /** Nombres distintos, para los puntos de color. */
+  /** `Ran 2 commands, edited a file, thought`: lo que se lee en la fila. */
+  readonly phrase: string;
+  /** Nombres distintos, en orden de aparición. */
   readonly kinds: string[];
   readonly elapsed: string | null;
   readonly failures: number;
@@ -355,5 +357,54 @@ export function summarizeGroup(entries: GroupEntry[]): GroupSummary {
         : `${Math.round(seconds / 60)} min`
       : null;
 
-  return { label, kinds: order, elapsed, failures };
+  return { label, phrase: phraseFor(order, counts), kinds: order, elapsed, failures };
+}
+
+/** Verbo y sustantivo por herramienta; lo demás cae al nombre crudo. */
+const PHRASES: Record<string, [string, string, string]> = {
+  Bash: ['ran', 'command', 'commands'],
+  Edit: ['edited', 'file', 'files'],
+  MultiEdit: ['edited', 'file', 'files'],
+  Write: ['wrote', 'file', 'files'],
+  Read: ['read', 'file', 'files'],
+  Grep: ['searched', 'time', 'times'],
+  Glob: ['searched', 'time', 'times'],
+  WebFetch: ['fetched', 'page', 'pages'],
+  WebSearch: ['searched the web', 'time', 'times'],
+};
+
+function phraseFor(order: string[], counts: Map<string, number>): string {
+  // Edit y Write cuentan juntos si ambos tocan archivos con el mismo verbo.
+  const merged = new Map<string, number>();
+  const plain: string[] = [];
+  for (const name of order) {
+    const times = counts.get(name) ?? 1;
+    const phrase = PHRASES[name];
+    if (name === THINKING_LABEL) {
+      plain.push('thought');
+    } else if (phrase) {
+      const [verb, one, many] = phrase;
+      const key = `${verb}\n${one}\n${many}`;
+      if (!merged.has(key)) {
+        plain.push(key);
+      }
+      merged.set(key, (merged.get(key) ?? 0) + times);
+    } else {
+      plain.push(times > 1 ? `used ${name} ×${times}` : `used ${name}`);
+    }
+  }
+  const text = plain
+    .map(part => {
+      const total = merged.get(part);
+      if (total === undefined) {
+        return part;
+      }
+      const [verb, one, many] = part.split('\n');
+      if (verb === 'searched' || verb === 'searched the web') {
+        return total > 1 ? `${verb} ${total} ${many}` : verb;
+      }
+      return total > 1 ? `${verb} ${total} ${many}` : `${verb} a ${one}`;
+    })
+    .join(', ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }

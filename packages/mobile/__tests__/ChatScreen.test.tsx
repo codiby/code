@@ -4,7 +4,12 @@ import { ChatScreen } from '../src/screens/ChatScreen';
 import { Composer } from '../src/components/Chat';
 import { SessionChatScreen } from '../src/screens/SessionChatScreen';
 import { NewSessionSheet } from '../src/screens/NewSessionSheet';
-import { createSession, setSessionStatus } from '../src/api/sessions';
+import {
+  createSession,
+  fetchSessions,
+  keepSession,
+  setSessionStatus,
+} from '../src/api/sessions';
 import { sendMessage } from '../src/api/messages';
 import { loadDirectContext } from '../src/api/directChat';
 import type { ChatMessage, SessionSummary } from '../src/api/types';
@@ -46,6 +51,8 @@ jest.mock('../src/api/directChat', () => ({
 jest.mock('../src/api/sessions', () => ({
   createSession: jest.fn(),
   setSessionStatus: jest.fn(),
+  keepSession: jest.fn(),
+  fetchSessions: jest.fn(),
 }));
 jest.mock('../src/api/messages', () => ({ sendMessage: jest.fn() }));
 jest.mock('../src/api/home', () => ({ invalidateHome: jest.fn() }));
@@ -107,6 +114,8 @@ beforeEach(() => {
   (createSession as jest.Mock).mockResolvedValue(temporary);
   (sendMessage as jest.Mock).mockResolvedValue(undefined);
   (setSessionStatus as jest.Mock).mockResolvedValue(undefined);
+  (keepSession as jest.Mock).mockResolvedValue(undefined);
+  (fetchSessions as jest.Mock).mockResolvedValue([]);
 });
 
 test('un fallo del primer envío reusa la sesión desechable en el reintento', async () => {
@@ -140,10 +149,8 @@ test('un fallo del primer envío reusa la sesión desechable en el reintento', a
   });
 });
 
-test('continuar restaura una sesión archivada en el host correcto y transfiere la petición', async () => {
-  const onOpen = jest.fn();
+async function startDirectChat(onOpen: jest.Mock) {
   let tree!: ReactTestRenderer.ReactTestRenderer;
-  let card!: ReactTestRenderer.ReactTestRenderer;
   await act(async () => {
     tree = ReactTestRenderer.create(
       <ChatScreen onOpenSession={onOpen} onBack={jest.fn()} />,
@@ -152,29 +159,19 @@ test('continuar restaura una sesión archivada en el host correcto y transfiere 
   await act(async () => {
     await tree.root.findByType(Composer).props.onSend('Mi petición', []);
   });
+  return tree;
+}
+
+test('la ruta del agente se aplica sola: restaura la sesión archivada y le pasa la petición', async () => {
+  const onOpen = jest.fn();
+  const tree = await startDirectChat(onOpen);
   const config = tree.root.findByType(SessionChatScreen).props.directChat;
+  let card!: ReactTestRenderer.ReactTestRenderer;
+  // Nadie toca la tarjeta: basta con que llegue la respuesta del agente.
   await act(async () => {
     card = ReactTestRenderer.create(
       config.renderDestination([user, recommendation]),
     );
-  });
-  const proposed = card.root.findAll(
-    n =>
-      typeof n.props.onPress === 'function' &&
-      n.props.children?.[1]?.props?.children === 'Continuar aquí →',
-    { deep: false },
-  );
-  // La acción principal es la primera de la tarjeta de destino.
-  const action =
-    proposed[0] ??
-    card.root.findAll(
-      n =>
-        n.props.accessibilityRole === 'button' &&
-        typeof n.props.onPress === 'function',
-      { deep: false },
-    )[0]!;
-  await act(async () => {
-    await action.props.onPress();
   });
   expect(setSessionStatus).toHaveBeenCalledWith(
     'http://b',
@@ -199,6 +196,108 @@ test('continuar restaura una sesión archivada en el host correcto y transfiere 
     'archived',
   );
   expect(tree.root.findByType(NewSessionSheet).props.visible).toBe(false);
+  // Repintar la misma respuesta no vuelve a mandar la petición.
+  await act(async () => {
+    card.update(config.renderDestination([user, recommendation]));
+  });
+  expect(sendMessage).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    tree.unmount();
+    card.unmount();
+  });
+});
+
+test('una ruta «new» crea la conversación en el host elegido sin abrir la hoja', async () => {
+  const created = { ...destination, id: 'fresh', key: 'b:fresh', isOpen: true };
+  (createSession as jest.Mock)
+    .mockResolvedValueOnce(temporary)
+    .mockResolvedValueOnce(created);
+  const onOpen = jest.fn();
+  const tree = await startDirectChat(onOpen);
+  const config = tree.root.findByType(SessionChatScreen).props.directChat;
+  const proposal: ChatMessage = {
+    ...recommendation,
+    id: 'assistant-new',
+    content:
+      'Mejor una nueva.\n```codiby-route\n{"kind":"new","serverId":"b","cwd":"/b/project","title":"Rediseño","reason":"Es otro tema"}\n```',
+  };
+  let card!: ReactTestRenderer.ReactTestRenderer;
+  await act(async () => {
+    card = ReactTestRenderer.create(
+      config.renderDestination([user, proposal]),
+    );
+  });
+  expect(createSession).toHaveBeenLastCalledWith(
+    'http://b',
+    'b',
+    'b',
+    expect.objectContaining({ cwd: '/b/project', name: 'Rediseño' }),
+  );
+  expect(sendMessage).toHaveBeenLastCalledWith(
+    'http://b',
+    'fresh',
+    'b',
+    'Mi petición',
+    [],
+  );
+  expect(onOpen).toHaveBeenCalledWith(
+    expect.objectContaining({ key: 'b:fresh' }),
+  );
+  expect(tree.root.findByType(NewSessionSheet).props.visible).toBe(false);
+  await act(async () => {
+    tree.unmount();
+    card.unmount();
+  });
+});
+
+test('sin bloque de ruta el agente solo conversa: no se mueve nada', async () => {
+  const onOpen = jest.fn();
+  const tree = await startDirectChat(onOpen);
+  const config = tree.root.findByType(SessionChatScreen).props.directChat;
+  const question: ChatMessage = {
+    ...recommendation,
+    id: 'assistant-question',
+    content: '¿En qué proyecto?',
+  };
+  let card!: ReactTestRenderer.ReactTestRenderer;
+  await act(async () => {
+    card = ReactTestRenderer.create(
+      config.renderDestination([user, question]),
+    );
+  });
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+  expect(onOpen).not.toHaveBeenCalled();
+  await act(async () => {
+    tree.unmount();
+    card.unmount();
+  });
+});
+
+test('una ruta «here» conserva el chat temporal como sesión normal, sin crear otra ni archivarlo', async () => {
+  (fetchSessions as jest.Mock).mockResolvedValue([
+    { ...temporary, name: 'Rediseño', cwd: '/a/app', folder: 'app' },
+  ]);
+  const onOpen = jest.fn();
+  const tree = await startDirectChat(onOpen);
+  const config = tree.root.findByType(SessionChatScreen).props.directChat;
+  const done: ChatMessage = {
+    ...recommendation,
+    id: 'assistant-here',
+    content:
+      'Listo, ya cambié la navegación.\n```codiby-route\n{"kind":"here","title":"Rediseño","reason":"Trabajo nuevo"}\n```',
+  };
+  let card!: ReactTestRenderer.ReactTestRenderer;
+  await act(async () => {
+    card = ReactTestRenderer.create(config.renderDestination([user, done]));
+  });
+  expect(keepSession).toHaveBeenCalledWith('http://a', 'a', 'temp', 'Rediseño');
+  // Solo existe la sesión temporal: nada nuevo, nada reenviado, nada archivado.
+  expect(createSession).toHaveBeenCalledTimes(1);
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+  expect(setSessionStatus).not.toHaveBeenCalled();
+  expect(onOpen).toHaveBeenCalledWith(
+    expect.objectContaining({ key: 'a:temp', name: 'Rediseño', cwd: '/a/app' }),
+  );
   await act(async () => {
     tree.unmount();
     card.unmount();

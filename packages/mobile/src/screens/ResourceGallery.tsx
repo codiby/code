@@ -14,6 +14,7 @@ import { fetchResources, type SessionResource } from '../api/resources';
 import { ImageLightbox } from '../components/Gallery';
 import { CloseIcon } from '../components/SessionList';
 import { sessionMedia } from '../lib/chatMedia';
+import { useInk } from '../theme';
 
 export type GalleryTab = 'image' | 'mockup';
 
@@ -57,6 +58,7 @@ export function ResourceGallery({
   onClose,
   onOpenMockup,
 }: ResourceGalleryProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
 
@@ -97,7 +99,7 @@ export function ResourceGallery({
           onPress={onClose}
           className="h-9 w-9 items-center justify-center rounded-full active:bg-slate-100"
         >
-          <CloseIcon size={20} color="#0f172a" />
+          <CloseIcon size={20} color={ink('#0f172a')} />
         </Pressable>
         <Text className="flex-1 text-base font-semibold text-slate-900">
           {`Resources · ${images.length + mockups.length}`}
@@ -130,7 +132,7 @@ export function ResourceGallery({
 
       {resources === null ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator color="#64748b" />
+          <ActivityIndicator color={ink('#64748b')} />
         </View>
       ) : tab === 'image' ? (
         <FlatList

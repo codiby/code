@@ -7,6 +7,11 @@ import { Composer } from '../src/components/Chat/Composer';
 import { fetchShareHost, sendIncomingShare } from '../src/lib/incomingShare';
 
 jest.mock('../src/global.css', () => ({}));
+jest.mock('../src/themePreference', () => ({
+  loadThemePreference: jest.fn(async () => 'system'),
+  applyThemePreference: jest.fn(),
+  saveThemePreference: jest.fn(async () => undefined),
+}));
 jest.mock('react-native-gesture-handler', () => ({
   GestureHandlerRootView: require('react-native').View,
 }));
@@ -16,9 +21,6 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 jest.mock('react-native-image-picker', () => ({
   launchImageLibrary: jest.fn(),
-}));
-jest.mock('../src/components/Chat/ComposerSpots', () => ({
-  ComposerSpots: () => null,
 }));
 jest.mock('../src/lib/incomingShare', () => ({
   ...jest.requireActual('../src/lib/incomingShare'),

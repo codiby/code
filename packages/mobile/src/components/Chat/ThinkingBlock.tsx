@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { SparkIcon } from './icons';
+import { useInk } from '../../theme';
 
 export interface ThinkingBlockProps {
   readonly text: string;
@@ -38,6 +39,7 @@ export function ThinkingBlock({
   redacted = false,
   compact = false,
 }: ThinkingBlockProps) {
+  const ink = useInk();
   const [isOpen, setIsOpen] = useState(false);
 
   const label = streaming
@@ -57,7 +59,7 @@ export function ThinkingBlock({
         className="flex-row items-start gap-1.5 py-0.5 active:opacity-60"
       >
         <View className="mt-0.5">
-          <SparkIcon size={12} color={streaming ? '#a78bfa' : '#94a3b8'} />
+          <SparkIcon size={12} color={streaming ? ink('#a78bfa') : ink('#94a3b8')} />
         </View>
         <Text className="mt-px shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
           {label}

@@ -3,6 +3,7 @@ import Svg, { Path, Rect } from 'react-native-svg';
 
 import type { ServerRoute } from '../api/useServerRoutes';
 import { colorHex, shortUrl, type ServerEntry } from '../config/servers';
+import { useInk } from '../theme';
 
 export function HostCard({
   server,
@@ -13,6 +14,7 @@ export function HostCard({
   readonly route?: ServerRoute;
   readonly onPress: () => void;
 }) {
+  const ink = useInk();
   const isUp = Boolean(route?.baseUrl);
   const isProbing = !isUp && route?.isProbing;
   const name = server.name.trim() || 'Untitled';
@@ -30,9 +32,9 @@ export function HostCard({
       accessibilityLabel={`Configure host ${name}`}
       accessibilityHint={`${status}. Open settings`}
       onPress={onPress}
-      className="mb-2 flex-row items-center gap-2.5 rounded-[14px] border border-slate-200 bg-white p-3 active:opacity-70"
+      className="mb-2 flex-row items-center gap-[11px] rounded-[20px] bg-slate-100 p-3 active:opacity-70"
     >
-      <View className="h-[35px] w-[35px] items-center justify-center rounded-[11px] bg-slate-100">
+      <View className="h-11 w-11 items-center justify-center rounded-full bg-white">
         <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
           <Rect
             x={3}
@@ -40,12 +42,12 @@ export function HostCard({
             width={18}
             height={13}
             rx={2}
-            stroke={colorHex(server.color)}
+            stroke={ink(colorHex(server.color))}
             strokeWidth={1.7}
           />
           <Path
             d="M8 21h8m-4-4v4"
-            stroke={colorHex(server.color)}
+            stroke={ink(colorHex(server.color))}
             strokeWidth={1.7}
             strokeLinecap="round"
           />
@@ -54,11 +56,11 @@ export function HostCard({
       <View className="flex-1">
         <Text
           numberOfLines={1}
-          className="text-[13px] font-semibold text-slate-900"
+          className="text-[14.5px] font-medium tracking-[-0.3px] text-slate-900"
         >
           {name}
         </Text>
-        <Text numberOfLines={1} className="mt-[5px] text-[10px] text-slate-400">
+        <Text numberOfLines={1} className="mt-0.5 text-[12px] text-slate-500">
           {address
             ? `${path} · ${shortUrl(address)}`
             : 'No address configured'}
@@ -67,7 +69,7 @@ export function HostCard({
       <View className="items-end gap-1">
         <View className="flex-row items-center gap-1.5">
           {isProbing ? (
-            <ActivityIndicator size="small" color="#94a3b8" />
+            <ActivityIndicator size="small" color={ink('#94a3b8')} />
           ) : (
             <View
               className={`h-1.5 w-1.5 rounded-full ${

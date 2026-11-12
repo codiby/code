@@ -4,6 +4,7 @@ import { SettingsScreen } from '../src/screens/SettingsScreen';
 import { HostCard } from '../src/components/HostCard';
 import { HostEditorSheet } from '../src/screens/HostEditorSheet';
 import type { ServerEntry } from '../src/config/servers';
+import { saveThemePreference } from '../src/themePreference';
 
 const mockServer: ServerEntry = {
   id: 'studio',
@@ -32,6 +33,11 @@ jest.mock('../src/config/ServerConfigContext', () => ({
       },
     },
   }),
+}));
+jest.mock('../src/themePreference', () => ({
+  loadThemePreference: jest.fn(async () => 'system'),
+  applyThemePreference: jest.fn(),
+  saveThemePreference: jest.fn(async () => undefined),
 }));
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0 }),
@@ -127,6 +133,26 @@ test('un fallo de guardado conserva los campos y permite reintentar', async () =
   });
   expect(mockUpsert).toHaveBeenCalledTimes(2);
   expect(sheet().props.server).toBeNull();
+  await act(async () => {
+    tree.unmount();
+  });
+});
+
+test('el selector de apariencia guarda el tema elegido', async () => {
+  let tree!: ReactTestRenderer.ReactTestRenderer;
+  await act(async () => {
+    tree = ReactTestRenderer.create(<SettingsScreen />);
+  });
+  const option = (label: string) =>
+    tree.root.find(
+      n => n.props.accessibilityLabel === `${label} theme` && !!n.props.onPress,
+    );
+  expect(option('System').props.accessibilityState).toEqual({ selected: true });
+  await act(async () => {
+    option('Dark').props.onPress();
+  });
+  expect(saveThemePreference).toHaveBeenCalledWith('dark');
+  expect(option('Dark').props.accessibilityState).toEqual({ selected: true });
   await act(async () => {
     tree.unmount();
   });

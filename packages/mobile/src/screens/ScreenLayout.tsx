@@ -15,15 +15,15 @@ export function ScreenLayout({ title, children }: ScreenLayoutProps) {
   const insets = useSafeAreaInsets();
 
   return (
-    <View className="flex-1 bg-slate-100">
+    <View className="flex-1 bg-white">
       <ScrollView
         contentContainerStyle={{
-          paddingTop: insets.top + 18,
+          paddingTop: insets.top + 4,
           paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
         }}
-        className="px-[18px]"
+        className="px-4"
       >
-        <Text className="mb-4 text-[23px] font-bold tracking-tight text-slate-900">
+        <Text className="mb-3 h-12 text-[23px] font-bold leading-[48px] tracking-[-0.9px] text-slate-900">
           {title}
         </Text>
         {children}

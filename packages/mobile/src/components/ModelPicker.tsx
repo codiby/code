@@ -15,6 +15,7 @@ import {
   type ProviderModel,
   type ProviderName,
 } from '../api/providers';
+import { useInk } from '../theme';
 
 export interface ModelPickerProps {
   readonly visible: boolean;
@@ -49,6 +50,7 @@ export function ModelPicker({
   onSelect,
   onClose,
 }: ModelPickerProps) {
+  const ink = useInk();
   const insets = useSafeAreaInsets();
   const [models, setModels] = useState<ProviderModel[] | null>(null);
 
@@ -86,7 +88,7 @@ export function ModelPicker({
       animationType="slide"
       onRequestClose={onClose}
     >
-      <View className="flex-1 justify-end bg-slate-900/45">
+      <View className="flex-1 justify-end bg-black/45">
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Close model picker"
@@ -103,7 +105,7 @@ export function ModelPicker({
           </Text>
           {models === null ? (
             <View className="items-center py-8">
-              <ActivityIndicator size="small" color="#94a3b8" />
+              <ActivityIndicator size="small" color={ink('#94a3b8')} />
             </View>
           ) : (
             <ScrollView>
