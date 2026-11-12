@@ -1,6 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Phone access: the "agents can use this phone" status notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Phone access opens apps by name, so it has to see the launcher's list. -->
+    <queries>
+      <intent>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent>
+    </queries>
 
     <application
       android:name=".MainApplication"
@@ -43,5 +53,29 @@
           <data android:mimeType="image/*" />
         </intent-filter>
       </activity>
+
+      <!-- Phone access (agent/PhoneAgentService.kt): only the system can bind
+           it, and only once the user turns it on in Settings → Accessibility. -->
+      <service
+        android:name=".agent.PhoneAgentService"
+        android:label="@string/phone_agent_label"
+        android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="android.accessibilityservice.AccessibilityService" />
+        </intent-filter>
+        <meta-data
+          android:name="android.accessibilityservice"
+          android:resource="@xml/phone_agent_service" />
+      </service>
+      <service
+        android:name=".agent.PhoneNotificationListener"
+        android:label="@string/phone_notifications_label"
+        android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="android.service.notification.NotificationListenerService" />
+        </intent-filter>
+      </service>
     </application>
 </manifest>

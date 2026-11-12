@@ -1,0 +1,199 @@
+package com.codiby.code.agent
+
+import android.content.Context
+import android.util.Log
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+
+/**
+ * One socket per host to `/phone/ws`, opened from the service itself so it
+ * does not depend on the React Native screen being alive.
+ *
+ * Hosts, routes and tokens come from the `share-targets` config the app
+ * already keeps in sync (see `syncShareTargets`): the preferred route first,
+ * the others as fallbacks.
+ */
+class PhoneLink(
+    private val context: Context,
+    private val hello: () -> JSONObject,
+    private val onCommand: (link: Link, frame: JSONObject) -> Unit,
+    private val onChange: () -> Unit,
+) {
+    private val client = OkHttpClient.Builder()
+        .pingInterval(25, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+    private val scheduler = Executors.newSingleThreadScheduledExecutor()
+    private val links = ConcurrentHashMap<String, Link>()
+
+    inner class Link(val serverId: String, val name: String, private val token: String, private val urls: List<String>) {
+        val signature = "$token|${urls.joinToString(",")}"
+        @Volatile var connected = false
+            private set
+        @Volatile private var socket: WebSocket? = null
+        @Volatile private var stopped = false
+        private var urlIndex = 0
+        private var attempt = 0
+        private var retry: ScheduledFuture<*>? = null
+
+        fun start() = scheduler.execute { connect() }
+
+        fun stop() {
+            stopped = true
+            scheduler.execute {
+                retry?.cancel(false)
+                socket?.close(1000, "Phone access turned off")
+                socket = null
+                connected = false
+            }
+        }
+
+        /** Network came back: retry now instead of waiting out the backoff. */
+        fun kick() = scheduler.execute {
+            if (stopped || connected || socket != null) return@execute
+            retry?.cancel(false)
+            attempt = 0
+            urlIndex = 0
+            connect()
+        }
+
+        fun send(frame: JSONObject): Boolean = socket?.send(frame.toString()) ?: false
+
+        private fun connect() {
+            if (stopped || urls.isEmpty()) return
+            val base = urls[urlIndex % urls.size].trimEnd('/')
+            val query = if (token.isNotBlank()) "?t=" + URLEncoder.encode(token, "UTF-8") else ""
+            val request = try {
+                Request.Builder().url("$base/phone/ws$query").build()
+            } catch (_: IllegalArgumentException) {
+                scheduleRetry(failedRoute = true, delayMs = null)
+                return
+            }
+            socket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (stopped) { webSocket.close(1000, null); return }
+                    connected = true
+                    attempt = 0
+                    webSocket.send(hello().toString())
+                    Log.i(TAG, "Linked to $name")
+                    onChange()
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val frame = try { JSONObject(text) } catch (_: Exception) { return }
+                    if (frame.optString("type") == "command") onCommand(this@Link, frame)
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, null)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    lost(webSocket, failedRoute = false, delayMs = when (code) {
+                        4401 -> 60_000L // token rotated: re-pairing takes a person
+                        4409 -> 30_000L // another connection of this phone won
+                        else -> null
+                    })
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    lost(webSocket, failedRoute = true, delayMs = if (response?.code == 401) 60_000L else null)
+                }
+            })
+        }
+
+        private fun lost(webSocket: WebSocket, failedRoute: Boolean, delayMs: Long?) = scheduler.execute {
+            if (socket !== webSocket) return@execute
+            socket = null
+            val was = connected
+            connected = false
+            if (was) onChange()
+            scheduleRetry(failedRoute, delayMs)
+        }
+
+        private fun scheduleRetry(failedRoute: Boolean, delayMs: Long?) {
+            if (stopped) return
+            // A route that failed hands over to the next one at once; only a
+            // full round of failures waits.
+            if (failedRoute) urlIndex = (urlIndex + 1) % maxOf(urls.size, 1)
+            val wait = delayMs ?: if (failedRoute && urlIndex != 0) 500L else {
+                val backoff = minOf(30_000L, 1000L shl minOf(attempt, 5))
+                attempt++
+                backoff
+            }
+            retry = scheduler.schedule({ connect() }, wait, TimeUnit.MILLISECONDS)
+        }
+    }
+
+    /** Opens, keeps or closes links to match the hosts the app knows. */
+    @Synchronized
+    fun sync() {
+        val wanted = readHosts()
+        for ((id, link) in links) {
+            if (wanted[id]?.signature != link.signature) {
+                link.stop()
+                links.remove(id)
+            }
+        }
+        for ((id, link) in wanted) {
+            if (!links.containsKey(id)) {
+                links[id] = link
+                link.start()
+            }
+        }
+        onChange()
+    }
+
+    @Synchronized
+    fun stopAll() {
+        links.values.forEach { it.stop() }
+        links.clear()
+        onChange()
+    }
+
+    fun kick() = links.values.forEach { it.kick() }
+
+    fun broadcast(frame: JSONObject) = links.values.forEach { if (it.connected) it.send(frame) }
+
+    fun connectedNames(): List<String> = links.values.filter { it.connected }.map { it.name }
+
+    fun shutdown() {
+        stopAll()
+        scheduler.shutdown()
+    }
+
+    private fun readHosts(): Map<String, Link> {
+        val raw = context.getSharedPreferences("share-targets", Context.MODE_PRIVATE).getString("config", null)
+            ?: return emptyMap()
+        return try {
+            val servers = JSONObject(raw).optJSONArray("servers") ?: return emptyMap()
+            buildMap {
+                for (i in 0 until servers.length()) {
+                    val server = servers.optJSONObject(i) ?: continue
+                    val id = server.optString("id").takeIf { it.isNotBlank() } ?: continue
+                    val urls = server.optJSONArray("urls")?.let { arr ->
+                        (0 until arr.length()).map { arr.optString(it) }.filter { it.startsWith("http") }
+                    } ?: emptyList()
+                    if (urls.isEmpty()) continue
+                    put(id, Link(id, server.optString("name").ifBlank { id }, server.optString("token"), urls))
+                }
+            }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    companion object {
+        private const val TAG = "PhoneLink"
+    }
+}

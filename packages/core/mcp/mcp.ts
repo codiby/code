@@ -14,6 +14,8 @@ import type { CallToolResult, ServerNotification } from '@modelcontextprotocol/s
 import { corsHeaders, MAIN_SESSION_ID } from '../config/config';
 import { log } from '../lib/logger';
 import { sessions, sessionToJSON, saveSessions } from '../session/sessions';
+import { hasKnownPhone } from '../integrations/phone';
+import { executePhoneTool, isPhoneTool, PHONE_TOOLS } from './phone-tools';
 import { sessionNotesTool } from '../handlers/session-notes';
 import {
   addWorkingDirectories, describeWorkspace, removeWorkingDirectory, resolveDirectory, setWorkingDirectory,
@@ -332,6 +334,9 @@ function createMcpServer(uiSessionId: string) {
 // Register tools
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    // Only once a phone has dialled in: nobody without the Android app should
+    // pay for six more tools in every session's context.
+    ...(hasKnownPhone() ? PHONE_TOOLS : []),
     { name: 'ui_list_hosts', description: 'Discover hosts configured on this Bun server and their MCP coordination permissions. Works without Electron. Remote sessions are addressed by host_id plus session_id. Disabled or unreachable hosts are reported individually.', inputSchema: { type: 'object' as const, properties: {} } },
     {
       name: 'ui_search',
@@ -1091,6 +1096,12 @@ export async function executeLocalMcpTool(
   progressToken?: string | number, sendNotification?: (n: ServerNotification) => Promise<void>,
 ): Promise<CallToolResult> {
   try {
+    if (isPhoneTool(name)) {
+      return await executePhoneTool(name, args ?? {}, {
+        sessionId: uiSessionId,
+        sessionName: sessions.get(uiSessionId)?.name ?? 'An agent',
+      });
+    }
     switch (name) {
       case 'ui_search': {
         const params = new URLSearchParams({ root: args!.root as string, q: args!.query as string });

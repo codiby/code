@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Keyboard, Pressable, Text, View } from 'react-native';
 
 import { HostCard } from '../components/HostCard';
+import { PhoneAccessSection } from '../components/PhoneAccessSection';
 import {
   loadThemePreference,
   saveThemePreference,
@@ -185,6 +186,7 @@ export function SettingsScreen() {
             </Pressable>
           ))}
         </View>
+        <PhoneAccessSection />
       </ScreenLayout>
       <HostEditorSheet
         server={editing}

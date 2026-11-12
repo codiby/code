@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Codiby Code</string>
+    <string name="phone_agent_label">Codiby Code phone access</string>
+    <string name="phone_agent_summary">Lets your Codiby agents read the screen and act on this phone</string>
+    <string name="phone_agent_description">Lets agents in your Codiby Code sessions read what is on screen, tap, type, scroll and open apps on this phone. Sending, paying, buying, deleting or confirming anything, and anything in system settings, waits for you to approve it on screen. Every action is logged in Codiby Code → Settings → Phone access, where you can turn it off.</string>
+    <string name="phone_notifications_label">Codiby Code notifications for agents</string>
 </resources>

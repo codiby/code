@@ -19,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
           add(PredictiveBackPackage())
           add(TableScrollPackage())
           add(ShareTargetsPackage())
+          add(com.codiby.code.agent.PhoneAgentPackage())
         },
     )
   }

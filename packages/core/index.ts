@@ -188,6 +188,7 @@ import { createDocsApp } from './api/swagger';
 import { Hono } from 'hono';
 import { transcribeAudioBuffer, listAuraVoices } from './integrations/deepgram';
 import { openVoice, voiceMessage, closeVoice, speakTurnResult, setVoiceDeps, voiceStateOf } from './integrations/voice';
+import { openPhone, phoneMessage, closePhone } from './integrations/phone';
 import { listElevenLabsVoices, SPEED_RANGE } from './integrations/tts';
 import { loadVoiceSettings, saveVoiceSettings, type VoiceSettings } from './session/storage';
 import { isTailscaleAvailable, getTailscaleHostname, getFunnelStatus, enableFunnel, disableFunnel } from './network/tailscale';
@@ -2852,6 +2853,13 @@ const server = Bun.serve({
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }
 
+    // Phone agent — the Android app dials in so agents can read and drive the
+    // phone. Same token as /ws (checked above). See integrations/phone.ts.
+    if (url.pathname === '/phone/ws') {
+      const upgraded = server.upgrade(req, { data: { type: 'phone' } });
+      return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
+    }
+
     // Legacy per-session browser WebSocket. Remote sessions connect to their
     // remote bridge's own /browser/ws directly through the tunnel, so this is
     // local-only now.
@@ -2951,6 +2959,11 @@ const server = Bun.serve({
         return;
       }
 
+      if (type === 'phone') {
+        openPhone(ws);
+        return;
+      }
+
       // LSP WebSocket
       if (type === 'lsp') {
         const { sessionId: sid, languageId } = ws.data as any;
@@ -2980,6 +2993,11 @@ const server = Bun.serve({
 
       if (type === 'voice') {
         voiceMessage(ws, message as string | Uint8Array);
+        return;
+      }
+
+      if (type === 'phone') {
+        phoneMessage(ws, message as string | Uint8Array);
         return;
       }
 
@@ -3031,6 +3049,11 @@ const server = Bun.serve({
 
       if (type === 'voice') {
         closeVoice(ws);
+        return;
+      }
+
+      if (type === 'phone') {
+        closePhone(ws);
         return;
       }
 
