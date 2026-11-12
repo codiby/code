@@ -926,16 +926,7 @@ export function SessionChatScreen({
               onSend={handleSend}
               replyTo={replyTo}
               onCancelReply={() => setReplyTo(null)}
-              context={
-                directChat?.context ?? (
-                  <Text
-                    numberOfLines={1}
-                    className="text-[11px] text-slate-500"
-                  >
-                    {session.folder}
-                  </Text>
-                )
-              }
+              context={directChat?.context}
               placeholder={directChat ? 'What do you want to do?' : undefined}
               disabled={isLoading || baseUrl.length === 0 || directChat?.busy}
               initialText={draft}
