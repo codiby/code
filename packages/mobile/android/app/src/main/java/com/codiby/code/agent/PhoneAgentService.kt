@@ -125,6 +125,7 @@ class PhoneAgentService : AccessibilityService() {
             try { (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(it) } catch (_: Exception) {}
         }
         networkCallback = null
+        try { stopService(Intent(this, PhoneAccessKeepAlive::class.java)) } catch (_: Exception) {}
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(STATUS_NOTIFICATION)
         worker.shutdownNow()
         shots.shutdownNow()
@@ -506,36 +507,27 @@ class PhoneAgentService : AccessibilityService() {
     private fun updateStatus() {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (!PhoneAgentPrefs.enabled(this)) {
+            stopService(Intent(this, PhoneAccessKeepAlive::class.java))
             manager.cancel(STATUS_NOTIFICATION)
             return
         }
-        if (Build.VERSION.SDK_INT >= 26) {
-            manager.createNotificationChannel(
-                NotificationChannel(STATUS_CHANNEL, "Phone access", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Shown while agents can use this phone"
-                    setShowBadge(false)
-                },
-            )
+        ensureKeepAlive()
+        // Same id as the foreground service: this just refreshes its text.
+        try { manager.notify(STATUS_NOTIFICATION, statusNotification(this, linkedHosts())) } catch (_: SecurityException) {}
+    }
+
+    /**
+     * Starts the foreground service that keeps the links' network. Android
+     * refuses it from the background (after a reboot, say); the app calls
+     * this again when it comes to the front, where it is always allowed.
+     */
+    fun ensureKeepAlive() {
+        if (!PhoneAgentPrefs.enabled(this) || PhoneAccessKeepAlive.running) return
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, PhoneAccessKeepAlive::class.java))
+        } catch (error: Exception) {
+            Log.w(TAG, "Phone access can't hold the foreground yet", error)
         }
-        val hosts = linkedHosts()
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
-        val off = PendingIntent.getBroadcast(
-            this, 1, Intent(ACTION_TURN_OFF).setPackage(packageName), PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = NotificationCompat.Builder(this, STATUS_CHANNEL)
-            .setSmallIcon(R.drawable.ic_phone_agent)
-            .setContentTitle("Agents can use this phone")
-            .setContentText(if (hosts.isEmpty()) "Waiting for your hosts…" else "Linked to ${hosts.joinToString(", ")}")
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setContentIntent(open)
-            .addAction(0, "Turn off", off)
-            .build()
-        try { manager.notify(STATUS_NOTIFICATION, notification) } catch (_: SecurityException) {}
     }
 
     companion object {
@@ -546,7 +538,37 @@ class PhoneAgentService : AccessibilityService() {
         private const val TAG = "PhoneAgent"
         private const val ACTION_TURN_OFF = "com.codiby.code.PHONE_ACCESS_OFF"
         private const val STATUS_CHANNEL = "phone_access"
-        private const val STATUS_NOTIFICATION = 7301
+        const val STATUS_NOTIFICATION = 7301
+
+        /** The "Agents can use this phone" notification, shared with [PhoneAccessKeepAlive]. */
+        fun statusNotification(context: Context, hosts: List<String>): android.app.Notification {
+            val manager = context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= 26) {
+                manager.createNotificationChannel(
+                    NotificationChannel(STATUS_CHANNEL, "Phone access", NotificationManager.IMPORTANCE_LOW).apply {
+                        description = "Shown while agents can use this phone"
+                        setShowBadge(false)
+                    },
+                )
+            }
+            val open = PendingIntent.getActivity(
+                context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            val off = PendingIntent.getBroadcast(
+                context, 1, Intent(ACTION_TURN_OFF).setPackage(context.packageName), PendingIntent.FLAG_IMMUTABLE,
+            )
+            return NotificationCompat.Builder(context, STATUS_CHANNEL)
+                .setSmallIcon(R.drawable.ic_phone_agent)
+                .setContentTitle("Agents can use this phone")
+                .setContentText(if (hosts.isEmpty()) "Waiting for your hosts…" else "Linked to ${hosts.joinToString(", ")}")
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setContentIntent(open)
+                .addAction(0, "Turn off", off)
+                .build()
+        }
         private const val SETTLE_MS = 700L
         private const val SHOT_WIDTH = 720
         private val TOUCHES = setOf("tap", "long_press", "type", "scroll", "swipe")

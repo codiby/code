@@ -19,4 +19,13 @@ class MainActivity : ReactActivity() {
    */
   override fun createReactActivityDelegate(): ReactActivityDelegate =
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+
+  /**
+   * In the front is where Android always lets Phone access take the
+   * foreground; after a reboot the service could not do it on its own.
+   */
+  override fun onResume() {
+    super.onResume()
+    com.codiby.code.agent.PhoneAgentService.instance?.ensureKeepAlive()
+  }
 }

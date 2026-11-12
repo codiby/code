@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Phone access reconnects to the hosts as soon as the network is back. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Phone access holds a foreground service: Android 15+ cuts the network
+         of background apps, and the links to the hosts would drop. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Phone access opens apps by name, so it has to see the launcher's list. -->
     <queries>
@@ -69,6 +73,14 @@
         <meta-data
           android:name="android.accessibilityservice"
           android:resource="@xml/phone_agent_service" />
+      </service>
+      <service
+        android:name=".agent.PhoneAccessKeepAlive"
+        android:exported="false"
+        android:foregroundServiceType="specialUse">
+        <property
+          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+          android:value="Keeps the connection that lets the user's own AI agents read and act on this phone while Phone access is on." />
       </service>
       <service
         android:name=".agent.PhoneNotificationListener"
