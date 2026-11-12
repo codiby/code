@@ -34,12 +34,19 @@ function time(t: number): string {
 export function PhoneAccessSection() {
   const ink = useInk();
   const [status, setStatus] = useState<PhoneAgentStatus | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const [log, setLog] = useState<PhoneAgentLogEntry[]>([]);
 
   const refresh = useCallback(() => {
     phoneAgentStatus()
-      .then(setStatus)
-      .catch(() => undefined);
+      .then(next => {
+        setStatus(next);
+        setFailure(null);
+      })
+      .catch((error: unknown) =>
+        // Said out loud: a section that silently vanished hid a crash once.
+        setFailure(error instanceof Error ? error.message : String(error)),
+      );
     phoneAgentLog()
       .then(setLog)
       .catch(() => undefined);
@@ -60,8 +67,23 @@ export function PhoneAccessSection() {
     };
   }, [refresh]);
 
-  if (!isPhoneAgentAvailable() || status === null) {
+  if (!isPhoneAgentAvailable()) {
     return null;
+  }
+  if (status === null) {
+    return failure === null ? null : (
+      <View>
+        <Text className="mb-2 mt-7 text-[11px] font-semibold uppercase tracking-widest text-slate-500">
+          Phone access
+        </Text>
+        <View className="rounded-[20px] bg-slate-100 p-3.5">
+          <Text className="text-[13.5px] font-medium text-rose-600">
+            Phone access isn't working in this build
+          </Text>
+          <Text className="mt-1 text-[12px] text-slate-500">{failure}</Text>
+        </View>
+      </View>
+    );
   }
 
   const set = (options: PhoneAgentOptions) => {

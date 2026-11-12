@@ -121,6 +121,17 @@ test('el registro muestra lo último primero, con lo rechazado marcado', async (
   await act(async () => tree.unmount());
 });
 
+test('si el servicio nativo falla, lo dice en vez de desaparecer', async () => {
+  (phoneAgentStatus as jest.Mock).mockRejectedValue(new Error('UNICODE_CHARACTER_CLASS flag not supported'));
+  let tree!: ReactTestRenderer.ReactTestRenderer;
+  await act(async () => {
+    tree = ReactTestRenderer.create(<PhoneAccessSection />);
+  });
+  expect(texts(tree)).toContain("Phone access isn't working in this build");
+  expect(texts(tree)).toContain('UNICODE_CHARACTER_CLASS flag not supported');
+  await act(async () => tree.unmount());
+});
+
 test('un registro dañado se lee como vacío', () => {
   expect(parsePhoneAgentLog('{nope')).toEqual([]);
   expect(parsePhoneAgentLog('{"t":1}')).toEqual([]);

@@ -534,7 +534,9 @@ class PhoneAgentService : AccessibilityService() {
                 "accept|aceptar|allow|permitir|publish|publicar|post|share|compartir|call|llamar|sign|firmar|" +
                 "submit|install|instalar|uninstall|desinstalar|reset|restablecer|log ?out|sign ?out|cerrar sesi[oó]n|" +
                 "subscribe|suscribir|unsubscribe|donate|donar)\\b",
-            Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE or Pattern.UNICODE_CHARACTER_CLASS,
+            // No UNICODE_CHARACTER_CLASS: Android rejects it, and its ICU regex
+            // already treats accented letters as word characters for `\\b`.
+            Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE,
         )
     }
 }
