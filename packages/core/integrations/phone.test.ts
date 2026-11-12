@@ -99,6 +99,26 @@ describe('phone link', () => {
     expect(listPhones()).toHaveLength(0);
   });
 
+  test('after switching networks the phone can still answer on its new socket', async () => {
+    resetPhonesForTest(join(dir, 'phone-devices.json'), 50);
+    const first = connect('pixel');
+    const answer = phoneRequest('act', { action: 'tap' }, { requester, timeoutMs: 60_000 });
+    const id = first.last().id;
+    const second = connect('pixel');
+    phoneMessage(second, JSON.stringify({ type: 'result', id, ok: true, result: { done: 'Tapped' } }));
+    expect(await answer).toEqual({ done: 'Tapped' });
+  });
+
+  test('without that late answer it fails after a short grace, not the full timeout', async () => {
+    resetPhonesForTest(join(dir, 'phone-devices.json'), 50);
+    connect('pixel');
+    const answer = phoneRequest('act', { action: 'tap' }, { requester, timeoutMs: 60_000 });
+    const started = Date.now();
+    connect('pixel');
+    await expect(answer).rejects.toThrow('switched networks');
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   test('a capabilities frame updates what the phone allows', () => {
     const ws = connect('pixel', { read: true, act: false, notifications: false });
     phoneMessage(ws, JSON.stringify({ type: 'capabilities', capabilities: { read: true, act: true, notifications: false } }));

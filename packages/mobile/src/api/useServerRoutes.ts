@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { RoutePath, ServerEntry } from '../config/servers';
+import { currentTransport, isPrivateUrl, onNetworkChange, type Transport } from './network';
 import { useAppActive } from './useAppActive';
 
 /** Por dónde entró cada servidor la última vez, para no empezar a ciegas. */
@@ -65,9 +66,17 @@ async function probe(url: string, timeoutMs: number): Promise<number | null> {
 
 async function resolve(
   server: ServerEntry,
+  transport: Transport = 'unknown',
 ): Promise<{ baseUrl: string; path: RoutePath | null; latencyMs: number | null }> {
   const local = server.localUrl;
   const remote = server.remoteUrl;
+
+  // Con datos móviles una IP de la LAN no contesta: esperar su 1,5 s solo
+  // retrasaba el respaldo. Si no hay respaldo, se prueba igual.
+  if (server.mode === 'auto' && transport === 'cellular' && isPrivateUrl(local) && remote.length > 0) {
+    const ms = await probe(remote, REMOTE_TIMEOUT_MS);
+    return { baseUrl: ms === null ? '' : remote, path: ms === null ? null : 'remote', latencyMs: ms };
+  }
 
   if (server.mode === 'local') {
     const ms = await probe(local, LOCAL_TIMEOUT_MS);
@@ -132,6 +141,9 @@ export function useServerRoutes(
     }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // Un sondeo empezado en la red anterior puede terminar después del nuevo:
+    // solo cuenta el último que se lanzó.
+    let generation = 0;
 
     /**
      * Arranca con la ruta que funcionó la última vez, sin esperar a la sonda.
@@ -180,6 +192,7 @@ export function useServerRoutes(
     };
 
     const run = async () => {
+      const mine = ++generation;
       const current = serversRef.current;
 
       setRoutes(previous => {
@@ -200,10 +213,11 @@ export function useServerRoutes(
 
       // En paralelo: un servidor caído tarda 1,5 s en rendirse y en serie
       // esos tiempos se suman antes de poder pintar nada.
+      const transport = await currentTransport();
       const results = await Promise.all(
-        current.map(async server => ({ server, ...(await resolve(server)) })),
+        current.map(async server => ({ server, ...(await resolve(server, transport)) })),
       );
-      if (cancelled) {
+      if (cancelled || mine !== generation) {
         return;
       }
 
@@ -235,12 +249,26 @@ export function useServerRoutes(
       timer = setTimeout(run, RECHECK_MS);
     };
 
+    // Cambiar de red (Wi-Fi ↔ datos) es justo cuando la ruta deja de servir:
+    // se vuelve a sondear al momento en vez de esperar los 30 s.
+    const offNetwork = onNetworkChange(() => {
+      if (cancelled) {
+        return;
+      }
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      run();
+    });
+
     // La apuesta primero y la sonda a la vez: no se espera a la una para la
     // otra, así que la lista puede empezar a cargarse en el primer milisegundo.
     optimistic();
     run();
     return () => {
       cancelled = true;
+      offNetwork();
       if (timer !== null) {
         clearTimeout(timer);
       }

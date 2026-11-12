@@ -20,6 +20,7 @@ class MainApplication : Application(), ReactApplication {
           add(TableScrollPackage())
           add(ShareTargetsPackage())
           add(com.codiby.code.agent.PhoneAgentPackage())
+          add(NetworkEventsPackage())
         },
     )
   }

@@ -2,6 +2,7 @@ package com.codiby.code.agent
 
 import android.content.Context
 import android.util.Log
+import com.codiby.code.NetworkWatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -33,11 +34,15 @@ class PhoneLink(
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+    /** A LAN address answers in milliseconds or not at all: don't wait 10 s on it. */
+    private val localClient = client.newBuilder().connectTimeout(2, TimeUnit.SECONDS).build()
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
     private val links = ConcurrentHashMap<String, Link>()
 
     inner class Link(val serverId: String, val name: String, private val token: String, private val urls: List<String>) {
-        val signature = "$token|${urls.joinToString(",")}"
+        // Order-free: the app reorders the routes as it probes them, and that
+        // alone must not tear down a working link. The route is chosen here.
+        val signature = "$token|${urls.sorted().joinToString(",")}"
         @Volatile var connected = false
             private set
         @Volatile private var socket: WebSocket? = null
@@ -45,6 +50,8 @@ class PhoneLink(
         private var urlIndex = 0
         private var attempt = 0
         private var retry: ScheduledFuture<*>? = null
+        /** Results that found no socket (mid network switch), resent after the next hello. */
+        private val outbox = java.util.concurrent.ConcurrentLinkedQueue<Pair<Long, String>>()
 
         fun start() = scheduler.execute { connect() }
 
@@ -58,20 +65,61 @@ class PhoneLink(
             }
         }
 
-        /** Network came back: retry now instead of waiting out the backoff. */
-        fun kick() = scheduler.execute {
-            if (stopped || connected || socket != null) return@execute
+        /**
+         * The default network changed: the current socket rides the old one
+         * and may hang for a while before failing. Drop it and dial again on
+         * the new network at once, starting from the best route for it.
+         */
+        fun restart(state: NetworkWatcher.State) = scheduler.execute {
+            if (stopped) return@execute
             retry?.cancel(false)
+            val old = socket
+            socket = null
+            val was = connected
+            connected = false
+            old?.cancel()
             attempt = 0
             urlIndex = 0
-            connect()
+            if (state.transport != NetworkWatcher.Transport.NONE) connect()
+            if (was) onChange()
         }
 
-        fun send(frame: JSONObject): Boolean = socket?.send(frame.toString()) ?: false
+        fun send(frame: JSONObject): Boolean {
+            val text = frame.toString()
+            if (socket?.send(text) == true) return true
+            // A result is the answer an agent is waiting for: keep it for the
+            // next connection instead of dropping it with the old network.
+            if (frame.optString("type") == "result") {
+                outbox.add(System.currentTimeMillis() to text)
+                while (outbox.size > MAX_OUTBOX) outbox.poll()
+            }
+            return false
+        }
+
+        private fun flush(webSocket: WebSocket) {
+            val now = System.currentTimeMillis()
+            while (true) {
+                val (at, text) = outbox.poll() ?: break
+                if (now - at < OUTBOX_TTL_MS) webSocket.send(text)
+            }
+        }
+
+        /**
+         * On Wi-Fi the LAN route first, it's the fast one; on mobile data LAN
+         * addresses can't be reached, so they're skipped (unless there's
+         * nothing else to try).
+         */
+        private fun routes(): List<String> =
+            if (NetworkWatcher.state.transport == NetworkWatcher.Transport.WIFI) {
+                urls.sortedBy { if (NetworkWatcher.isPrivate(it)) 0 else 1 }
+            } else {
+                urls.filterNot(NetworkWatcher::isPrivate).ifEmpty { urls }
+            }
 
         private fun connect() {
             if (stopped || urls.isEmpty()) return
-            val base = urls[urlIndex % urls.size].trimEnd('/')
+            val candidates = routes()
+            val base = candidates[urlIndex % candidates.size].trimEnd('/')
             val query = if (token.isNotBlank()) "?t=" + URLEncoder.encode(token, "UTF-8") else ""
             val request = try {
                 Request.Builder().url("$base/phone/ws$query").build()
@@ -79,15 +127,18 @@ class PhoneLink(
                 scheduleRetry(failedRoute = true, delayMs = null)
                 return
             }
-            socket = client.newWebSocket(request, object : WebSocketListener() {
+            val dialer = if (NetworkWatcher.isPrivate(base)) localClient else client
+            socket = dialer.newWebSocket(request, object : WebSocketListener() {
                 // OkHttp runs these on its own threads, where an uncaught
                 // exception takes the whole app down: nothing may escape.
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    if (stopped) { webSocket.close(1000, null); return }
+                    // A dial from before a network change that opened late.
+                    if (stopped || socket !== webSocket) { webSocket.close(1000, null); return }
                     try {
                         connected = true
                         attempt = 0
                         webSocket.send(hello().toString())
+                        flush(webSocket)
                         Log.i(TAG, "Linked to $name")
                         onChange()
                     } catch (error: Exception) {
@@ -136,7 +187,7 @@ class PhoneLink(
             if (stopped) return
             // A route that failed hands over to the next one at once; only a
             // full round of failures waits.
-            if (failedRoute) urlIndex = (urlIndex + 1) % maxOf(urls.size, 1)
+            if (failedRoute) urlIndex = (urlIndex + 1) % maxOf(routes().size, 1)
             val wait = delayMs ?: if (failedRoute && urlIndex != 0) 500L else {
                 val backoff = minOf(30_000L, 1000L shl minOf(attempt, 5))
                 attempt++
@@ -172,7 +223,7 @@ class PhoneLink(
         onChange()
     }
 
-    fun kick() = links.values.forEach { it.kick() }
+    fun networkChanged(state: NetworkWatcher.State) = links.values.forEach { it.restart(state) }
 
     fun broadcast(frame: JSONObject) = links.values.forEach { if (it.connected) it.send(frame) }
 
@@ -206,5 +257,8 @@ class PhoneLink(
 
     companion object {
         private const val TAG = "PhoneLink"
+        private const val MAX_OUTBOX = 20
+        /** The bridge waits 8 s for late answers after a switch; older ones are moot. */
+        private const val OUTBOX_TTL_MS = 30_000L
     }
 }

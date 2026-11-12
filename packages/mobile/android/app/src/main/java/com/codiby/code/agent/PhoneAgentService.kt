@@ -13,8 +13,6 @@ import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
-import android.net.ConnectivityManager
-import android.net.Network
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -29,6 +27,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.codiby.code.MainActivity
+import com.codiby.code.NetworkWatcher
 import com.codiby.code.R
 import org.json.JSONArray
 import org.json.JSONObject
@@ -53,7 +52,7 @@ class PhoneAgentService : AccessibilityService() {
     private val worker = Executors.newSingleThreadExecutor()
     private val shots = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val networkListener: (NetworkWatcher.State) -> Unit = { state -> link?.networkChanged(state) }
 
     // Held as fields: SharedPreferences keeps its listeners weakly.
     private val agentPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -82,16 +81,10 @@ class PhoneAgentService : AccessibilityService() {
         } catch (error: Exception) {
             Log.e(TAG, "Phone access could not start its listeners", error)
         }
-        try {
-            val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            networkCallback = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { link?.kick() }
-            }.also { connectivity.registerDefaultNetworkCallback(it) }
-        } catch (error: Exception) {
-            // Only speeds up reconnecting; the backoff still gets there.
-            networkCallback = null
-            Log.w(TAG, "No network callback", error)
-        }
+        // Reconnect the moment the network changes, not when the old socket
+        // finally times out.
+        NetworkWatcher.start(this)
+        NetworkWatcher.addListener(networkListener)
         try {
             applySwitches()
         } catch (error: Exception) {
@@ -121,10 +114,7 @@ class PhoneAgentService : AccessibilityService() {
         PhoneAgentPrefs.prefs(this).unregisterOnSharedPreferenceChangeListener(agentPrefsListener)
         getSharedPreferences("share-targets", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(hostsListener)
         try { unregisterReceiver(offReceiver) } catch (_: Exception) {}
-        networkCallback?.let {
-            try { (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(it) } catch (_: Exception) {}
-        }
-        networkCallback = null
+        NetworkWatcher.removeListener(networkListener)
         try { stopService(Intent(this, PhoneAccessKeepAlive::class.java)) } catch (_: Exception) {}
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(STATUS_NOTIFICATION)
         worker.shutdownNow()

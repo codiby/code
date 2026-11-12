@@ -61,7 +61,7 @@ interface Pending {
   readonly deviceId: string;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 const NO_CAPABILITIES: PhoneCapabilities = { read: false, act: false, notifications: false };
@@ -69,6 +69,11 @@ const NO_CAPABILITIES: PhoneCapabilities = { read: false, act: false, notificati
 const HELLO_TIMEOUT_MS = 10_000;
 /** Covers the on-phone confirmation prompt, which waits up to 60 s. */
 export const DEFAULT_TIMEOUT_MS = 75_000;
+/**
+ * After the phone switches networks it resends unanswered results on the new
+ * socket. This long, then the request fails instead of waiting the full timeout.
+ */
+let replacedGraceMs = 8_000;
 
 const devices = new Map<string, PhoneInfo & { ws: PhoneSocket }>();
 const deviceOf = new Map<PhoneSocket, string>();
@@ -138,6 +143,16 @@ export function phoneMessage(ws: PhoneSocket, message: string | ArrayBuffer | Ui
     if (previous && previous.ws !== ws) {
       deviceOf.delete(previous.ws);
       try { previous.ws.close(4409, 'Replaced by a newer connection'); } catch {}
+      // The phone resends unanswered results on the new socket; give them a
+      // moment, then fail instead of letting the agent wait the full timeout.
+      for (const [id, waiter] of pending) {
+        if (waiter.deviceId !== deviceId) continue;
+        clearTimeout(waiter.timer);
+        waiter.timer = setTimeout(() => {
+          pending.delete(id);
+          waiter.reject(new Error('The phone switched networks before answering. Read the screen to see whether it happened.'));
+        }, replacedGraceMs);
+      }
     }
     const info: PhoneInfo = {
       deviceId,
@@ -185,11 +200,15 @@ export function closePhone(ws: PhoneSocket) {
   if (!deviceId || devices.get(deviceId)?.ws !== ws) return;
   devices.delete(deviceId);
   log(`[phone] ${deviceId} disconnected`);
+  failPending(deviceId, 'The phone disconnected before answering');
+}
+
+function failPending(deviceId: string, message: string) {
   for (const [id, waiter] of pending) {
     if (waiter.deviceId !== deviceId) continue;
     pending.delete(id);
     clearTimeout(waiter.timer);
-    waiter.reject(new Error('The phone disconnected before answering'));
+    waiter.reject(new Error(message));
   }
 }
 
@@ -241,8 +260,9 @@ export function phoneRequest(
 }
 
 /** Tests only. */
-export function resetPhonesForTest(file: string) {
+export function resetPhonesForTest(file: string, graceMs = 8_000) {
   knownFile = file;
+  replacedGraceMs = graceMs;
   for (const waiter of pending.values()) clearTimeout(waiter.timer);
   for (const timer of helloTimers.values()) clearTimeout(timer);
   pending.clear();

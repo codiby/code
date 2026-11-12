@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { toSocketUrl } from './client';
+import { onNetworkChange } from './network';
 import { useAppActive } from './useAppActive';
 import { useServers } from '../config/ServerConfigContext';
 
@@ -209,12 +210,30 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    // Al cambiar de red los sockets viajan por la anterior y pueden tardar en
+    // darse cuenta de que murieron: se abren de nuevo al momento. Si además
+    // cambia la ruta (local ↔ remota), el sondeo la corrige y este efecto
+    // vuelve a correr con la nueva.
+    const offNetwork = onNetworkChange(transport => {
+      if (disposed) {
+        return;
+      }
+      for (const [serverId, target] of targets) {
+        drop(serverId);
+        attempts.current.set(serverId, 0);
+        if (transport !== 'none') {
+          connect(serverId, target.baseUrl, target.token);
+        }
+      }
+    });
+
     // Pasar a segundo plano desmonta todo aquí (`active` cambia) y volver lo
     // abre de cero, con los intentos en cero y las suscripciones repetidas en
     // el `onopen`. Eso también cubre lo que antes resolvía un reinicio al
     // volver: Android deja sockets medio abiertos al bloquear la pantalla.
     return () => {
       disposed = true;
+      offNetwork();
       for (const serverId of [...openSockets.keys()]) {
         drop(serverId);
         openAttempts.set(serverId, 0);
