@@ -4,7 +4,7 @@ import { listCodexModels, type CodexHandlers } from '../codex-app-server';
 import type { ProviderEvents, SpawnOptions } from '../types';
 const opts: SpawnOptions = { sessionId: 'test', cwd: '/tmp', model: null, permissionMode: 'default', effort: 'high' };
 const settle = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
-function harness(options = opts, startup = Promise.resolve()) {
+function harness(options = opts, startup = Promise.resolve(), hangInterrupt = false) {
   const calls: any[] = [], output: any[] = [];
   let handlers!: CodexHandlers;
   let turn = 0;
@@ -16,6 +16,7 @@ function harness(options = opts, startup = Promise.resolve()) {
       if (method === 'thread/start' || method === 'thread/resume') return { thread: { id: 'thread' }, model: 'model-default' };
       if (method === 'model/list') return { data: [{ id: 'model-default', model: 'model-default', displayName: 'Default model', isDefault: true }], nextCursor: null };
       if (method === 'turn/start') return { turn: { id: String(++turn) } };
+      if (method === 'turn/interrupt' && hangInterrupt) return new Promise(() => {});
       return {};
     },
     async close() {},
@@ -176,5 +177,21 @@ test('turn completion clears compaction even when its item-completed event is ab
   h.notify('item/started', { item: { id: 'compact', type: 'contextCompaction' } });
   h.complete(); await settle();
   expect(h.output.filter(x => x.event === 'onCompaction').at(-1)?.args[0]).toBe(false);
+  await h.session.close();
+});
+
+test('a slow turn/interrupt keeps the runtime alive; the next turn waits for turn/completed', async () => {
+  const h = harness(opts, Promise.resolve(), true);
+  await h.session.sendUserMessage({ text: 'long command' }); await settle();
+  await h.session.sendUserMessage({ text: 'barge-in' }); await settle();
+  // Codex has not acknowledged the interrupt yet: no second turn, no failure.
+  expect(h.calls.filter(x => x.method === 'turn/interrupt')).toHaveLength(1);
+  expect(h.calls.filter(x => x.method === 'turn/start')).toHaveLength(1);
+  h.complete('interrupted'); await settle();
+  expect(h.calls.filter(x => x.method === 'turn/start')).toHaveLength(2);
+  h.notify('item/completed', { item: { id: 'b', type: 'agentMessage', text: 'read it' } }); h.complete(); await settle();
+  expect(h.output.filter(x => x.event === 'onError')).toHaveLength(0);
+  expect(h.output.filter(x => x.event === 'onExit')).toHaveLength(0);
+  expect(h.output.filter(x => x.event === 'onAssistantText').map(x => x.args[0])).toEqual(['read it']);
   await h.session.close();
 });

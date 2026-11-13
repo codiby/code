@@ -36,6 +36,11 @@ export function codexPermissions(mode: PermissionMode, cwd: string, additionalDi
   return { approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: mode === 'plan' ? 'read-only' : 'workspace-write', sandboxPolicy };
 }
 
+/** How long `interrupt()` blocks the caller before the abort continues in the background. */
+const INTERRUPT_WAIT_MS = 5_000;
+/** After this long with neither an answer nor `turn/completed`, the turn is released locally. */
+const INTERRUPT_GIVE_UP_MS = 120_000;
+
 type TurnState = {
   id: string | null;
   cancelled: boolean;
@@ -278,15 +283,34 @@ export class CodexProviderSession extends ProviderSessionBase {
     throw new Error(`Unsupported Codex request: ${method}`);
   }
 
+  /**
+   * Codex answers `turn/interrupt` only once the turn has actually aborted,
+   * which waits on whatever command or tool call is in flight — easily past
+   * 30 s. A slow answer is not a dead runtime, so the request never kills the
+   * connection: the turn is released by its own `turn/completed`, and only if
+   * that never comes does it get released locally after INTERRUPT_GIVE_UP_MS.
+   */
   private async interruptTurn(state: TurnState) {
     const id = await state.started.promise;
     if (!id || this.closed) return;
-    try { await this.connection.request('turn/interrupt', { threadId: this.threadId, turnId: id }); }
-    catch { state.done.resolve({ status: 'interrupted' }); }
+    const answer = this.connection
+      .request('turn/interrupt', { threadId: this.threadId, turnId: id }, { timeoutMs: INTERRUPT_GIVE_UP_MS, fatal: false })
+      .then(() => true, () => false);
+    const finished = state.done.promise.then(() => true);
+    const answered = await Promise.race([answer, finished]);
+    // Accepted but still aborting: `turn/completed` will release it.
+    if (answered) return;
+    state.done.resolve({ status: 'interrupted' });
   }
   async interrupt() {
     this.events.onCompaction?.(false);
-    if (this.active) { this.active.cancelled = true; await this.interruptTurn(this.active); }
+    const state = this.active;
+    if (!state) return;
+    state.cancelled = true;
+    // The bridge awaits this before echoing a barge-in message; don't hold it
+    // for the whole abort. The next turn still waits for this one through
+    // `pendingRun`, so nothing overlaps on Codex's side.
+    await Promise.race([this.interruptTurn(state), Bun.sleep(INTERRUPT_WAIT_MS)]);
   }
   async setModel(model: string | null) { this.opts.model = model; }
   async setPermissionMode(mode: PermissionMode) { this.opts.permissionMode = mode; }

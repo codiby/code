@@ -11,9 +11,15 @@ export type CodexHandlers = {
   request(method: string, params: any): Promise<unknown>;
   exit(error: Error): void;
 };
+export type CodexRequestOptions = {
+  /** Default 30 s. */
+  timeoutMs?: number;
+  /** Default true: a timeout means the runtime is wedged, so it is killed. */
+  fatal?: boolean;
+};
 export interface CodexConnection {
   ready: Promise<void>;
-  request<T = any>(method: string, params: object): Promise<T>;
+  request<T = any>(method: string, params: object, options?: CodexRequestOptions): Promise<T>;
   close(): Promise<void>;
 }
 export type CodexConnect = (handlers: CodexHandlers) => CodexConnection;
@@ -67,16 +73,19 @@ export class CodexAppServer implements CodexConnection {
     void this.ready.catch(() => {});
   }
 
-  request<T = any>(method: string, params: object): Promise<T> {
+  request<T = any>(method: string, params: object, options: CodexRequestOptions = {}): Promise<T> {
     if (this.closed) return Promise.reject(new Error('Codex connection is closed'));
+    const { timeoutMs = 30000, fatal = true } = options;
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        const error = new Error(`Codex did not respond to ${method} within 30 seconds`);
+        const error = new Error(`Codex did not respond to ${method} within ${Math.round(timeoutMs / 1000)} seconds`);
         reject(error);
-        this.fail(error);
-      }, 30000);
+        // A late answer to a non-fatal request is dropped by `receive`; the
+        // runtime itself stays up.
+        if (fatal) this.fail(error);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.write({ id, method, params });
     });
