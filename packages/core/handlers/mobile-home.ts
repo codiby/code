@@ -30,6 +30,8 @@ export function buildMobileHome(sessionList: unknown[], prefs: Json, hostId: str
       // The session-info model picker shows what is selected now.
       model: s.model,
       provider_default_model: s.provider_default_model,
+      // Session info's mode selector shows the mode the session runs in.
+      permission_mode: s.permission_mode,
     };
   });
 

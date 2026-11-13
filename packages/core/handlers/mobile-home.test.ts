@@ -12,7 +12,7 @@ const prefs = {
 
 test('only the fields the phone reads', () => {
   const home = buildMobileHome(sessions, prefs);
-  expect(Object.keys(home.sessions[0]!)).toEqual(['id', 'name', 'cwd', 'updated_at', 'status', 'runtime_status', 'provider', 'model', 'provider_default_model']);
+  expect(Object.keys(home.sessions[0]!)).toEqual(['id', 'name', 'cwd', 'updated_at', 'status', 'runtime_status', 'provider', 'model', 'provider_default_model', 'permission_mode']);
   expect(home.preferences.tabGroups.g1).toEqual({ name: 'code', color: 'red', parentId: undefined });
   expect('pinnedGroupIds' in home.preferences).toBe(false);
 });

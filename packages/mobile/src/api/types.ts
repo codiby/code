@@ -111,5 +111,7 @@ export interface SessionSummary {
   readonly model?: string | null;
   /** El que usa el proveedor cuando la sesión no fija uno. */
   readonly defaultModel?: string | null;
+  /** `default`, `acceptEdits`, `plan` o `bypassPermissions`; `null` en bridges viejos. */
+  readonly permissionMode?: string | null;
   readonly disposableTtlMs?: number | null;
 }

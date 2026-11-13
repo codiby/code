@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -43,6 +49,164 @@ export interface SessionInfoScreenProps {
 }
 
 const STRIP_COUNT = 8;
+
+type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+
+const MODE_ORDER: readonly PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+];
+
+/** Mismos modos y nombres que el selector del escritorio. */
+const MODES: Record<
+  PermissionMode,
+  {
+    readonly label: string;
+    readonly short: string;
+    readonly description: string;
+    readonly activeBg: string;
+    readonly activeText: string;
+    readonly tone: ChipTone;
+    readonly chipText: string;
+  }
+> = {
+  default: {
+    label: 'Default',
+    short: 'Ask',
+    description: 'Asks before running commands or editing files.',
+    activeBg: 'border-slate-300 bg-white',
+    activeText: 'text-slate-900',
+    tone: 'neutral',
+    chipText: 'text-slate-600',
+  },
+  acceptEdits: {
+    label: 'Accept Edits',
+    short: 'Edits',
+    description: 'Edits files without asking; still asks before commands.',
+    activeBg: 'border-slate-300 bg-white',
+    activeText: 'text-emerald-700',
+    tone: 'emerald',
+    chipText: 'text-emerald-700',
+  },
+  plan: {
+    label: 'Plan',
+    short: 'Plan',
+    description: 'Read-only: explores and proposes a plan before changing anything.',
+    activeBg: 'border-slate-300 bg-white',
+    activeText: 'text-violet-700',
+    tone: 'violet',
+    chipText: 'text-violet-700',
+  },
+  bypassPermissions: {
+    label: 'Bypass All',
+    short: 'Bypass',
+    description: 'Runs every command and edit without asking. Use with care.',
+    activeBg: 'border-amber-500 bg-amber-500',
+    activeText: 'text-white',
+    tone: 'amber',
+    chipText: 'text-amber-700',
+  },
+};
+
+function toPermissionMode(value: string | null | undefined): PermissionMode {
+  return MODE_ORDER.find(option => option === value) ?? 'default';
+}
+
+type ChipTone = 'neutral' | 'emerald' | 'violet' | 'amber';
+
+const CHIP_BG: Record<ChipTone, string> = {
+  neutral: 'bg-slate-100',
+  emerald: 'bg-emerald-500/15',
+  violet: 'bg-violet-500/15',
+  amber: 'bg-amber-500/15',
+};
+
+function Chip({
+  children,
+  tone = 'neutral',
+}: {
+  readonly children: ReactNode;
+  readonly tone?: ChipTone;
+}) {
+  return (
+    <View
+      className={`flex-row items-center gap-1.5 rounded-full px-2.5 py-1 ${CHIP_BG[tone]}`}
+    >
+      {children}
+    </View>
+  );
+}
+
+/** Grupo con esquinas redondeadas, separado del borde, como los ajustes del sistema. */
+function Section({
+  title,
+  trailing,
+  onPressHeader,
+  children,
+}: {
+  readonly title?: string;
+  readonly trailing?: string;
+  readonly onPressHeader?: () => void;
+  readonly children: ReactNode;
+}) {
+  return (
+    <View className="mx-4 mb-5">
+      {title !== undefined ? (
+        <Pressable
+          accessibilityRole={onPressHeader ? 'button' : undefined}
+          disabled={onPressHeader === undefined}
+          onPress={onPressHeader}
+          className="flex-row items-center px-1 pb-1.5 active:opacity-60"
+        >
+          <Text className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            {title}
+          </Text>
+          {trailing !== undefined ? (
+            <Text className="ml-auto text-[12px] font-medium text-slate-400">
+              {`${trailing} ›`}
+            </Text>
+          ) : null}
+        </Pressable>
+      ) : null}
+      <View className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+        {children}
+      </View>
+    </View>
+  );
+}
+
+function ActionRow({
+  icon,
+  label,
+  onPress,
+  destructive = false,
+  first = false,
+}: {
+  readonly icon: ReactNode;
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly destructive?: boolean;
+  readonly first?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      className={`flex-row items-center gap-3 px-4 py-3 ${
+        first ? '' : 'border-t border-slate-200'
+      } ${destructive ? 'active:bg-rose-50' : 'active:bg-slate-100'}`}
+    >
+      {icon}
+      <Text
+        className={`text-[14px] ${destructive ? 'text-rose-700' : 'text-slate-700'}`}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
 
 function sizeLabel(bytes: number): string {
   return bytes >= 1024 * 1024
@@ -156,6 +320,54 @@ export function SessionInfoScreen({
     [sockets, session.serverId, session.id],
   );
 
+  const [mode, setMode] = useState<PermissionMode>(
+    toPermissionMode(session.permissionMode),
+  );
+  // La lista se refresca por el socket; un cambio hecho en otro lado (el
+  // escritorio, «Approve & Bypass») debe verse aquí.
+  useEffect(() => {
+    setMode(toPermissionMode(session.permissionMode));
+  }, [session.permissionMode]);
+
+  /** El mismo `set_permission_mode` del escritorio: el bridge lo guarda y lo aplica en vivo. */
+  const applyMode = useCallback(
+    (next: PermissionMode) => {
+      const sent = sockets.send(session.serverId, {
+        type: 'set_permission_mode',
+        sessionId: session.id,
+        mode: next,
+      });
+      if (sent) {
+        setMode(next);
+      } else {
+        Alert.alert('Mode not changed', 'The connection to the server is down.');
+      }
+    },
+    [sockets, session.serverId, session.id],
+  );
+
+  const selectMode = useCallback(
+    (next: PermissionMode) => {
+      if (next === mode) {
+        return;
+      }
+      if (next !== 'bypassPermissions') {
+        applyMode(next);
+        return;
+      }
+      // Igual que el aviso del escritorio: bypass aprueba todo sin preguntar.
+      Alert.alert(
+        'Bypass permissions?',
+        'The agent will run every command and edit without asking, for the rest of this session.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Bypass', style: 'destructive', onPress: () => applyMode(next) },
+        ],
+      );
+    },
+    [mode, applyMode],
+  );
+
   const modelLabel =
     model ?? (session.defaultModel ? `Default (${session.defaultModel})` : 'Default');
 
@@ -177,7 +389,7 @@ export function SessionInfoScreen({
     <View className="absolute inset-0 bg-white">
       <View
         style={{ paddingTop: insets.top + 8 }}
-        className="flex-row items-center gap-2 border-b border-slate-200 bg-white px-2 pb-3"
+        className="flex-row items-center gap-2 bg-white px-2 pb-2"
       >
         <Pressable
           accessibilityRole="button"
@@ -194,10 +406,10 @@ export function SessionInfoScreen({
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
-        <View className="items-center border-b border-slate-200 bg-white px-4 pb-4 pt-5">
+        <View className="items-center px-6 pb-5 pt-3">
           <View
             style={{ backgroundColor: avatarColorFor(session.id) }}
-            className="h-20 w-20 items-center justify-center rounded-full"
+            className="h-[72px] w-[72px] items-center justify-center rounded-full"
           >
             <Text className="text-2xl font-bold text-white">
               {initialsOf(name)}
@@ -208,137 +420,167 @@ export function SessionInfoScreen({
             accessibilityRole="button"
             accessibilityLabel="Rename session"
             onPress={() => setIsRenaming(true)}
-            className="mt-2.5 flex-row items-center gap-1.5 active:opacity-60"
+            className="mt-3 flex-row items-center gap-1.5 active:opacity-60"
           >
-            <Text className="text-lg font-bold text-slate-900">{name}</Text>
-            <RenameIcon size={13} color={ink('#cbd5e1')} />
+            <Text className="text-center text-[19px] font-bold text-slate-900">
+              {name}
+            </Text>
+            <RenameIcon size={13} color={ink('#94a3b8')} />
           </Pressable>
 
-          <Text className="mt-0.5 font-mono text-[11px] text-slate-400">
+          <Text
+            numberOfLines={1}
+            className="mt-1 font-mono text-[11px] text-slate-400"
+          >
             {session.cwd}
           </Text>
 
           <View className="mt-3 flex-row flex-wrap justify-center gap-1.5">
-            <View className="flex-row items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1">
+            <Chip>
               <View
                 className={`h-1.5 w-1.5 rounded-full ${
-                  session.isRunning ? 'bg-emerald-500' : 'bg-slate-300'
+                  session.isRunning ? 'bg-emerald-500' : 'bg-slate-400'
                 }`}
               />
-              <Text className="text-[10.5px] font-semibold text-slate-600">
-                {session.isOpen ? 'active' : 'archived'}
+              <Text className="text-[11px] font-semibold text-slate-600">
+                {!session.isOpen ? 'archived' : session.isRunning ? 'running' : 'idle'}
               </Text>
-            </View>
+            </Chip>
             {session.provider !== null ? (
-              <View className="rounded-full bg-slate-100 px-2.5 py-1">
-                <Text className="text-[10.5px] font-semibold text-slate-600">
+              <Chip>
+                <Text className="text-[11px] font-semibold text-slate-600">
                   {session.provider}
                 </Text>
-              </View>
+              </Chip>
             ) : null}
+            <Chip tone={MODES[mode].tone}>
+              <Text className={`text-[11px] font-semibold ${MODES[mode].chipText}`}>
+                {MODES[mode].label}
+              </Text>
+            </Chip>
           </View>
         </View>
 
+        <Section title="Agent">
+          <View className="px-4 pb-3.5 pt-3">
+            <Text className="text-[12px] font-medium text-slate-500">
+              Permission mode
+            </Text>
+            <View className="mt-2 flex-row gap-1 rounded-xl bg-slate-100 p-1">
+              {MODE_ORDER.map(option => {
+                const isActive = option === mode;
+                return (
+                  <Pressable
+                    key={option}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: isActive }}
+                    accessibilityLabel={`Permission mode ${MODES[option].label}`}
+                    onPress={() => selectMode(option)}
+                    className={`flex-1 items-center rounded-lg border py-2 ${
+                      isActive ? MODES[option].activeBg : 'border-transparent active:opacity-60'
+                    }`}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      className={`text-[12px] font-semibold ${
+                        isActive ? MODES[option].activeText : 'text-slate-500'
+                      }`}
+                    >
+                      {MODES[option].short}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text className="mt-2 text-[11.5px] leading-[16px] text-slate-400">
+              {MODES[mode].description}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Change model"
+            onPress={() => setIsPickingModel(true)}
+            className="flex-row items-center border-t border-slate-200 px-4 py-3 active:bg-slate-100"
+          >
+            <Text className="text-[13.5px] text-slate-700">Model</Text>
+            <Text
+              numberOfLines={1}
+              className="ml-3 flex-1 text-right text-[13.5px] font-medium text-slate-900"
+            >
+              {modelLabel}
+            </Text>
+            <Text className="ml-2 text-[15px] text-slate-400">›</Text>
+          </Pressable>
+        </Section>
+
         {resources === null ? (
-          <View className="items-center py-8">
+          <View className="items-center py-6">
             <ActivityIndicator size="small" color={ink('#94a3b8')} />
           </View>
         ) : (
-          <>
-            <View className="mt-2 border-y border-slate-200 bg-white">
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Open media"
-                onPress={() => onOpenGallery('image')}
-                className="flex-row items-center px-4 pb-2 pt-3 active:opacity-60"
+          <Section
+            title="Media"
+            trailing={`${images.length + mockups.length}`}
+            onPressHeader={() => onOpenGallery('image')}
+          >
+            {images.length === 0 && mockups.length === 0 ? (
+              <Text className="px-4 py-3.5 text-[12.5px] text-slate-400">
+                No images or mockups yet
+              </Text>
+            ) : null}
+            {images.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerClassName="gap-1.5 p-3"
               >
-                <Text className="text-[12.5px] font-semibold text-slate-700">
-                  Media
-                </Text>
-                <Text className="ml-auto text-[11.5px] text-slate-400">
-                  {`${images.length + mockups.length} ›`}
-                </Text>
-              </Pressable>
-
-              {images.length === 0 ? (
-                <Text className="px-4 pb-3 text-[12px] text-slate-400">
-                  No images yet
-                </Text>
-              ) : (
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerClassName="gap-1.5 px-4 pb-3"
-                >
-                  {images.slice(0, STRIP_COUNT).map((item, index) => (
-                    <Pressable
-                      key={item.id}
-                      accessibilityRole="imagebutton"
-                      accessibilityLabel={item.name}
-                      // Tocar una miniatura abre esa imagen, no la rejilla:
-                      // la rejilla se llega por el «14 ›» de la cabecera.
-                      onPress={() => setZoomedIndex(index)}
-                      className="active:opacity-80"
-                    >
-                      <Image
-                        source={{ uri: item.uri }}
-                        className="h-[74px] w-[74px] rounded-xl bg-slate-100"
-                      />
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              )}
-            </View>
-
-            {mockups.length > 0 ? (
-              <View className="mt-2 border-y border-slate-200 bg-white">
-                <View className="flex-row items-center px-4 pb-2 pt-3">
-                  <Text className="text-[12.5px] font-semibold text-slate-700">
-                    Mockups
+                {images.slice(0, STRIP_COUNT).map((item, index) => (
+                  <Pressable
+                    key={item.id}
+                    accessibilityRole="imagebutton"
+                    accessibilityLabel={item.name}
+                    // Tocar una miniatura abre esa imagen, no la rejilla:
+                    // la rejilla se llega por el contador de la cabecera.
+                    onPress={() => setZoomedIndex(index)}
+                    className="active:opacity-80"
+                  >
+                    <Image
+                      source={{ uri: item.uri }}
+                      className="h-[68px] w-[68px] rounded-xl bg-slate-100"
+                    />
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
+            {mockups.map(item => (
+              <Pressable
+                key={item.id}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${mockupName(item)}`}
+                onPress={() => onOpenMockup(mockupName(item))}
+                className="flex-row items-center gap-3 border-t border-slate-200 px-4 py-2.5 active:bg-slate-100"
+              >
+                <View className="h-8 w-8 items-center justify-center rounded-lg bg-violet-600">
+                  <Text className="text-[13px] text-white">◨</Text>
+                </View>
+                <View className="flex-1">
+                  <Text
+                    numberOfLines={1}
+                    className="text-[13px] font-semibold text-slate-900"
+                  >
+                    {mockupName(item)}
                   </Text>
-                  <Text className="ml-auto text-[11.5px] text-slate-400">
-                    {mockups.length}
+                  <Text className="text-[11px] text-slate-400">
+                    {`Mockup · ${sizeLabel(item.size)}`}
                   </Text>
                 </View>
-                {mockups.map((item, index) => (
-                  <View
-                    key={item.id}
-                    className={`flex-row items-center gap-3 px-4 py-2.5 ${
-                      index === 0 ? '' : 'border-t border-slate-100'
-                    }`}
-                  >
-                    <View className="h-8 w-8 items-center justify-center rounded-lg bg-violet-600">
-                      <Text className="text-[13px] text-white">◨</Text>
-                    </View>
-                    <View className="flex-1">
-                      <Text
-                        numberOfLines={1}
-                        className="text-[13px] font-semibold text-slate-900"
-                      >
-                        {mockupName(item)}
-                      </Text>
-                      <Text className="text-[11px] text-slate-400">
-                        {sizeLabel(item.size)}
-                      </Text>
-                    </View>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Open ${mockupName(item)}`}
-                      onPress={() => onOpenMockup(mockupName(item))}
-                      className="rounded-full bg-slate-900 px-3 py-1 active:opacity-70"
-                    >
-                      <Text className="text-[11px] font-bold text-slate-50">
-                        View
-                      </Text>
-                    </Pressable>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-          </>
+                <Text className="text-[15px] text-slate-400">›</Text>
+              </Pressable>
+            ))}
+          </Section>
         )}
 
-        <View className="mt-2 border-y border-slate-200 bg-white">
+        <Section title="Details">
           {[
             ['Folder', session.cwd],
             ['Provider', session.provider ?? '—'],
@@ -349,72 +591,47 @@ export function SessionInfoScreen({
           ].map(([key, value], index) => (
             <View
               key={key}
-              className={`flex-row px-4 py-2.5 ${
-                index === 0 ? '' : 'border-t border-slate-100'
+              className={`flex-row items-center px-4 py-3 ${
+                index === 0 ? '' : 'border-t border-slate-200'
               }`}
             >
-              <Text className="w-24 text-[12.5px] text-slate-400">{key}</Text>
+              <Text className="text-[13.5px] text-slate-700">{key}</Text>
               <Text
                 numberOfLines={1}
-                className={`flex-1 text-[12.5px] text-slate-700 ${
-                  key === 'Folder' ? 'font-mono text-[11px]' : ''
+                ellipsizeMode="head"
+                className={`ml-4 flex-1 text-right text-slate-500 ${
+                  key === 'Folder' ? 'font-mono text-[11.5px]' : 'text-[13.5px]'
                 }`}
               >
                 {value}
               </Text>
             </View>
           ))}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Change model"
-            onPress={() => setIsPickingModel(true)}
-            className="flex-row items-center border-t border-slate-100 px-4 py-2.5 active:bg-slate-50"
-          >
-            <Text className="w-24 text-[12.5px] text-slate-400">Model</Text>
-            <Text
-              numberOfLines={1}
-              className="flex-1 text-[12.5px] font-medium text-slate-900"
-            >
-              {modelLabel}
-            </Text>
-            <Text className="text-[12.5px] text-slate-400">›</Text>
-          </Pressable>
-        </View>
+        </Section>
 
-        <View className="mt-2 border-y border-slate-200 bg-white">
-          <Pressable
-            accessibilityRole="button"
+        <Section>
+          <ActionRow
+            icon={<PinIcon size={18} color={isPinned ? ink('#0f172a') : ink('#475569')} />}
+            label={isPinned ? 'Unpin from top' : 'Pin to top'}
             onPress={togglePin}
-            className="flex-row items-center gap-3 px-4 py-3 active:bg-slate-50"
-          >
-            <PinIcon size={18} color={isPinned ? ink('#0f172a') : ink('#475569')} />
-            <Text className="text-[13.5px] text-slate-700">
-              {isPinned ? 'Unpin from top' : 'Pin to top'}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
+            first
+          />
+          <ActionRow
+            icon={<ArchiveIcon size={18} color={ink('#475569')} />}
+            label={session.isOpen ? 'Archive' : 'Unarchive'}
             onPress={toggleArchive}
-            className="flex-row items-center gap-3 border-t border-slate-100 px-4 py-3 active:bg-slate-50"
-          >
-            <ArchiveIcon size={18} color={ink('#475569')} />
-            <Text className="text-[13.5px] text-slate-700">
-              {session.isOpen ? 'Archive' : 'Unarchive'}
-            </Text>
-          </Pressable>
+          />
+        </Section>
 
-          <Pressable
-            accessibilityRole="button"
+        <Section>
+          <ActionRow
+            icon={<TrashIcon size={18} color={ink('#be123c')} />}
+            label="Delete session"
             onPress={confirmDelete}
-            className="flex-row items-center gap-3 border-t border-slate-100 px-4 py-3 active:bg-rose-50"
-          >
-            <TrashIcon size={18} color={ink('#be123c')} />
-            <Text className="text-[13.5px] text-rose-700">
-              Delete session
-            </Text>
-          </Pressable>
-        </View>
+            destructive
+            first
+          />
+        </Section>
       </ScrollView>
 
       {zoomedIndex !== null ? (

@@ -47,6 +47,8 @@ function toSessionSummary(
       typeof raw.provider_default_model === 'string'
         ? raw.provider_default_model
         : null,
+    permissionMode:
+      typeof raw.permission_mode === 'string' ? raw.permission_mode : null,
     disposableTtlMs:
       typeof raw.disposable_ttl_ms === 'number' ? raw.disposable_ttl_ms : null,
   };
