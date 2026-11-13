@@ -446,6 +446,7 @@ export function SessionChatScreen({
   const {
     status: socketStatus,
     respondPermission,
+    setPermissionMode,
     isLive,
   } = useSessionSocket({
     serverId: session.serverId,
@@ -509,7 +510,7 @@ export function SessionChatScreen({
   });
 
   const answerPermission = useCallback(
-    (allow: boolean) => {
+    (allow: boolean, bypass = false) => {
       if (permission === null) {
         return;
       }
@@ -517,17 +518,18 @@ export function SessionChatScreen({
       // El bridge confirma con `permission_cancelled`, que limpia el estado.
       if (!respondPermission(permission.requestId, allow)) {
         setIsResponding(false);
+        return;
+      }
+      // «Approve & Bypass», como en el escritorio: tras aprobar el plan, el
+      // resto de la sesión ya no pide permiso. El bridge guarda el modo en la
+      // sesión y lo aplica al proveedor en vivo.
+      if (allow && bypass) {
+        setPermissionMode('bypassPermissions');
       }
     },
-    [permission, respondPermission],
+    [permission, respondPermission, setPermissionMode],
   );
 
-  /**
-   * `AskUserQuestion` se aprueba siempre: lo que decide no es si la herramienta
-   * corre, sino qué contesta. La elección viaja en `updatedInput`, que el bridge
-   * guarda como resultado de la herramienta — de ahí que haya que reenviar el
-   * input original entero y no solo las respuestas.
-   */
   const answerQuestions = useCallback(
     (answers: Record<string, string>) => {
       if (permission === null) {

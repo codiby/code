@@ -35,6 +35,11 @@ export interface UseSessionSocketResult {
     allow: boolean,
     updatedInput?: Record<string, unknown>,
   ) => boolean;
+  /**
+   * `set_permission_mode`: el bridge lo guarda en la sesión y lo aplica al
+   * proveedor en vivo. false si el socket no está abierto.
+   */
+  readonly setPermissionMode: (mode: string) => boolean;
   /** Suscrita y con la conexión viva. */
   readonly isLive: boolean;
 }
@@ -184,6 +189,12 @@ export function useSessionSocket({
         // pero así queda claro que solo `AskUserQuestion` lo usa.
         ...(updatedInput === undefined ? {} : { updatedInput }),
       }),
+    [sockets, serverId, sessionId],
+  );
+
+  const setPermissionMode = useCallback(
+    (mode: string) =>
+      sockets.send(serverId, { type: 'set_permission_mode', sessionId, mode }),
     [sockets, serverId, sessionId],
   );
 
@@ -349,6 +360,7 @@ export function useSessionSocket({
   return {
     status: sockets.statusOf(serverId),
     respondPermission,
+    setPermissionMode,
     isLive: sockets.isLive(serverId, sessionId),
   };
 }
