@@ -53,13 +53,21 @@ interface Props {
   nested?: boolean;
 }
 
-/** Short `9:41`-style clock for the hover stamp; null when we have no usable
- *  timestamp so callers can skip rendering. */
-function formatMsgTime(ts?: number): string | null {
+/** Short `9:41`-style clock for the hover stamp; messages from another day
+ *  get the date in front (`Aug 18, 3:32 PM`, plus the year when it differs).
+ *  Null when we have no usable timestamp so callers can skip rendering. */
+export function formatMsgTime(ts?: number, now: Date = new Date()): string | null {
   if (!ts) return null;
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return time;
+  const date = d.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}),
+  });
+  return `${date}, ${time}`;
 }
 
 /** Full date+time shown in the native tooltip on hover. */
