@@ -26,7 +26,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import type { SessionSummary } from './api/types';
+import type { MessageImage, SessionSummary } from './api/types';
 import { GlassTabBar, type TabKey } from './components/GlassTabBar';
 import {
   ServerConfigProvider,
@@ -74,6 +74,27 @@ const ENTER = {
   easing: Easing.bezier(0.05, 0.7, 0.1, 1),
 } as const;
 
+/**
+ * El relevo del chat directo a la conversación destino: no se desliza, se
+ * funde encima en el mismo lugar — la conversación «siempre estuvo ahí».
+ */
+const FUSE = {
+  duration: 260,
+  easing: Easing.bezier(0.2, 0, 0, 1),
+} as const;
+
+/** Lo que el chat directo le pasa a la conversación a la que se movió. */
+export interface OpenSessionOptions {
+  /** Aparece en su lugar con un fundido en vez de entrar deslizándose. */
+  readonly inPlace?: boolean;
+  /** La petición que viaja: el destino la envía como mensaje propio. */
+  readonly handoff?: {
+    readonly text: string;
+    readonly images: MessageImage[];
+    readonly note: string;
+  };
+}
+
 /** Al salir conviene lo contrario: acelerar y desaparecer sin ceremonia. */
 const EXIT = {
   duration: 240,
@@ -120,6 +141,13 @@ function AppContent() {
   const { width } = useWindowDimensions();
   const [activeTab, setActiveTab] = useState<TabKey>('chat');
   const [openSession, setOpenSession] = useState<SessionSummary | null>(null);
+  /** El envío que el chat directo dejó encargado a `openSession`, si lo hay. */
+  const [handoff, setHandoff] = useState<{
+    readonly key: string;
+    readonly text: string;
+    readonly images: MessageImage[];
+    readonly note: string;
+  } | null>(null);
   const [drafts, setDrafts] = useState<Drafts>({});
   /** true mientras la conversación entra: retiene el trabajo pesado. */
   const [isEntering, setIsEntering] = useState(false);
@@ -138,6 +166,8 @@ function AppContent() {
 
   /** 0 = la conversación está fuera de pantalla; 1 = cubre la lista. */
   const progress = useSharedValue(0);
+  /** Opacidad de la conversación; solo baja de 1 durante el relevo en sitio. */
+  const fade = useSharedValue(1);
 
   // Los borradores viven aquí porque los necesitan las dos pantallas: la de
   // sesión para restaurar el texto, y la lista para enseñar «Borrador: …».
@@ -161,13 +191,32 @@ function AppContent() {
    * creación y medición de la jerarquía de vistas, y el salto se ve.
    */
   const openSessionAnimated = useCallback(
-    (session: SessionSummary) => {
+    (session: SessionSummary, options: OpenSessionOptions = {}) => {
+      setHandoff(
+        options.handoff ? { key: session.key, ...options.handoff } : null,
+      );
+      if (options.inPlace) {
+        // Ya en su sitio, invisible, y se funde encima del chat directo. La
+        // pestaña cambia al terminar: si cambiara antes, el chat directo se
+        // desmontaría y por debajo del fundido se vería el Home.
+        progress.value = 1;
+        fade.value = 0;
+        setIsEntering(false);
+        setOpenSession(session);
+        fade.value = withTiming(1, FUSE, finished => {
+          if (finished === true) {
+            runOnJS(setActiveTab)('home');
+          }
+        });
+        return;
+      }
+      fade.value = 1;
       setActiveTab('home');
       progress.value = 0;
       setIsEntering(true);
       setOpenSession(session);
     },
-    [progress],
+    [progress, fade],
   );
 
   /**
@@ -333,6 +382,7 @@ function AppContent() {
   ]);
 
   const chatStyle = useAnimatedStyle(() => ({
+    opacity: fade.value,
     transform: [{ translateX: (1 - progress.value) * width }],
   }));
 
@@ -342,8 +392,10 @@ function AppContent() {
     transform: [{ translateX: -progress.value * width * PARALLAX }],
   }));
 
+  // Por `fade`: en el relevo en sitio `progress` ya vale 1 desde el primer
+  // fotograma, y el scrim oscurecería el chat directo de golpe.
   const scrimStyle = useAnimatedStyle(() => ({
-    opacity: progress.value * 0.25,
+    opacity: progress.value * 0.25 * fade.value,
   }));
 
   return (
@@ -391,6 +443,7 @@ function AppContent() {
           >
             <SessionChatScreen
               session={openSession}
+              handoff={handoff?.key === openSession.key ? handoff : undefined}
               onClose={closeSession}
               isReady={!isEntering}
               draft={drafts[openSession.key] ?? ''}

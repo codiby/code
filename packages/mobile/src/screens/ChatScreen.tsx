@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   KeyboardAvoidingView,
   Modal,
   Pressable,
@@ -23,10 +24,12 @@ import {
   type DirectRecommendation,
 } from '../api/directChat';
 import { invalidateHome } from '../api/home';
-import { sendMessage } from '../api/messages';
+import { LATEST_SEQ, fetchMessages, sendMessage } from '../api/messages';
+import { readMessages, writeMessages } from '../api/messageStore';
 import { PROVIDERS } from '../api/providers';
 import {
   createSession,
+  deleteSession,
   fetchSessions,
   keepSession,
   setSessionStatus,
@@ -37,9 +40,20 @@ import { useServers } from '../config/ServerConfigContext';
 import { useInk } from '../theme';
 import { NewSessionSheet, type NewSessionSheetProps } from './NewSessionSheet';
 import { SessionChatScreen } from './SessionChatScreen';
+import type { OpenSessionOptions } from '../App';
+
+/** Cuánto se espera la precarga del destino antes de animar sin ella. */
+const PREFETCH_TIMEOUT_MS = 1_500;
+/** Encabezado y tarjeta se transforman; luego `App` funde el destino encima. */
+const MORPH_MS = 220;
+
+const sleep = (ms: number) => new Promise<null>(resolve => setTimeout(() => resolve(null), ms));
 
 interface ChatScreenProps {
-  readonly onOpenSession: (session: SessionSummary) => void;
+  readonly onOpenSession: (
+    session: SessionSummary,
+    options?: OpenSessionOptions,
+  ) => void;
   readonly onBack: () => void;
 }
 
@@ -65,11 +79,14 @@ function Destination({
   busy,
   failed,
   hereServerId,
+  morph,
   onAuto,
   onDeliver,
   onContinue,
   onNew,
 }: {
+  /** 0 → 1 mientras el chat se funde en el destino: la tarjeta se desvanece. */
+  morph: Animated.Value;
   onDeliver: (
     recommendation: DirectRecommendation,
     messages: ChatMessage[],
@@ -135,7 +152,20 @@ function Destination({
       ? recommendation.session.name
       : recommendation?.title;
   return (
-    <View className="mx-4 my-3">
+    <Animated.View
+      style={{
+        opacity: morph.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+        transform: [
+          {
+            scale: morph.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0.97],
+            }),
+          },
+        ],
+      }}
+      className="mx-4 my-3"
+    >
       {recommendation ? (
         <View className="overflow-hidden rounded-[20px] bg-slate-100">
           <View className="flex-row items-center gap-2 px-3.5 pt-3">
@@ -258,7 +288,7 @@ function Destination({
         The agent decides: it moves your request to another conversation, or
         keeps this one.
       </Text>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -279,6 +309,9 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
   const attempted = useRef(new Set<string>());
   const createdNew = useRef(new Map<string, SessionSummary>());
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
+  /** El destino al que se está fundiendo el chat; cambia el encabezado. */
+  const [fusing, setFusing] = useState<SessionSummary | null>(null);
+  const morph = useRef(new Animated.Value(0)).current;
   const reachable = servers.filter(s => !!routes[s.id]?.baseUrl);
   const selected = reachable.find(s => s.id === serverId) ?? reachable[0];
 
@@ -342,25 +375,73 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
     }
   };
 
-  const finish = (session: SessionSummary) => {
+  /**
+   * El chat temporal ya entregó su petición: se elimina, no se archiva —todo
+   * lo que tenía viaja al destino—. Va en segundo plano; un fallo al borrarlo
+   * no debe repetir el envío, y de todos modos caduca solo en 1 h.
+   */
+  const dropTemporary = () => {
     const pending = started.current;
-    // El destino ya recibió la petición. Un fallo al archivar no debe repetirla.
-    if (pending) {
-      const route = routes[pending.session.serverId];
-      if (route?.baseUrl) {
-        setSessionStatus(
-          route.baseUrl,
-          route.token,
-          pending.session.id,
-          'archived',
-        ).catch(() => undefined);
-      }
-    }
     started.current = null;
+    if (!pending) {
+      return;
+    }
+    const route = routes[pending.session.serverId];
+    if (route?.baseUrl) {
+      deleteSession(route.baseUrl, route.token, pending.session.id)
+        .catch(() => undefined)
+        .finally(invalidateHome);
+    }
+  };
+
+  const finish = (session: SessionSummary) => {
+    dropTemporary();
     setChat(null);
     setInitial(undefined);
     invalidateHome();
     onOpenSession(session);
+  };
+
+  /**
+   * «Fusión en sitio»: el historial del destino queda en caché antes de
+   * animar, el encabezado y la tarjeta se transforman, y `App` funde el
+   * destino encima sin deslizarlo. El destino envía la petición él mismo,
+   * así que la animación nunca espera a la red y un fallo se reintenta con
+   * la burbuja de siempre.
+   *
+   * El chat directo no se limpia aquí: seguiría pintándose debajo del
+   * fundido. Se desmonta cuando `App` cambia de pestaña al terminar.
+   */
+  const fuseInto = async (
+    session: SessionSummary,
+    route: { baseUrl: string; token: string },
+    handoff: { text: string; images: MessageImage[] },
+  ) => {
+    if (readMessages(session.key) === null) {
+      const page = await Promise.race([
+        fetchMessages(route.baseUrl, session.id, route.token, LATEST_SEQ).catch(
+          () => null,
+        ),
+        sleep(PREFETCH_TIMEOUT_MS),
+      ]);
+      if (page !== null) {
+        writeMessages(session.key, page.messages, page.hasMore);
+      }
+    }
+    setFusing(session);
+    await new Promise<void>(resolve =>
+      Animated.timing(morph, {
+        toValue: 1,
+        duration: MORPH_MS,
+        useNativeDriver: true,
+      }).start(() => resolve()),
+    );
+    dropTemporary();
+    invalidateHome();
+    onOpenSession(session, {
+      inPlace: true,
+      handoff: { ...handoff, note: 'Moved here from Direct chat' },
+    });
   };
 
   /**
@@ -429,15 +510,11 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
           }));
         createdNew.current.set(key, session);
       }
-      await sendMessage(
-        route.baseUrl,
-        session.id,
-        route.token,
-        handoff.text,
-        handoff.images,
-      );
       createdNew.current.clear();
-      finish(session);
+      await fuseInto(session, route, {
+        text: handoff.text,
+        images: handoff.images ?? [],
+      });
       return true;
     } catch (error) {
       Alert.alert(
@@ -543,12 +620,47 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
         <BackIcon size={22} color={ink('#0f172a')} />
       </Pressable>
       <View className="h-12 flex-1 justify-center">
-        <Text className="text-[23px] font-bold leading-7 tracking-[-0.9px] text-slate-900">
-          Direct
-        </Text>
-        <Text className="text-[11.5px] text-slate-500">
-          Temporary agent · ends after 1 h idle
-        </Text>
+        <Animated.View
+          style={{
+            opacity: morph.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 0, 0] }),
+          }}
+        >
+          <Text className="text-[23px] font-bold leading-7 tracking-[-0.9px] text-slate-900">
+            Direct
+          </Text>
+          <Text className="text-[11.5px] text-slate-500">
+            Temporary agent · ends after 1 h idle
+          </Text>
+        </Animated.View>
+        {fusing !== null ? (
+          // El nombre del destino entra donde estaba «Direct»: es lo que hace
+          // que el cambio se lea como la misma conversación que sigue.
+          <Animated.View
+            style={{
+              opacity: morph.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0, 1] }),
+              transform: [
+                {
+                  translateY: morph.interpolate({
+                    inputRange: [0.5, 1],
+                    outputRange: [4, 0],
+                    extrapolate: 'clamp',
+                  }),
+                },
+              ],
+            }}
+            className="absolute inset-0 justify-center"
+          >
+            <Text
+              numberOfLines={1}
+              className="text-[15.5px] font-semibold tracking-[-0.3px] text-slate-900"
+            >
+              {fusing.name}
+            </Text>
+            <Text className="text-[11.5px] text-slate-500">
+              {`Continuing · ${fusing.folder}`}
+            </Text>
+          </Animated.View>
+        ) : null}
       </View>
     </View>
   );
@@ -571,6 +683,7 @@ export function ChatScreen({ onOpenSession, onBack }: ChatScreenProps) {
                 busy={busy}
                 failed={failed}
                 hereServerId={chat.session.serverId}
+                morph={morph}
                 onAuto={autoRoute}
                 onDeliver={deliver}
                 onContinue={continueIn}

@@ -124,3 +124,26 @@ test.each([false, true])(
     await act(async () => tree.unmount());
   },
 );
+
+test('el encargo del chat directo se envía una sola vez y su burbuja no se pierde', async () => {
+  let tree!: ReactTestRenderer.ReactTestRenderer;
+  const handoff = { text: 'Mi petición', images: [], note: 'Moved here from Direct chat' };
+  await act(async () => {
+    tree = ReactTestRenderer.create(
+      <SessionChatScreen session={session} onClose={() => {}} handoff={handoff} />,
+    );
+  });
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+  expect(sendMessage).toHaveBeenCalledWith('http://host', 's1', 'token', 'Mi petición', []);
+  const bubbles = () => tree.root.findAllByType(MessageBubble).map(b => b.props.message.content);
+  // La lista está invertida: la petición (lo más nuevo) va primero, abajo en
+  // pantalla, y la historia precargada sigue ahí después de sincronizar.
+  expect(bubbles()).toEqual(['Mi petición', message.content]);
+  // Repintar con el mismo encargo no lo vuelve a mandar.
+  await act(async () => {
+    tree.update(<SessionChatScreen session={session} onClose={() => {}} handoff={handoff} />);
+  });
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+  expect(tree.root.findByProps({ children: 'Moved here from Direct chat' })).toBeDefined();
+  await act(async () => tree.unmount());
+});

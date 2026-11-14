@@ -5,12 +5,14 @@ import { Composer } from '../src/components/Chat';
 import { SessionChatScreen } from '../src/screens/SessionChatScreen';
 import { NewSessionSheet } from '../src/screens/NewSessionSheet';
 import {
+  deleteSession,
   createSession,
   fetchSessions,
   keepSession,
   setSessionStatus,
 } from '../src/api/sessions';
-import { sendMessage } from '../src/api/messages';
+import { fetchMessages, sendMessage } from '../src/api/messages';
+import { writeMessages } from '../src/api/messageStore';
 import { loadDirectContext } from '../src/api/directChat';
 import type { ChatMessage, SessionSummary } from '../src/api/types';
 
@@ -53,8 +55,19 @@ jest.mock('../src/api/sessions', () => ({
   setSessionStatus: jest.fn(),
   keepSession: jest.fn(),
   fetchSessions: jest.fn(),
+  deleteSession: jest.fn(() => Promise.resolve()),
 }));
-jest.mock('../src/api/messages', () => ({ sendMessage: jest.fn() }));
+jest.mock('../src/api/messages', () => ({
+  LATEST_SEQ: Number.MAX_SAFE_INTEGER,
+  sendMessage: jest.fn(),
+  fetchMessages: jest.fn(() =>
+    Promise.resolve({ messages: [], hasMore: false }),
+  ),
+}));
+jest.mock('../src/api/messageStore', () => ({
+  readMessages: jest.fn(() => null),
+  writeMessages: jest.fn(),
+}));
 jest.mock('../src/api/home', () => ({ invalidateHome: jest.fn() }));
 
 const temporary: SessionSummary = {
@@ -179,28 +192,44 @@ test('la ruta del agente se aplica sola: restaura la sesión archivada y le pasa
     'project',
     'open',
   );
-  expect(sendMessage).toHaveBeenLastCalledWith(
+  // El encabezado y la tarjeta se transforman antes del relevo.
+  await act(() => new Promise<void>(resolve => setTimeout(resolve, 400)));
+  // El historial del destino queda en caché antes de animar.
+  expect(fetchMessages).toHaveBeenCalledWith(
     'http://b',
     'project',
     'b',
-    'Mi petición',
-    [],
+    Number.MAX_SAFE_INTEGER,
   );
+  expect(writeMessages).toHaveBeenCalledWith('b:project', [], false);
+  // La petición no la manda el chat directo: viaja al destino, que la envía
+  // como mensaje propio al aparecer en sitio.
+  expect(sendMessage).toHaveBeenCalledTimes(1);
   expect(onOpen).toHaveBeenCalledWith(
     expect.objectContaining({ key: 'b:project', isOpen: true }),
+    {
+      inPlace: true,
+      handoff: {
+        text: 'Mi petición',
+        images: [],
+        note: 'Moved here from Direct chat',
+      },
+    },
   );
-  expect(setSessionStatus).toHaveBeenCalledWith(
+  // El chat temporal se elimina, no se archiva.
+  expect(deleteSession).toHaveBeenCalledWith('http://a', 'a', 'temp');
+  expect(setSessionStatus).not.toHaveBeenCalledWith(
     'http://a',
     'a',
     'temp',
     'archived',
   );
   expect(tree.root.findByType(NewSessionSheet).props.visible).toBe(false);
-  // Repintar la misma respuesta no vuelve a mandar la petición.
+  // Repintar la misma respuesta no vuelve a moverla.
   await act(async () => {
     card.update(config.renderDestination([user, recommendation]));
   });
-  expect(sendMessage).toHaveBeenCalledTimes(2);
+  expect(onOpen).toHaveBeenCalledTimes(1);
   await act(async () => {
     tree.unmount();
     card.unmount();
@@ -233,16 +262,15 @@ test('una ruta «new» crea la conversación en el host elegido sin abrir la hoj
     'b',
     expect.objectContaining({ cwd: '/b/project', name: 'Rediseño' }),
   );
-  expect(sendMessage).toHaveBeenLastCalledWith(
-    'http://b',
-    'fresh',
-    'b',
-    'Mi petición',
-    [],
-  );
+  await act(() => new Promise<void>(resolve => setTimeout(resolve, 400)));
   expect(onOpen).toHaveBeenCalledWith(
     expect.objectContaining({ key: 'b:fresh' }),
+    expect.objectContaining({
+      inPlace: true,
+      handoff: expect.objectContaining({ text: 'Mi petición' }),
+    }),
   );
+  expect(deleteSession).toHaveBeenCalledWith('http://a', 'a', 'temp');
   expect(tree.root.findByType(NewSessionSheet).props.visible).toBe(false);
   await act(async () => {
     tree.unmount();

@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   ActivityIndicator,
+  Animated as RNAnimated,
   FlatList,
   Pressable,
   Text,
@@ -59,6 +60,7 @@ import {
   ToolGroup,
 } from '../components/Chat';
 import { buildChatItems } from '../lib/chatItems';
+import { OPTIMISTIC_PREFIX, keepPending } from '../lib/pendingMessages';
 import {
   loadAnsweredSuggestions,
   pendingNewSessionSuggestion,
@@ -76,7 +78,6 @@ import { useRouteFor } from '../config/ServerConfigContext';
 import { avatarColorFor, initialsOf } from '../lib/format';
 import { useInk } from '../theme';
 
-const OPTIMISTIC_PREFIX = 'local-';
 
 /** Alto inicial del compositor, hasta que `onLayout` mida el real. */
 const COMPOSER_CLEARANCE = 64;
@@ -113,6 +114,16 @@ export interface SessionChatScreenProps {
   readonly onTotalMessages?: (total: number) => void;
   /** Abre otra sesión; la usa la tarjeta de «nueva sesión». */
   readonly onOpenSession?: (session: SessionSummary) => void;
+  /**
+   * Lo que el chat directo movió aquí: se envía una vez al montar, como un
+   * mensaje propio — burbuja optimista y reintento incluidos — y `note` se
+   * muestra un momento bajo el encabezado.
+   */
+  readonly handoff?: {
+    readonly text: string;
+    readonly images: MessageImage[];
+    readonly note: string;
+  };
 }
 
 export function SessionChatScreen({
@@ -126,6 +137,7 @@ export function SessionChatScreen({
   onOpenInfo,
   onTotalMessages,
   onOpenSession,
+  handoff,
 }: SessionChatScreenProps) {
   const ink = useInk();
   // El borrador se guarda al desmontar, no en cada tecla: escribir no debería
@@ -220,7 +232,7 @@ export function SessionChatScreen({
               ? page.messages
               : [...page.messages, ...current];
           writeMessages(session.key, next, page.hasMore);
-          return next;
+          return keepPending(next, current);
         });
         setHasMore(page.hasMore);
         setError(null);
@@ -255,12 +267,12 @@ export function SessionChatScreen({
         const current = readMessages(session.key)?.messages ?? [];
         const next = [...older, ...current.filter(m => !ids.has(m.id))];
         writeMessages(session.key, next, hasMoreNext);
-        setMessages(next);
+        setMessages(shown => keepPending(next, shown));
         setHasMore(hasMoreNext);
       };
 
       writeMessages(session.key, tail, true);
-      setMessages(tail);
+      setMessages(shown => keepPending(tail, shown));
       setHasMore(true);
 
       // `loadOlder` pediría lo mismo en paralelo al llegar arriba.
@@ -336,7 +348,7 @@ export function SessionChatScreen({
         );
         if (next !== latest.messages) {
           writeMessages(session.key, next, latest.hasMore);
-          setMessages(next);
+          setMessages(shown => keepPending(next, shown));
         }
       } else {
         await fillGap(current, page.messages, afterSeq);
@@ -379,7 +391,7 @@ export function SessionChatScreen({
         hasStartedRef.current = true;
       }
       if (stored !== null) {
-        setMessages(stored.messages);
+        setMessages(shown => keepPending(stored.messages, shown));
         setHasMore(stored.hasMore);
         setIsLoading(false);
         sync();
@@ -406,7 +418,7 @@ export function SessionChatScreen({
       subscribeMessages(session.key, () => {
         const page = readMessages(session.key);
         if (page !== null) {
-          setMessages(page.messages);
+          setMessages(shown => keepPending(page.messages, shown));
         }
       }),
     [session.key],
@@ -629,6 +641,17 @@ export function SessionChatScreen({
     [baseUrl, session.id, token, sync, socketStatus, setSendState, replyTo],
   );
 
+  // El encargo del chat directo sale una sola vez, aunque la pantalla se
+  // vuelva a pintar. `keepPending` lo protege de la primera sincronización.
+  const handoffSentRef = useRef(false);
+  useEffect(() => {
+    if (handoff === undefined || handoffSentRef.current) {
+      return;
+    }
+    handoffSentRef.current = true;
+    handleSend(handoff.text, handoff.images, null);
+  }, [handoff, handleSend]);
+
   /** La oferta de sesión nueva que sigue en pie, si nadie la contestó. */
   const newSession = useMemo(() => {
     const pending = pendingNewSessionSuggestion(messages);
@@ -792,6 +815,8 @@ export function SessionChatScreen({
           />
         </View>
       )}
+
+      {handoff !== undefined ? <ArrivalNote text={handoff.note} /> : null}
 
       {error !== null ? (
         <View className="bg-rose-50 px-4 py-3">
@@ -959,6 +984,45 @@ export function SessionChatScreen({
           </View>
         </Animated.View>
       </View>
+    </View>
+  );
+}
+
+/**
+ * «Movido desde el chat directo»: aparece al llegar y se va solo. No ocupa
+ * lugar en el layout — flota sobre la lista para no empujar los mensajes a
+ * media transición.
+ */
+function ArrivalNote({ text }: { readonly text: string }) {
+  const opacity = useRef(new RNAnimated.Value(0)).current;
+  useEffect(() => {
+    const show = RNAnimated.sequence([
+      RNAnimated.delay(180),
+      RNAnimated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+      RNAnimated.delay(2600),
+      RNAnimated.timing(opacity, { toValue: 0, duration: 260, useNativeDriver: true }),
+    ]);
+    show.start();
+    return () => show.stop();
+  }, [opacity]);
+  return (
+    <View pointerEvents="none" className="relative z-10 h-0 items-center">
+      <RNAnimated.View
+        style={{
+          opacity,
+          transform: [
+            {
+              translateY: opacity.interpolate({
+                inputRange: [0, 1],
+                outputRange: [-6, 0],
+              }),
+            },
+          ],
+        }}
+        className="mt-2 rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5"
+      >
+        <Text className="text-[12px] text-slate-600">{text}</Text>
+      </RNAnimated.View>
     </View>
   );
 }
