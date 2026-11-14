@@ -46,9 +46,10 @@ import { InteractiveTerminalBubble } from './InteractiveTerminalBubble';
 import type { TerminalBubbleHandle } from './InteractiveTerminalBubble';
 import type { TabGroupInfo, ProjectEnvVar } from '../lib/tab-groups';
 import { GROUP_HEX_COLOR } from '../lib/tab-groups';
-import { listProjects, projectOfRepo, scopeToProject, type Project, type ProjectFolder } from '../lib/project-scope';
+import { listProjects, projectOfRepo, scopeToProject, sessionInProject, type Project, type ProjectFolder } from '../lib/project-scope';
 import { parseStoredProjects, type StoredFolder, type StoredProject } from '../lib/project-sync';
 import { ProjectDialog } from './ProjectDialog';
+import { ProjectAddFolderModal } from './ProjectAddFolderModal';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { Overview, modelLabel } from './Overview';
 import { Inbox } from './Inbox';
@@ -216,11 +217,12 @@ const isDraftSessionId = (id: string | null | undefined): boolean =>
   !!id && id.startsWith(DRAFT_SESSION_PREFIX);
 /** localStorage key holding the drafts (session settings, group, text). */
 const DRAFTS_KEY = 'codiby-session-drafts';
-interface StoredDraft { session: SessionInfo; groupId: string; input: string }
+/** `groupId` is '' for a project's draft in a folder no group holds. */
+interface StoredDraft { session: SessionInfo; groupId: string; projectId?: string; input: string }
 function readStoredDrafts(): StoredDraft[] {
   try {
     const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '[]');
-    return Array.isArray(raw) ? raw.filter(d => d && isDraftSessionId(d.session?.id) && d.groupId) : [];
+    return Array.isArray(raw) ? raw.filter(d => d && isDraftSessionId(d.session?.id) && (d.groupId || d.projectId)) : [];
   } catch { return []; }
 }
 const storedDraftIds = () => new Set(readStoredDrafts().map(d => d.session.id));
@@ -463,7 +465,12 @@ export function ChatApp() {
     () => readStoredDrafts().map(d => ({ ...d.session, runtime_status: 'stopped' as const })),
   );
   const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>(
-    () => Object.fromEntries(readStoredDrafts().map(d => [d.session.id, d.groupId])),
+    () => Object.fromEntries(readStoredDrafts().filter(d => d.groupId).map(d => [d.session.id, d.groupId])),
+  );
+  /** Drafts opened from a project's "+": draft id → project id. Their folder
+   *  picker lists that project's folders, and the group follows the folder. */
+  const [draftProjectMap, setDraftProjectMap] = useState<Record<string, string>>(
+    () => Object.fromEntries(readStoredDrafts().filter(d => d.projectId).map(d => [d.session.id, d.projectId!])),
   );
   /** Session ids that existed when the in-flight placeholders were added:
    *  anything newer in the same folder is the create still landing. */
@@ -626,25 +633,8 @@ export function ChatApp() {
     // A draft row in the group on this frame. It lives only in this window:
     // the session is created, on the draft's host, when the first message is
     // sent — until then the user can still change host and provider.
-    const stored = localStorage.getItem('claude-ui-last-provider');
-    const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
-    // The final name, picked here so the row never changes name: the bridge
-    // would call it `Session <count + 1>`, which only it can count.
-    const nextNumber = 1 + Math.max(0, ...[...sessions, ...pendingSessions].map(s => Number(/^Session (\d+)$/.exec(s.name)?.[1] ?? 0)));
-    const name = `Session ${nextNumber}`;
     const initialHost = groupRemoteInfo[groupId]?.remoteId ?? null;
-    const draft: SessionInfo = {
-      ...makePlaceholderSession(cwd, initialHost, name, provider),
-      id: `${DRAFT_SESSION_PREFIX}${crypto.randomUUID()}`,
-      runtime_status: 'stopped',
-      permission_mode: defaultPermissionModeByHost[initialHost || ''] ?? 'default',
-    };
-    setPendingSessions(prev => [...prev, draft]);
-    setPendingGroupMap(prev => ({ ...prev, [draft.id]: groupId }));
-    // Focus it now: the empty-session stage renders from local state alone.
-    setSessionStates(prev => ({ ...prev, [draft.id]: emptyLocalState() }));
-    setSelectedGroupId(null);
-    setActiveId(draft.id);
+    const draft = openDraft(cwd, initialHost, groupId);
     try {
       // The folder decides the default host: a local group can hold a folder
       // that only exists on a remote (vtb lives on ryzen9). Prefer the group's
@@ -669,6 +659,101 @@ export function ChatApp() {
     }
   };
 
+  /** Add a draft row (in `groupId`, if any) and focus it. */
+  const openDraft = (cwd: string, host: string | null, groupId: string | null, projectId?: string): SessionInfo => {
+    const stored = localStorage.getItem('claude-ui-last-provider');
+    const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
+    // The final name, picked here so the row never changes name: the bridge
+    // would call it `Session <count + 1>`, which only it can count.
+    const nextNumber = 1 + Math.max(0, ...[...sessions, ...pendingSessions].map(s => Number(/^Session (\d+)$/.exec(s.name)?.[1] ?? 0)));
+    const draft: SessionInfo = {
+      ...makePlaceholderSession(cwd, host, `Session ${nextNumber}`, provider),
+      id: `${DRAFT_SESSION_PREFIX}${crypto.randomUUID()}`,
+      runtime_status: 'stopped',
+      permission_mode: defaultPermissionModeByHost[host || ''] ?? 'default',
+    };
+    setPendingSessions(prev => [...prev, draft]);
+    if (groupId) setPendingGroupMap(prev => ({ ...prev, [draft.id]: groupId }));
+    if (projectId) setDraftProjectMap(prev => ({ ...prev, [draft.id]: projectId }));
+    // Focus it now: the empty-session stage renders from local state alone.
+    setSessionStates(prev => ({ ...prev, [draft.id]: emptyLocalState() }));
+    setSelectedGroupId(null);
+    setActiveId(draft.id);
+    return draft;
+  };
+
+  /** A project's folders this window can reach: here, or on a known remote. */
+  const reachableProjectFolders = (projectId: string): ProjectFolder[] =>
+    (projectDefs[projectId]?.folders ?? []).filter(f => f.remoteId === null || remotes.some(r => r.id === f.remoteId));
+  const projectFolderKey = (f: ProjectFolder) => `${f.remoteId ?? ''}|${f.path}`;
+  /** The group a session in `path` files into: the folder's own root group,
+   *  else any group on that exact folder. None leaves it ungrouped. */
+  const groupForFolder = (path: string) =>
+    projectGroupIdForRepo(path, sidebarGroups) ?? groupIdForCwd(path, sidebarGroups);
+
+  /** "+" on a project: a draft in the folder the project was last used in.
+   *  Its headline picks among the project's folders; each carries its host. */
+  const handleNewSessionInProject = (projectId: string) => {
+    const project = projectDefs[projectId];
+    if (!project) return;
+    const folders = reachableProjectFolders(projectId);
+    // Nothing to pick from: the project's settings are where folders are added.
+    if (!folders.length) { setProjectDialog(projectId); return; }
+    hideStandaloneEditor();
+    setActiveNavView('sessions');
+    const blank = pendingSessions.find(p => isDraftSessionId(p.id) && draftProjectMap[p.id] === projectId
+      && !launchingDraftIds.has(p.id) && !sessionStates[p.id]?.input.trim());
+    if (blank) { setSelectedGroupId(null); setActiveId(blank.id); return; }
+    const recent = [...sessions]
+      .filter(s => s.status === 'open' && sessionInProject(s, project))
+      .sort((a, b) => b.updated_at - a.updated_at)[0];
+    const folder = (recent && folders.find(f => sessionInProject(recent, { ...project, folders: [f] }))) || folders[0]!;
+    const groupId = groupForFolder(folder.path);
+    if (groupId) setExpandedGroupIds(prev => new Set([...prev, groupId]));
+    openDraft(folder.path, folder.remoteId, groupId, projectId);
+  };
+
+  /** Move a project draft to another of its project's folders (and host). */
+  const changeDraftFolder = (id: string, key: string) => {
+    const projectId = draftProjectMap[id];
+    const folder = projectId ? reachableProjectFolders(projectId).find(f => projectFolderKey(f) === key) : undefined;
+    if (folder) moveDraftToFolder(id, folder);
+  };
+  const moveDraftToFolder = (id: string, folder: ProjectFolder) => {
+    const draft = pendingSessions.find(s => s.id === id);
+    if (!draft) return;
+    // Each host has its own default mode; an untouched draft follows it.
+    const followsDefault = (draft.permission_mode || 'default') === (defaultPermissionModeByHost[draft.remoteId || ''] ?? 'default');
+    patchDraft(id, {
+      cwd: folder.path,
+      remoteId: folder.remoteId,
+      ...(followsDefault ? { permission_mode: defaultPermissionModeByHost[folder.remoteId || ''] ?? 'default' } : {}),
+    });
+    const groupId = groupForFolder(folder.path);
+    setPendingGroupMap(prev => {
+      const next = { ...prev };
+      if (groupId) next[id] = groupId; else delete next[id];
+      return next;
+    });
+    if (groupId) setExpandedGroupIds(prev => new Set([...prev, groupId]));
+    setSwitchHostError(null);
+  };
+
+  /** Draft whose "Add folder to the project…" modal is open. */
+  const [addFolderDraftId, setAddFolderDraftId] = useState<string | null>(null);
+  /** Save `folder` into the draft's project, then point the draft at it. */
+  const addFolderToDraftProject = (draftId: string, folder: ProjectFolder) => {
+    const projectId = draftProjectMap[draftId];
+    const prev = projectId ? storedProjects[projectId] : undefined;
+    const project = projectId ? projectDefs[projectId] : undefined;
+    if (!prev || !project) return;
+    writeStoredProjects({
+      ...storedProjects,
+      [projectId!]: { ...prev, folders: toStoredFolders([...project.folders, folder]), updatedAt: Date.now() },
+    });
+    moveDraftToFolder(draftId, folder);
+  };
+
   const patchDraft = (id: string, patch: Partial<SessionInfo>) => {
     setPendingSessions(prev => prev.map(s => (s.id === id ? { ...s, ...patch } : s)));
   };
@@ -677,6 +762,7 @@ export function ChatApp() {
   const dropDraft = (id: string) => {
     setPendingSessions(prev => prev.filter(s => s.id !== id));
     setPendingGroupMap(prev => { const next = { ...prev }; delete next[id]; return next; });
+    setDraftProjectMap(prev => { if (!(id in prev)) return prev; const next = { ...prev }; delete next[id]; return next; });
     setSessionStates(prev => { const next = { ...prev }; delete next[id]; return next; });
     setLaunchingDraftIds(prev => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
     setActiveId(prev => (prev === id ? null : prev));
@@ -686,8 +772,8 @@ export function ChatApp() {
    *  (host, provider, model, mode, effort) and send it there. */
   const launchDraft = async (id: string, text: string, images?: { media_type: string; data: string }[]) => {
     const draft = pendingSessions.find(s => s.id === id);
-    const groupId = pendingGroupMap[id];
-    if (!draft || !groupId || launchingDraftIds.has(id)) return;
+    const groupId = pendingGroupMap[id] ?? null;
+    if (!draft || (!groupId && !draftProjectMap[id]) || launchingDraftIds.has(id)) return;
     const saved = getState(id);
     setLaunchingDraftIds(prev => new Set(prev).add(id));
     patchDraft(id, { runtime_status: 'starting' });
@@ -970,7 +1056,8 @@ export function ChatApp() {
    *  session boots. Handles group binding and
    *  legacy cwd backfill, plus a primer message. */
   const handleSpawnInGroup = async (
-    groupId: string,
+    /** null: no group (a project's folder no group holds). */
+    groupId: string | null,
     cwd: string,
     provider: string,
     prompt: string,
@@ -988,11 +1075,11 @@ export function ChatApp() {
     const c = clientRef.current;
     if (!c) throw new Error('Not connected. Please retry.');
     // Merged view: the composer also opens on folders that live on a remote.
-    const group = sidebarGroups[groupId];
-    if (!group || !cwd) throw new Error('Choose a project folder.');
+    const group = groupId ? sidebarGroups[groupId] : undefined;
+    if ((groupId && !group) || !cwd) throw new Error('Choose a project folder.');
     // A folder owned by a remote records its own membership; we neither write
     // nor persist a mapping into it.
-    const ownedHere = !isRemoteGroupKey(groupId);
+    const ownedHere = !!groupId && !isRemoteGroupKey(groupId);
     try {
       // Local: the bridge owns the mapping write. Remote: it never reaches our
       // preferences, so the client persists it below.
@@ -1000,19 +1087,19 @@ export function ChatApp() {
         name, provider, model, permissionMode, effort, groupCwd: worktreeOrigin,
         // Nothing to send yet: the provider spawns with the first message.
         deferStart: !prompt && !images?.length,
-        groupId: remoteId || !ownedHere ? undefined : groupId,
-        remoteId: remoteId ?? remoteOfGroupKey(groupId),
+        groupId: remoteId || !ownedHere ? undefined : groupId!,
+        remoteId: remoteId ?? (groupId ? remoteOfGroupKey(groupId) : null),
       });
-      const newMap = ownedHere ? { ...tabGroupMap, [session.id]: groupId } : tabGroupMap;
+      const newMap = ownedHere ? { ...tabGroupMap, [session.id]: groupId! } : tabGroupMap;
       if (ownedHere) setTabGroupMap(newMap);
       let nextGroups = tabGroups;
-      if (ownedHere && !group.cwd) {
+      if (ownedHere && group && !group.cwd) {
         // Prefer the parent repo over the worktree path so future opens
         // resolve to the main repo, matching handleWorktreeCreatedForGroup.
-        nextGroups = { ...tabGroups, [groupId]: { ...group, cwd: worktreeOrigin || cwd } };
+        nextGroups = { ...tabGroups, [groupId!]: { ...group, cwd: worktreeOrigin || cwd } };
         setTabGroups(nextGroups);
       }
-      setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
+      if (groupId) setExpandedGroupIds(prev => { const next = new Set(prev); next.add(groupId); return next; });
       c.subscribe(session.id);
       subscribedRef.current.add(session.id);
       if (placeholderId) {
@@ -1040,7 +1127,7 @@ export function ChatApp() {
       }
       persistPrefs({
         ...(remoteId && ownedHere ? { tabGroupMap: newMap } : {}),
-        ...(group.cwd || !ownedHere ? {} : { tabGroups: nextGroups }),
+        ...(!ownedHere || group?.cwd ? {} : { tabGroups: nextGroups }),
       });
       if (prompt || images?.length) c.sendMessage(session.id, prompt || ' ', images);
     } catch (err) {
@@ -2745,12 +2832,15 @@ export function ChatApp() {
     // Until the restored text is in state, saving would write it back empty.
     if (pendingSessions.some(p => isDraftSessionId(p.id) && !sessionStates[p.id])) return;
     const drafts: StoredDraft[] = pendingSessions
-      .filter(p => isDraftSessionId(p.id) && !launchingDraftIds.has(p.id) && pendingGroupMap[p.id])
-      .map(p => ({ session: p, groupId: pendingGroupMap[p.id]!, input: sessionStates[p.id]?.input ?? '' }));
+      .filter(p => isDraftSessionId(p.id) && !launchingDraftIds.has(p.id) && (pendingGroupMap[p.id] || draftProjectMap[p.id]))
+      .map(p => ({
+        session: p, groupId: pendingGroupMap[p.id] ?? '', input: sessionStates[p.id]?.input ?? '',
+        ...(draftProjectMap[p.id] ? { projectId: draftProjectMap[p.id] } : {}),
+      }));
     const json = JSON.stringify(drafts);
     if (localStorage.getItem(DRAFTS_KEY) === json) return;
     if (drafts.length) localStorage.setItem(DRAFTS_KEY, json); else localStorage.removeItem(DRAFTS_KEY);
-  }, [pendingSessions, pendingGroupMap, launchingDraftIds, sessionStates]);
+  }, [pendingSessions, pendingGroupMap, draftProjectMap, launchingDraftIds, sessionStates]);
 
 
   // Sync active session to URL hash. The hash is what lets a webview reload
@@ -7495,6 +7585,7 @@ export function ChatApp() {
               onRequestDeleteGroup={handleRequestDeleteGroup}
               onArchiveGroup={handleArchiveGroup}
               onNewSessionInGroup={handleNewSessionInGroup}
+              onNewSessionInProject={handleNewSessionInProject}
               onNewSessionFromSession={handleNewSessionFromSession}
               onBranchSession={handleBranchSession}
               collapsed={tabsCollapsed}
@@ -8223,6 +8314,26 @@ export function ChatApp() {
                       host={activeStageSession?.remoteId ?? null}
                       onHostChange={(remoteId) => { void switchEmptySessionHost(activeId, remoteId); }}
                       hostError={switchHostError?.id === activeId ? switchHostError.message : null}
+                      {...(() => {
+                        // A project's draft: its folders replace the host picker.
+                        const project = activeId ? projectDefs[draftProjectMap[activeId] ?? ''] : undefined;
+                        if (!project || !activeStageSession) return {};
+                        return {
+                          project: { name: project.name, color: project.color ? GROUP_HEX_COLOR[project.color] : undefined },
+                          folders: reachableProjectFolders(project.id).map(f => {
+                            const remote = f.remoteId ? remotes.find(r => r.id === f.remoteId) : undefined;
+                            return {
+                              key: projectFolderKey(f),
+                              name: f.path.split(/[\\/]/).filter(Boolean).pop() || f.path,
+                              hostName: remote ? remote.name || remote.id : undefined,
+                              hostColor: remote?.color ?? undefined,
+                            };
+                          }),
+                          folderKey: projectFolderKey({ path: activeStageSession.cwd, remoteId: activeStageSession.remoteId ?? null }),
+                          onFolderChange: (key: string) => changeDraftFolder(activeId!, key),
+                          onAddFolder: () => setAddFolderDraftId(activeId),
+                        };
+                      })()}
                       branch={gitBranch}
                       getThreadEl={() => scrollRef.current}
                       widthClass={chatWidthClass}
@@ -9652,6 +9763,25 @@ export function ChatApp() {
           </div>
         )}
       </div>
+      {addFolderDraftId && (() => {
+        const draft = pendingSessions.find(s => s.id === addFolderDraftId);
+        const project = projectDefs[draftProjectMap[addFolderDraftId] ?? ''];
+        if (!draft || !project) return null;
+        return (
+          <ProjectAddFolderModal
+            project={{ name: project.name, color: project.color ? GROUP_HEX_COLOR[project.color] : undefined }}
+            hosts={[{ id: null, name: 'Local', color: '#71717a' }, ...remotes.map(r => ({ id: r.id, name: r.name || r.id, color: r.color ?? undefined }))]}
+            initialHost={draft.remoteId ?? null}
+            existing={project.folders}
+            client={client}
+            onClose={() => setAddFolderDraftId(null)}
+            onAdd={(folder) => {
+              addFolderToDraftProject(addFolderDraftId, folder);
+              setAddFolderDraftId(null);
+            }}
+          />
+        );
+      })()}
       {projectDialog !== null && (() => {
         const editing = projectDialog ? projectDefs[projectDialog] : undefined;
         return (

@@ -102,6 +102,8 @@ interface Props {
   /** Spawn a session immediately in the group's saved cwd and add it to the
    *  group — no composer step. */
   onNewSessionInGroup?: (groupId: string) => void;
+  /** "+" on a project section: a new session in one of its folders. */
+  onNewSessionInProject?: (projectId: string) => void;
   /** Start a session in the same folder and host as `sessionId`: `sibling`
    *  files it beside that one, `pair` groups the two in a new subgroup of
    *  its folder. */
@@ -875,7 +877,7 @@ export const TabBar = memo(function TabBar(props: Props) {
   const { sessions, closedSessions, activeSessionId, sessionStatuses, sessionStreaming, sessionInterrupted, sessionHasPermission, sessionActivity, sessionLastMessageAt, sessionLastSentAt,
     pinnedSessionIds, onTogglePin, onKeepSession,
     onSelect, onNew, onClose, onReopen, onRename, onReorder,
-    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionFromSession, onBranchSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
+    tabGroups, tabGroupMap, groupRemoteInfo, expandedGroupIds, sessionTurnComplete, sessionAwaitingReply, onCreateGroup, onGroupTabs, onAddToGroup, onToggleGroup, onRenameGroup, onChangeGroupColor, onChangeGroupIcon, onNewSessionInGroup, onNewSessionInProject, onNewSessionFromSession, onBranchSession, onArchiveSession, onRequestDelete, onQuickDelete, onRequestDeleteGroup, onArchiveGroup,
     onCreateSubgroup, onEditGroupFolder, onMoveGroup, onAutoGroupSessions, onCreateFreeGroup,
     accentPalette, getSessionAccent, onPickSessionAccent,
     collapsed, onToggleCollapsed,
@@ -1274,13 +1276,15 @@ export const TabBar = memo(function TabBar(props: Props) {
     if (!nodes.length && (normalizedSessionSearch || sec.key === '__none__')) return null;
     const open = !!normalizedSessionSearch || !collapsedProjects.has(sec.key);
     const hex = sec.color ? GROUP_HEX_COLOR[sec.color] : undefined;
+    const canAddToProject = !!onNewSessionInProject && sec.key !== '__none__';
     return (
       <div key={`proj-${sec.key}`} className="flex flex-col gap-px mt-2 first:mt-0">
+        <div className="group/proj relative">
         <button
           type="button"
           onClick={() => toggleProjectSection(sec.key)}
           aria-expanded={open}
-          className="group flex items-center gap-2 h-[26px] px-2 rounded-[6px] text-[11.5px] font-medium uppercase tracking-[0.04em] text-zinc-500 hover:text-zinc-300"
+          className="w-full flex items-center gap-2 h-[26px] px-2 rounded-[6px] text-[11.5px] font-medium uppercase tracking-[0.04em] text-zinc-500 hover:text-zinc-300 group-hover/proj:text-zinc-300"
         >
           {sec.key === '__none__'
             ? <span className="w-[14px] h-[14px] rounded-[4px] border border-dashed border-zinc-600 shrink-0" />
@@ -1293,9 +1297,25 @@ export const TabBar = memo(function TabBar(props: Props) {
               </span>
             )}
           <span className="flex-1 text-left truncate">{sec.name}</span>
-          <span className="tabular-nums text-zinc-600 normal-case tracking-normal">{secSessions.length}</span>
+          {/* The count gives way to "+" on hover, as on a folder. */}
+          <span className={`tabular-nums text-zinc-600 normal-case tracking-normal ${canAddToProject ? 'group-hover/proj:invisible' : ''}`}>{secSessions.length}</span>
           <ChevronRight size={12} strokeWidth={1.8} className={`shrink-0 text-zinc-600 transition-transform ${open ? 'rotate-90' : ''}`} />
         </button>
+        {canAddToProject && (
+          <span title="New session in project" className="absolute right-[26px] top-1/2 -translate-y-1/2 hidden group-hover/proj:flex">
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="New session in project"
+              className="w-4 h-4 min-w-0 p-0 flex items-center justify-center rounded-sm leading-none text-zinc-600 hover:text-zinc-300 hover:bg-surface-light"
+              onPress={() => onNewSessionInProject!(sec.key)}
+            >
+              <Plus size={12} />
+            </Button>
+          </span>
+        )}
+        </div>
         {/* Nested like a folder's contents: same indent and hairline rail. */}
         {open && (
           <div className="tree-rail flex flex-col gap-px pl-2.5 ml-[15px]">

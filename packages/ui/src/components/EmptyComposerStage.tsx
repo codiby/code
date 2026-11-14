@@ -19,7 +19,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectPopover, SelectIndicator,
   ListBox, ListBoxItem,
 } from '@heroui/react';
-import { Bot, FolderClosed, GitBranch } from 'lucide-react';
+import { Bot, FolderClosed, GitBranch, Plus } from 'lucide-react';
 
 interface Props {
   /** Session this stage is bound to. A change re-lays out without animating —
@@ -46,6 +46,15 @@ interface Props {
   onHostChange?: (remoteId: string | null) => void;
   /** Why the last host switch didn't happen (folder missing there, …). */
   hostError?: string | null;
+  /** A project's "+": the headline names the project, and the folder becomes
+   *  a picker of that project's folders only. The folder carries its host, so
+   *  the host picker is left out. */
+  project?: { name: string; color?: string };
+  folders?: { key: string; name: string; hostName?: string; hostColor?: string }[];
+  folderKey?: string;
+  onFolderChange?: (key: string) => void;
+  /** With this, the folder list ends in "Add folder to the project…". */
+  onAddFolder?: () => void;
   /** Current git branch of the session's cwd, when known. */
   branch?: string | null;
   /** Chat scroll container — faded up as the composer docks so the first
@@ -58,6 +67,9 @@ interface Props {
   children: ReactNode;
 }
 
+/** The folder list's last row: opens the add-folder modal, never selected. */
+const ADD_FOLDER_KEY = '__add_folder__';
+
 /** Select keys can't be null; this stands for "this machine". */
 const LOCAL_KEY = '__local__';
 
@@ -67,6 +79,7 @@ const prefersReducedMotion = () =>
 export function EmptyComposerStage({
   sessionId, centered, folderName, providerLabel, provider, providerOptions, onProviderChange,
   switchingProvider, hosts, host = null, onHostChange, hostError, branch, getThreadEl,
+  project, folders, folderKey, onFolderChange, onAddFolder,
   widthClass = 'max-w-4xl', children,
 }: Props) {
   const stackRef = useRef<HTMLDivElement>(null);
@@ -171,7 +184,18 @@ export function EmptyComposerStage({
         <div ref={headRef} className="overflow-hidden">
           <div className={`${widthClass} mx-auto px-6 pb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[22px] text-zinc-400 font-light`}>
             <span>New session in</span>
-            {hosts && onHostChange && (() => {
+            {project && (
+              <span className="inline-flex items-center gap-1.5 text-zinc-100">
+                <span
+                  className="w-[18px] h-[18px] grid place-items-center rounded-[5px] font-mono text-[11px] font-semibold shrink-0"
+                  style={{ background: project.color ?? 'var(--color-surface-lighter)', color: project.color ? '#0f1012' : 'var(--color-zinc-300)' }}
+                >
+                  {project.name.trim().charAt(0).toUpperCase()}
+                </span>
+                <span className="font-semibold">{project.name}</span>
+              </span>
+            )}
+            {!folders && hosts && onHostChange && (() => {
               const current = hosts.find(h => h.id === host);
               const color = current?.color || (host ? '#a78bfa' : '#71717a');
               return (
@@ -208,10 +232,62 @@ export function EmptyComposerStage({
                 </Select>
               );
             })()}
-            <span className="inline-flex items-center gap-1.5 text-zinc-100" title={folderName}>
-              <FolderClosed size={18} className="text-zinc-500" />
-              <span className="font-semibold">{folderName}</span>
-            </span>
+            {folders && onFolderChange ? (
+              <Select
+                aria-label="Folder"
+                selectedKey={folderKey ?? null}
+                isDisabled={switchingProvider}
+                onSelectionChange={(key) => {
+                  if (key === ADD_FOLDER_KEY) { onAddFolder?.(); return; }
+                  if (key != null && key !== folderKey) onFolderChange(String(key));
+                }}
+              >
+                <SelectTrigger className="min-h-0 h-auto py-0 px-1.5 bg-transparent border-0 shadow-none hover:bg-white/5 data-[hovered]:bg-white/5 rounded-md text-[22px] text-zinc-100">
+                  <FolderClosed size={18} className="text-zinc-500 mr-1.5 shrink-0" />
+                  {/* Just the name: the item's icon and host chip are for the list. */}
+                  <SelectValue className="font-semibold text-zinc-100">{({ selectedText }) => selectedText || folderName}</SelectValue>
+                  <SelectIndicator className="!static size-4 text-zinc-600 ml-1 shrink-0" />
+                </SelectTrigger>
+                <SelectPopover>
+                  <ListBox>
+                    {folders.map(f => (
+                      <ListBoxItem key={f.key} id={f.key} textValue={f.name}>
+                        <span className="flex w-full items-center gap-2 text-sm">
+                          <FolderClosed size={14} className="text-zinc-500 shrink-0" />
+                          <span className="flex-1 truncate">{f.name}</span>
+                          {f.hostName && (
+                            <span
+                              className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded border leading-none shrink-0"
+                              style={{ color: f.hostColor || '#a78bfa', background: `${f.hostColor || '#a78bfa'}14`, borderColor: `${f.hostColor || '#a78bfa'}40` }}
+                            >
+                              {f.hostName}
+                            </span>
+                          )}
+                        </span>
+                      </ListBoxItem>
+                    ))}
+                    {onAddFolder && (
+                      <ListBoxItem
+                        key={ADD_FOLDER_KEY}
+                        id={ADD_FOLDER_KEY}
+                        textValue="Add folder to the project"
+                        className="mt-1 relative before:absolute before:-top-0.5 before:left-1 before:right-1 before:h-px before:bg-border"
+                      >
+                        <span className="flex w-full items-center gap-2 text-sm text-zinc-400">
+                          <Plus size={14} className="text-zinc-500 shrink-0" />
+                          Add folder to the project…
+                        </span>
+                      </ListBoxItem>
+                    )}
+                  </ListBox>
+                </SelectPopover>
+              </Select>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-zinc-100" title={folderName}>
+                <FolderClosed size={18} className="text-zinc-500" />
+                <span className="font-semibold">{folderName}</span>
+              </span>
+            )}
             <span>with</span>
             {provider && providerOptions && onProviderChange ? (
               <Select
