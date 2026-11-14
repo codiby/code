@@ -209,6 +209,21 @@ const UNDO_DELETE_WINDOW_MS = 7000;
 const PENDING_SESSION_PREFIX = 'pending:';
 export const isPendingSessionId = (id: string | null | undefined): boolean =>
   !!id && id.startsWith(PENDING_SESSION_PREFIX);
+/** A group's "+" before its first message: a pending row that stays, focusable
+ *  and editable, until the user sends (that creates the session) or leaves it. */
+const DRAFT_SESSION_PREFIX = `${PENDING_SESSION_PREFIX}draft:`;
+const isDraftSessionId = (id: string | null | undefined): boolean =>
+  !!id && id.startsWith(DRAFT_SESSION_PREFIX);
+/** localStorage key holding the drafts (session settings, group, text). */
+const DRAFTS_KEY = 'codiby-session-drafts';
+interface StoredDraft { session: SessionInfo; groupId: string; input: string }
+function readStoredDrafts(): StoredDraft[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter(d => d && isDraftSessionId(d.session?.id) && d.groupId) : [];
+  } catch { return []; }
+}
+const storedDraftIds = () => new Set(readStoredDrafts().map(d => d.session.id));
 
 /** Stand-in tab shown while `POST /sessions` is in flight. Shaped like a real
  *  `SessionInfo` so the sidebar renders it with the ordinary "starting" dot. */
@@ -443,11 +458,20 @@ export function ChatApp() {
   /** Optimistic sidebar rows for worktree sessions whose POST is in flight.
    *  Merged into the list handed to the TabBar and dropped in the
    *  creator's `finally` — a failed create leaves no ghost behind. */
-  const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>([]);
-  const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>({});
+  // Drafts saved in this browser come back with the page.
+  const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>(
+    () => readStoredDrafts().map(d => ({ ...d.session, runtime_status: 'stopped' as const })),
+  );
+  const [pendingGroupMap, setPendingGroupMap] = useState<Record<string, string>>(
+    () => Object.fromEntries(readStoredDrafts().map(d => [d.session.id, d.groupId])),
+  );
   /** Session ids that existed when the in-flight placeholders were added:
    *  anything newer in the same folder is the create still landing. */
   const knownBeforePendingRef = useRef<Set<string>>(new Set());
+  /** Draft sessions (a group's "+") whose first message is creating the real
+   *  session right now. Every other draft is UI only: nothing exists on any
+   *  host until the user sends. */
+  const [launchingDraftIds, setLaunchingDraftIds] = useState<Set<string>>(() => new Set());
   /** Status changes made here and not yet confirmed by the bridge. A session
    *  list broadcast before the PATCH lands (stopping the provider broadcasts
    *  one) still says `open`, which put a closed tab back for a beat and then
@@ -593,54 +617,119 @@ export function ChatApp() {
     const cwd = group.cwd || '';
     const showComposer = () => { setSelectedGroupId(groupId); setActiveId(null); };
     if (!cwd || !clientRef.current) { showComposer(); return; }
+    // One blank draft per group is enough: "+" again goes back to it.
+    const blank = pendingSessions.find(p => isDraftSessionId(p.id) && pendingGroupMap[p.id] === groupId
+      && !launchingDraftIds.has(p.id) && !sessionStates[p.id]?.input.trim());
+    if (blank) { setSelectedGroupId(null); setActiveId(blank.id); return; }
     if (creatingInGroupRef.current) return;
     creatingInGroupRef.current = true;
-    // A row in the group on this frame; the real one replaces it once the
-    // bridge answers. Finding the host and booting the session take a while.
+    // A draft row in the group on this frame. It lives only in this window:
+    // the session is created, on the draft's host, when the first message is
+    // sent — until then the user can still change host and provider.
     const stored = localStorage.getItem('claude-ui-last-provider');
     const provider = stored === 'codex' || (stored === 'opencode' && opencodeInfo?.available) ? stored : 'claude';
     // The final name, picked here so the row never changes name: the bridge
     // would call it `Session <count + 1>`, which only it can count.
-    const nextNumber = 1 + Math.max(0, ...sessions.map(s => Number(/^Session (\d+)$/.exec(s.name)?.[1] ?? 0)));
+    const nextNumber = 1 + Math.max(0, ...[...sessions, ...pendingSessions].map(s => Number(/^Session (\d+)$/.exec(s.name)?.[1] ?? 0)));
     const name = `Session ${nextNumber}`;
-    const placeholder = makePlaceholderSession(cwd, groupRemoteInfo[groupId]?.remoteId ?? null, name, provider);
-    knownBeforePendingRef.current = new Set(sessions.map(s => s.id));
-    setPendingSessions(prev => [...prev, placeholder]);
-    setPendingGroupMap(prev => ({ ...prev, [placeholder.id]: groupId }));
+    const initialHost = groupRemoteInfo[groupId]?.remoteId ?? null;
+    const draft: SessionInfo = {
+      ...makePlaceholderSession(cwd, initialHost, name, provider),
+      id: `${DRAFT_SESSION_PREFIX}${crypto.randomUUID()}`,
+      runtime_status: 'stopped',
+      permission_mode: defaultPermissionModeByHost[initialHost || ''] ?? 'default',
+    };
+    setPendingSessions(prev => [...prev, draft]);
+    setPendingGroupMap(prev => ({ ...prev, [draft.id]: groupId }));
     // Focus it now: the empty-session stage renders from local state alone.
-    setSessionStates(prev => ({ ...prev, [placeholder.id]: emptyLocalState() }));
+    setSessionStates(prev => ({ ...prev, [draft.id]: emptyLocalState() }));
     setSelectedGroupId(null);
-    setActiveId(placeholder.id);
+    setActiveId(draft.id);
     try {
-      // The folder decides the host: a local group can hold a folder that
-      // only exists on a remote (vtb lives on ryzen9). Prefer the group's own
-      // host, then hosts its sessions in that folder run on, then the rest.
+      // The folder decides the default host: a local group can hold a folder
+      // that only exists on a remote (vtb lives on ryzen9). Prefer the group's
+      // own host, then hosts its sessions in that folder run on, then the rest.
       const members = sessions.filter(s => sidebarGroupMap[s.id] === groupId && s.cwd === cwd);
       const remoteId = await hostWithFolder(cwd, [
-        groupRemoteInfo[groupId]?.remoteId ?? null,
+        initialHost,
         ...members.map(s => s.remoteId ?? null),
         null,
         ...remotes.map(r => r.id),
       ]);
-      if (remoteId === undefined) { showComposer(); return; }
-      await handleSpawnInGroup(
-        groupId, cwd, provider, '', undefined,
-        defaultPermissionModeByHost[remoteId || ''] ?? 'default',
-        undefined, remoteId, undefined, undefined, name, placeholder.id,
-      );
-    } catch {
-      showComposer();
+      if (remoteId === undefined) {
+        dropDraft(draft.id);
+        showComposer();
+        return;
+      }
+      if (remoteId !== initialHost) {
+        patchDraft(draft.id, { remoteId, permission_mode: defaultPermissionModeByHost[remoteId || ''] ?? 'default' });
+      }
     } finally {
       creatingInGroupRef.current = false;
-      setPendingSessions(prev => prev.filter(s => s.id !== placeholder.id));
-      setPendingGroupMap(prev => {
-        const next = { ...prev };
-        delete next[placeholder.id];
-        return next;
-      });
-      setSessionStates(prev => { const next = { ...prev }; delete next[placeholder.id]; return next; });
-      // A failed create leaves focus on nothing rather than on a ghost.
-      setActiveId(prev => (prev === placeholder.id ? null : prev));
+    }
+  };
+
+  const patchDraft = (id: string, patch: Partial<SessionInfo>) => {
+    setPendingSessions(prev => prev.map(s => (s.id === id ? { ...s, ...patch } : s)));
+  };
+
+  /** Forget a draft. Nothing exists on any host, so this is all of it. */
+  const dropDraft = (id: string) => {
+    setPendingSessions(prev => prev.filter(s => s.id !== id));
+    setPendingGroupMap(prev => { const next = { ...prev }; delete next[id]; return next; });
+    setSessionStates(prev => { const next = { ...prev }; delete next[id]; return next; });
+    setLaunchingDraftIds(prev => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
+    setActiveId(prev => (prev === id ? null : prev));
+  };
+
+  /** First message of a draft: create the session where the draft points
+   *  (host, provider, model, mode, effort) and send it there. */
+  const launchDraft = async (id: string, text: string, images?: { media_type: string; data: string }[]) => {
+    const draft = pendingSessions.find(s => s.id === id);
+    const groupId = pendingGroupMap[id];
+    if (!draft || !groupId || launchingDraftIds.has(id)) return;
+    const saved = getState(id);
+    setLaunchingDraftIds(prev => new Set(prev).add(id));
+    patchDraft(id, { runtime_status: 'starting' });
+    knownBeforePendingRef.current = new Set(sessions.map(s => s.id));
+    // Shown at once, like any send: the message lands in the thread and the
+    // turn reads "Working" while the host creates the session. Both carry over
+    // to the real session when it arrives.
+    const userMsgId = crypto.randomUUID();
+    updateLocalState(id, s => ({
+      ...s,
+      input: '', pastedImages: [], attachedFiles: [],
+      messages: [...s.messages, {
+        id: userMsgId, role: 'user', content: text, timestamp: Date.now(),
+        images: images?.map(img => ({ media_type: img.media_type, data: img.data })),
+      }],
+      isStreaming: true,
+      wasInterrupted: false,
+      partialText: '',
+      partialThinking: '',
+    }));
+    try {
+      await handleSpawnInGroup(
+        groupId, draft.cwd, draft.provider || 'claude', text, draft.model || undefined,
+        draft.permission_mode || 'default', undefined, draft.remoteId ?? null, images,
+        draft.effort || undefined, draft.name, id,
+      );
+      dropDraft(id);
+    } catch (err) {
+      // Nothing was created: give the message back so it can be sent again.
+      setLaunchingDraftIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      patchDraft(id, { runtime_status: 'stopped' });
+      updateLocalState(id, s => ({
+        ...s,
+        input: saved.input,
+        pastedImages: saved.pastedImages,
+        attachedFiles: saved.attachedFiles,
+        isStreaming: false,
+        messages: [...s.messages.filter(m => m.id !== userMsgId), {
+          id: crypto.randomUUID(), role: 'system', timestamp: Date.now(), afterSeq: lastSeq(s.messages),
+          content: `Could not create the session: ${err instanceof Error ? err.message : String(err)}`,
+        }],
+      }));
     }
   };
 
@@ -933,10 +1022,16 @@ export function ChatApp() {
         // stage stays up through the swap instead of waiting a frame for
         // `session_state` (a new session has no history to wait for).
         setSessionStates(prev => {
-          const draft = prev[placeholderId]?.input ?? '';
+          const from = prev[placeholderId];
+          const draft = from?.input ?? '';
           if (draft) clientRef.current?.updateUIState(session.id, { input: draft });
           const base = prev[session.id] || emptyLocalState();
-          return { ...prev, [session.id]: draft ? { ...base, input: draft } : base };
+          // A draft's first message is already on screen with its "Working":
+          // the real session picks them up instead of starting blank.
+          const sent = prompt || images?.length
+            ? { messages: from?.messages ?? base.messages, isStreaming: true }
+            : {};
+          return { ...prev, [session.id]: { ...base, ...(draft ? { input: draft } : {}), ...sent } };
         });
         setActiveId(prev => (prev === placeholderId ? session.id : prev));
       } else {
@@ -1811,6 +1906,8 @@ export function ChatApp() {
             if (prev) return prev;
             const hashId = window.location.hash.slice(1);
             if (!hashId) return null;
+            // A draft isn't on any host; it's back from localStorage.
+            if (isDraftSessionId(hashId)) return storedDraftIds().has(hashId) ? hashId : null;
             const openList = list.filter(s => s.status === 'open');
             return openList.some(s => s.id === hashId) ? hashId : null;
           });
@@ -2614,6 +2711,47 @@ export function ChatApp() {
     if (clientRef.current && liteSubscribedRef.current.delete(activeId)) clientRef.current.hydrate(activeId);
   }, [activeId, client]);
 
+  // Leaving a draft with nothing typed throws it away: it was never more than
+  // a composer, and an empty row per "+" would pile up in the group.
+  const draftLeftRef = useRef<string | null>(activeId);
+  useEffect(() => {
+    const prev = draftLeftRef.current;
+    draftLeftRef.current = activeId;
+    if (!prev || prev === activeId || !isDraftSessionId(prev) || launchingDraftIds.has(prev)) return;
+    const st = sessionStates[prev];
+    if (st && (st.input.trim() || st.pastedImages.length || st.attachedFiles?.length)) return;
+    dropDraft(prev);
+  }, [activeId]);
+
+  // Drafts live in this browser only, so they survive a reload without any
+  // host knowing about them. Restored once; saved on every change to a
+  // draft or its text. One being created is left out: it's on its way to the
+  // host, and a reload mid-create would otherwise send it twice.
+  const draftsRestoredRef = useRef(false);
+  useEffect(() => {
+    if (draftsRestoredRef.current) return;
+    draftsRestoredRef.current = true;
+    // The rows themselves came back with the state's initial value; this
+    // gives each its text.
+    const saved = readStoredDrafts();
+    if (!saved.length) return;
+    setSessionStates(prev => ({
+      ...prev,
+      ...Object.fromEntries(saved.map(d => [d.session.id, { ...emptyLocalState(), input: d.input || '' }])),
+    }));
+  }, []);
+  useEffect(() => {
+    if (!draftsRestoredRef.current) return;
+    // Until the restored text is in state, saving would write it back empty.
+    if (pendingSessions.some(p => isDraftSessionId(p.id) && !sessionStates[p.id])) return;
+    const drafts: StoredDraft[] = pendingSessions
+      .filter(p => isDraftSessionId(p.id) && !launchingDraftIds.has(p.id) && pendingGroupMap[p.id])
+      .map(p => ({ session: p, groupId: pendingGroupMap[p.id]!, input: sessionStates[p.id]?.input ?? '' }));
+    const json = JSON.stringify(drafts);
+    if (localStorage.getItem(DRAFTS_KEY) === json) return;
+    if (drafts.length) localStorage.setItem(DRAFTS_KEY, json); else localStorage.removeItem(DRAFTS_KEY);
+  }, [pendingSessions, pendingGroupMap, launchingDraftIds, sessionStates]);
+
 
   // Sync active session to URL hash. The hash is what lets a webview reload
   // restore the previously-selected session, so we must NOT strip it on
@@ -3089,7 +3227,15 @@ export function ChatApp() {
 
   const handleSelectSession = async (id: string) => {
     // Optimistic sidebar rows have no server session behind them yet; the
-    // creator focuses the real one as soon as the POST lands.
+    // creator focuses the real one as soon as the POST lands. A draft has
+    // nothing behind it either, but it's a composer the user can go back to.
+    if (isDraftSessionId(id)) {
+      hideStandaloneEditor();
+      setActiveNavView('sessions');
+      setSelectedGroupId(null);
+      setActiveId(id);
+      return;
+    }
     if (isPendingSessionId(id)) return;
     const prevId = activeId;
     setActiveId(id);
@@ -3196,6 +3342,7 @@ export function ChatApp() {
   };
 
   const handleCloseTab = (id: string) => {
+    if (isDraftSessionId(id) && !launchingDraftIds.has(id)) { dropDraft(id); return; }
     if (isPendingSessionId(id)) return;
     const state = getState(id);
     const hasRunningProcesses = state.isStreaming ||
@@ -3375,25 +3522,68 @@ export function ChatApp() {
    *  group, host and tab slot, then purges the empty original — nothing was
    *  said in it, so there's nothing to keep. */
   const [switchingProviderId, setSwitchingProviderId] = useState<string | null>(null);
-  const switchEmptySessionProvider = async (targetId: string, provider: string) => {
+  const [switchHostError, setSwitchHostError] = useState<{ id: string; message: string } | null>(null);
+  const switchEmptySessionProvider = (targetId: string, provider: string) => {
+    if (isDraftSessionId(targetId)) {
+      // A draft is only a picture of the session to create: change the picture.
+      localStorage.setItem('claude-ui-last-provider', provider);
+      patchDraft(targetId, { provider, model: null, effort: null });
+      return;
+    }
+    void recreateEmptySession(targetId, { provider });
+  };
+  /** Points an empty session at another machine. The folder has to exist
+   *  there — the same path on another host is usually a different checkout or
+   *  none. A draft just records the pick; a real empty session is recreated. */
+  const switchEmptySessionHost = async (targetId: string, remoteId: string | null) => {
+    const isDraft = isDraftSessionId(targetId);
+    const old = isDraft ? pendingSessions.find(s => s.id === targetId) : sessions.find(s => s.id === targetId);
+    if (!old || (old.remoteId ?? null) === remoteId || switchingProviderId) return;
+    setSwitchHostError(null);
+    const cwd = getState(targetId).initInfo?.cwd || old.cwd;
+    setSwitchingProviderId(targetId);
+    const found = await hostWithFolder(cwd, [remoteId]);
+    setSwitchingProviderId(null);
+    if (found === undefined) {
+      const host = remoteId ? remotes.find(r => r.id === remoteId)?.name || 'that host' : 'this machine';
+      setSwitchHostError({ id: targetId, message: `${cwd} doesn't exist on ${host}` });
+      return;
+    }
+    if (isDraft) {
+      // Each host has its own default mode; an untouched draft follows it.
+      const followsDefault = (old.permission_mode || 'default') === (defaultPermissionModeByHost[old.remoteId || ''] ?? 'default');
+      patchDraft(targetId, {
+        remoteId,
+        ...(followsDefault ? { permission_mode: defaultPermissionModeByHost[remoteId || ''] ?? 'default' } : {}),
+      });
+      return;
+    }
+    await recreateEmptySession(targetId, { remoteId });
+  };
+  const recreateEmptySession = async (targetId: string, change: { provider?: string; remoteId?: string | null }) => {
     const c = clientRef.current;
     const old = sessions.find(s => s.id === targetId);
-    if (!c || !old || (old.provider || 'claude') === provider || switchingProviderId) return;
+    if (!c || !old || switchingProviderId) return;
+    const provider = change.provider ?? (old.provider || 'claude');
+    const groupId = sidebarGroupMap[targetId];
+    const remoteId = change.remoteId !== undefined
+      ? change.remoteId
+      : old.remoteId ?? (groupId ? remoteOfGroupKey(groupId) : null);
+    if (provider === (old.provider || 'claude') && remoteId === (old.remoteId ?? null)) return;
     if (hasConversation(sessionStates[targetId]?.messages ?? [])) return;
     setSwitchingProviderId(targetId);
     try {
-      const groupId = sidebarGroupMap[targetId];
       const ownedHere = !!groupId && !isRemoteGroupKey(groupId);
-      const remoteId = old.remoteId ?? (groupId ? remoteOfGroupKey(groupId) : null);
       const fresh = await c.createSession(getState(targetId).initInfo?.cwd || old.cwd, {
         name: old.name,
         provider,
-        permissionMode: old.permission_mode || 'default',
+        // Each host has its own default mode; a move keeps the user's pick.
+        permissionMode: old.permission_mode || defaultPermissionModeByHost[remoteId || ''] || 'default',
         groupId: ownedHere && !remoteId ? groupId : undefined,
         remoteId,
         deferStart: true,
       });
-      localStorage.setItem('claude-ui-last-provider', provider);
+      if (change.provider) localStorage.setItem('claude-ui-last-provider', provider);
       setTabOrder(prev => {
         const idx = prev.indexOf(targetId);
         const next = idx === -1 ? [...prev, fresh.id] : prev.map(x => (x === targetId ? fresh.id : x));
@@ -3413,7 +3603,10 @@ export function ChatApp() {
       subscribedRef.current.add(fresh.id);
       await handlePurgeSession(targetId, { keepFocus: true });
     } catch (err) {
-      console.error('[ChatApp] Provider switch failed:', err);
+      console.error('[ChatApp] Empty session switch failed:', err);
+      if (change.remoteId !== undefined) {
+        setSwitchHostError({ id: targetId, message: err instanceof Error ? err.message : String(err) });
+      }
     } finally {
       setSwitchingProviderId(null);
     }
@@ -3778,7 +3971,7 @@ export function ChatApp() {
 
   const handleSend = (sid: string | null = activeId) => {
     // The draft stays put and moves to the real session once it exists.
-    if (!sid || !clientRef.current || isPendingSessionId(sid)) return;
+    if (!sid || !clientRef.current || (isPendingSessionId(sid) && !isDraftSessionId(sid))) return;
     const state = getState(sid);
     let text = state.input.trim();
     // Swap any file-backed code blocks (large pastes) for their reference badge:
@@ -3796,6 +3989,14 @@ export function ChatApp() {
     }
     const sessionPastedImages = state.pastedImages;
     if (!text && sessionPastedImages.length === 0) return;
+
+    // A group's draft: this message is what creates the session.
+    if (isDraftSessionId(sid)) {
+      void launchDraft(sid, text, sessionPastedImages.length
+        ? sessionPastedImages.map(({ media_type, data }) => ({ media_type, data }))
+        : undefined);
+      return;
+    }
 
     const session = sessions.find(s => s.id === sid);
 
@@ -5033,14 +5234,17 @@ export function ChatApp() {
     // before its group is written, so it would flash ungrouped. Keep it hidden
     // behind its placeholder until it has a group, then swap the two in the
     // same render.
+    // Only creates in flight are landing: an idle draft has no POST behind it,
+    // and an unrelated session in its folder must neither hide nor replace it.
+    const inFlight = pendingSessions.filter(p => !isDraftSessionId(p.id) || launchingDraftIds.has(p.id));
     const known = knownBeforePendingRef.current;
-    const landing = (s: SessionInfo) => !known.has(s.id) && pendingSessions.some(p => p.cwd === s.cwd);
+    const landing = (s: SessionInfo) => !known.has(s.id) && inFlight.some(p => p.cwd === s.cwd);
     const arrived = new Set(orderedOpenSessions.filter(s => landing(s) && tabGroupMap[s.id]).map(s => s.cwd));
     return [
       ...orderedOpenSessions.filter(s => !landing(s) || tabGroupMap[s.id]),
-      ...pendingSessions.filter(p => !arrived.has(p.cwd)),
+      ...pendingSessions.filter(p => !inFlight.includes(p) || !arrived.has(p.cwd)),
     ];
-  }, [orderedOpenSessions, pendingSessions, tabGroupMap]);
+  }, [orderedOpenSessions, pendingSessions, tabGroupMap, launchingDraftIds]);
   /** Session ids this machine's own bridge owns. Used to spot an id that also
    *  exists on a remote (`main-session` is on every machine) so the remote's
    *  grouping can't drag the local tab away. */
@@ -6138,9 +6342,12 @@ export function ChatApp() {
   const renderComposer = (sid: string, opts?: { inline?: boolean }) => {
     const s = sessionStates[sid];
     if (!s) return null;
-    const sess = sessions.find(x => x.id === sid);
-    // A stopped provider isn't "offline": sending (or typing) starts it.
-    const rawStatus: ConnectionStatus = statuses[sid] || (isPendingSessionId(sid) ? 'connecting' : 'disconnected');
+    const isDraft = isDraftSessionId(sid);
+    const sess = sessions.find(x => x.id === sid) ?? (isDraft ? pendingSessions.find(x => x.id === sid) : undefined);
+    // A stopped provider isn't "offline": sending (or typing) starts it. A
+    // draft is ready to send as is — the send is what creates it.
+    const rawStatus: ConnectionStatus = isDraft ? 'connected'
+      : statuses[sid] || (isPendingSessionId(sid) ? 'connecting' : 'disconnected');
     const status: ConnectionStatus = rawStatus === 'disconnected' && sess?.runtime_status === 'stopped' ? 'connected' : rawStatus;
     const BUILTINS = ['restart', 'default', 'terminal', 't'];
     const sdkCommands = s.initInfo?.slashCommands || [];
@@ -6194,6 +6401,7 @@ export function ChatApp() {
         onRegisterSnippet={(block, badge) => { (snippetMapRef.current[sid] ||= []).push({ block, badge }); }}
         onInterrupt={() => handleInterrupt(sid)}
         onSelectModel={(modelId) => {
+          if (isDraft) { patchDraft(sid, { model: modelId || null }); return; }
           if (!clientRef.current) return;
           const prevModel = sess?.model ?? null;
           if (prevModel === (modelId || null)) return;
@@ -6201,10 +6409,12 @@ export function ChatApp() {
           setSessions(prev => prev.map(x => x.id === sid ? { ...x, model: modelId || null } : x));
         }}
         onSelectPermissionMode={(mode) => {
+          if (isDraft) { patchDraft(sid, { permission_mode: mode }); return; }
           if (!clientRef.current) return;
           requestPermissionMode(sid, mode);
         }}
         onSelectEffort={(effort) => {
+          if (isDraft) { patchDraft(sid, { effort: effort || null }); return; }
           if (!clientRef.current) return;
           const prevEffort = sess?.effort ?? null;
           if (prevEffort === (effort || null)) return;
@@ -8009,6 +8219,10 @@ export function ChatApp() {
                         .map(([key, label]) => ({ key, label }))}
                       onProviderChange={(provider) => { void switchEmptySessionProvider(activeId, provider); }}
                       switchingProvider={switchingProviderId === activeId}
+                      hosts={remotes.length > 0 ? [{ id: null, name: 'Local', color: '#71717a' }, ...remotes.map(r => ({ id: r.id, name: r.name || r.id, color: r.color ?? undefined }))] : undefined}
+                      host={activeStageSession?.remoteId ?? null}
+                      onHostChange={(remoteId) => { void switchEmptySessionHost(activeId, remoteId); }}
+                      hostError={switchHostError?.id === activeId ? switchHostError.message : null}
                       branch={gitBranch}
                       getThreadEl={() => scrollRef.current}
                       widthClass={chatWidthClass}

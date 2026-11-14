@@ -36,8 +36,16 @@ interface Props {
   provider?: string;
   providerOptions?: { key: string; label: string }[];
   onProviderChange?: (provider: string) => void;
-  /** A provider switch is in flight. */
+  /** A provider or host switch is in flight. */
   switchingProvider?: boolean;
+  /** Machines the session can move to (`id: null` = this one). With
+   *  `onHostChange`, the headline gets a host picker; absent when no remote
+   *  is configured. */
+  hosts?: { id: string | null; name: string; color?: string }[];
+  host?: string | null;
+  onHostChange?: (remoteId: string | null) => void;
+  /** Why the last host switch didn't happen (folder missing there, …). */
+  hostError?: string | null;
   /** Current git branch of the session's cwd, when known. */
   branch?: string | null;
   /** Chat scroll container — faded up as the composer docks so the first
@@ -50,12 +58,15 @@ interface Props {
   children: ReactNode;
 }
 
+/** Select keys can't be null; this stands for "this machine". */
+const LOCAL_KEY = '__local__';
+
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export function EmptyComposerStage({
   sessionId, centered, folderName, providerLabel, provider, providerOptions, onProviderChange,
-  switchingProvider, branch, getThreadEl,
+  switchingProvider, hosts, host = null, onHostChange, hostError, branch, getThreadEl,
   widthClass = 'max-w-4xl', children,
 }: Props) {
   const stackRef = useRef<HTMLDivElement>(null);
@@ -160,6 +171,43 @@ export function EmptyComposerStage({
         <div ref={headRef} className="overflow-hidden">
           <div className={`${widthClass} mx-auto px-6 pb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[22px] text-zinc-400 font-light`}>
             <span>New session in</span>
+            {hosts && onHostChange && (() => {
+              const current = hosts.find(h => h.id === host);
+              const color = current?.color || (host ? '#a78bfa' : '#71717a');
+              return (
+                <Select
+                  aria-label="Host"
+                  selectedKey={host ?? LOCAL_KEY}
+                  isDisabled={switchingProvider}
+                  onSelectionChange={(key) => {
+                    if (key == null) return;
+                    const next = key === LOCAL_KEY ? null : String(key);
+                    if (next !== host) onHostChange(next);
+                  }}
+                >
+                  <SelectTrigger
+                    className="min-h-0 h-auto inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider rounded-md px-2 py-0.5 border shadow-none hover:brightness-125"
+                    style={{ color, background: `${color}14`, borderColor: `${color}40` }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color }} />
+                    <SelectValue className="text-[11px]" style={{ color }} />
+                    <SelectIndicator className="!static size-3 opacity-60 shrink-0" />
+                  </SelectTrigger>
+                  <SelectPopover>
+                    <ListBox>
+                      {hosts.map(h => (
+                        <ListBoxItem key={h.id ?? LOCAL_KEY} id={h.id ?? LOCAL_KEY} textValue={h.name}>
+                          <span className="inline-flex items-center gap-2 text-sm">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: h.color || '#a78bfa' }} />
+                            {h.name}
+                          </span>
+                        </ListBoxItem>
+                      ))}
+                    </ListBox>
+                  </SelectPopover>
+                </Select>
+              );
+            })()}
             <span className="inline-flex items-center gap-1.5 text-zinc-100" title={folderName}>
               <FolderClosed size={18} className="text-zinc-500" />
               <span className="font-semibold">{folderName}</span>
@@ -196,8 +244,11 @@ export function EmptyComposerStage({
             {switchingProvider && (
               <span role="status" className="inline-flex items-center gap-2 text-xs text-zinc-500">
                 <span className="w-3 h-3 rounded-full border-[1.5px] border-zinc-500/25 border-t-teal-400 animate-spin" />
-                Switching provider…
+                Switching…
               </span>
+            )}
+            {hostError && !switchingProvider && (
+              <p role="alert" className="basis-full text-xs text-red-400">{hostError}</p>
             )}
           </div>
         </div>
