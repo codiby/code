@@ -1532,6 +1532,22 @@ export const TabBar = memo(function TabBar(props: Props) {
         <span className="text-[14px] font-semibold tracking-[-0.2px] text-zinc-100">Codiby</span>
       </div>
 
+      {/* The sidebar's primary action, right under the brand. It opens the
+          composer with no host or folder picked; sending from there lets the
+          agent route the request (see lib/direct-chat). */}
+      <div className="px-2 shrink-0 mb-2">
+        <button
+          type="button"
+          onClick={onNew}
+          className="path-primary w-full h-[30px] flex items-center gap-1.5 pl-2.5 pr-1.5 rounded-[7px] text-[13px] font-medium"
+          title="New session"
+        >
+          <Plus className="w-[15px] h-[15px]" strokeWidth={1.8} />
+          New session
+          <kbd className="path-kbd ml-auto">⌘N</kbd>
+        </button>
+      </div>
+
       <div className="px-2 shrink-0">
         {(searchOpen || sessionSearch) && (
           <div className="flex items-center gap-2 h-[30px] px-2.5 mb-2 rounded-[7px] bg-surface-light">

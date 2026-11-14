@@ -102,6 +102,10 @@ import {
   type SupportedModel,
   type TerminalInfo,
 } from '../lib/claude-client';
+import {
+  DIRECT_SESSION_NAME, DIRECT_TTL_MS, directHandoff, directMessageText, directPrompt, excerptOf, hostIdOf,
+  parseDirectRecommendation, rankSessions, type DirectContext, type DirectRecommendation,
+} from '../lib/direct-chat';
 import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
 import { type MockupComment } from '../lib/mockup-inspector';
@@ -1176,6 +1180,166 @@ export function ChatApp() {
     }
   };
 
+  /** Direct chats still waiting for the agent's route, by session id. Held in
+   *  memory only: after a reload the chat simply stays where it is. */
+  const directChatsRef = useRef(new Map<string, DirectContext>());
+  /** Replies whose route was already acted on (or attempted) — once each. */
+  const routedRepliesRef = useRef(new Set<string>());
+
+  /** The unpinned composer's send: open a disposable session that decides
+   *  where the request belongs (see lib/direct-chat). */
+  const handleDirectChat = async (
+    prompt: string,
+    provider: string,
+    host: string | null,
+    model?: string,
+    permissionMode?: string,
+    images?: { media_type: string; data: string }[],
+    effort?: string,
+  ) => {
+    const c = clientRef.current;
+    if (!c) throw new Error('Not connected yet.');
+    const hereId = host ?? '';
+    // Shown at once, like a draft's first send: a row with the message and a
+    // "Working" turn, while hosts are read and the session is created. The
+    // real session takes both over when it lands.
+    // A draft id that is already launching: it renders exactly like a draft's
+    // first send, and neither "leave" nor localStorage touch it.
+    const placeholder: SessionInfo = {
+      ...makePlaceholderSession('', hereId || null, DIRECT_SESSION_NAME, provider),
+      id: `${DRAFT_SESSION_PREFIX}direct:${crypto.randomUUID()}`,
+      disposable_ttl_ms: DIRECT_TTL_MS,
+    };
+    setDirectRetry(null);
+    setLaunchingDraftIds(prev => new Set(prev).add(placeholder.id));
+    setPendingSessions(prev => [...prev, placeholder]);
+    setSessionStates(prev => ({
+      ...prev,
+      [placeholder.id]: {
+        ...emptyLocalState(),
+        messages: [{
+          id: crypto.randomUUID(), role: 'user', content: prompt, timestamp: Date.now(),
+          images: images?.map(img => ({ media_type: img.media_type, data: img.data })),
+        }],
+        isStreaming: true,
+      },
+    }));
+    setSelectedGroupId(null);
+    setActiveId(placeholder.id);
+    try {
+      await startDirectChat(placeholder.id, prompt, provider, hereId, model, permissionMode, images, effort);
+      dropDraft(placeholder.id);
+    } catch (err) {
+      // Nothing was created: back to the composer with the message in it.
+      dropDraft(placeholder.id);
+      setDirectRetry({ prompt, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  /** The unpinned composer's text and error after a failed direct send. */
+  const [directRetry, setDirectRetry] = useState<{ prompt: string; error: string } | null>(null);
+
+  const startDirectChat = async (
+    placeholderId: string,
+    prompt: string,
+    provider: string,
+    hereId: string,
+    model?: string,
+    permissionMode?: string,
+    images?: { media_type: string; data: string }[],
+    effort?: string,
+  ) => {
+    const c = clientRef.current;
+    if (!c) throw new Error('Not connected yet.');
+    const withTimeout = <T,>(p: Promise<T>, ms: number, fallback: T) =>
+      Promise.race([p.catch(() => fallback), new Promise<T>(r => setTimeout(() => r(fallback), ms))]);
+    const hostRows = [{ id: '', name: 'Local' }, ...remotes.map(r => ({ id: r.id, name: r.name || r.id }))];
+    const hosts = (await Promise.all(hostRows.map(async h => ({
+      ...h, home: await withTimeout(c.getUserHome(h.id || null), 4000, ''),
+    })))).filter(h => h.home);
+    const reachable = new Set(hosts.map(h => h.id));
+    const known = sessions.filter(s => reachable.has(hostIdOf(s)) && !isPendingSessionId(s.id));
+    const candidates = rankSessions(known, prompt).slice(0, 24);
+    const excerpts: DirectContext['excerpts'] = [];
+    // Four reads at a time, so a big inventory doesn't flood the bridges.
+    for (let i = 0; i < candidates.length; i += 4) {
+      excerpts.push(...await Promise.all(candidates.slice(i, i + 4).map(async s => {
+        const page = await withTimeout(
+          c.hostFetch(s.remoteId ?? null, `/sessions/${s.id}/messages?before_seq=${Number.MAX_SAFE_INTEGER}&limit=6`)
+            .then(r => (r.ok ? r.json() as Promise<{ messages: ChatMessage[] }> : null)),
+          4000, null,
+        );
+        return { key: s.id, messages: page ? excerptOf(page.messages) : [] };
+      })));
+    }
+    const context: DirectContext = { sessions: known.filter(s => !s.disposable_ttl_ms), hosts, excerpts };
+    const here = hosts.find(h => h.id === hereId);
+    if (!here) throw new Error(hereId ? 'That host is not responding.' : "Could not read this machine's home folder.");
+    const session = await c.createSession(here.home, {
+      name: DIRECT_SESSION_NAME, provider, model, permissionMode, effort,
+      remoteId: hereId || null, disposableTtlMs: DIRECT_TTL_MS,
+    });
+    directChatsRef.current.set(session.id, context);
+    c.subscribe(session.id);
+    subscribedRef.current.add(session.id);
+    // The message and its "Working" are already on screen: the real session
+    // starts from them instead of blank.
+    setSessionStates(prev => {
+      const from = prev[placeholderId];
+      const base = prev[session.id] || emptyLocalState();
+      return { ...prev, [session.id]: { ...base, messages: from?.messages ?? base.messages, isStreaming: true } };
+    });
+    setActiveId(prev => (prev === placeholderId ? session.id : prev));
+    c.sendMessage(session.id, directPrompt(prompt, context, hereId), images);
+  };
+
+  /** Carry out the agent's route. The direct chat is deleted once its request
+   *  has landed elsewhere — everything it held travels with the handoff. */
+  const deliverDirectRoute = async (tempId: string, rec: DirectRecommendation, messages: ChatMessage[]) => {
+    const c = clientRef.current;
+    const temp = sessions.find(s => s.id === tempId);
+    if (!c || !temp) return;
+    if (rec.kind === 'here') {
+      await c.keepSession(tempId);
+      await c.renameSession(tempId, rec.title);
+      directChatsRef.current.delete(tempId);
+      return;
+    }
+    const handoff = directHandoff(messages);
+    let targetId: string;
+    if (rec.kind === 'continue') {
+      targetId = rec.session.id;
+      if (rec.session.status === 'archived') await c.unarchiveSession(targetId);
+    } else {
+      const created = await c.createSession(rec.cwd, {
+        name: rec.title, provider: temp.provider, remoteId: rec.hostId || null,
+      });
+      targetId = created.id;
+    }
+    directChatsRef.current.delete(tempId);
+    c.subscribe(targetId);
+    subscribedRef.current.add(targetId);
+    setActiveId(targetId);
+    c.sendMessage(targetId, handoff.text || ' ', handoff.images.length ? handoff.images : undefined);
+    c.deleteSession(tempId).catch(() => {});
+  };
+
+  // Act on a direct chat's route as soon as the agent's turn ends.
+  useEffect(() => {
+    for (const [tempId, context] of directChatsRef.current) {
+      const state = sessionStates[tempId];
+      if (!state || state.isStreaming) continue;
+      const last = [...state.messages].reverse().find(m => m.role === 'assistant' && !m.toolName && !m.isToolResult && !m.isThinking);
+      if (!last || routedRepliesRef.current.has(last.id)) continue;
+      const rec = parseDirectRecommendation(last.content || '', context);
+      if (!rec) continue;
+      routedRepliesRef.current.add(last.id);
+      deliverDirectRoute(tempId, rec, state.messages).catch(err => {
+        console.error('[ChatApp] Direct chat route failed:', err);
+      });
+    }
+  });
+
   const handleGroupTabs = (tabIdA: string, tabIdB: string) => {
     handleCreateGroup([tabIdA, tabIdB]);
   };
@@ -2115,8 +2279,12 @@ export function ChatApp() {
             // the local entry in place so it picks up the authoritative `seq`
             // and sorts into the correct timeline slot.
             if (msg.role === 'user' && msg.seq != null) {
+              // A direct chat's echo carries the routing inventory after the
+              // text the user typed (and saw on screen): compare that part.
+              const echoed = directMessageText(msg.content || '');
               const idx = s.messages.findIndex(m =>
-                m.role === 'user' && m.seq == null && !m.isPending && m.content === msg.content
+                m.role === 'user' && m.seq == null && !m.isPending
+                && (m.content === msg.content || m.content === echoed)
               );
               if (idx !== -1) {
                 const next = [...s.messages];
@@ -5736,7 +5904,7 @@ export function ChatApp() {
     }
     const sid = row.sessionId;
     if (!sid) return;
-    if (row.bucket === 'read') setAwaitingReplyIds(prev => { const next = new Set(prev); next.delete(sid); return next; });
+    if (row.bucket === 'finished') setAwaitingReplyIds(prev => { const next = new Set(prev); next.delete(sid); return next; });
     else if (row.bucket === 'broke') updateLocalState(sid, st => ({ ...st, wasInterrupted: false }));
     else { setActiveNavView('sessions'); void handleSelectSession(sid); }
   };
@@ -7457,20 +7625,6 @@ export function ChatApp() {
               <LayoutGrid className="w-3.5 h-3.5" />
             </button>
           </div>
-          {/* Primary action of the path bar: a solid ink button with its chord. */}
-          {isStandardShell && (
-            <button
-              type="button"
-              onClick={newSessionInScope}
-              className="path-primary h-[30px] mr-1.5 flex items-center gap-1.5 pl-2.5 pr-1.5 rounded-[7px] text-[13px] font-medium shrink-0"
-              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-              title="New session"
-            >
-              <Plus className="w-[15px] h-[15px]" strokeWidth={1.8} />
-              New session
-              <kbd className="path-kbd">⌘N</kbd>
-            </button>
-          )}
           {/* File-explorer panel toggle — pinned to the far right of the
               titlebar, since the Explorer is docked on the right of the chat. */}
           {activeNavView === 'sessions' && (
@@ -7625,6 +7779,7 @@ export function ChatApp() {
                 projects={projects}
                 defaultProjectId={scopedProjectId}
                 onOpenSession={(id) => { setActiveNavView('sessions'); void handleSelectSession(id); }}
+                onArchiveSession={handleCloseTab}
                 renderSession={(id) => (
                   <>
                     {renderChatBody(id)}
@@ -7701,6 +7856,9 @@ export function ChatApp() {
                 key={selectedGroupId || (scopedProject ? `new-chat:${scopedProject.id}` : "new-chat")}
                 groupName={selectedGroupId ? sidebarGroups[selectedGroupId]?.name || "" : ""}
                 groupCwd={
+                  // The unpinned composer (no group, no project) starts with no
+                  // folder: sending without one lets the agent route it.
+                  (!selectedGroupId && !scopedProject) ? '' :
                   (selectedGroupId ? sidebarGroups[selectedGroupId]?.cwd || sessions.find(s => sidebarGroupMap[s.id] === selectedGroupId)?.cwd : null) ||
                   // A selected project starts new sessions in its first folder.
                   scopedProject?.folders[0]?.path ||
@@ -7725,6 +7883,9 @@ export function ChatApp() {
                 onSpawn={selectedGroupId
                   ? (...args) => handleSpawnInGroup(selectedGroupId, ...args)
                   : async (...args) => { await handleSpawnHome(...args); }}
+                onDirect={!selectedGroupId && !scopedProject ? handleDirectChat : undefined}
+                initialPrompt={!selectedGroupId && !scopedProject ? directRetry?.prompt : undefined}
+                initialError={!selectedGroupId && !scopedProject ? directRetry?.error : undefined}
                 onBranchChanged={setGitBranch}
               />
             ) : (

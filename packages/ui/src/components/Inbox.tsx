@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  ArrowLeft, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
+  Archive, ArrowLeft, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
   Loader2, MessageCircle, Pause, RefreshCw, Sparkles, UserX, X,
 } from 'lucide-react';
 import { slackConnectionOf, type ClaudeClient, type SlackStatus, type SlackThreadMessage } from '../lib/claude-client';
@@ -23,6 +23,8 @@ interface Props {
   projects: { id: string; name: string; folders: ProjectFolder[]; githubOrgs?: string[] }[];
   defaultProjectId: string | null;
   onOpenSession: (sessionId: string) => void;
+  /** Archive a session row's session (same as closing its tab). */
+  onArchiveSession?: (sessionId: string) => void;
   onDone: (row: InboxRow) => void;
   onRead: (row: InboxRow) => void;
   onHandToAgent: (h: HandOff) => void;
@@ -87,7 +89,7 @@ function SourceTile({ row }: { row: InboxRow }) {
   );
 }
 
-export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditProject, projects, defaultProjectId, onOpenSession, onDone, onRead, onHandToAgent, renderSession, onViewSession }: Props) {
+export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditProject, projects, defaultProjectId, onOpenSession, onArchiveSession, onDone, onRead, onHandToAgent, renderSession, onViewSession }: Props) {
   const [tab, setTab] = useState<'all' | InboxSource>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
@@ -200,6 +202,7 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
                 projects={projects}
                 defaultProjectId={defaultProjectId}
                 onOpenSession={onOpenSession}
+                onArchiveSession={onArchiveSession}
                 renderSession={renderSession}
                 onViewSession={onViewSession}
                 onDone={() => onDone(current)}
@@ -214,8 +217,8 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
 
 // ── detail ──────────────────────────────────────────────────────────────────
 
-function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone, onHandToAgent, onOpenDm, renderSession, onViewSession }: {
-  row: InboxRow; client: ClaudeClient | null;
+function Detail({ row, client, projects, defaultProjectId, onOpenSession, onArchiveSession, onDone, onHandToAgent, onOpenDm, renderSession, onViewSession }: {
+  row: InboxRow; client: ClaudeClient | null; onArchiveSession?: Props['onArchiveSession'];
   renderSession?: Props['renderSession']; onViewSession?: Props['onViewSession'];
   projects: Props['projects']; defaultProjectId: string | null;
   onOpenSession: (id: string) => void; onDone: () => void; onHandToAgent: (h: HandOff) => void;
@@ -249,6 +252,11 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onDone
       <div className="ml-auto flex gap-1.5 shrink-0">
         {row.source === 'session' && row.sessionId && (
           <button type="button" className="ib-btn" onClick={() => onOpenSession(row.sessionId!)}><ArrowUpRight size={14} /> Open session</button>
+        )}
+        {row.source === 'session' && row.sessionId && onArchiveSession && (
+          <button type="button" className="ib-btn" onClick={() => onArchiveSession(row.sessionId!)} title="Archive the session">
+            <Archive size={14} /> Archive
+          </button>
         )}
         {row.item?.url && (
           <button type="button" className="ib-btn" onClick={() => open(row.item!.url)}>

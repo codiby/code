@@ -20,6 +20,7 @@ import {
   type ToolRunGroup,
 } from '../lib/tool-runs';
 import { ToolSteps } from './ToolSteps';
+import { directMessageText } from '../lib/direct-chat';
 
 const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
 const Editor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.default })));
@@ -1086,7 +1087,11 @@ function ThinkingBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onReply, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry, onCancelDelivery, nested }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message: rawMessage, onReply, onOpenTerminal, isLast, onAnswerAskUser, sessionId, client, accent, interactiveMinimized, onToggleInteractiveMinimize, onCancelPending, onRetry, onCancelDelivery, nested }: Props) {
+  // A direct chat's first message carries the routing inventory and the
+  // agent's reply ends in a route block; neither is for the reader.
+  const shown = !rawMessage.toolName && rawMessage.content ? directMessageText(rawMessage.content) : rawMessage.content;
+  const message = shown === rawMessage.content ? rawMessage : { ...rawMessage, content: shown };
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isToolUse = !!message.toolName;

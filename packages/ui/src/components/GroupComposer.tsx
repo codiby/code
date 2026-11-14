@@ -82,6 +82,21 @@ interface Props {
   /** Keeps the app-wide git status indicator aligned with this composer's
    * branch selection before a session exists for the selected group. */
   onBranchChanged?: (branch: string | null) => void;
+  /** Unpinned composer (the sidebar's "New session"): nothing is preselected,
+   *  and sending without a folder hands the request to the routing agent
+   *  instead of spawning. `host` is the machine the user picked, if any. */
+  onDirect?: (
+    prompt: string,
+    provider: string,
+    host: string | null,
+    model?: string,
+    permissionMode?: string,
+    images?: { media_type: string; data: string }[],
+    effort?: string,
+  ) => Promise<void>;
+  /** Text and error to start with: a direct send that failed comes back here. */
+  initialPrompt?: string;
+  initialError?: string;
 }
 
 /**
@@ -91,12 +106,13 @@ interface Props {
  * to an in-session chat composer. Provider lives in the header above; the
  * worktree affordance sits in a footer row below.
  */
-export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], defaultModelsByHost, defaultPermissionModeByHost, onSetDefaultPermissionMode, onSetDefaultModel, remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBranchChanged }: Props) {
+export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claudeModels = [], defaultModelsByHost, defaultPermissionModeByHost, onSetDefaultPermissionMode, onSetDefaultModel, remoteId, remoteName, remoteColor, remotes = [], onSpawn, onBranchChanged, onDirect, initialPrompt, initialError }: Props) {
+  const unpinned = !!onDirect;
   const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(initialPrompt ?? '');
   const submittingRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(initialError ?? null);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [cwd, setCwd] = useState(groupCwd);
   const [provider, setProvider] = useState<ProviderKey>(() => {
@@ -122,6 +138,8 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   // host to inherit — before this it silently meant "local", which spawned on
   // this Mac from a composer that was showing a remote's folder.
   const [target, setTarget] = useState<string | null>(remoteId ?? null);
+  // Unpinned: the host chip reads "Host" until the user picks one.
+  const [hostPicked, setHostPicked] = useState(!unpinned);
   const permissionMode = pickedPermissionMode ?? defaultPermissionModeByHost?.[target || ''] ?? 'default';
   const [hostMenuOpen, setHostMenuOpen] = useState(false);
   const hostBtnRef = useRef<HTMLButtonElement>(null);
@@ -164,6 +182,7 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
    *  recent directory, and to the folder picker when there is none. */
   const changeTarget = (next: string | null) => {
     setHostMenuOpen(false);
+    setHostPicked(true);
     if (next === target) return;
     setTarget(next);
     const recents = getRecentDirs(next);
@@ -373,12 +392,12 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
   // The picked host's own metadata, falling back to what the group reported —
   // a remote can be selected before `/remotes` has been answered.
   const targetMeta = target ? remotes.find(r => r.id === target) : null;
-  const targetLabel = target ? (targetMeta?.name || remoteName || 'remote') : 'Local';
+  const targetLabel = !hostPicked ? 'Host' : target ? (targetMeta?.name || remoteName || 'remote') : 'Local';
   const targetColor = target ? (targetMeta?.color || remoteColor || '#a78bfa') : '#71717a';
   const branchLabel = gitInfo?.is_git ? gitInfo.branch : null;
 
   const submit = async () => {
-    if (submittingRef.current || !cwd || (!prompt.trim() && pastedImages.length === 0)) return;
+    if (submittingRef.current || (!cwd && !onDirect) || (!prompt.trim() && pastedImages.length === 0)) return;
     submittingRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
@@ -386,6 +405,15 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
       ? pastedImages.map(({ media_type, data }) => ({ media_type, data }))
       : undefined;
     try {
+      if (!cwd && onDirect) {
+        await onDirect(
+          prompt.trim(), provider, hostPicked ? target : null,
+          model || undefined, permissionMode, images, effort || undefined,
+        );
+        setPastedImages([]);
+        setPrompt('');
+        return;
+      }
       await onSpawn(
         cwd,
         provider,
@@ -431,7 +459,10 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
                 aria-expanded={hostMenuOpen}
                 title={target ? `Runs on remote "${targetLabel}"` : 'Runs on this machine'}
               >
-                <span className="w-1.5 h-1.5 rounded-full" style={{ background: targetColor }} />
+                <span
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={hostPicked ? { background: targetColor } : { border: `1px dashed ${targetColor}` }}
+                />
                 {targetLabel}
                 <ChevronDown size={12} className="opacity-60" />
               </button>
@@ -481,10 +512,12 @@ export function GroupComposer({ groupName, groupCwd, client, opencodeInfo, claud
               className="inline-flex items-center gap-1.5 text-zinc-100 px-1.5 py-0 rounded-md hover:bg-white/5 transition-colors"
               aria-haspopup="listbox"
               aria-expanded={folderMenuOpen}
-              title={cwd}
+              title={cwd || (unpinned ? 'No folder: the agent picks where this goes' : undefined)}
             >
               <FolderClosed size={18} className="text-zinc-500" />
-              <span className="font-semibold">{folderName}</span>
+              {!cwd && unpinned
+                ? <span className="text-zinc-500">folder</span>
+                : <span className="font-semibold">{folderName}</span>}
               <ChevronDown size={16} className="text-zinc-600" />
             </button>
             {folderMenuOpen && (
