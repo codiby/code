@@ -1314,7 +1314,7 @@ export const MessageBubble = memo(function MessageBubble({ message: rawMessage, 
       {assistantTime !== null && (
         <span
           title={formatMsgTimeFull(message.timestamp)}
-          className={`pointer-events-none absolute top-1 ${replyAction ? 'right-9' : 'right-0'} text-[11px] tabular-nums text-zinc-600 whitespace-nowrap bg-zinc-950/80 px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity`}
+          className={`pointer-events-none absolute bottom-full -mb-1 ${replyAction ? 'right-9' : 'right-0'} text-[11px] leading-4 tabular-nums text-zinc-600 whitespace-nowrap bg-zinc-950 px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity`}
         >
           {assistantTime}
         </span>
