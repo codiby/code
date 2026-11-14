@@ -16,6 +16,7 @@ import { getDefaultPermissionMode } from '../session/default-permission-mode';
 import { stopSessionWatcher } from '../session/watcher';
 import { closeSessionPortForwards } from '../network/port-forward';
 import { forgetViewerBriefing } from '../network/remote-viewer';
+import { forgetMessageOrigin } from '../network/message-origin';
 import { rootRepoOf } from './worktree';
 import { deleteSessionNotes } from './session-notes';
 import { removeSessionFromBoards } from '../boards/repository';
@@ -405,6 +406,7 @@ export async function handleDeleteSession(
   // leaving the listeners bound would just squat on the ports.
   closeSessionPortForwards(sessionId);
   forgetViewerBriefing(sessionId);
+  forgetMessageOrigin(sessionId);
   sessions.delete(sessionId);
   saveSessions();
 

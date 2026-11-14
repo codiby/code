@@ -1,4 +1,8 @@
+import { Platform } from 'react-native';
+
 import { ServerError, requestJson } from './client';
+import { currentTransport } from './network';
+import { deviceName } from '../lib/device';
 import type { ChatMessage, MessageImage, MessagePage } from './types';
 import { stripAnsi } from '../lib/ansi';
 import { readReply } from '../lib/messageReply';
@@ -191,13 +195,30 @@ function toChatMessage(value: unknown): ChatMessage | null {
  * Encola un mensaje del usuario en la sesión. El bridge responde en cuanto lo
  * acepta; la respuesta del agente llega después, en una lectura posterior.
  */
-export function sendMessage(
+/**
+ * Quién manda el mensaje: app, teléfono y red. El bridge ya sabe por qué ruta
+ * llegó (LAN, Tailscale, Funnel); con esto el agente sabe qué links te abren
+ * — el de Funnel por datos móviles, la IP local en Wi-Fi.
+ */
+async function clientHeaders(): Promise<Record<string, string>> {
+  const transport = await currentTransport();
+  return {
+    'X-Codiby-Client': Platform.OS === 'ios' ? 'ios-app' : 'android-app',
+    'X-Codiby-Device': deviceName(),
+    ...(transport === 'unknown' || transport === 'none'
+      ? {}
+      : { 'X-Codiby-Network': transport }),
+  };
+}
+
+export async function sendMessage(
   baseUrl: string,
   sessionId: string,
   token: string,
   text: string,
   images: MessageImage[] = [],
 ): Promise<void> {
+  const headers = await clientHeaders();
   return requestJson(
     baseUrl,
     `/sessions/${encodeURIComponent(sessionId)}/messages`,
@@ -208,6 +229,7 @@ export function sendMessage(
       // Con 8 s, una red lenta daba el envío por fallido aunque sí llegaba, y
       // el mensaje se podía volver a mandar duplicado.
       timeoutMs: 30_000,
+      headers,
       body: {
         text,
         // El bridge espera `media_type`, no `mediaType`.

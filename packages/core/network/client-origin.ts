@@ -31,11 +31,55 @@ export function isLoopbackAddress(address: string | null | undefined): boolean {
   return /^127\.\d+\.\d+\.\d+$/.test(addr);
 }
 
+/**
+ * How a client reaches this bridge, which decides what links it can open.
+ *
+ * - `this-machine`: loopback with a local Host — the desktop app here.
+ * - `lan`: a private (RFC 1918 / ULA / link-local) peer.
+ * - `tailnet`: a Tailscale peer (100.64/10, fd7a:115c:a1e0::/48), or Tailscale
+ *   Serve, which proxies from loopback but stamps `Tailscale-User-Login`.
+ * - `tailscale-funnel`: loopback peer under a `*.ts.net` Host with no tailnet
+ *   identity — the public internet through Funnel. Before this it looked like
+ *   the desktop app, because tailscaled connects from 127.0.0.1.
+ * - `internet`: any other public peer.
+ */
+export type ClientRoute = 'this-machine' | 'lan' | 'tailnet' | 'tailscale-funnel' | 'internet';
+
+function isTailscaleAddress(addr: string): boolean {
+  const v4 = addr.match(/^100\.(\d+)\.\d+\.\d+$/);
+  if (v4) { const second = Number(v4[1]); return second >= 64 && second <= 127; }
+  return addr.startsWith('fd7a:115c:a1e0:');
+}
+
+function isPrivateAddress(addr: string): boolean {
+  if (/^10\.\d+\.\d+\.\d+$/.test(addr) || /^192\.168\.\d+\.\d+$/.test(addr) || /^169\.254\.\d+\.\d+$/.test(addr)) return true;
+  const m = addr.match(/^172\.(\d+)\.\d+\.\d+$/);
+  if (m) { const second = Number(m[1]); return second >= 16 && second <= 31; }
+  return /^f[cd][0-9a-f]{2}:/.test(addr) || addr.startsWith('fe80:');
+}
+
+export function classifyRoute(
+  address: string,
+  host: string | null,
+  headers?: { get(name: string): string | null } | null,
+): ClientRoute {
+  if (isLoopbackAddress(address)) {
+    if (host && /\.ts\.net$/i.test(host)) {
+      return headers?.get('tailscale-user-login') ? 'tailnet' : 'tailscale-funnel';
+    }
+    return 'this-machine';
+  }
+  if (isTailscaleAddress(address)) return 'tailnet';
+  if (isPrivateAddress(address)) return 'lan';
+  return 'internet';
+}
+
 export type ClientOrigin = {
   /** Peer address of the socket, e.g. "192.168.1.24". */
   address: string;
-  /** False when the peer is loopback — the browser runs on this machine. */
+  /** False only when the client runs on this machine (see `route`). */
   remote: boolean;
+  route: ClientRoute;
   /**
    * Hostname from the `Host` header the client used to reach the bridge, port
    * stripped. This is the name a forwarded port has to be advertised under:
@@ -48,10 +92,13 @@ export type ClientOrigin = {
 export function describeClientOrigin(
   address: string | null | undefined,
   hostHeader: string | null | undefined,
+  headers?: { get(name: string): string | null } | null,
 ): ClientOrigin {
   const addr = address ? normalizeAddress(address) : '';
   const host = (hostHeader || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '') || null;
-  return { address: addr, remote: !isLoopbackAddress(addr), host };
+  // No address at all (a test, an unusual transport) keeps the old answer.
+  const route = addr ? classifyRoute(addr, host, headers) : 'internet';
+  return { address: addr, remote: route !== 'this-machine', host, route };
 }
 
 // Keyed by the frontend ServerWebSocket. Entries are added on `open` and
@@ -123,10 +170,14 @@ export function sessionViewerLocation(sessionId: string): ViewerLocation {
  */
 export function remoteViewerHosts(): string[] {
   const hosts: string[] = [];
+  const funnel: string[] = [];
   for (const origin of origins.values()) {
     if (!origin.remote) continue;
     const candidate = origin.host || origin.address;
-    if (candidate && !hosts.includes(candidate)) hosts.push(candidate);
+    // Funnel only carries 443 → the bridge, so `host:<port>` from it opens
+    // only on tailnet devices; rank it after names that route directly.
+    const bucket = origin.route === 'tailscale-funnel' ? funnel : hosts;
+    if (candidate && !hosts.includes(candidate) && !funnel.includes(candidate)) bucket.push(candidate);
   }
-  return hosts;
+  return [...hosts, ...funnel];
 }

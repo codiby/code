@@ -998,6 +998,18 @@ export interface SessionResource {
   url: string;
 }
 
+/**
+ * Who is sending, for the bridge's message origin (network/message-origin.ts):
+ * the desktop app exposes `window.codiby`, anything else is a browser — the
+ * route itself (LAN, Tailscale, Funnel) the bridge reads from the socket.
+ */
+function messageClient(): { kind: 'desktop-app' | 'browser'; device?: string } {
+  if (typeof window === 'undefined') return { kind: 'browser' };
+  const kind = (window as { codiby?: unknown }).codiby ? 'desktop-app' : 'browser';
+  const device = typeof navigator !== 'undefined' ? navigator.platform : '';
+  return device ? { kind, device } : { kind };
+}
+
 export class ClaudeClient {
   async getSessionNotes(sessionId: string): Promise<SessionNotes> {
     const base = await this.sessionBase(sessionId);
@@ -1650,7 +1662,7 @@ export class ClaudeClient {
   // ---------------------------------------------------------------------------
 
   sendMessage(sessionId: string, text: string, images?: { media_type: string; data: string }[]) {
-    this.send({ type: 'send_message', sessionId, text, images });
+    this.send({ type: 'send_message', sessionId, text, images, client: messageClient() });
   }
 
   respondToPermission(sessionId: string, requestId: string, allow: boolean, updatedInput?: Record<string, unknown>) {

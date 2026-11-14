@@ -64,13 +64,17 @@ export async function requestJson<T>(
     body?: unknown;
     /** Por defecto 8 s; un envío con imágenes por una red lenta necesita más. */
     timeoutMs?: number;
+    headers?: Record<string, string>;
   } = {},
 ): Promise<T> {
   const timeoutMs = init.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...init.headers,
+  };
   if (token.trim().length > 0) {
     headers.Authorization = `Bearer ${token.trim()}`;
   }

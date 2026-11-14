@@ -34,6 +34,7 @@ import {
 import { isRemoteGroupId } from './network/remote-groups-cache';
 import {
   bindSubscriptionMap,
+  clientOrigin,
   describeClientOrigin,
   forgetClientOrigin,
   registerClientOrigin,
@@ -41,6 +42,7 @@ import {
 import type { ClientOrigin } from './network/client-origin';
 import { OWNER_VERIFICATION_ERROR, callerInput, isLocalUiRequest, isLocalhostRequest as isLocalhostCaller, isOwnerVerifiedRequest, isProxiedRequest, presentsToken } from './network/local-trust';
 import { viewerLocationReminder } from './network/remote-viewer';
+import { buildMessageOrigin, messageOriginFromRequest, messageOriginReminder, type MessageOrigin } from './network/message-origin';
 import { setPortForwardListener } from './network/port-forward';
 import {
   handleAddPublishedPort,
@@ -671,11 +673,24 @@ function fileImagesAsResources(sessionId: string, images?: { media_type: string;
  * session is idle, echoes the message to the session's chat log, flips the
  * streaming flag, and forwards to the provider.
  */
+/**
+ * The user's text as the provider should read it: prefixed by the viewer
+ * briefing when the watcher moved, and by where this message came from when
+ * that changed (network/message-origin.ts). Both are null in the common case.
+ */
+function withContextNotices(sessionId: string, text: string, origin: MessageOrigin | null): string {
+  const notices = [
+    viewerLocationReminder(sessionId),
+    origin ? messageOriginReminder(sessionId, origin) : null,
+  ].filter((notice): notice is string => notice !== null);
+  return notices.length ? `${notices.join('\n\n')}\n\n${text}` : text;
+}
+
 async function sendMessageToSession(
   sessionId: string,
   text: string,
   images?: { media_type: string; data: string }[],
-  opts: { bargeIn?: boolean; source?: ChatMessage['source'] } = {},
+  opts: { bargeIn?: boolean; source?: ChatMessage['source']; origin?: MessageOrigin } = {},
 ): Promise<{ ok: boolean; error?: string }> {
   const session = sessions.get(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
@@ -700,6 +715,7 @@ async function sendMessageToSession(
     timestamp: Date.now(),
     images,
     ...(opts.source ? { source: opts.source } : {}),
+    ...(opts.origin ? { origin: opts.origin } : {}),
   };
   if (addMessage(sessionId, userMsg)) {
     broadcastToSession(sessionId, { type: 'message', sessionId, message: userMsg });
@@ -712,8 +728,11 @@ async function sendMessageToSession(
   updateSessionState(sessionId, s => ({ ...s, isStreaming: true, wasInterrupted: false }));
   broadcastToSession(sessionId, { type: 'status', sessionId, status: 'streaming' });
 
+  // Only a person typing carries an origin; resumes and agent dispatch do not,
+  // and get no notices.
+  const outgoing = opts.origin ? withContextNotices(sessionId, text, opts.origin) : text;
   try {
-    await session.providerSession.sendUserMessage({ text, images });
+    await session.providerSession.sendUserMessage({ text: outgoing, images });
     return { ok: true };
   } catch (err) {
     log(`[${sessionId.slice(0, 8)}] sendUserMessage failed: ${err}`);
@@ -971,8 +990,12 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
 
   // ---- send_message --------------------------------------------------------
   if (type === 'send_message') {
-    const { sessionId, text: msgText = '', images } = msg as { sessionId: string; text: string; images?: { media_type: string; data: string }[] };
+    const { sessionId, text: msgText = '', images, client } = msg as { sessionId: string; text: string; images?: { media_type: string; data: string }[]; client?: { kind?: unknown; device?: unknown; transport?: unknown } };
     if (!sessionId || (!msgText && !images?.length)) return;
+    const wsOrigin = clientOrigin(ws);
+    const origin: MessageOrigin | null = wsOrigin
+      ? buildMessageOrigin(wsOrigin, { client: client?.kind, device: client?.device, transport: client?.transport })
+      : null;
 
     const session = sessions.get(sessionId);
     if (!session) return;
@@ -1000,6 +1023,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
       content: msgText,
       timestamp: Date.now(),
       images,
+      ...(origin ? { origin } : {}),
     };
     if (addMessage(sessionId, userMsg)) {
       broadcastToSession(sessionId, { type: 'message', sessionId, message: userMsg });
@@ -1058,8 +1082,7 @@ async function handleFrontendMessage(ws: any, rawMessage: string | ArrayBuffer) 
     // this session from another machine after it started would otherwise never
     // learn that `localhost` URLs are useless to them. Fires only when the
     // viewer actually moved since the last briefing.
-    const viewerNotice = viewerLocationReminder(sessionId);
-    const outgoingText = viewerNotice ? `${viewerNotice}\n\n${msgText}` : msgText;
+    const outgoingText = withContextNotices(sessionId, msgText, origin);
 
     try {
       await session.providerSession!.sendUserMessage({ text: outgoingText, images });
@@ -2035,7 +2058,8 @@ app.post('/sessions/:id/messages', async (c) => {
   // A photo on its own is a whole message: the phone sends images with no text.
   if (!body.text && !body.images?.length) return Response.json({ error: 'text or images required' }, { status: 400, headers: corsHeaders });
   // The phone and remote renderers post here: a person typing, so barge in.
-  const result = await sendMessageToSession(sid, body.text ?? '', body.images, { bargeIn: true });
+  const origin = messageOriginFromRequest(req, server.requestIP(req)?.address);
+  const result = await sendMessageToSession(sid, body.text ?? '', body.images, { bargeIn: true, origin });
   return Response.json(result, { headers: corsHeaders });
 });
 
@@ -2918,7 +2942,7 @@ const server = Bun.serve({
       // says what name they reached us under. Both are gone by the time the
       // `websocket.open` handler runs, so they ride along in `data`. See
       // network/client-origin.ts for what the agent does with it.
-      const origin = describeClientOrigin(server.requestIP(req)?.address, req.headers.get('host'));
+      const origin = describeClientOrigin(server.requestIP(req)?.address, req.headers.get('host'), req.headers);
       const upgraded = server.upgrade(req, { data: { type: 'frontend', origin } });
       return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
     }

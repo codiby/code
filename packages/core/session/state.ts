@@ -66,6 +66,8 @@ export interface ChatMessage {
   durationMs?: number;
   usage?: { input_tokens?: number; output_tokens?: number };
   model?: string;
+  /** User messages: the client, device, network and route they came from. */
+  origin?: import('../network/message-origin').MessageOrigin;
   /** Agent session only: the channel a user message arrived from (badge in the UI). */
   source?: {
     channelType: string;
