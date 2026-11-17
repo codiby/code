@@ -129,7 +129,8 @@ import {
 import { BookmarkPlus, Code2, Eye, GitBranch, MessageCircle, MessageSquarePlus } from 'lucide-react';
 import { PortForwardsPopover } from './PortForwardsPopover';
 import { ChatComposer } from './ChatComposer';
-import { canReplyTo, readReply, replyFromMessage, replyFromSelection, withReply } from '../lib/message-reply';
+import { addReply, canReplyTo, type MessageReply, readReplies, replyFromMessage, replyFromSelection, withReplies } from '../lib/message-reply';
+import { ReplyHighlights } from './ReplyHighlights';
 import { SelectionReply } from './SelectionReply';
 import { GroupFolderDialog } from './GroupFolderDialog';
 import { CtrlTabSwitcher } from './CtrlTabSwitcher';
@@ -342,6 +343,9 @@ function freezeStreaming(messages: ChatMessage[]): ChatMessage[] {
   if (!messages.some(m => m.streaming)) return messages;
   return messages.map(m => (m.streaming ? { ...m, streaming: false } : m));
 }
+
+/** Stable empty list, so the thread highlight doesn't re-run on every render. */
+const NO_REPLIES: readonly MessageReply[] = [];
 
 export function ChatApp() {
   // Session state now lives in the store (sessionsSlice). The store setters
@@ -1897,7 +1901,7 @@ export function ChatApp() {
     openTerminalId: null, diffView: null, editorFullWidth: false,
     reviewComments: {}, reviewMode: false, reviewFiles: [], reviewIndex: 0, todos: [],
     input: '', inputHistory: [],
-    replyTo: null,
+    replies: [],
     contextTokens: 0,
     pendingMessages: [],
     openMockup: null, lastMockup: null,
@@ -2231,7 +2235,7 @@ export function ChatApp() {
                 // first message as the provider boots.
                 pastedImages: existing?.pastedImages ?? [],
                 attachedFiles: existing?.attachedFiles ?? [],
-                replyTo: existing?.replyTo ?? null,
+                replies: existing?.replies ?? [],
                 pendingMessages: existing?.pendingMessages ?? [],
                 editorTabs: existing?.editorTabs ?? [],
                 activeEditorPath: existing?.activeEditorPath ?? null,
@@ -4253,7 +4257,9 @@ export function ChatApp() {
       text = [text, attachedFiles.map(f => f.badge).join('\n')].filter(Boolean).join('\n\n');
     }
     const sessionPastedImages = state.pastedImages;
-    if (!text && sessionPastedImages.length === 0) return;
+    // Quotes with notes are a message on their own, even with an empty composer.
+    const hasNotes = (state.replies ?? []).some(r => r.note?.trim());
+    if (!text && sessionPastedImages.length === 0 && !hasNotes) return;
 
     // A group's draft: this message is what creates the session.
     if (isDraftSessionId(sid)) {
@@ -4395,8 +4401,8 @@ export function ChatApp() {
       updateLocalState(sid, s => ({ ...s, permRequest: null }));
     }
 
-    const effectiveText = withReply(text || ' ', state.replyTo ?? null);
-    updateLocalState(sid, s => ({ ...s, replyTo: null }));
+    const effectiveText = withReplies(text || ' ', state.replies ?? []);
+    updateLocalState(sid, s => ({ ...s, replies: [] }));
 
     // Session closed (remote bridge offline / runtime stopped): stage the
     // message locally with a "sending" loader instead of dropping it. The
@@ -5845,7 +5851,7 @@ export function ChatApp() {
         if (m.role === 'system') continue;
         if (m.isToolResult || m.toolName) continue;
         if (m.isThinking) continue;
-        const c = (m.role === 'user' ? readReply(m.content || '').text : m.content || '').trim();
+        const c = (m.role === 'user' ? readReplies(m.content || '').text : m.content || '').trim();
         if (!c) continue;
         preview = c;
         break;
@@ -5876,7 +5882,7 @@ export function ChatApp() {
         for (let i = msgs.length - 1; i >= 0; i--) {
           const m = msgs[i]!;
           if (m.role === 'system' || m.isToolResult || m.toolName || m.isThinking) continue;
-          const c = (m.role === 'user' ? readReply(m.content || '').text : m.content || '').trim();
+          const c = (m.role === 'user' ? readReplies(m.content || '').text : m.content || '').trim();
           if (c) return c;
         }
         return undefined;
@@ -6643,8 +6649,9 @@ export function ChatApp() {
         widthClass={chatWidthClass}
         autoFocus={!opts?.inline && sid === activeId}
         input={s.input}
-        replyTo={s.replyTo}
-        onCancelReply={() => updateLocalState(sid, st => ({ ...st, replyTo: null }))}
+        replies={s.replies ?? []}
+        onChangeReplies={(next) => updateLocalState(sid, st => ({ ...st, replies: next(st.replies ?? []) }))}
+        getThread={() => scrollRef.current}
         onChangeInput={(val) => setInputForSession(sid, val)}
         pastedImages={s.pastedImages}
         onChangePastedImages={(val) => setPastedImagesForSession(sid, val)}
@@ -6902,7 +6909,7 @@ export function ChatApp() {
               <div key={item.uiKey ?? item.id} id={`msg-${item.id}`} className={inFold && !item.toolName ? 'opacity-70' : undefined}>
                 <MessageBubble
                   message={item}
-                  onReply={(message) => updateLocalState(sid, st => ({ ...st, replyTo: replyFromMessage(message) }))}
+                  onReply={(message) => updateLocalState(sid, st => ({ ...st, replies: addReply(st.replies, replyFromMessage(message)) }))}
                   onOpenTerminal={handleOpenTerminal}
                   isLast={isLast}
                   onAnswerAskUser={answerCb}
@@ -7980,8 +7987,14 @@ export function ChatApp() {
                       }}
                       onReply={(id, text) => {
                         const m = getState(activeId).messages.find(x => x.id === id);
-                        if (m) updateLocalState(activeId, st => ({ ...st, replyTo: replyFromSelection(m, text) }));
+                        if (m) updateLocalState(activeId, st => ({ ...st, replies: addReply(st.replies, replyFromSelection(m, text)) }));
                       }}
+                    />
+                  )}
+                  {activeId && (
+                    <ReplyHighlights
+                      getContainer={() => scrollRef.current}
+                      replies={getState(activeId).replies ?? NO_REPLIES}
                     />
                   )}
                   <div

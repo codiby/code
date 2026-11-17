@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense, memo } from 'react';
 import { ChevronDown, ChevronRight, Sparkles, Copy, Check, Reply } from 'lucide-react';
-import { canReplyTo, readReply } from '../lib/message-reply';
+import { canReplyTo, readReplies } from '../lib/message-reply';
 import { ReplyQuote } from './ReplyQuote';
 import type { ChatMessage, ClaudeClient } from '../lib/claude-client';
 import { isDotenvPath } from '../lib/monaco-dotenv';
@@ -1194,7 +1194,7 @@ export const MessageBubble = memo(function MessageBubble({ message: rawMessage, 
   }
 
   if (isUser) {
-    const body = readReply(message.content);
+    const body = readReplies(message.content);
     const pending = !!message.isPending;
     const sending = message.deliveryStatus === 'sending';
     const failed = message.deliveryStatus === 'failed';
@@ -1220,7 +1220,13 @@ export const MessageBubble = memo(function MessageBubble({ message: rawMessage, 
             }`}
           >
             {replyAction}
-            {body.reply && <div className="mb-2"><ReplyQuote reply={body.reply} /></div>}
+            {body.replies.length > 0 && (
+              <div className="mb-2 flex flex-col gap-1.5">
+                {body.replies.map((reply, i) => (
+                  <ReplyQuote key={i} reply={reply} index={body.replies.length > 1 ? i : undefined} />
+                ))}
+              </div>
+            )}
             {message.images && message.images.length > 0 && (
               <div className="flex gap-1.5 flex-wrap mb-1.5">
                 {message.images.map((img, i) => {

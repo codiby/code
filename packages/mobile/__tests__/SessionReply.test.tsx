@@ -5,7 +5,7 @@ import { Composer, MessageBubble } from '../src/components/Chat';
 import { fetchNewerMessages, sendMessage } from '../src/api/messages';
 import { readMessages } from '../src/api/messageStore';
 import type { ChatMessage, SessionSummary } from '../src/api/types';
-import { readReply, replyFromMessage } from '../src/lib/messageReply';
+import { readReplies, replyFromMessage } from '../src/lib/messageReply';
 
 jest.mock('react-native-reanimated', () => ({
   __esModule: true,
@@ -103,24 +103,24 @@ test.each([false, true])(
     const composer = () => tree.root.findByType(Composer);
     const bubbles = () => tree.root.findAllByType(MessageBubble);
     await act(async () => bubbles()[0]!.props.onReply(message));
-    expect(composer().props.replyTo).toEqual(replyFromMessage(message));
+    expect(composer().props.replies).toEqual([replyFromMessage(message)]);
     (sendMessage as jest.Mock).mockRejectedValueOnce(new Error('Sin conexión'));
     await act(async () => composer().props.onSend('Este archivo', []));
     const sent = (sendMessage as jest.Mock).mock.calls[0]![3];
-    expect(readReply(sent)).toEqual({
+    expect(readReplies(sent)).toEqual({
       text: 'Este archivo',
-      reply: replyFromMessage(message),
+      replies: [replyFromMessage(message)],
     });
-    expect(composer().props.replyTo).toBeNull();
+    expect(composer().props.replies).toEqual([]);
     const failed = bubbles().find(b => b.props.message.sendState === 'failed')!;
     expect(failed).toBeDefined();
     // Retrying an earlier message must leave a newly selected response alone.
     await act(async () => bubbles()[0]!.props.onReply(message));
     await act(async () => failed.props.onRetry(failed.props.message));
     expect((sendMessage as jest.Mock).mock.calls[1]![3]).toBe(sent);
-    expect(composer().props.replyTo).toEqual(replyFromMessage(message));
-    await act(async () => composer().props.onCancelReply());
-    expect(composer().props.replyTo).toBeNull();
+    expect(composer().props.replies).toEqual([replyFromMessage(message)]);
+    await act(async () => composer().props.onChangeReplies(() => []));
+    expect(composer().props.replies).toEqual([]);
     await act(async () => tree.unmount());
   },
 );

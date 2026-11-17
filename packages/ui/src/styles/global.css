@@ -753,6 +753,18 @@ html.light .thinking-sweep {
   .tool-ticker-in, .tool-ticker-out { animation-duration: 1ms; }
 }
 
+/* Pending quotes painted in the thread (ReplyHighlights, CSS Custom Highlight API). */
+::highlight(codiby-reply) {
+  background-color: rgba(167, 139, 250, .18);
+  text-decoration: underline 1.5px rgba(167, 139, 250, .9);
+  text-underline-offset: 3px;
+}
+::highlight(codiby-reply-hot) {
+  background-color: rgba(167, 139, 250, .38);
+  text-decoration: underline 1.5px rgb(167, 139, 250);
+  text-underline-offset: 3px;
+}
+
 /* Floating "Copy · Reply" bar over a text selection in the thread (SelectionReply). */
 @keyframes selection-reply-in {
   from { opacity: 0; transform: translateY(4px) scale(.96); }

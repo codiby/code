@@ -14,21 +14,38 @@ afterEach(() => jest.clearAllMocks());
 
 test('cancelar una cita conserva el texto del borrador', async () => {
   const onSend = jest.fn().mockResolvedValue(undefined);
-  const onCancelReply = jest.fn();
+  const onChangeReplies = jest.fn();
+  const quote = { id: 'm1', role: 'assistant' as const, text: 'Mensaje original' };
   let tree!: ReactTestRenderer.ReactTestRenderer;
   await act(async () => {
     tree = ReactTestRenderer.create(
       <Composer
         onSend={onSend}
         initialText="Mi respuesta"
-        replyTo={{ id: 'm1', role: 'assistant', text: 'Mensaje original' }}
-        onCancelReply={onCancelReply}
+        replies={[quote]}
+        onChangeReplies={onChangeReplies}
       />,
     );
   });
   await act(async () => button(tree, 'Cancel reply').props.onPress());
-  expect(onCancelReply).toHaveBeenCalledTimes(1);
+  expect(onChangeReplies).toHaveBeenCalledTimes(1);
+  expect(onChangeReplies.mock.calls[0][0]([quote])).toEqual([]);
   expect(button(tree, 'Message').props.value).toBe('Mi respuesta');
+  await act(async () => tree.unmount());
+});
+
+test('una cita con nota se puede enviar sin texto', async () => {
+  const onSend = jest.fn().mockResolvedValue(undefined);
+  let tree!: ReactTestRenderer.ReactTestRenderer;
+  await act(async () => {
+    tree = ReactTestRenderer.create(
+      <Composer
+        onSend={onSend}
+        replies={[{ id: 'm1', role: 'assistant', text: 'Cita', note: 'Cámbialo' }]}
+      />,
+    );
+  });
+  expect(button(tree, 'Send').props.disabled).toBe(false);
   await act(async () => tree.unmount());
 });
 

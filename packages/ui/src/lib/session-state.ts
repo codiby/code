@@ -17,8 +17,9 @@ export type PendingMessage = {
  *  server doesn't track these fields, so the `onSessionState` merge must
  *  preserve them across re-subscribes (see the merge in ChatApp). */
 export type LocalSessionState = SessionState & {
-  /** Unsent citation, scoped to this session like its draft and attachments. */
-  replyTo?: MessageReply | null;
+  /** Unsent quotes, each with an optional note, scoped to this session like
+   *  its draft and attachments. All of them go out in the next message. */
+  replies?: MessageReply[];
   contextTokens: number;
   pendingMessages: PendingMessage[];
   // Live HTML mockup preview shown in the side panel. UI-only — the bridge

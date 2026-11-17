@@ -31,8 +31,11 @@ export interface ComposerProps {
   readonly placeholder?: string;
   /** Host o modo del chat, dentro de la fila de acciones. */
   readonly context?: ReactNode;
-  readonly replyTo?: MessageReply | null;
-  readonly onCancelReply?: () => void;
+  /** Citas pendientes; salen todas, cada una con su nota, en el próximo mensaje. */
+  readonly replies?: readonly MessageReply[];
+  readonly onChangeReplies?: (
+    next: (prev: MessageReply[]) => MessageReply[],
+  ) => void;
   /** Texto recuperado al volver a la sesión. */
   readonly initialText?: string;
   /** Se llama en cada cambio; la pantalla decide cuándo persistir. */
@@ -69,8 +72,8 @@ export function Composer({
   allowAttachments = true,
   placeholder = 'Write a message…',
   context,
-  replyTo,
-  onCancelReply,
+  replies = [],
+  onChangeReplies,
   initialText = '',
   onTextChange,
   insertText,
@@ -79,11 +82,14 @@ export function Composer({
   const ink = useInk();
   const [text, setText] = useState(initialText);
   const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
+  const replyCount = replies.length;
   useEffect(() => {
-    if (replyTo) {
+    if (replyCount > 0) {
       inputRef.current?.focus();
     }
-  }, [replyTo]);
+  }, [replyCount]);
+  // Una cita con nota ya es un mensaje, aunque el campo de texto esté vacío.
+  const hasNotes = replies.some(r => r.note?.trim());
 
   // Solo el nonce está en las dependencias: si estuviera `insertText`, editar
   // el input después de volcar una sugerencia lo revertiría al siguiente
@@ -102,7 +108,7 @@ export function Composer({
 
   const trimmed = text.trim();
   const canSend =
-    (trimmed.length > 0 || images.length > 0) &&
+    (trimmed.length > 0 || images.length > 0 || hasNotes) &&
     !isSending &&
     !disabled &&
     !sendDisabled;
@@ -202,10 +208,28 @@ export function Composer({
           redondo de 44 px y un botón circular aparte para enviar. */}
       <View className="flex-row items-end gap-2">
         <View className="min-h-11 flex-1 overflow-hidden rounded-[22px] bg-slate-100">
-          {replyTo ? (
-            <View className="mx-2 mt-2">
-              <ReplyQuote reply={replyTo} onCancel={onCancelReply} />
-            </View>
+          {replyCount > 0 ? (
+            <ScrollView
+              className="mx-2 mt-2 max-h-56"
+              contentContainerClassName="gap-1.5"
+              keyboardShouldPersistTaps="handled"
+            >
+              {replies.map((reply, i) => (
+                <ReplyQuote
+                  key={`${reply.id}:${reply.text}`}
+                  reply={reply}
+                  index={replyCount > 1 ? i : undefined}
+                  onCancel={() =>
+                    onChangeReplies?.(prev => prev.filter((_, j) => j !== i))
+                  }
+                  onNoteChange={note =>
+                    onChangeReplies?.(prev =>
+                      prev.map((r, j) => (j === i ? { ...r, note } : r)),
+                    )
+                  }
+                />
+              ))}
+            </ScrollView>
           ) : null}
           <View className="flex-row items-end">
             {allowAttachments ? (

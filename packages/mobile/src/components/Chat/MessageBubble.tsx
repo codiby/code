@@ -5,7 +5,7 @@ import { Pressable, Text, View } from 'react-native';
 import type { ChatMessage } from '../../api/types';
 import { formatFullTimestamp } from '../../lib/format';
 import type { GroupEntry } from '../../lib/chatItems';
-import { readReply } from '../../lib/messageReply';
+import { readReplies } from '../../lib/messageReply';
 import { Markdown } from '../Markdown';
 import { ChatImages } from './ChatImage';
 import { ThinkingBlock } from './ThinkingBlock';
@@ -63,8 +63,8 @@ export function MessageBubble({
   }
 
   const parsed = isUser
-    ? readReply(message.content)
-    : { text: message.content, reply: null };
+    ? readReplies(message.content)
+    : { text: message.content, replies: [] };
   const content = parsed.text.trim();
   const hasImages = message.images.length > 0;
   // Un mensaje vacío que sí trajo herramientas no se descarta: la burbuja es
@@ -126,9 +126,15 @@ export function MessageBubble({
               : 'w-full'
           }
         >
-          {parsed.reply ? (
-            <View className="mb-2">
-              <ReplyQuote reply={parsed.reply} />
+          {parsed.replies.length > 0 ? (
+            <View className="mb-2 gap-1.5">
+              {parsed.replies.map((reply, i) => (
+                <ReplyQuote
+                  key={i}
+                  reply={reply}
+                  index={parsed.replies.length > 1 ? i : undefined}
+                />
+              ))}
             </View>
           ) : null}
           <ChatImages images={message.images} />

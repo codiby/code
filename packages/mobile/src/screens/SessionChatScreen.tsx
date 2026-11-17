@@ -70,8 +70,9 @@ import {
 } from '../lib/newSessionSuggestion';
 import { createSession } from '../api/sessions';
 import {
+  addReply,
   replyFromMessage,
-  withReply,
+  withReplies,
   type MessageReply,
 } from '../lib/messageReply';
 import { useRouteFor } from '../config/ServerConfigContext';
@@ -204,9 +205,9 @@ export function SessionChatScreen({
   useEffect(() => {
     loadAnsweredSuggestions().then(setAnswered);
   }, []);
-  const [replyTo, setReplyTo] = useState<MessageReply | null>(null);
+  const [replies, setReplies] = useState<MessageReply[]>([]);
   const selectReply = useCallback((message: ChatMessage) => {
-    setReplyTo(replyFromMessage(message));
+    setReplies(current => addReply(current, replyFromMessage(message)));
   }, []);
   const [permission, setPermission] = useState<PermissionRequest | null>(null);
   const [isResponding, setIsResponding] = useState(false);
@@ -590,11 +591,11 @@ export function SessionChatScreen({
     (
       text: string,
       images: MessageImage[],
-      reply: MessageReply | null = replyTo,
+      quoted: readonly MessageReply[] = replies,
     ): Promise<void> => {
-      const outgoing = withReply(text, reply);
-      if (reply !== null && reply === replyTo) {
-        setReplyTo(null);
+      const outgoing = withReplies(text, quoted);
+      if (quoted.length > 0 && quoted === replies) {
+        setReplies([]);
       }
       const optimistic: ChatMessage = {
         id: `${OPTIMISTIC_PREFIX}${Date.now()}`,
@@ -638,7 +639,7 @@ export function SessionChatScreen({
       });
       return Promise.resolve();
     },
-    [baseUrl, session.id, token, sync, socketStatus, setSendState, replyTo],
+    [baseUrl, session.id, token, sync, socketStatus, setSendState, replies],
   );
 
   // El encargo del chat directo sale una sola vez, aunque la pantalla se
@@ -649,7 +650,7 @@ export function SessionChatScreen({
       return;
     }
     handoffSentRef.current = true;
-    handleSend(handoff.text, handoff.images, null);
+    handleSend(handoff.text, handoff.images, []);
   }, [handoff, handleSend]);
 
   /** La oferta de sesión nueva que sigue en pie, si nadie la contestó. */
@@ -704,7 +705,7 @@ export function SessionChatScreen({
   const retrySend = useCallback(
     (message: ChatMessage) => {
       setMessages(current => current.filter(item => item.id !== message.id));
-      handleSend(message.content, message.images, null);
+      handleSend(message.content, message.images, []);
     },
     [handleSend],
   );
@@ -900,7 +901,7 @@ export function SessionChatScreen({
                       onCreate={() => createSuggestedSession(newSession)}
                       onContinue={() => {
                         answerSuggestion(newSession);
-                        handleSend('Continue here, in this session.', [], null);
+                        handleSend('Continue here, in this session.', [], []);
                       }}
                     />
                   ) : (
@@ -952,7 +953,7 @@ export function SessionChatScreen({
           >
             {/* Se esconde mientras escribes: con el teclado abierto la
                 pantalla ya está apretada y los chips empujarían el hilo. */}
-            {!directChat && !hasDraftText && !isStreaming && !replyTo ? (
+            {!directChat && !hasDraftText && !isStreaming && replies.length === 0 ? (
               <SuggestionRow
                 suggestions={suggestions}
                 onSend={text => {
@@ -967,8 +968,8 @@ export function SessionChatScreen({
 
             <Composer
               onSend={handleSend}
-              replyTo={replyTo}
-              onCancelReply={() => setReplyTo(null)}
+              replies={replies}
+              onChangeReplies={next => setReplies(next)}
               context={directChat?.context}
               placeholder={directChat ? 'What do you want to do?' : undefined}
               disabled={isLoading || baseUrl.length === 0 || directChat?.busy}

@@ -1,10 +1,19 @@
 import { parseLiveMessage } from '../src/api/messages';
 import type { ChatMessage } from '../src/api/types';
 import {
-  readReply,
+  addReply,
+  readReplies,
   replyFromMessage,
-  withReply,
+  withReplies,
+  type MessageReply,
 } from '../src/lib/messageReply';
+
+const readReply = (content: string) => {
+  const { text, replies } = readReplies(content);
+  return { text, reply: replies[0] ?? null };
+};
+const withReply = (text: string, reply: MessageReply | null) =>
+  withReplies(text, reply ? [reply] : []);
 
 const original = {
   id: 'original',
@@ -61,4 +70,21 @@ test('la cita no recorta un cuerpo de 8,000 caracteres al sincronizar', () => {
     content: withReply(text, reply),
   });
   expect(readReply(message!.content)).toEqual({ text, reply });
+});
+
+test('varias citas con nota viajan en un solo mensaje, igual que en escritorio', () => {
+  const replies: MessageReply[] = [
+    { id: 'a', role: 'assistant', text: 'Agrupar por repo', note: 'Por branch' },
+    { id: 'a', role: 'assistant', text: 'Cajón de archivadas' },
+  ];
+  const message = parseLiveMessage({
+    id: 'response',
+    role: 'user',
+    content: withReplies('En general bien', replies),
+  });
+  expect(readReplies(message!.content)).toEqual({
+    text: 'En general bien',
+    replies,
+  });
+  expect(addReply(addReply([], replies[1]!), replies[1]!)).toEqual([replies[1]]);
 });

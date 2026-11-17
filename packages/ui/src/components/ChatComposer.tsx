@@ -18,6 +18,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MessageReply } from '../lib/message-reply';
 import { ReplyQuote } from './ReplyQuote';
+import { jumpToReply, setHotReply } from './ReplyHighlights';
 import { useCodexModels, codexEfforts } from '../lib/codex-models';
 import { File as FileIcon, Folder as FolderIcon, Plus as PlusIcon, Send as SendIcon } from 'lucide-react';
 import { CompactionIndicator } from './CompactionIndicator';
@@ -208,8 +209,12 @@ interface Props {
   autoFocus?: boolean;
 
   input: string;
-  replyTo?: MessageReply | null;
-  onCancelReply?: () => void;
+  /** Pending quotes (Reply on a message or a selection). They all go out,
+   *  each with its note, in the next message. */
+  replies?: readonly MessageReply[];
+  onChangeReplies?: (next: (prev: MessageReply[]) => MessageReply[]) => void;
+  /** The thread, so clicking a quote can scroll to it. */
+  getThread?: () => HTMLElement | null;
   onChangeInput: (val: string | ((prev: string) => string)) => void;
   pastedImages: PastedImage[];
   onChangePastedImages: (
@@ -287,9 +292,20 @@ export function ChatComposer(props: Props) {
   // instance has independent slash / file-mention picker state.
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
+  // A new quote takes the cursor, so the note is typed right away.
+  const replies = props.replies ?? [];
+  const noteRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const replyCountRef = useRef(replies.length);
   useEffect(() => {
-    if (props.replyTo) editorRef.current?.focus();
-  }, [props.replyTo]);
+    if (replies.length > replyCountRef.current) noteRefs.current[replies.length - 1]?.focus();
+    replyCountRef.current = replies.length;
+  }, [replies.length]);
+  useEffect(() => () => setHotReply(null), []);
+  const removeReply = (i: number) => {
+    setHotReply(null);
+    props.onChangeReplies?.(prev => prev.filter((_, j) => j !== i));
+    editorRef.current?.focus();
+  };
   const historyIdxRef = useRef(-1);
   const historyDraftRef = useRef('');
   const dropDepthRef = useRef(0);
@@ -409,10 +425,10 @@ export function ChatComposer(props: Props) {
   // Chat-mode key handling on the contenteditable editor. Selection comes from
   // `caret()` (character offsets), and edits go through `applyEdit`.
   const handleChatKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'Escape' && props.replyTo && !slash.isActive && !fileMention.isActive) {
+    if (e.key === 'Escape' && replies.length && !slash.isActive && !fileMention.isActive) {
       e.preventDefault();
       e.stopPropagation();
-      props.onCancelReply?.();
+      removeReply(replies.length - 1);
       return;
     }
     const mod = e.metaKey || e.ctrlKey;
@@ -726,9 +742,32 @@ export function ChatComposer(props: Props) {
                 {dragKind === 'file-reference' ? 'Drop to mention file' : 'Drop files to attach'}
               </div>
             )}
-            {!isTerminalMode && props.replyTo && (
-              <div className="px-3 pt-3" aria-label="Replying to a message">
-                <ReplyQuote reply={props.replyTo} onCancel={props.onCancelReply} />
+            {!isTerminalMode && replies.length > 0 && (
+              <div className="px-3 pt-3" aria-label={replies.length > 1 ? `Replying to ${replies.length} quotes` : 'Replying to a message'}>
+                {replies.length > 1 && (
+                  <div className="mb-1.5 flex items-center justify-between text-[11px] text-zinc-500">
+                    <span>{replies.length} quotes · sent together in one message</span>
+                    <button type="button" className="hover:text-zinc-200"
+                      onClick={() => { setHotReply(null); props.onChangeReplies?.(() => []); editorRef.current?.focus(); }}>
+                      Discard all
+                    </button>
+                  </div>
+                )}
+                <div className="flex max-h-60 flex-col gap-1.5 overflow-y-auto">
+                  {replies.map((reply, i) => (
+                    <ReplyQuote
+                      key={`${reply.id}:${reply.text}`}
+                      ref={el => { noteRefs.current[i] = el; }}
+                      reply={reply}
+                      index={replies.length > 1 ? i : undefined}
+                      onCancel={() => removeReply(i)}
+                      onNoteChange={note => props.onChangeReplies?.(prev => prev.map((r, j) => j === i ? { ...r, note } : r))}
+                      onNoteDone={() => editorRef.current?.focus()}
+                      onHover={on => setHotReply(on ? i : null)}
+                      onJump={props.getThread ? () => jumpToReply(props.getThread!(), reply) : undefined}
+                    />
+                  ))}
+                </div>
               </div>
             )}
             {refs && refs.length > 0 && (

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ChatMessage } from './claude-client';
-import { canReplyTo, readReply, replyFromMessage, replyFromSelection, withReply } from './message-reply';
+import { addReply, canReplyTo, MAX_REPLIES, readReplies, replyFromMessage, replyFromSelection, withReplies } from './message-reply';
 
 const message = (extra: Partial<ChatMessage> = {}): ChatMessage => ({
   id: 'original', role: 'assistant', content: 'Primera línea\nSegunda línea', timestamp: 1, ...extra,
@@ -9,24 +9,53 @@ const message = (extra: Partial<ChatMessage> = {}): ChatMessage => ({
 describe('message replies shared with Android', () => {
   test('reads the exact envelope sent by Android, including multiline text', () => {
     const content = '<codiby-reply>{"id":"android-message","role":"assistant","text":"Primera línea\\nSegunda línea"}</codiby-reply>\n\nTesteando';
-    expect(readReply(content)).toEqual({
-      text: 'Testeando', reply: { id: 'android-message', role: 'assistant', text: 'Primera línea\nSegunda línea' },
+    expect(readReplies(content)).toEqual({
+      text: 'Testeando', replies: [{ id: 'android-message', role: 'assistant', text: 'Primera línea\nSegunda línea' }],
     });
   });
 
   test('the text persisted by the bridge retains the citation through queues and retries', () => {
     const reply = replyFromMessage(message());
-    const sent = withReply('Mi respuesta', reply);
+    const sent = withReplies('Mi respuesta', [reply]);
     const reloaded = JSON.parse(JSON.stringify({ content: sent }));
-    expect(readReply(reloaded.content)).toEqual({ text: 'Mi respuesta', reply });
-    expect(withReply('Sin cita', null)).toBe('Sin cita');
+    expect(readReplies(reloaded.content)).toEqual({ text: 'Mi respuesta', replies: [reply] });
+    expect(withReplies('Sin cita', [])).toBe('Sin cita');
+  });
+
+  test('one quote without a note keeps the single envelope older clients read', () => {
+    expect(withReplies('x', [{ id: 'a', role: 'assistant', text: 'q', note: '  ' }]))
+      .toBe('<codiby-reply>{"id":"a","role":"assistant","text":"q"}</codiby-reply>\n\nx');
+  });
+
+  test('several quotes with notes travel in one message and come back in order', () => {
+    const replies = [
+      { id: 'a', role: 'assistant' as const, text: 'Agrupar por repo', note: 'Sí, pero por branch' },
+      { id: 'a', role: 'assistant' as const, text: 'Cajón de archivadas' },
+      { id: 'b', role: 'user' as const, text: 'Mi pregunta', note: 'Ignora esto' },
+    ];
+    const sent = withReplies('En general bien', replies);
+    expect(sent.startsWith('<codiby-replies>')).toBe(true);
+    expect(readReplies(sent)).toEqual({ text: 'En general bien', replies });
+    // A single quote with a note needs the list envelope to carry the note.
+    expect(readReplies(withReplies('', [replies[0]]))).toEqual({ text: '', replies: [replies[0]] });
+  });
+
+  test('pending quotes dedupe and cap', () => {
+    const r = { id: 'a', role: 'assistant' as const, text: 'q' };
+    expect(addReply(addReply(undefined, r), r)).toEqual([r]);
+    let list = addReply(undefined, r);
+    for (let i = 0; i < 20; i++) list = addReply(list, { ...r, text: `q${i}` });
+    expect(list).toHaveLength(MAX_REPLIES);
+    expect(list.at(-1)?.text).toBe('q19');
   });
 
   test('a reply to a reply cites its body without nesting envelopes', () => {
     const original = replyFromMessage(message());
-    const next = replyFromMessage(message({ role: 'user', content: withReply('Respuesta anterior', original) }));
+    const next = replyFromMessage(message({ role: 'user', content: withReplies('Respuesta anterior', [original]) }));
     expect(next.text).toBe('Respuesta anterior');
     expect(next.role).toBe('user');
+    const multi = replyFromMessage(message({ role: 'user', content: withReplies('Cuerpo', [{ ...original, note: 'n' }, original]) }));
+    expect(multi.text).toBe('Cuerpo');
     expect(replyFromMessage(message({ content: 'a '.repeat(600) })).text).toHaveLength(600);
     expect(replyFromMessage(message({ content: '', images: [{ media_type: 'image/png', data: 'photo' }] })).text).toBe('Image');
   });
@@ -42,8 +71,13 @@ describe('message replies shared with Android', () => {
     'Normal', '<codiby-reply>incompleto', '<codiby-reply>null</codiby-reply>\n\ntexto',
     '<codiby-reply>{"id":"x","role":"system","text":"x"}</codiby-reply>\n\ntexto',
     `<codiby-reply>${JSON.stringify({ id: 'x', role: 'user', text: 'x'.repeat(601) })}</codiby-reply>\n\ntexto`,
+    '<codiby-replies>[]</codiby-replies>\n\ntexto',
+    '<codiby-replies>{"id":"x","role":"user","text":"x"}</codiby-replies>\n\ntexto',
+    `<codiby-replies>${JSON.stringify([{ id: 'x', role: 'user', text: 'x' }, { id: 'y', role: 'system', text: 'y' }])}</codiby-replies>\n\ntexto`,
+    `<codiby-replies>${JSON.stringify([{ id: 'x', role: 'user', text: 'x', note: 5 }])}</codiby-replies>\n\ntexto`,
+    `<codiby-replies>${JSON.stringify(Array.from({ length: 11 }, (_, i) => ({ id: `${i}`, role: 'user', text: 'x' })))}</codiby-replies>\n\ntexto`,
   ])('malformed citation remains visible as ordinary text: %s', text => {
-    expect(readReply(text)).toEqual({ text, reply: null });
+    expect(readReplies(text)).toEqual({ text, replies: [] });
   });
 
   test('only delivered conversational messages are reply targets', () => {

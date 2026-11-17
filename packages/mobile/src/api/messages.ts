@@ -5,7 +5,7 @@ import { currentTransport } from './network';
 import { deviceName } from '../lib/device';
 import type { ChatMessage, MessageImage, MessagePage } from './types';
 import { stripAnsi } from '../lib/ansi';
-import { readReply } from '../lib/messageReply';
+import { readReplies } from '../lib/messageReply';
 
 /** El bridge pagina hacia atrás; sin `before_seq` asume 0 y devuelve vacío. */
 export const LATEST_SEQ = Number.MAX_SAFE_INTEGER;
@@ -71,7 +71,7 @@ function normalizeContent(raw: string): string {
 
   const clean = stripAnsi(raw);
   // The citation must not consume the user's existing 8,000-character allowance.
-  const body = readReply(clean);
+  const body = readReplies(clean);
   const limit = MAX_STORED_CHARS + clean.length - body.text.length;
   return clean.length > limit
     ? `${clean.slice(0, limit)}\n\n… (+${kb} KB truncated)`
