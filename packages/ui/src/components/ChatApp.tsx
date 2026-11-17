@@ -110,7 +110,7 @@ import { LspClient } from '../lib/lsp-client';
 import { DebugPanel } from './DebugPanel';
 import { type MockupComment } from '../lib/mockup-inspector';
 import { MockupPanel } from './MockupPanel';
-import { BrowserPanel } from './BrowserPanel';
+import { BrowserPanel, openBackgroundBrowserPreview } from './BrowserPanel';
 import { PlanPanel } from './PlanPanel';
 import { RequirementsPanel } from './RequirementsPanel';
 import { RemoteVersionBanner } from './RemoteVersionBanner';
@@ -2578,6 +2578,13 @@ export function ChatApp() {
           if (!name || !url) return;
           const t = title || name;
           const jar = cookieJar || 'default';
+          const openSeq = Date.now();
+          // Create (or re-point) the native view now, hidden, instead of when
+          // the panel first mounts: the panel only mounts for the session on
+          // screen, and until then the agent's browser_* calls found no view
+          // at all. The panel later opens with this same `openSeq`, which is
+          // a pure reattach — the page the agent left is what the user sees.
+          openBackgroundBrowserPreview({ label: browserLabelFor(sid, name), url, title: t, cookieJar: jar, openSeq });
           // The browser opens as its own panel tab and coexists with any
           // file/mockup/terminal tabs already open — we only bump the focus
           // seq so the workspace reveals (activates) this browser's tab.
@@ -2585,7 +2592,7 @@ export function ChatApp() {
             ...s,
             browsers: {
               ...s.browsers,
-              [name]: { url, title: t, openSeq: Date.now(), cookieJar: jar },
+              [name]: { url, title: t, openSeq, cookieJar: jar },
             },
             activeBrowserName: name,
             panelFocusTabId: 'browser:' + name,
@@ -8735,13 +8742,6 @@ export function ChatApp() {
                       title={b.title}
                       openSeq={b.openSeq}
                       cookieJar={b.cookieJar}
-                      // The preview is a NATIVE child view overlaid on the
-                      // window — DOM modals can never z-index above it. Any
-                      // full-screen overlay ChatApp can open must be listed
-                      // here so the native view hides while it's up.
-                      obscured={showPalette || projectSettings.open || switcher.open
-                        || browserUrlModalOpen || showNewSession || showShortcuts
-                        || showSkills || showMemory || pendingBypassSessionId !== null}
                       inspect={!!active.browserInspect[name]}
                       comments={commentsForActive}
                       // Mounting means this browser's tab is the active one —

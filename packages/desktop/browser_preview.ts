@@ -1,9 +1,12 @@
 /**
  * Embedded browser preview — Electron port of `browser_preview.rs`.
  *
- * Each preview is a `BrowserView` attached to the main `BrowserWindow` at
- * the rect computed by the React panel's ResizeObserver. The previewed
- * page is third-party content, so the BrowserView gets its own preload
+ * Each preview is a `WebContentsView` child of the main `BrowserWindow`'s
+ * content view, positioned at the rect the React panel measures. It is a
+ * native layer painted above the host DOM, so the renderer hides it (and
+ * shows a screenshot placeholder) whenever DOM UI covers it — see
+ * `lib/browser-occlusion.ts`. The previewed
+ * page is third-party content, so the view gets its own preload
  * (`preview_preload`) that only exposes a single `__codiby_relay`
  * function — used by the injected inspector script to relay events back
  * to the host renderer.
@@ -26,7 +29,7 @@
  *     - "browser-preview://inspect-auto-off"
  *     - "browser-preview://url-changed"
  */
-import { BrowserView, BrowserWindow, WebContents, session as electronSession } from 'electron';
+import { BrowserWindow, WebContents, WebContentsView, session as electronSession } from 'electron';
 import { join } from 'node:path';
 import { renderInspectorScript } from './inspector_script';
 import { attachCdp, detachCdp } from './cdp';
@@ -36,14 +39,16 @@ export type Bounds = { x: number; y: number; width: number; height: number };
 
 type PreviewState = {
   label: string;
-  view: BrowserView;
+  view: WebContentsView;
+  /** Shown in the window (`setVisible`). Hidden views stay children of the
+   *  content view so a show is just a flag flip, not a re-parent. */
   attached: boolean;
   bounds: Bounds;
   inspectorReady: boolean;
   /** Cookie-jar name used to build this view's partition. Tracked so an
    *  open call requesting a different jar can tear down and recreate the
    *  view under the new partition — Electron pins the partition at
-   *  `BrowserView` construction time, so an in-place swap isn't possible. */
+   *  view construction time, so an in-place swap isn't possible. */
   cookieJar: string;
   /** The model-driven re-open token (`openSeq`) the view was last (re)pointed
    *  for. The React panel re-mounts on every tab switch and re-issues
@@ -155,6 +160,11 @@ export async function openBrowserPreview(args: {
    *  this browser, navigate to `url`. Undefined falls back to the legacy
    *  URL-diff behaviour. */
   openSeq?: number;
+  /** Open (or re-point) without touching visibility: the agent opened this
+   *  preview in a session the user isn't looking at, so the view must exist
+   *  for its `browser_*` tools without appearing over the current session.
+   *  A new view starts hidden; an existing one keeps its visibility. */
+  background?: boolean;
   x: number; y: number; width: number; height: number;
 }): Promise<void> {
   validateLabel(args.label);
@@ -180,17 +190,19 @@ export async function openBrowserPreview(args: {
   //     (loadURL). This is a fresh `browser_open` from the SDK. Cheaper than
   //     destroy+create, preserves the cookie/cache scope.
   //   - Different jar → fall through and recreate. The partition is fixed
-  //     at `BrowserView` construction time, so an in-place swap is not
+  //     at view construction time, so an in-place swap is not
   //     possible; close + open is the only way to apply the new jar.
   //   - No existing view → create.
   const existing = previews.get(args.label);
   if (existing && existing.cookieJar === jar) {
-    if (!existing.attached) {
-      main.addBrowserView(existing.view);
-      existing.attached = true;
+    if (!args.background) {
+      existing.bounds = bounds;
+      existing.view.setBounds(bounds);
+      if (!existing.attached) {
+        existing.view.setVisible(true);
+        existing.attached = true;
+      }
     }
-    existing.bounds = bounds;
-    existing.view.setBounds(bounds);
     // Only navigate when the SDK genuinely re-pointed this browser (openSeq
     // bumped). On a pure reattach the live page is authoritative — leave it
     // be. When openSeq is absent (legacy caller) fall back to the URL diff.
@@ -210,7 +222,7 @@ export async function openBrowserPreview(args: {
   }
 
   const partitionedSession = electronSession.fromPartition(partition);
-  const view = new BrowserView({
+  const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -224,7 +236,7 @@ export async function openBrowserPreview(args: {
   const state: PreviewState = {
     label: args.label,
     view,
-    attached: true,
+    attached: !args.background,
     bounds,
     inspectorReady: false,
     cookieJar: jar,
@@ -233,14 +245,35 @@ export async function openBrowserPreview(args: {
   previews.set(args.label, state);
   wcIdToLabel.set(wcId, args.label);
 
-  main.addBrowserView(view);
+  // Bounds must be on-screen even for a hidden view: macOS doesn't start
+  // rendering one placed off the window (VS Code hit the same thing).
   view.setBounds(bounds);
-  view.setAutoResize({ width: false, height: false });
+  view.setBackgroundColor('#FFFFFF');
+  if (args.background) view.setVisible(false);
+  main.contentView.addChildView(view);
+  keepAwakeForAgent(view.webContents);
 
   wireWebContents(args.label, view.webContents);
-  attachCdp(args.label, view.webContents);
+  attachCdp(args.label, view.webContents, {
+    isVisible: () => view.getVisible(),
+    // A never-shown view has no render pipeline; a show/hide round trip in
+    // the same task starts it without the user ever seeing the view.
+    wake: () => { if (!view.getVisible()) { view.setVisible(true); view.setVisible(false); } },
+  });
 
   startLoad(view.webContents, targetUrl);
+}
+
+/** Every preview can be driven by the agent, including while hidden in a
+ *  session the user isn't looking at. Chromium throttles hidden pages —
+ *  rAF stops, timers slow to 1 Hz, no frames are produced — which stalls
+ *  `browser_wait_for`, clicks that wait on a repaint and screenshots. Electron
+ *  only applies the setting to a never-shown view once its frame exists, so
+ *  it is re-applied on every `dom-ready` (that also covers the renderer
+ *  swaps a cross-site navigation does). */
+function keepAwakeForAgent(wc: WebContents): void {
+  wc.setBackgroundThrottling(false);
+  wc.on('dom-ready', () => wc.setBackgroundThrottling(false));
 }
 
 /** Kick off navigation without holding the open IPC hostage to it. The
@@ -260,11 +293,10 @@ export function closeBrowserPreview(label: string): boolean {
   if (!state) return false;
   detachCdp(label);
   try {
-    if (mainWindowRef && state.attached) mainWindowRef.removeBrowserView(state.view);
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) mainWindowRef.contentView.removeChildView(state.view);
   } catch {}
   try {
-    // Destroy the underlying webContents. There's no public BrowserView.destroy,
-    // but closing the webContents collapses the surface.
+    // Destroy the underlying webContents; removing the view alone leaks it.
     const wc = state.view.webContents as unknown as { destroy?: () => void; close?: () => void };
     if (typeof wc.destroy === 'function') wc.destroy();
     else if (typeof wc.close === 'function') wc.close();
@@ -290,14 +322,29 @@ export function setVisible(label: string, visible: boolean): boolean {
   if (!state) return false;
   if (!mainWindowRef) return false;
   if (visible && !state.attached) {
-    mainWindowRef.addBrowserView(state.view);
     state.view.setBounds(state.bounds);
+    state.view.setVisible(true);
     state.attached = true;
   } else if (!visible && state.attached) {
-    mainWindowRef.removeBrowserView(state.view);
+    state.view.setVisible(false);
     state.attached = false;
   }
   return true;
+}
+
+/** JPEG of the visible page as a data URL, for the renderer's placeholder —
+ *  what the panel shows while DOM UI covers the native view. Full resolution
+ *  at quality 80, like VS Code's integrated browser. Null when the view is
+ *  hidden (nothing current to show). */
+export async function capturePlaceholder(label: string): Promise<string | null> {
+  validateLabel(label);
+  const state = previews.get(label);
+  if (!state || !state.attached) return null;
+  const wc = state.view.webContents;
+  if (wc.isDestroyed() || !wc.getURL()) return null;
+  const image = await wc.capturePage(undefined, { stayHidden: true });
+  if (image.isEmpty()) return null;
+  return `data:image/jpeg;base64,${image.toJPEG(80).toString('base64')}`;
 }
 
 export function setInspect(label: string, enabled: boolean): boolean {

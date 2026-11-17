@@ -68,6 +68,8 @@ type AxNode = {
 
 type CdpState = {
   wc: WebContents;
+  /** The hosting view, when browser_preview attached us (absent in tests). */
+  view?: ViewControls;
   refToBackendNode: Map<string, number>;
   network: NetEntry[];
   netInflight: Map<string, NetEntry>;
@@ -94,7 +96,14 @@ function send<T = unknown>(wc: WebContents, method: string, params?: object): Pr
 // attach / detach
 // ---------------------------------------------------------------------------
 
-export function attachCdp(label: string, wc: WebContents): void {
+/** What cdp.ts needs from the view that hosts `wc` (owned by browser_preview). */
+export type ViewControls = {
+  isVisible: () => boolean;
+  /** Start the render pipeline of a view that has never been shown. */
+  wake: () => void;
+};
+
+export function attachCdp(label: string, wc: WebContents, view?: ViewControls): void {
   try {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
   } catch {
@@ -103,6 +112,7 @@ export function attachCdp(label: string, wc: WebContents): void {
 
   const state: CdpState = {
     wc,
+    view,
     refToBackendNode: new Map(),
     network: [],
     netInflight: new Map(),
@@ -285,10 +295,30 @@ export async function snapshot(label: string): Promise<{ url: string; title: str
 // screenshot
 // ---------------------------------------------------------------------------
 
+/**
+ * PNG of the page, also while its view is hidden in a session the user isn't
+ * looking at. CDP's `Page.captureScreenshot` waits for a compositor frame a
+ * hidden page never produces, so it hung until the bridge's timeout.
+ * `capturePage({ stayHidden: true })` renders one without showing the view —
+ * VS Code's integrated browser captures the same way.
+ */
 export async function screenshot(label: string): Promise<{ format: 'png'; data: string }> {
   const state = getState(label);
-  const r = await send<{ data: string }>(state.wc, 'Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-  return { format: 'png', data: r.data };
+  if (state.view && !state.view.isVisible()) state.view.wake();
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const image = await state.wc.capturePage(undefined, { stayHidden: true });
+      return { format: 'png', data: image.toPNG().toString('base64') };
+    } catch (err) {
+      // No frame yet right after the pipeline starts (Electron reports it
+      // as `UnknownVizError`); it is there a frame later.
+      if (!(err instanceof Error && err.message === 'UnknownVizError')) throw err;
+      lastError = err;
+      await new Promise(resolve => setTimeout(resolve, 16));
+    }
+  }
+  throw new Error(`could not capture the page: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,11 +1,15 @@
 /**
- * Browser preview side-panel — embedded Electron child BrowserView.
+ * Browser preview side-panel — embedded Electron child WebContentsView.
  *
  * The panel renders a React control header at the top (Inspect, Send, Reload,
- * Close). The body is a sized-but-empty `<div ref={bodyRef}>`; its bounding
- * rect is what the Electron `browser_preview` module positions the native
- * child BrowserView to. The page itself lives on that overlaid surface —
- * same Codiby window, no separate OS window.
+ * Close). The body is a `<div ref={bodyRef}>` whose bounding rect is what the
+ * Electron `browser_preview` module positions the native view to. The page
+ * lives on that overlaid surface — same Codiby window, no separate OS window.
+ *
+ * The native view paints above all DOM, so whenever DOM UI is drawn over the
+ * body (found automatically by `lib/browser-occlusion.ts`) the view is hidden
+ * and the body shows the last screenshot of the page instead — the same
+ * scheme VS Code's integrated browser uses. No overlay needs to register.
  *
  * Layout sync: a ResizeObserver on the body div re-pushes `set_bounds` on
  * every measurable change. A window-resize listener catches the parent
@@ -33,6 +37,12 @@ import { Button } from '@heroui/react';
 import { ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Globe, RotateCw, Send } from 'lucide-react';
 import type { MockupComment } from '../lib/mockup-inspector';
 import { getNative, isNative, tryInvokeNative } from '../lib/native';
+import { watchOcclusion } from '../lib/browser-occlusion';
+
+/** How often the placeholder screenshot is refreshed while the page shows
+ *  (VS Code uses the same 1 s). Whatever covers the page next reveals a
+ *  frame at most this old. */
+const PLACEHOLDER_INTERVAL_MS = 1_000;
 
 export type BrowserPanelProps = {
   label: string;
@@ -44,10 +54,6 @@ export type BrowserPanelProps = {
   cookieJar: string;
   inspect: boolean;
   comments: MockupComment[];
-  /** When true, hide the OS-level child webview so a React overlay (e.g.
-   *  the Cmd+K palette) is visible. The webview sits on top of all React
-   *  content otherwise. */
-  obscured: boolean;
   onSetInspect: (next: boolean) => void;
   onSetComments: (next: MockupComment[]) => void;
   onSendToChat: (markdown: string) => void;
@@ -135,7 +141,25 @@ function sameBounds(a: Bounds | null, b: Bounds | null): boolean {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
-/** Open a BrowserView at the host element's screen rect and keep it pinned
+/** Create (or re-point) a preview's native view without showing it, for a
+ *  browser the agent opened in a session that may not be on screen. Main
+ *  keeps a new view hidden and leaves an existing one as it is; the panel's
+ *  own open, with the same `openSeq`, later just reveals it. The bounds only
+ *  need to be on-screen (macOS renders nothing for an off-window view); the
+ *  panel re-measures them when it mounts. */
+export function openBackgroundBrowserPreview(args: {
+  label: string; url: string; title: string; cookieJar: string; openSeq: number;
+}): void {
+  const native = getNative();
+  if (!native) return;
+  const zoom = native.getZoomFactor?.() ?? 1;
+  const width = Math.max(1, Math.round(Math.min(1024, window.innerWidth) * zoom));
+  const height = Math.max(1, Math.round(Math.min(768, window.innerHeight) * zoom));
+  native.invoke('open_browser_preview', { ...args, background: true, x: 0, y: 0, width, height })
+    .catch((e: unknown) => console.warn('[browser] background open failed', e));
+}
+
+/** Open a WebContentsView at the host element's screen rect and keep it pinned
  *  to that rect. Caller owns the host `<div>`; this hook never mutates it.
  *
  *  Used by `BrowserPanel` (standard layout) and by `ChatApp`'s focus-mode
@@ -162,7 +186,7 @@ export function useBrowserPreviewBounds(args: {
    *  here so the webview survives the layout switch without appearing
    *  over the chat-focus grid. */
   visible: boolean;
-}): { windowOpen: boolean; openError: string | null } {
+}): { windowOpen: boolean; openError: string | null; placeholder: string | null; occluded: boolean } {
   const { hostRef, label, url, title, openSeq, cookieJar, visible } = args;
   // The open-effect below is keyed on `openSeq` (the model-driven re-open
   // bump), not `url` — otherwise propagating the user's in-page navigation
@@ -175,17 +199,25 @@ export function useBrowserPreviewBounds(args: {
   titleRef.current = title;
   const [windowOpen, setWindowOpen] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
-  const [imageViewerOpen, setImageViewerOpen] = useState(false);
   const lastBoundsRef = useRef<Bounds | null>(null);
   const rafRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    const onImageViewer = (event: Event) => {
-      setImageViewerOpen((event as CustomEvent<boolean>).detail);
-    };
-    document.addEventListener('codiby:image-viewer', onImageViewer);
-    return () => document.removeEventListener('codiby:image-viewer', onImageViewer);
-  }, []);
+  // DOM UI painted over the host (menu, modal, toast, tooltip…), found by
+  // hit-testing — see lib/browser-occlusion.ts. While true the native view
+  // is hidden and the host shows `placeholder`, the last screenshot.
+  const [occluded, setOccluded] = useState(false);
+  const [placeholder, setPlaceholder] = useState<string | null>(null);
+  const occlusionRef = useRef<{ recheck: () => void } | null>(null);
+  const watcherOccludedRef = useRef(false);
+  // Bumped on every new open so a capture still in flight from the previous
+  // page can't land as this page's placeholder.
+  const placeholderSeqRef = useRef(0);
+  const refreshPlaceholder = useCallback(() => {
+    const seq = placeholderSeqRef.current;
+    getNative()?.invoke<string | null>('browser_preview_capture', { label })
+      .then((shot) => { if (shot && seq === placeholderSeqRef.current) setPlaceholder(shot); })
+      .catch(() => {});
+  }, [label]);
+  const shown = windowOpen && visible && !occluded;
 
   const pushBoundsIfChanged = useCallback(() => {
     if (rafRef.current != null) return;
@@ -197,6 +229,8 @@ export function useBrowserPreviewBounds(args: {
       if (sameBounds(next, lastBoundsRef.current)) return;
       lastBoundsRef.current = next;
       tryInvokeNative('browser_preview_set_bounds', { label, ...next });
+      // The host moved: it may have slid under (or out from) an overlay.
+      occlusionRef.current?.recheck();
     });
   }, [label, hostRef]);
 
@@ -209,6 +243,8 @@ export function useBrowserPreviewBounds(args: {
     let cancelled = false;
     setOpenError(null);
     setWindowOpen(false);
+    setPlaceholder(null);
+    placeholderSeqRef.current++;
     lastBoundsRef.current = null;
 
     const start = requestAnimationFrame(() => {
@@ -263,15 +299,69 @@ export function useBrowserPreviewBounds(args: {
   }, [windowOpen, pushBoundsIfChanged, hostRef]);
 
   useEffect(() => {
-    if (!windowOpen) return;
-    tryInvokeNative('browser_preview_set_visible', { label, visible: visible && !imageViewerOpen });
-  }, [visible, imageViewerOpen, windowOpen, label]);
+    if (!windowOpen || !visible) {
+      watcherOccludedRef.current = false;
+      setOccluded(false);
+      return;
+    }
+    const el = hostRef.current;
+    if (!el) return;
+    const watcher = watchOcclusion(el, (next) => {
+      if (next) {
+        // As VS Code does: ask for a fresh frame of the page as it is now,
+        // then hide the view on the next frame — not after React re-renders,
+        // since every frame the view stays up it paints over the overlay.
+        refreshPlaceholder();
+        requestAnimationFrame(() => {
+          // Skip if the overlay already went away: React may never re-render
+          // for a true→false flip inside one frame, so nothing would re-show.
+          if (watcherOccludedRef.current) tryInvokeNative('browser_preview_set_visible', { label, visible: false });
+        });
+      }
+      watcherOccludedRef.current = next;
+      setOccluded(next);
+    });
+    occlusionRef.current = watcher;
+    return () => {
+      occlusionRef.current = null;
+      watcherOccludedRef.current = false;
+      watcher.dispose();
+    };
+  }, [windowOpen, visible, hostRef, label, refreshPlaceholder]);
 
-  return { windowOpen, openError };
+  useEffect(() => {
+    if (!windowOpen) return;
+    tryInvokeNative('browser_preview_set_visible', { label, visible: shown });
+  }, [shown, windowOpen, label]);
+
+  // Keep a recent screenshot under the native view while it shows, so an
+  // overlay opening later reveals the page instead of an empty panel. The
+  // capture can't wait for the overlay: it takes tens of ms, and the view
+  // has to be gone the frame the overlay paints.
+  useEffect(() => {
+    if (!shown) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const seq = placeholderSeqRef.current;
+    const capture = async () => {
+      try {
+        const shot = await getNative()?.invoke<string | null>('browser_preview_capture', { label });
+        if (!cancelled && shot && seq === placeholderSeqRef.current) setPlaceholder(shot);
+      } catch {}
+      if (!cancelled) timer = setTimeout(capture, PLACEHOLDER_INTERVAL_MS);
+    };
+    void capture();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [shown, label]);
+
+  return { windowOpen, openError, placeholder, occluded: windowOpen && visible && occluded };
 }
 
 export function BrowserPanel({
-  label, url, title, openSeq, cookieJar, inspect, comments, obscured,
+  label, url, title, openSeq, cookieJar, inspect, comments,
   onSetInspect, onSetComments, onSendToChat, onWriteToChat,
   onUrlChanged, onMountFocus,
 }: BrowserPanelProps) {
@@ -306,10 +396,10 @@ export function BrowserPanel({
   onMountFocusRef.current = onMountFocus;
   useEffect(() => { onMountFocusRef.current?.(); }, []);
 
-  const { windowOpen, openError } = useBrowserPreviewBounds({
+  const { windowOpen, openError, placeholder, occluded } = useBrowserPreviewBounds({
     hostRef: bodyRef,
     label, url, title, openSeq, cookieJar,
-    visible: !obscured,
+    visible: true,
   });
 
   useEffect(() => {
@@ -550,6 +640,26 @@ export function BrowserPanel({
         ref={bodyRef}
         className="flex-1 relative min-h-0 bg-[#0f172a]/40 overflow-hidden"
       >
+        {/* Last screenshot of the page, under the native view. It is what
+            the user sees whenever the view steps aside for DOM UI drawn
+            over it, so menus and modals appear above "the page". */}
+        {placeholder && windowOpen && !openError && (
+          <img
+            src={placeholder}
+            alt=""
+            aria-hidden
+            draggable={false}
+            className="absolute inset-0 w-full h-full object-contain object-left-top pointer-events-none select-none"
+          />
+        )}
+        {/* Dims the paused page while something covers it, like VS Code's
+            `workbench.browser.dimOnOverlay` (on by default there). */}
+        <div
+          aria-hidden
+          className={`absolute inset-0 pointer-events-none bg-surface/15 transition-opacity duration-200 ease-in ${
+            occluded && placeholder ? 'opacity-100 visible' : 'opacity-0 invisible'
+          }`}
+        />
         {(openError || !windowOpen) && (
           <div className="absolute inset-0 flex items-center justify-center text-center p-6 text-zinc-400 pointer-events-none">
             <div className="max-w-md">

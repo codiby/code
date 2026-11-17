@@ -22,6 +22,7 @@ import {
   closeBrowserPreview,
   setBounds,
   setVisible,
+  capturePlaceholder,
   setInspect,
   setComments,
   navigate,
@@ -284,7 +285,7 @@ function createMainWindow(): BrowserWindow {
     Menu.buildFromTemplate(items).popup({ window: win });
   });
 
-  // Browser-preview surfaces are native BrowserViews that live in the main
+  // Browser-preview surfaces are native WebContentsViews that live in the main
   // process, decoupled from the host renderer's lifecycle. When the user
   // hard-reloads the host (Cmd+Shift+R after a blank/black render), the React
   // tree that owns them is torn down *without* running its unmount cleanup —
@@ -335,7 +336,7 @@ function registerIpcHandlers(): void {
 
   // --- browser preview ------------------------------------------------------
   ipcMain.handle('app:open_browser_preview', async (_e, args: {
-    label: string; url: string; title?: string; cookieJar?: string; openSeq?: number;
+    label: string; url: string; title?: string; cookieJar?: string; openSeq?: number; background?: boolean;
     x: number; y: number; width: number; height: number;
   }) => {
     await openBrowserPreview(args);
@@ -350,6 +351,9 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle('app:browser_preview_set_visible', async (_e, args: { label: string; visible: boolean }) => {
     return setVisible(args.label, args.visible);
+  });
+  ipcMain.handle('app:browser_preview_capture', async (_e, args: { label: string }) => {
+    return await capturePlaceholder(args.label);
   });
   ipcMain.handle('app:browser_preview_set_inspect', async (_e, args: { label: string; enabled: boolean }) => {
     return setInspect(args.label, args.enabled);

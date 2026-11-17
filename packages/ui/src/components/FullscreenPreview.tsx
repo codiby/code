@@ -163,15 +163,6 @@ export function FullscreenPreview({ gallery, onIndexChange, onClose }: Props) {
     return () => { document.body.style.overflow = prev; };
   }, [src]);
 
-  // Electron BrowserViews are native windows that always render above the
-  // renderer. Tell their React hosts to hide the active view while this
-  // DOM-based fullscreen overlay is open.
-  useEffect(() => {
-    if (!src) return;
-    document.dispatchEvent(new CustomEvent('codiby:image-viewer', { detail: true }));
-    return () => { document.dispatchEvent(new CustomEvent('codiby:image-viewer', { detail: false })); };
-  }, [src]);
-
   // Keep the current thumbnail in view as the gallery is walked.
   useEffect(() => {
     if (!hasStrip) return;
