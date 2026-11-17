@@ -43,3 +43,29 @@ describe('Markdown lists copied to rich text editors', () => {
     expect(html).toContain('list-disc');
   });
 });
+
+describe('```ui blocks', () => {
+  test('render components inline, with markdown between them', () => {
+    const html = render([
+      'Before',
+      '```ui',
+      'Some **bold** text',
+      '<cx-stats><stat label="CPU" value="38%" delta="→ 1.1%" good/></cx-stats>',
+      '<cx-choice label="Ignore list"><choice title="Hard-coded" recommended>Five lines.</choice></cx-choice>',
+      '<cx-html><div id="free">hi</div></cx-html>',
+      '```',
+    ].join('\n'));
+    expect(html).toContain('Before');
+    expect(html).toContain('<strong');
+    expect(html).toContain('38%');
+    expect(html).toContain('Recommended');
+    expect(html).toContain('sandbox="allow-scripts"');
+    expect(html).not.toContain('&lt;cx-stats');
+  });
+
+  test('an unfinished block shows a placeholder instead of raw markup', () => {
+    const html = render('```ui\n<cx-stats><stat label="CPU"');
+    expect(html).toContain('Drawing');
+    expect(html).not.toContain('cx-stats');
+  });
+});

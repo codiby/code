@@ -13,6 +13,7 @@ import { splitBlockSegments } from '../lib/block-fences';
 import { explainBlockId } from '../lib/explain';
 import { DiffDoc, DiffDocPending } from './DiffDoc';
 import { Explain, ExplainPending } from './Explain';
+import { UiBlock, UiBlockPending } from './UiBlock';
 import { useAppStore } from '../lib/store';
 
 const SAFE_TAGS = new Set(['details', 'summary', 'br', 'hr', 'b', 'i', 'em', 'strong', 'del', 'sub', 'sup', 'kbd', 'mark', 'abbr']);
@@ -339,7 +340,7 @@ function renderMarkdown(source: string): string {
 // Skipping the re-render when `text`/`className` are unchanged keeps the DOM
 // (and the live selection) intact.
 /** Fenced languages that render as React components instead of code blocks. */
-const BLOCK_LANGS = ['diffdoc', 'explain'] as const;
+const BLOCK_LANGS = ['diffdoc', 'explain', 'ui'] as const;
 
 /**
  * Everything an `explain` block needs that lives outside its own message: the
@@ -447,11 +448,15 @@ export const Markdown = memo(function Markdown({
   }
 
   let explainIndex = 0;
+  let uiIndex = 0;
   return (
     <div onClick={handleClick} onCopy={copyMarkdownSelection} className={cls}>
       {segments.map((segment, i) => {
         if (segment.type === 'block' && segment.lang === 'diffdoc') {
           return <DiffDoc key={i} source={segment.source} />;
+        }
+        if (segment.type === 'block' && segment.lang === 'ui') {
+          return <UiBlock key={i} source={segment.source} blockId={`${messageId || 'local'}:${uiIndex++}`} renderMd={renderMarkdown} />;
         }
         if (segment.type === 'block') {
           const blockId = explainBlockId(messageId || 'local', explainIndex++);
@@ -466,6 +471,7 @@ export const Markdown = memo(function Markdown({
           );
         }
         if (segment.type === 'pending') {
+          if (segment.lang === 'ui') return <UiBlockPending key={i} />;
           return segment.lang === 'explain' ? <ExplainPending key={i} /> : <DiffDocPending key={i} />;
         }
         return <div key={i} dangerouslySetInnerHTML={{ __html: renderMarkdown(segment.text) }} />;
