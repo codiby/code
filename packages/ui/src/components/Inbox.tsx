@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  Archive, ArrowLeft, ArrowUpRight, Bot, Check, CheckCheck, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
+  Archive, ArrowLeft, ArrowUpRight, Bot, Check, CheckCheck, ChevronRight, CircleCheck, Copy, ExternalLink, GitPullRequest, Hash,
   Loader2, MessageCircle, Pause, RefreshCw, Sparkles, UserX, X,
 } from 'lucide-react';
 import { slackConnectionOf, type ClaudeClient, type SlackStatus, type SlackThreadMessage } from '../lib/claude-client';
-import { BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
+import { BUCKETS, PASSIVE_BUCKETS, initials, type InboxRow, type InboxSource, type RowStatus } from '../lib/inbox';
 import { projectOfRepo, type ProjectFolder } from '../lib/project-scope';
 import { SlackAvatar, SlackConversation } from './SlackConversation';
 import { Markdown } from './Markdown';
@@ -41,6 +41,7 @@ const TABS: { key: 'all' | InboxSource; label: string }[] = [
   { key: 'slack', label: 'Slack' },
   { key: 'pr', label: 'Pull requests' },
 ];
+const COLLAPSED_KEY = 'codiby.inbox.collapsed';
 const open = (url: string | null | undefined) => { if (url) window.open(url, '_blank', 'noopener'); };
 
 /** "3 days ago", "4 months ago" — for dates that can be far back. */
@@ -93,6 +94,16 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
   const [tab, setTab] = useState<'all' | InboxSource>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
+  /** Sections folded shut, remembered across reloads. */
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]') as string[]); } catch { return new Set(); }
+  });
+  const toggleSection = (key: string) => setCollapsed(prev => {
+    const next = new Set(prev);
+    if (!next.delete(key)) next.add(key);
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])); } catch { /* storage off */ }
+    return next;
+  });
   /** A DM opened from a person's name or photo, shown in place of the detail. */
   const [dm, setDm] = useState<{ connectionId: string; channel: string; name: string; avatar?: string } | null>(null);
   const openDm = async (connectionId: string, user: string, name: string) => {
@@ -107,6 +118,7 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
     for (const r of rows) c[r.source] = (c[r.source] ?? 0) + 1;
     return c;
   }, [rows]);
+  const waiting = rows.filter(r => !PASSIVE_BUCKETS.has(r.bucket)).length;
   const current = rows.find(r => r.id === selected) ?? null;
 
   // Keep a selection while there is something to select.
@@ -127,7 +139,7 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
       <section className="ib-list">
         <div className="ib-head">
           <h1>Inbox</h1>
-          <span className="ib-faint">{rows.length ? `${rows.length} waiting on you` : 'All clear'}</span>
+          <span className="ib-faint">{waiting ? `${waiting} waiting on you` : 'All clear'}</span>
           <div className="ml-auto flex gap-1">
             {client && (
               <button type="button" className="ib-icon" title="Refresh pull requests" onClick={() => { void client.refreshInbox(); }}>
@@ -136,7 +148,7 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
             )}
             <button
               type="button" className="ib-icon" title="Mark all done"
-              onClick={() => { for (const r of visible) if (r.item || r.source === 'session') onDone(r); }}
+              onClick={() => { for (const r of visible) if (!PASSIVE_BUCKETS.has(r.bucket) && (r.item || r.source === 'session')) onDone(r); }}
             >
               <CheckCheck size={15} strokeWidth={1.6} />
             </button>
@@ -163,10 +175,15 @@ export function Inbox({ client, rows, slackConnections, scopedProjectId, onEditP
           {BUCKETS.map(b => {
             const list = visible.filter(r => r.bucket === b.key);
             if (!list.length) return null;
+            const shut = collapsed.has(b.key);
             return (
               <div key={b.key}>
-                <div className="ib-grp">{b.label}</div>
-                {list.map(r => (
+                <button type="button" className={`ib-grp ${shut ? 'shut' : ''}`} aria-expanded={!shut} onClick={() => toggleSection(b.key)}>
+                  <ChevronRight size={12} strokeWidth={2} className="ib-grp-chev" />
+                  {b.label}
+                  <span className="ib-grp-n">{list.length}</span>
+                </button>
+                {!shut && list.map(r => (
                   <div key={r.id} className={`ib-row ${r.id === selected && !dm ? 'sel' : ''}`} onClick={() => { setSelected(r.id); setSetup(false); setDm(null); }}>
                     <SourceTile row={r} />
                     <div className="min-w-0">
@@ -278,9 +295,9 @@ function Detail({ row, client, projects, defaultProjectId, onOpenSession, onArch
             {declining ? <Loader2 size={14} className="animate-spin" /> : <UserX size={14} />} Decline review
           </button>
         )}
-        <button type="button" className="ib-btn" onClick={onDone} title={row.source === 'pr' ? 'Remove from the Inbox — nothing changes on GitHub' : undefined}>
+        {row.bucket !== 'working' && <button type="button" className="ib-btn" onClick={onDone} title={row.source === 'pr' ? 'Remove from the Inbox — nothing changes on GitHub' : undefined}>
           {row.source === 'pr' ? <><X size={14} /> Dismiss</> : <><CircleCheck size={14} /> Done</>}
-        </button>
+        </button>}
       </div>
     </div>
   );

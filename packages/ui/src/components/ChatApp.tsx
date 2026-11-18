@@ -5861,6 +5861,7 @@ export function ChatApp() {
       hasPermission: sessionHasPermission,
       interrupted: sessionInterrupted,
       awaitingReply: awaitingReplyIds,
+      working: sessionStreaming,
       lastMessageAt: sessionLastMessageAt,
       lastPreview: sessionLastPreview,
       lastMessage: (sid) => {
