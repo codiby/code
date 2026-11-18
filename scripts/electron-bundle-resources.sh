@@ -18,6 +18,12 @@ if [ ! -x "$BUN_PATH" ]; then
   exit 1
 fi
 
+# Inside `bun run`, `which bun` can resolve to a shim instead of the runtime
+# (on Windows it is an 8 KB .bunx launcher that cannot run outside the project's
+# node_modules). Ask the runtime for its own path so the real binary is copied.
+BUN_PATH=$("$BUN_PATH" -e "process.stdout.write(process.execPath)")
+if command -v cygpath >/dev/null 2>&1; then BUN_PATH=$(cygpath -u "$BUN_PATH"); fi
+
 case "$(uname -s)" in
   Darwin*|Linux*) BUN_OUT="$OUT_DIR/bun" ;;
   MINGW*|MSYS*|CYGWIN*) BUN_OUT="$OUT_DIR/bun.exe" ;;
@@ -27,6 +33,11 @@ esac
 echo "-- Copying bun ($BUN_PATH) -> $BUN_OUT"
 cp "$BUN_PATH" "$BUN_OUT"
 chmod +x "$BUN_OUT"
+BUN_SIZE=$(wc -c < "$BUN_OUT" | tr -d " ")
+if [ "$BUN_SIZE" -lt 10000000 ]; then
+  echo "Error: $BUN_OUT is only $BUN_SIZE bytes, which is a launcher shim, not the bun runtime." >&2
+  exit 1
+fi
 
 SERVER_OUT="$OUT_DIR/server.js"
 echo "-- Bundling server -> $SERVER_OUT"

@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.31.108",
+  "version": "0.31.109",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "electron-dist/main.js",
@@ -150,6 +150,10 @@
         {
           "from": "packages/desktop/resources/bun.exe",
           "to": "bun.exe"
+        },
+        {
+          "from": "packages/desktop/resources/rg.exe",
+          "to": "rg.exe"
         }
       ]
     },
