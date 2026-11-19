@@ -1,0 +1,56 @@
+name: Installer
+
+on:
+  pull_request:
+    paths:
+      - "packages/installer/**"
+      - ".github/workflows/installer.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/installer/**"
+      - ".github/workflows/installer.yml"
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Test and package (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: packages/installer
+    env:
+      # The windows crate overflows rustc's default stack (docs/dev/windows.md).
+      RUST_MIN_STACK: "268435456"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/installer
+
+      - name: Install nsh
+        shell: pwsh
+        run: |
+          irm https://nsh.dev/install.ps1 | iex
+          # The script installs to %LOCALAPPDATA%\nsh and edits the user's
+          # PATH, which later steps don't read.
+          "$env:LOCALAPPDATA\nsh\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Test
+        run: cargo test
+
+      - name: Package
+        run: nsh package --target windows
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: codiby-installer-windows
+          path: |
+            packages/installer/.nsh/out/*.zip
+            packages/installer/.nsh/out/*-setup.exe
+          if-no-files-found: warn

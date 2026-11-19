@@ -45,6 +45,10 @@
         "@codiby/ui": "workspace:*",
       },
     },
+    "packages/installer": {
+      "name": "@codiby/installer",
+      "version": "0.1.0",
+    },
     "packages/mobile": {
       "name": "@codiby/mobile",
       "version": "0.0.1",
@@ -401,6 +405,8 @@
     "@codiby/core": ["@codiby/core@workspace:packages/core"],
 
     "@codiby/desktop": ["@codiby/desktop@workspace:packages/desktop"],
+
+    "@codiby/installer": ["@codiby/installer@workspace:packages/installer"],
 
     "@codiby/mobile": ["@codiby/mobile@workspace:packages/mobile"],
 

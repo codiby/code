@@ -1,0 +1,40 @@
+[package]
+name = "codiby-installer"
+description = "Codiby Code's installer for Windows: installs the app and picks the base host (Windows or WSL)."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: the monorepo's packages are Bun's, this one is Cargo's.
+[workspace]
+
+[[bin]]
+name = "codiby-installer"
+path = "src/main.rs"
+
+# The same nsh as Flow: no C dependencies, so it cross-compiles from WSL with
+# cargo-xwin (./build.sh).
+[dependencies]
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "ed23bfaff14fefda15b3d583b9943073c0fbdfa5" }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "ed23bfaff14fefda15b3d583b9943073c0fbdfa5", default-features = false }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "macros"] }
+
+[build-dependencies]
+nsh-i18n = { git = "https://github.com/longbridge/nsh", rev = "ed23bfaff14fefda15b3d583b9943073c0fbdfa5", features = ["build"] }
+serde_json = "1"
+
+[dev-dependencies]
+nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "ed23bfaff14fefda15b3d583b9943073c0fbdfa5" }
+nsh-testing = { git = "https://github.com/longbridge/nsh", rev = "ed23bfaff14fefda15b3d583b9943073c0fbdfa5" }
+nsh-i18n = { git = "https://github.com/longbridge/nsh", rev = "ed23bfaff14fefda15b3d583b9943073c0fbdfa5", features = ["build"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows = { git = "https://github.com/longbridge/nsh", rev = "ed23bfaff14fefda15b3d583b9943073c0fbdfa5", default-features = false, features = ["svg"] }
+env_logger = "0.11"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+strip = true

@@ -1,0 +1,12 @@
+{
+  "name": "@codiby/installer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codiby Code's Windows installer, built with NSH (Rust). Bun only runs its scripts.",
+  "scripts": {
+    "dev": "nsh run",
+    "dev:sim": "CODIBY_INSTALLER_SIM=nowsl nsh run",
+    "check": "cargo check && cargo test",
+    "package": "nsh package --target windows"
+  }
+}

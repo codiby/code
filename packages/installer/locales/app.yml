@@ -1,0 +1,329 @@
+_version: 2
+
+# --- Shared -----------------------------------------------------------------
+common.back:
+  es: Atrás
+  en: Back
+common.continue:
+  es: Continuar
+  en: Continue
+common.close:
+  es: Cerrar
+  en: Close
+common.version:
+  es: "Versión %{version} · %{size} MB"
+  en: "Version %{version} · %{size} MB"
+common.version_unknown:
+  es: Última versión
+  en: Latest version
+common.language:
+  es: English
+  en: Español
+
+# --- Welcome ----------------------------------------------------------------
+welcome.title:
+  es: Instalar Codiby Code
+  en: Install Codiby Code
+welcome.update_title:
+  es: Actualizar Codiby Code
+  en: Update Codiby Code
+welcome.start:
+  es: Empezar
+  en: Get started
+
+# --- Base -------------------------------------------------------------------
+base.title:
+  es: ¿Dónde corre Codiby?
+  en: Where does Codiby run?
+base.sub:
+  es: El host base guarda tus sesiones y ejecuta a los agentes.
+  en: The base host keeps your sessions and runs the agents.
+base.windows:
+  es: Windows
+  en: Windows
+base.windows_sub:
+  es: Lo normal. Puedes agregar distros de WSL como hosts.
+  en: The usual choice. You can add WSL distros as hosts.
+base.wsl:
+  es: WSL
+  en: WSL
+base.wsl_sub:
+  es: Herramientas de Linux. Los hosts SSH funcionan.
+  en: Linux tools. SSH hosts work.
+base.pill_install_wsl:
+  es: se instala WSL
+  en: installs WSL
+base.pill_install_distro:
+  es: se instala una distro
+  en: installs a distro
+base.pill_unavailable:
+  es: no disponible
+  en: unavailable
+base.note_install_wsl:
+  es: Se instala WSL. Windows pide permiso de administrador y hay que reiniciar una vez.
+  en: WSL gets installed. Windows asks for administrator permission and one restart.
+base.note_novirt:
+  es: WSL no está disponible porque la virtualización está apagada. Puedes activarla después y volver a correr el instalador.
+  en: WSL isn't available because virtualization is turned off. You can turn it on later and run the installer again.
+
+# --- Hosts (Windows base) ---------------------------------------------------
+hosts.title:
+  es: Agregar WSL como host
+  en: Add WSL as a host
+hosts.sub:
+  es: Codiby podrá abrir sesiones dentro de estas distros.
+  en: Codiby will be able to open sessions inside these distros.
+hosts.install_new:
+  es: "Instalar %{distro} y agregarla"
+  en: "Install %{distro} and add it"
+hosts.install_new_sub_wsl:
+  es: WSL ya está instalado
+  en: WSL is already installed
+hosts.install_new_sub_nowsl:
+  es: Instala WSL · requiere reinicio
+  en: Installs WSL · needs a restart
+hosts.none:
+  es: Ninguna por ahora
+  en: None for now
+hosts.none_sub:
+  es: Las puedes agregar después en Ajustes → Remotos
+  en: You can add them later in Settings → Remotes
+
+# --- Distros ----------------------------------------------------------------
+distro.title:
+  es: ¿Qué distro?
+  en: Which distro?
+distro.sub:
+  es: Ahí se instala el servidor de Codiby.
+  en: Codiby's server gets installed there.
+distro.default:
+  es: predeterminada
+  en: default
+distro.running:
+  es: WSL 2 · en ejecución
+  en: WSL 2 · running
+distro.stopped:
+  es: WSL 2 · detenida
+  en: WSL 2 · stopped
+distro.wsl1:
+  es: WSL 1 · no compatible
+  en: WSL 1 · not supported
+distro.add:
+  es: Instalar otra distro…
+  en: Install another distro…
+distro.add_sub:
+  es: Ubuntu 24.04, Debian
+  en: Ubuntu 24.04, Debian
+distro.ubuntu:
+  es: Ubuntu 24.04 LTS
+  en: Ubuntu 24.04 LTS
+distro.ubuntu_sub:
+  es: Recomendada
+  en: Recommended
+distro.debian:
+  es: Debian
+  en: Debian
+distro.debian_sub:
+  es: Más ligera
+  en: Lighter
+
+# --- Install WSL / a distro -------------------------------------------------
+install_wsl.title_new:
+  es: WSL no está instalado
+  en: WSL isn't installed
+install_wsl.sub_new:
+  es: Lo instalo junto con una distro. Windows pide permiso de administrador y hay que reiniciar una vez; después el instalador sigue solo.
+  en: I'll install it with a distro. Windows asks for administrator permission and one restart; then the installer carries on by itself.
+install_wsl.button_new:
+  es: Instalar WSL
+  en: Install WSL
+install_wsl.title_distro:
+  es: WSL no tiene distros
+  en: WSL has no distros
+install_wsl.sub_distro:
+  es: WSL ya está instalado, pero no hay ninguna distro. Elige cuál instalar.
+  en: WSL is installed, but there are no distros. Pick one to install.
+install_wsl.title_add:
+  es: Instalar otra distro
+  en: Install another distro
+install_wsl.sub_add:
+  es: Se agrega junto a las que ya tienes.
+  en: It's added next to the ones you have.
+install_wsl.button_distro:
+  es: Instalar distro
+  en: Install distro
+
+# --- Linux user -------------------------------------------------------------
+user.title:
+  es: Usuario de Linux
+  en: Linux user
+user.sub:
+  es: Es el usuario de la distro nueva. No tiene que ser igual al de Windows.
+  en: The new distro's user. It doesn't have to match your Windows one.
+user.sub_resume:
+  es: Escribe otra vez la contraseña para terminar de crear el usuario.
+  en: Type the password again to finish creating the user.
+user.name:
+  es: Usuario
+  en: Username
+user.password:
+  es: Contraseña
+  en: Password
+user.repeat:
+  es: Repetir
+  en: Repeat
+user.error_name:
+  es: Usa minúsculas, números, guion o guion bajo, empezando con una letra.
+  en: Use lowercase letters, digits, hyphen or underscore, starting with a letter.
+user.error_mismatch:
+  es: Las contraseñas no coinciden.
+  en: The passwords don't match.
+
+# --- Virtualization off -----------------------------------------------------
+novirt.title:
+  es: La virtualización está apagada
+  en: Virtualization is turned off
+novirt.sub:
+  es: WSL la necesita. Actívala en la BIOS (Intel VT-x o AMD SVM) y vuelve a abrir el instalador. Mientras tanto puedes instalar con base Windows.
+  en: WSL needs it. Turn it on in the BIOS (Intel VT-x or AMD SVM) and open the installer again. Meanwhile you can install with Windows as the base.
+novirt.use_windows:
+  es: Seguir con Windows
+  en: Continue with Windows
+
+# --- Summary ----------------------------------------------------------------
+summary.title:
+  es: Todo listo
+  en: All set
+summary.sub:
+  es: Revisa y empieza la instalación.
+  en: Review and start the installation.
+summary.install:
+  es: Instalar
+  en: Install
+summary.version:
+  es: Versión
+  en: Version
+summary.base:
+  es: Base
+  en: Base
+summary.distro:
+  es: Distro
+  en: Distro
+summary.distro_new:
+  es: "%{distro} (nueva)"
+  en: "%{distro} (new)"
+summary.also:
+  es: También
+  en: Also
+summary.also_wsl:
+  es: Instalar WSL · reinicio
+  en: Install WSL · restart
+summary.boot:
+  es: Al iniciar Windows
+  en: When Windows starts
+summary.boot_wsl:
+  es: Levantar el servidor de WSL
+  en: Start the WSL server
+summary.hosts:
+  es: Hosts WSL
+  en: WSL hosts
+summary.hosts_none:
+  es: Ninguno
+  en: None
+summary.keep:
+  es: Ya instalada
+  en: Already installed
+
+# --- Progress ---------------------------------------------------------------
+progress.title:
+  es: Instalando…
+  en: Installing…
+progress.title_resume:
+  es: Terminando la instalación…
+  en: Finishing the installation…
+progress.details:
+  es: Ver detalles
+  en: Show details
+progress.hide:
+  es: Ocultar detalles
+  en: Hide details
+progress.failed:
+  es: Algo falló
+  en: Something failed
+progress.retry:
+  es: Reintentar
+  en: Retry
+
+step.download:
+  es: Descargando Codiby
+  en: Downloading Codiby
+step.download_pct:
+  es: "Descargando Codiby · %{pct}%"
+  en: "Downloading Codiby · %{pct}%"
+step.install_app:
+  es: Instalando la app
+  en: Installing the app
+step.enable_wsl:
+  es: Activando WSL
+  en: Turning on WSL
+step.install_distro:
+  es: "Instalando %{distro}"
+  en: "Installing %{distro}"
+step.create_user:
+  es: Creando el usuario
+  en: Creating the user
+step.packages:
+  es: Instalando curl y unzip
+  en: Installing curl and unzip
+step.bridge:
+  es: "Copiando el servidor a %{distro}"
+  en: "Copying the server to %{distro}"
+step.add_host:
+  es: "Agregando %{distro} como host"
+  en: "Adding %{distro} as a host"
+step.base_wsl:
+  es: Configurando el arranque
+  en: Setting up start-up
+step.base_windows:
+  es: Configurando la base Windows
+  en: Setting up the Windows base
+step.verify:
+  es: Probando la conexión
+  en: Testing the connection
+
+# --- Reboot -----------------------------------------------------------------
+reboot.title:
+  es: Hay que reiniciar Windows
+  en: Windows needs to restart
+reboot.sub:
+  es: WSL ya quedó instalado. Al volver a entrar, el instalador se abre solo y termina de configurar la distro.
+  en: WSL is installed. When you sign back in, the installer opens by itself and finishes setting up the distro.
+reboot.later:
+  es: Más tarde
+  en: Later
+reboot.now:
+  es: Reiniciar ahora
+  en: Restart now
+
+# --- Done -------------------------------------------------------------------
+done.title:
+  es: Codiby Code está listo
+  en: Codiby Code is ready
+done.windows:
+  es: Base Windows.
+  en: Windows base.
+done.windows_hosts:
+  es: "Base Windows. %{hosts} quedó como host."
+  en: "Windows base. %{hosts} was added as a host."
+done.wsl:
+  es: "Base WSL en %{distro}."
+  en: "WSL base on %{distro}."
+done.claude_login:
+  es: Inicia sesión en Claude Code dentro de la distro la primera vez que abras Codiby.
+  en: Sign in to Claude Code inside the distro the first time you open Codiby.
+done.open:
+  es: Abrir Codiby
+  en: Open Codiby
+done.app_running:
+  es: Codiby Code está abierto. Ciérralo por completo (también desde la bandeja) para que tome la nueva base.
+  en: Codiby Code is open. Quit it completely (from the tray too) so it picks up the new base.
