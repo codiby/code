@@ -1,6 +1,8 @@
 /**
- * Bridge-server port discovery + sidecar spawn. Three resolution steps,
- * in order:
+ * Bridge-server port discovery + sidecar spawn. On Windows with a WSL base
+ * (the installer's codiby-base\config.json) the distro's bridge is the only
+ * one: it is started if needed and nothing below runs. Otherwise three
+ * resolution steps, in order:
  *
  *   1. LaunchAgent / SCM-service port file (~/.codiby/server.port etc.)
  *   2. Previous app-spawned sidecar port file (app-server.port sibling)
@@ -14,6 +16,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
+import { readWslBase, wslKeepalive, type WslBase } from './base_host';
 
 let cachedPort: number | null = null;
 let sidecarChild: ChildProcess | null = null;
@@ -247,6 +250,15 @@ export async function getBridgePort(): Promise<number> {
   }
   cachedPort = null;
 
+  // WSL base (Windows installer): the distro's bridge is the only bridge.
+  // Start it if it's down, and never fall back to one on Windows — that
+  // would silently make Windows the local host.
+  const wslBase = readWslBase();
+  if (wslBase) {
+    cachedPort = await ensureWslBridge(wslBase);
+    return cachedPort;
+  }
+
   // 1. Externally-installed service (LaunchAgent / SCM service).
   const servicePort = readPort(bridgePortFile());
   if (servicePort && await healthCheck(servicePort)) {
@@ -276,6 +288,32 @@ export async function getBridgePort(): Promise<number> {
   // the next attempt would find the port taken by a bridge that answers nothing.
   killSidecar();
   throw new Error(`Spawned bun sidecar on port ${port} but health check never passed`);
+}
+
+/** One start attempt at a time; concurrent callers share it. */
+let wslStarting: Promise<number> | null = null;
+
+function ensureWslBridge(base: WslBase): Promise<number> {
+  if (wslStarting) return wslStarting;
+  wslStarting = (async () => {
+    if (await healthCheck(base.port)) return base.port;
+    // Detached and unref'd: the keepalive must outlive this window, like the
+    // one the installer's bridge.ps1 starts at logon (a second one is harmless:
+    // start.sh only launches the bridge when it isn't running).
+    const { command, args } = wslKeepalive(base.distro);
+    try {
+      const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      child.on('error', () => {});
+      child.unref();
+    } catch {}
+    // A cold distro has to boot and then start bun.
+    for (let i = 0; i < 120; i++) {
+      if (await healthCheck(base.port)) return base.port;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error(`Codiby's server in WSL (${base.distro}) didn't answer on port ${base.port}. Check that the distro starts, or reinstall from the Codiby installer.`);
+  })().finally(() => { wslStarting = null; });
+  return wslStarting;
 }
 
 export function killSidecar(): void {

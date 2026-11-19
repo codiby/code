@@ -28,6 +28,8 @@ import {
   handleListWslDistros,
   handleInstallWsl,
 } from './handlers/remotes';
+import { handleRemoteTunnels } from './handlers/remote-tunnels';
+import { cleanupStaleControlSockets } from './network/ssh-tunnel';
 // Remote traffic is no longer proxied by bun — the renderer connects directly
 // to each remote's tunnelled bridge (Electron main owns the SSH tunnels), so
 // the former gateway/ssh-tunnel imports are gone.
@@ -2834,6 +2836,17 @@ const server = Bun.serve({
       } catch (error: any) { return Response.json({ error: error.message }, { status: 400, headers: corsHeaders }); }
     }
 
+    // SSH tunnels to remotes: the bridge runs them on its host and the window
+    // connects to the returned port directly. They spawn processes and open
+    // ports, so only a real loopback connection may drive them.
+    if (url.pathname.startsWith('/remote-tunnels/')) {
+      if (!isLoopback(server.requestIP(req)?.address)) {
+        return Response.json({ error: 'Tunnels require a local connection' }, { status: 403, headers: corsHeaders });
+      }
+      const tunnelResponse = await handleRemoteTunnels(req, url);
+      if (tunnelResponse) return tunnelResponse;
+    }
+
     // (Remote routing removed: the renderer now talks to each remote's
     // tunnelled bridge directly, so there is no `?remoteId=` forwarding here.)
 
@@ -3262,6 +3275,9 @@ startAutomationScheduler();
   // Project replication between paired bridges.
   setProjectSyncStore(loadPreferences, (p) => { savePreferences(p); broadcastPreferences(p); });
   startProjectSync();
+  // The bridge owns the window's SSH tunnels: drop control sockets a previous
+  // run left behind, or the next master can't bind its socket.
+  cleanupStaleControlSockets();
   setSlackBroadcaster(toWindows);
   pruneInbox();
   startSlack();

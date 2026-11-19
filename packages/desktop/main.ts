@@ -48,28 +48,31 @@ import {
 } from './cdp';
 import { pluginOauthLogin, type OAuthSpec } from './plugin_oauth';
 import { registerUpdaterIpc, startUpdateChecks } from './updater';
+import { readWslBase, toWslPath } from './base_host';
 import { registerBubbles, disposeBubbles } from './bubbles';
 import {
   acquireTunnel,
   releaseTunnel,
+  releaseAllTunnels,
   disconnectTunnel,
-  closeAllTunnels,
   getTunnelStatus,
-  getTunnelLocalPort,
   probeRemoteHealth,
   addPortForward,
   removePortForward,
   listActiveForwards,
-  onTunnelStatus,
-  cleanupStaleControlSockets,
-} from './ssh_tunnel';
+  followTunnelStatus,
+  configureBridgeTunnels,
+} from './bridge_tunnels';
 
 const DEV = process.env.ELECTRON_DEV === '1' || !app.isPackaged;
 const DEV_URL = process.env.CODIBY_DEV_URL || 'http://localhost:3111';
 
 configureRemoteRegistry(async () => `http://127.0.0.1:${await getBridgePort()}`);
+// The bridge owns the SSH tunnels; main only asks it for them.
+configureBridgeTunnels(async () => `http://127.0.0.1:${await getBridgePort()}`);
 
 let mainWindow: BrowserWindow | null = null;
+let stopTunnelStatus: () => void = () => {};
 
 // ---------------------------------------------------------------------------
 // Startup performance + memory budget
@@ -418,19 +421,18 @@ function registerIpcHandlers(): void {
   });
 
   // --- remote SSH tunnels ---------------------------------------------------
-  // Main owns the ssh masters. The renderer acquires a tunnel (getting a free
-  // local port), then connects DIRECTLY to 127.0.0.1:<port> for that remote's
-  // sessions. bun no longer proxies remote traffic.
+  // The bridge owns the ssh masters and runs them on its own host (on a WSL
+  // base, inside the distro). The renderer acquires a tunnel through main,
+  // then connects DIRECTLY to 127.0.0.1:<port> for that remote's sessions.
   ipcMain.handle('app:remote_tunnel_acquire', async (_e, args: { remoteId: string }) => {
-    const { localTunnelPort } = await acquireTunnel(args.remoteId);
-    return { port: localTunnelPort };
+    return await acquireTunnel(args.remoteId);
   });
   ipcMain.handle('app:remote_tunnel_release', async (_e, args: { remoteId: string }) => {
-    releaseTunnel(args.remoteId);
+    await releaseTunnel(args.remoteId);
     return { ok: true };
   });
   ipcMain.handle('app:remote_tunnel_status', async (_e, args: { remoteId: string }) => {
-    return getTunnelStatus(args.remoteId);
+    return await getTunnelStatus(args.remoteId);
   });
   ipcMain.handle('app:remote_tunnel_disconnect', async (_e, args: { remoteId: string }) => {
     await disconnectTunnel(args.remoteId);
@@ -447,7 +449,7 @@ function registerIpcHandlers(): void {
     return { ok: true };
   });
   ipcMain.handle('app:remote_forward_list', async (_e, args: { remoteId: string }) => {
-    return listActiveForwards(args.remoteId);
+    return await listActiveForwards(args.remoteId);
   });
 
   // --- plugin OAuth ---------------------------------------------------------
@@ -475,15 +477,20 @@ function registerIpcHandlers(): void {
     if (res.canceled || res.filePaths.length === 0) return [];
     return res.filePaths.map((p) => ({ name: basename(p), data: readFileSync(p) }));
   });
-  // Paths only — the standalone editor reads them through the local bridge.
+  // Paths only — the standalone editor reads them through the local bridge,
+  // so on a WSL base they're handed over as the distro sees them.
+  const forBridge = (paths: string[]) => {
+    const base = readWslBase();
+    return base ? paths.map((p) => toWslPath(p, base.distro)) : paths;
+  };
   ipcMain.handle('app:pick_paths', async () => {
     const opts = { properties: ['openFile', 'multiSelections'] as Array<'openFile' | 'multiSelections'> };
     const res = mainWindow
       ? await dialog.showOpenDialog(mainWindow, opts)
       : await dialog.showOpenDialog(opts);
-    return res.canceled ? [] : res.filePaths;
+    return res.canceled ? [] : forBridge(res.filePaths);
   });
-  ipcMain.handle('app:take_open_files', () => pendingOpenFiles.splice(0));
+  ipcMain.handle('app:take_open_files', () => forBridge(pendingOpenFiles.splice(0)));
 
   // --- auto-update ----------------------------------------------------------
   registerUpdaterIpc(() => mainWindow);
@@ -516,16 +523,11 @@ app.whenReady().then(async () => {
     getBaseUrl: appBaseUrl,
   });
 
-  // Remove stale ssh control sockets from a previous run, and forward tunnel
-  // status changes to the renderer (replaces bun's `remote.status` WS frames).
-  cleanupStaleControlSockets();
-  onTunnelStatus((remoteId, status, lastError) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      // Include the current local port so the renderer can (re)point its direct
-      // connection — the port changes whenever the ssh master respawns.
-      const port = getTunnelLocalPort(remoteId);
-      mainWindow.webContents.send('remote-tunnel-status', { remoteId, status, lastError, port });
-    }
+  // Forward the bridge's tunnel status changes to the renderer. Each carries
+  // the current local port so the renderer can (re)point its direct
+  // connection — the port changes whenever the ssh master respawns.
+  stopTunnelStatus = followTunnelStatus((event) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote-tunnel-status', event);
   });
 
   await loadInitialUrl(mainWindow);
@@ -547,11 +549,13 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   try { disposeBubbles(); } catch {}
   try { disposeAll(); } catch {}
-  try { closeAllTunnels(); } catch {}
+  stopTunnelStatus();
+  // Give the bridge our tunnel refs back so it can close idle masters; a
+  // bridge we spawned closes all of them when it is killed below anyway.
+  void releaseAllTunnels().catch(() => {});
   killSidecar();
 });
 
 process.on('exit', () => {
-  try { closeAllTunnels(); } catch {}
   killSidecar();
 });
