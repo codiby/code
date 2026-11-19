@@ -5,6 +5,12 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.117] — 2026-11-19
+
+### Changed
+
+- **Narrow windows fold the side panels.** Below 1200 px the file explorer collapses, and below 960 px the sessions sidebar too, so the chat keeps its room. Widening the window brings back the layout it had, and either panel can still be opened by hand.
+
 ## [0.31.116] — 2026-11-19
 
 ### Added
