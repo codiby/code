@@ -16,14 +16,17 @@ function Test-Health { try { (Invoke-WebRequest -UseBasicParsing "http://127.0.0
 
 $appRunning = [bool](Get-Process 'Codiby Code' -ErrorAction SilentlyContinue)
 
-# The app updated: copy its new server.js to WSL, only while the app is closed
-# so an open window keeps its server.
+# The app updated: copy its new server.js and UI (dist) to WSL, only while
+# the app is closed so an open window keeps its server. A missing dist is
+# copied too: the window loads its UI from this server.
 $hash = (Get-FileHash $ServerJs).Hash
 $old = if (Test-Path $HashFile) { (Get-Content $HashFile -Raw).Trim() } else { '' }
-if ($hash -ne $old -and -not $appRunning) {
-  Write-Log "server.js changed; copying it to $($cfg.distro)"
+& wsl.exe -d $cfg.distro --exec sh -c 'test -d "$HOME/.codiby/wsl-bridge/dist"'
+$distMissing = $LASTEXITCODE -ne 0
+if (($hash -ne $old -or $distMissing) -and -not $appRunning) {
+  Write-Log "server.js changed or UI missing; copying them to $($cfg.distro)"
   $src = (& wsl.exe -d $cfg.distro --exec wslpath -u $ServerJs).Trim()
-  & wsl.exe -d $cfg.distro --exec sh -c "D=`$HOME/.codiby/wsl-bridge; if [ -f `$D/bridge.pid ]; then kill `$(cat `$D/bridge.pid) 2>/dev/null; rm -f `$D/bridge.pid; sleep 1; fi; cp '$src' `$D/server.js.tmp && mv `$D/server.js.tmp `$D/server.js"
+  & wsl.exe -d $cfg.distro --exec sh -c "D=`$HOME/.codiby/wsl-bridge; S='$src'; if [ -f `$D/bridge.pid ]; then kill `$(cat `$D/bridge.pid) 2>/dev/null; rm -f `$D/bridge.pid; sleep 1; fi; cp `"`$S`" `$D/server.js.tmp && mv `$D/server.js.tmp `$D/server.js && if [ -d `"`$(dirname `"`$S`")/dist`" ]; then rm -rf `$D/dist.tmp && cp -R `"`$(dirname `"`$S`")/dist`" `$D/dist.tmp && rm -rf `$D/dist && mv `$D/dist.tmp `$D/dist; fi"
   Set-Content $HashFile $hash
 }
 

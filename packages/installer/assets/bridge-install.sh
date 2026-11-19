@@ -33,8 +33,18 @@ if [ -f "$DIR/bridge.pid" ]; then
   fi
   rm -f "$DIR/bridge.pid"
 fi
-cp "$(wslpath -u "$SRC_WIN")" "$DIR/server.js.tmp"
+SRC="$(wslpath -u "$SRC_WIN")"
+cp "$SRC" "$DIR/server.js.tmp"
 mv "$DIR/server.js.tmp" "$DIR/server.js"
+# The UI ships next to server.js (resources\dist). With a WSL base this
+# server is the one the window loads its UI from, so it needs the copy.
+if [ -d "$(dirname "$SRC")/dist" ]; then
+  rm -rf "$DIR/dist.tmp"
+  cp -R "$(dirname "$SRC")/dist" "$DIR/dist.tmp"
+  rm -rf "$DIR/dist"
+  mv "$DIR/dist.tmp" "$DIR/dist"
+  echo "UI copied"
+fi
 
 cat > "$DIR/start.sh" <<EOF
 #!/bin/sh

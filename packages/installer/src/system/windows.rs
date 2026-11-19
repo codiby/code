@@ -487,10 +487,20 @@ fn base_wsl(distro: &str, port: u16, report: &Reporter) -> Result<(), String> {
             desc = ps_quote(&format!("Codiby Code (WSL: {distro})")),
         )),
     )?;
-    // Start the server now rather than at the next sign-in.
+    // Start the server now rather than at the next sign-in. Its output isn't
+    // captured: the script leaves a `wsl.exe` running forever to keep the
+    // distro up, and that process would inherit a captured pipe and keep it
+    // open, so the read never ends and the installer hangs here. The script
+    // logs to codiby-base\bridge.log, and Verify checks the server answers.
     let mut cmd = command("powershell.exe");
     cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(&ps1);
-    checked(report, cmd).map(drop)
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let status = cmd.status().map_err(|e| format!("powershell.exe: {e}"))?;
+    report.log(format!("start-up script: {status}"));
+    if !status.success() {
+        return Err(format!("The start-up script failed ({status}); see {}", dir.join("bridge.log").display()));
+    }
+    Ok(())
 }
 
 fn base_windows(report: &Reporter) -> Result<(), String> {
