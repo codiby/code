@@ -9,7 +9,7 @@ import type { InboxItem, SessionInfo } from './claude-client';
  */
 
 export type InboxSource = 'session' | 'slack' | 'pr';
-export type InboxBucket = 'progress' | 'decision' | 'broke' | 'read';
+export type InboxBucket = 'progress' | 'finished' | 'decision' | 'broke' | 'read' | 'working';
 export type RowStatus = 'wait' | 'err' | 'ok' | null;
 
 export interface InboxRow {
@@ -44,16 +44,27 @@ export interface AgentState {
 }
 
 export const BUCKETS: { key: InboxBucket; label: string }[] = [
+  // Your own sessions come first: the ones that finished a turn and wait on
+  // you, then the ones still running.
+  { key: 'finished', label: 'Sessions finished' },
+  // A reply sent from the Inbox moves its row here, keeping the same id, so
+  // the selection and the open composer stay on it.
+  { key: 'working', label: 'Working' },
   { key: 'progress', label: 'With an agent' },
   { key: 'decision', label: 'Needs a decision' },
   { key: 'broke', label: 'Something broke' },
   { key: 'read', label: 'To read' },
 ];
 
+/** Buckets that ask nothing of the user: left out of "waiting on you". */
+export const PASSIVE_BUCKETS: ReadonlySet<InboxBucket> = new Set(['working']);
+
 export interface SessionFlags {
   hasPermission: Record<string, boolean>;
   interrupted: Record<string, boolean>;
   awaitingReply: ReadonlySet<string>;
+  /** Sessions running a turn right now. */
+  working?: Record<string, boolean>;
   lastMessageAt: Record<string, number>;
   lastPreview: Record<string, string>;
   /** `code · Opus 5.5` — where the session runs and with what. */
@@ -116,8 +127,11 @@ export function sessionRows(sessions: SessionInfo[], f: SessionFlags, skip: Read
       at: f.lastMessageAt[s.id] || s.updated_at, unread: true, sessionId: s.id,
     };
     if (f.hasPermission[s.id]) rows.push({ ...base, bucket: 'decision', status: 'wait', tag: { label: 'Needs approval', tone: 'warn' } });
+    // Before the finished/interrupted checks: right after a send those flags
+    // can still be set for a moment, and the row must not bounce back.
+    else if (f.working?.[s.id]) rows.push({ ...base, bucket: 'working', unread: false, status: null, tag: { label: 'Working', tone: 'live' } });
     else if (f.interrupted[s.id]) rows.push({ ...base, bucket: 'broke', status: 'err', tag: { label: 'Interrupted', tone: 'err' } });
-    else if (f.awaitingReply.has(s.id)) rows.push({ ...base, bucket: 'read', status: 'ok', tag: { label: 'Turn finished' } });
+    else if (f.awaitingReply.has(s.id)) rows.push({ ...base, bucket: 'finished', status: 'ok', tag: { label: 'Turn finished' } });
   }
   return rows;
 }

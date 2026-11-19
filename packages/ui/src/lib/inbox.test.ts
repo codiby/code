@@ -20,10 +20,23 @@ describe('inbox rows', () => {
   test('sessions become rows only when they wait on the user', () => {
     const rows = buildInboxRows([], ['a', 'b', 'c', 'd'].map(session), flags);
     expect(rows.map(r => [r.sessionId, r.bucket, r.tag?.label])).toEqual([
+      ['c', 'finished', 'Turn finished'],
       ['a', 'decision', 'Needs approval'],
       ['b', 'broke', 'Interrupted'],
-      ['c', 'read', 'Turn finished'],
     ]);
+  });
+
+  test('a session running a turn sits in Working with the same row id', () => {
+    const before = buildInboxRows([], [session('c')], flags);
+    // Right after a send, the "turn finished" flag may still be set.
+    const after = buildInboxRows([], [session('c')], { ...flags, working: { c: true } });
+    expect(before.map(r => [r.id, r.bucket])).toEqual([['session:c', 'finished']]);
+    expect(after.map(r => [r.id, r.bucket, r.tag?.label, r.unread])).toEqual([['session:c', 'working', 'Working', false]]);
+  });
+
+  test('Working sorts second, right after "Sessions finished"', () => {
+    const rows = buildInboxRows([], ['a', 'b', 'c', 'e'].map(session), { ...flags, working: { e: true } });
+    expect(rows.map(r => r.bucket)).toEqual(['finished', 'working', 'decision', 'broke']);
   });
 
   test('Slack: mentions ask for a decision, DMs are to read', () => {
