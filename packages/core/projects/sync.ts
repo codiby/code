@@ -1,19 +1,22 @@
 /**
  * Project replication between bridges.
  *
- * A project spans every host that has one of its folders. Each of those hosts
- * keeps the same bundle in its own preferences — the definition (name,
- * colour, folders, GitHub orgs) plus its organization (its groups, session
- * assignments, child order, pins) — and the bridges keep it identical among
- * themselves, whether or not any window is open. Whole bundle, last change
- * wins by `updatedAt`; deletions travel as tombstones.
+ * Every paired host (coordination `write`) keeps every project in its own
+ * preferences, including projects with no folder on it — so opening the app
+ * on any machine shows the same projects, with the same folders on every
+ * host and the same organization. A project travels as one bundle: the
+ * definition (name, colour, folders tagged by host, GitHub orgs) plus its
+ * organization (its groups, session assignments, child order, pins). The
+ * bridges keep it identical whether or not any window is open. Whole bundle,
+ * last change wins by `updatedAt`; deletions travel as tombstones.
  *
  * Every local write of the preferences goes through `onLocalWrite` (from
  * `updatePreferences`): a project whose definition or organization changed
  * gets a new version, and a sync is scheduled. A sync is one round trip per
- * paired host: we send the versions we hold for the projects it spans and
- * every bundle it may lack; it applies the newer ones and answers with its
- * own newer ones. The same exchange runs at boot and every few minutes, which
+ * paired host: we send every bundle and the versions we hold; it applies the
+ * newer ones and answers with its own newer ones. A host that takes something
+ * new passes it on to its own peers, so a change reaches hosts that aren't
+ * paired with the one that made it. The same exchange runs at boot and every few minutes, which
  * is how a host that was offline catches up in both directions.
  */
 
@@ -22,7 +25,7 @@ import { getHostIdentity } from '../network/host-identity';
 import { peers } from '../network/peers';
 import { logError } from '../lib/logger';
 import {
-  applyPeerProjects, bundleOf, mergeProjects, parseStoredProjects, projectHosts, resolveFolderHosts, stampProjects,
+  applyPeerProjects, bundleOf, mergeProjects, parseStoredProjects, resolveFolderHosts, stampProjects,
   type OrgBundle, type OrgPrefs, type StoredProject, type TabGroupInfo,
 } from './bundle';
 
@@ -73,23 +76,25 @@ function wireFor(prefs: Prefs, filter: (p: StoredProject) => boolean): Wire[] {
 /** Apply a peer's newer versions; true when anything changed. */
 function applyFromPeer(incoming: Wire[]): boolean {
   const prefs = load();
-  const applied = applyPeerProjects(orgOf(prefs), incoming, getHostIdentity().hostId);
+  const applied = applyPeerProjects(orgOf(prefs), incoming);
   if (!applied) return false;
   commit({
     ...prefs,
     projects: applied.projects, tabGroups: applied.tabGroups, tabGroupMap: applied.tabGroupMap,
     groupOrder: applied.groupOrder, pinnedSessionIds: applied.pinnedSessionIds,
   });
+  // Relay to our other peers. The sender gets it back at an equal version
+  // and ignores it, so this settles after one pass.
+  scheduleSync();
   return true;
 }
 
 /** `/peer/projects`: take the sender's newer versions, answer with ours. */
 export function handlePeerProjects(body: { source: { hostId: string }; projects?: Wire[]; versions?: Record<string, number> }): { projects: Wire[] } {
-  const sender = body.source.hostId;
   applyFromPeer(Array.isArray(body.projects) ? body.projects : []);
   const theirs = body.versions ?? {};
-  // Ours that span the sender and that it lacks or holds older.
-  return { projects: wireFor(load(), p => projectHosts(p).has(sender) && (theirs[p.id] ?? -1) < p.updatedAt) };
+  // Ours that the sender lacks or holds older.
+  return { projects: wireFor(load(), p => (theirs[p.id] ?? -1) < p.updatedAt) };
 }
 
 // ── outgoing ───────────────────────────────────────────────────────────────
@@ -110,10 +115,10 @@ async function syncAll(): Promise<void> {
     for (const remote of listRemotes()) {
       if (remote.coordination !== 'write' || !remote.hostId) continue;
       const prefs = load();
-      const spanning = wireFor(prefs, p => projectHosts(p).has(remote.hostId!));
+      const all = wireFor(prefs, () => true);
       const versions = Object.fromEntries(Object.values(orgOf(prefs).projects).map(p => [p.id, p.updatedAt]));
       try {
-        const res = await peers.post<{ projects?: Wire[] }>(remote.id, '/peer/projects', { projects: spanning, versions });
+        const res = await peers.post<{ projects?: Wire[] }>(remote.id, '/peer/projects', { projects: all, versions });
         if (res.projects?.length) applyFromPeer(res.projects);
       } catch (e) {
         // Offline, unpaired, or an older bridge: the periodic pass retries.

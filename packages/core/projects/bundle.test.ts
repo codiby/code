@@ -61,7 +61,7 @@ describe('two hosts exchanging', () => {
     const ryzen = prefs({ up: project({ updatedAt: 1000 }) }, { tabGroups: { mine: g('mine') }, tabGroupMap: { r1: 'mine' } });
 
     const wire = [{ project: mac.projects.up!, bundle: bundleOf(mac, 'up') }];
-    const after = applyPeerProjects(ryzen, wire, RYZEN)!;
+    const after = applyPeerProjects(ryzen, wire)!;
     expect(after.projects.up!.githubOrgs).toEqual(['SunroomOrg']);
     expect(after.tabGroups.bug).toBeDefined();
     expect(after.tabGroups.mine).toBeDefined();          // its own groups untouched
@@ -71,14 +71,23 @@ describe('two hosts exchanging', () => {
     expect(stampProjects(after.projects, after, 9999).changed).toEqual([]);
     expect(stampProjects(mac.projects, mac, 9999).changed).toEqual([]);
     // And an older copy coming back is ignored.
-    expect(applyPeerProjects(after, [{ project: project({ updatedAt: 1500 }), bundle: null }], RYZEN)).toBeNull();
+    expect(applyPeerProjects(after, [{ project: project({ updatedAt: 1500 }), bundle: null }])).toBeNull();
   });
 
-  test('a project that does not span this host is not taken; a tombstone deletes', () => {
-    const elsewhere = project({ id: 'p2', folders: [{ path: '/x', hostId: 'host_other' }], updatedAt: 5 });
-    expect(applyPeerProjects(prefs({}), [{ project: elsewhere, bundle: null }], RYZEN)).toBeNull();
+  test('a project with no folder on this host is still taken, folders of every host included', () => {
+    // A third machine opens the app: it should see the Mac's and ryzen9's folders as they are.
+    const org = { tabGroups: { bug: g('bug', { projectId: 'up' }) }, tabGroupMap: { s1: 'bug' } };
+    const mac = prefs({ up: project({ updatedAt: 5 }) }, org);
+    const got = applyPeerProjects(prefs({}), [{ project: mac.projects.up!, bundle: bundleOf(mac, 'up') }])!;
+    expect(got.projects.up!.folders).toEqual(project().folders);
+    expect(got.tabGroups.bug).toBeDefined();
+    expect(got.tabGroupMap).toEqual({ s1: 'bug' });
+  });
+
+  test('a tombstone deletes what we hold, and is ignored for what we never had', () => {
     const held = prefs({ up: project({ updatedAt: 10 }) });
-    const gone = applyPeerProjects(held, [{ project: { ...project(), deleted: true, updatedAt: 20 }, bundle: null }], RYZEN)!;
+    const gone = applyPeerProjects(held, [{ project: { ...project(), deleted: true, updatedAt: 20 }, bundle: null }])!;
     expect(gone.projects.up!.deleted).toBe(true);
+    expect(applyPeerProjects(prefs({}), [{ project: { ...project(), deleted: true, updatedAt: 20 }, bundle: null }])).toBeNull();
   });
 });

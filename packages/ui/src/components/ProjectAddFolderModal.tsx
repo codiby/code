@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronLeft, ChevronRight, Folder, Loader2, X } from 'lucide-react';
 import type { ClaudeClient } from '../lib/claude-client';
@@ -33,9 +33,17 @@ export function ProjectAddFolderModal({ project, hosts, initialHost, existing, c
   const [failed, setFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
 
-  // A path from one machine means nothing on another: each host opens at its home.
+  // What was being browsed on the previous host, and that host's home: on a
+  // host switch the same folder is looked for on the new one.
+  const browsedRef = useRef({ path: '', home: '' });
+
+  // Switching host keeps the folder when the new host has it — the same path,
+  // or the same place under its home (/Users/j/src/up → /home/j/src/up).
+  // Only when neither exists does it open at the new host's home.
   useEffect(() => {
     let live = true;
+    const prev = browsedRef.current;
+    browsedRef.current = { path: '', home: '' };
     setPath('');
     setDirs(null);
     setSelected(null);
@@ -44,16 +52,36 @@ export function ProjectAddFolderModal({ project, hosts, initialHost, existing, c
     // Without an answer, start beside a folder the project already has there.
     const known = existing.find(f => (f.remoteId ?? null) === host)?.path;
     const fallback = known ? trim(known).replace(/[\\/][^\\/]*$/, '') || '/' : '';
+    const exists = (dir: string) => within(client.listDirs(dir, host), 4000)
+      .then(list => list.some(d => trim(d) === dir))
+      .catch(() => false);
+    const show = (p: string, home: string) => { browsedRef.current = { path: p, home }; setPath(p); };
     within(client.getUserHome(host), 4000)
-      .then(home => { if (live) setPath(trim(home && home !== '/' ? home : fallback || '/')); })
+      .then(async raw => {
+        const home = raw && raw !== '/' ? trim(raw) : '';
+        const underHome = prev.home && prev.path.startsWith(`${prev.home}/`) && home
+          ? home + prev.path.slice(prev.home.length) : '';
+        for (const candidate of [...new Set([prev.path, underHome].filter(Boolean))]) {
+          if (candidate === '/' || candidate === prev.home) continue;   // a home isn't "the same folder"
+          if (await exists(candidate)) { if (live) show(candidate, home); return; }
+          if (!live) return;
+        }
+        if (live) show(home || fallback || '/', home);
+      })
       .catch(() => {
         if (!live) return;
-        if (fallback) setPath(fallback);
+        if (fallback) show(fallback, '');
         else { setDirs([]); setFailed(true); }
       });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, host]);
+
+  // Track the folder in view (a picked one first), so a host switch knows what to look for.
+  useEffect(() => {
+    const current = selected ?? path;
+    if (current) browsedRef.current = { ...browsedRef.current, path: trim(current) };
+  }, [path, selected]);
 
   useEffect(() => {
     if (!client || !path) return;

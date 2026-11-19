@@ -165,11 +165,6 @@ export function parseStoredProjects(raw: unknown): Record<string, StoredProject>
   return out;
 }
 
-/** Hosts a project spans, by identity. */
-export function projectHosts(p: StoredProject): Set<string> {
-  return new Set(p.folders.map(f => f.hostId).filter((h): h is string => !!h));
-}
-
 // ── stamping and merging (the bridge does both on every write) ──────────────
 
 /** A project's definition and organization as one comparable string: any
@@ -229,18 +224,20 @@ export function resolveFolderHosts(projects: Record<string, StoredProject>, loca
 }
 
 /** Apply peer versions newer than ours to `prefs` (projects + organization).
- *  Returns null when nothing was newer. Only projects that span `hostId`
- *  (or that we already hold) are taken. */
+ *  Returns null when nothing was newer. Every project is taken, including
+ *  one with no folder on this host: each host holds the whole set, with
+ *  every folder tagged by the host it lives on, so any machine opens with
+ *  the same organization. */
 export function applyPeerProjects(
   prefs: OrgPrefs & { projects: Record<string, StoredProject> },
   incoming: { project: StoredProject; bundle: OrgBundle | null }[],
-  hostId: string,
 ): (OrgPrefs & { projects: Record<string, StoredProject> }) | null {
   let next = prefs;
   let moved = false;
   for (const { project, bundle } of incoming) {
     const mine = next.projects[project.id];
-    if (!mine && !projectHosts(project).has(hostId)) continue;
+    // A tombstone for a project we never held has nothing to delete.
+    if (!mine && project.deleted) continue;
     if (mine && project.updatedAt <= mine.updatedAt) continue;
     const org = !project.deleted && bundle ? applyBundle(next, project.id, bundle) : next;
     next = { ...next, ...org, projects: { ...next.projects, [project.id]: project } };
