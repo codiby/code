@@ -49,7 +49,21 @@ export async function handleUpdateRemote(id: string, req: Request): Promise<Resp
   if (!remotes.has(id)) return notFound(`Remote ${id} not found`);
   let body: Partial<AddRemoteInput> = {};
   try { body = await req.json() as Partial<AddRemoteInput>; } catch {}
-  if (remotes.get(id)?.pairingId) return badRequest('Unpair these hosts before changing their connection or permissions');
+  const cur = remotes.get(id)!;
+  if (cur.pairingId) {
+    // Pairing pins the connection and permissions on both hosts; the name and
+    // colour are only this window's labels, so they stay editable.
+    const same = (a: unknown, b: unknown) => String(a ?? '') === String(b ?? '');
+    const changed = (['alias', 'bunPort', 'serverAlias', 'coordination'] as const)
+      .filter(k => k in body && !same(body[k], cur[k]));
+    if (changed.length) return badRequest('Unpair these hosts before changing their connection or permissions');
+    try {
+      const r = updateRemote(id, { name: body.name, color: body.color });
+      return Response.json(remoteToJSON(r.id), { headers: corsHeaders });
+    } catch (e: any) {
+      return badRequest(e?.message || 'Failed to update remote');
+    }
+  }
   try {
     const r = updateRemote(id, body);
     await disconnectTunnel(id);

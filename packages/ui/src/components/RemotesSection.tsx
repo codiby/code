@@ -281,7 +281,7 @@ function RemoteRow({
         <Button
           size="sm"
           onPress={onEdit}
-          isDisabled={!!remote.pairingId || testing}
+          isDisabled={testing}
           className="h-auto px-2 py-0.5 min-w-0 text-[10px] uppercase tracking-wider text-zinc-400 hover:text-zinc-200 bg-transparent hover:bg-zinc-800"
         >
           Edit
@@ -299,7 +299,7 @@ function RemoteRow({
         ) : (
           <Button size="sm" onPress={() => setPairing(true)} isDisabled={testing}
             className="h-auto px-2 py-0.5 min-w-0 text-[10px] text-blue-300 bg-transparent hover:bg-zinc-800">
-            {remote.pairingId ? 'Pairing…' : 'Pair both hosts'}
+            {remote.pairingId ? 'Paired · Manage' : 'Pair both hosts'}
           </Button>
         )}
         {!isConfirmingDelete ? (
@@ -351,6 +351,7 @@ function RemoteEditDialog({
   onSaved: () => void;
 }) {
   const isEdit = !!initial;
+  const paired = !!initial?.pairingId;
   const [name, setName] = useState(initial?.name ?? '');
   const [alias, setAlias] = useState(initial?.alias ?? '');
   const [serverAlias, setServerAlias] = useState(initial?.serverAlias ?? '');
@@ -363,7 +364,8 @@ function RemoteEditDialog({
   async function handleSave() {
     setError(null);
     setSaving(true);
-    const body = {
+    // A paired remote's connection is pinned on both hosts; only its label changes here.
+    const body = paired ? { name: name.trim(), color } : {
       name: name.trim(),
       alias: alias.trim(),
       serverAlias: serverAlias.trim(),
@@ -411,7 +413,12 @@ function RemoteEditDialog({
             </TextField>
           </div>
 
-          {!initial?.wsl && <>
+          {paired && (
+            <p className="text-[11px] text-zinc-500 px-1">
+              Paired with this host: its connection and permissions are set on both sides. Unpair to change them.
+            </p>
+          )}
+          {!initial?.wsl && !paired && <>
           <div>
             <label className="block text-[11px] text-zinc-500 mb-1 px-1">SSH alias (~/.ssh/config Host)</label>
             <TextField value={alias} onChange={setAlias} aria-label="SSH alias">
@@ -441,7 +448,7 @@ function RemoteEditDialog({
               WSL distro <code className="text-zinc-400">{initial.wsl.distro}</code> on port <code className="text-zinc-400">{initial.bunPort}</code>. Reinstall to change them.
             </p>
           )}
-          <div>
+          {!paired && <div>
             <label className="block text-[11px] text-zinc-500 mb-1 px-1" htmlFor="remote-coordination">Agent coordination from this server</label>
             <select id="remote-coordination" value={coordination} onChange={e => setCoordination(e.target.value as 'off' | 'read' | 'write')}
               className="w-full bg-zinc-800 text-zinc-200 text-[12px] rounded-md p-2">
@@ -450,7 +457,7 @@ function RemoteEditDialog({
               <option value="write">Read, send messages and create sessions</option>
             </select>
             <p className="mt-1 text-[10px] text-zinc-500">After saving, use Pair both hosts to configure and verify agent access in both directions.</p>
-          </div>
+          </div>}
           <div>
             <label className="block text-[11px] text-zinc-500 mb-1 px-1">Color</label>
             <div className="flex items-center gap-1.5">
@@ -684,8 +691,13 @@ function PairingDialog({ serverUrl, remote, onClose, onChanged }: {
     } catch (error: any) { setMessage(''); setError(error.message); }
     finally { setBusy(false); }
   }
+  // Unpairing also deletes a remote that the pairing itself created on this
+  // side, so the first press only explains that; the second one unpairs.
+  const [confirmUnpair, setConfirmUnpair] = useState(false);
   async function unpair() {
     if (!record) return;
+    if (!confirmUnpair) { setConfirmUnpair(true); return; }
+    setConfirmUnpair(false);
     setBusy(true); setError(''); setMessage('');
     try {
       const response = await fetch(`${serverUrl}/pairings/${record.id}`, { method: 'DELETE' });
@@ -718,11 +730,16 @@ function PairingDialog({ serverUrl, remote, onClose, onChanged }: {
           </select>
         </label>
       </>}
+      {confirmUnpair && (
+        <p role="alert" className="text-[12px] text-amber-300 break-words">
+          Unpairing stops agent access in both directions, and if {remote.name} was added here by pairing from the other host, it disappears from this list. To rename it, use Edit instead.
+        </p>
+      )}
       {error && <p role="alert" className="text-[12px] text-red-400 break-words">{error}</p>}
       {message && <p role="status" className="text-[12px] text-zinc-300 break-words">{message}</p>}
       <div className="flex justify-end gap-2">
-        <Button size="sm" onPress={onClose} isDisabled={busy}>Close</Button>
-        {record ? <Button size="sm" onPress={unpair} isDisabled={busy}>Unpair</Button>
+        <Button size="sm" onPress={() => { if (confirmUnpair) setConfirmUnpair(false); else onClose(); }} isDisabled={busy}>{confirmUnpair ? 'Cancel' : 'Close'}</Button>
+        {record ? <Button size="sm" onPress={unpair} isDisabled={busy}>{confirmUnpair ? 'Unpair anyway' : 'Unpair'}</Button>
           : <Button size="sm" onPress={submit} isDisabled={busy || !loaded || !returnAlias.trim()}>{busy ? 'Pairing…' : 'Pair both hosts'}</Button>}
       </div>
     </div>
