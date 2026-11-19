@@ -44,10 +44,13 @@ function Flow({ node }: { node: Extract<UiNode, { kind: 'flow' }> }) {
   return (
     <div>
       <Label text={node.label} />
-      <div className="flex items-stretch">
+      {/* Stacks when the chat is narrow (the /m PWA, a squeezed panel): four
+          steps side by side under ~520px truncate every title. */}
+      <div className="@container">
+      <div className="flex flex-col @[520px]:flex-row items-stretch">
         {node.steps.map((s, i) => (
           <div key={i} className="contents">
-            {i > 0 && <div className="flex items-center px-1.5 text-zinc-600" aria-hidden>→</div>}
+            {i > 0 && <div className="flex items-center justify-center px-1.5 text-zinc-600 rotate-90 @[520px]:rotate-0 h-5 @[520px]:h-auto" aria-hidden>→</div>}
             <button
               type="button"
               onClick={() => setCur(i)}
@@ -61,6 +64,7 @@ function Flow({ node }: { node: Extract<UiNode, { kind: 'flow' }> }) {
             </button>
           </div>
         ))}
+      </div>
       </div>
       {step?.text && <div className="mt-2 px-0.5 text-zinc-400 min-h-[2.4em]" dangerouslySetInnerHTML={{ __html: inline(step.text) }} />}
     </div>

@@ -19,6 +19,7 @@ import Animated, {
   useAnimatedStyle,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SendMessageContext } from '../components/Markdown/SendMessageContext';
 
 import {
   LATEST_SEQ,
@@ -731,6 +732,15 @@ export function SessionChatScreen({
     [messages],
   );
 
+  // Una opción elegida dentro de la respuesta (bloque ```ui) sale como un
+  // mensaje tuyo normal, sin cita.
+  const sendFromAnswer = useCallback(
+    (text: string) => {
+      handleSend(text, [], []).catch(() => undefined);
+    },
+    [handleSend],
+  );
+
   return (
     <View className="flex-1 bg-white">
       {directChat ? (
@@ -845,29 +855,31 @@ export function SessionChatScreen({
                 ) : item.kind === 'group' ? (
                   <ToolGroup entries={item.entries} />
                 ) : (
-                  <MessageBubble
-                    message={
-                      (directChat ||
-                        item.message.content.includes(
-                          '<codiby-direct-context>',
-                        ) ||
-                        (item.message.role === 'assistant' &&
-                          item.message.content.includes('```codiby-route'))) &&
-                      !item.message.toolName &&
-                      !item.message.isToolResult
-                        ? {
-                            ...item.message,
-                            content: directMessageText(item.message.content),
-                          }
-                        : item.message
-                    }
-                    group={item.group}
-                    isSelected={stampedId === item.message.id}
-                    onSelect={toggleStamp}
-                    onShowStamp={showStamp}
-                    onRetry={retrySend}
-                    onReply={selectReply}
-                  />
+                  <SendMessageContext.Provider value={sendFromAnswer}>
+                    <MessageBubble
+                      message={
+                        (directChat ||
+                          item.message.content.includes(
+                            '<codiby-direct-context>',
+                          ) ||
+                          (item.message.role === 'assistant' &&
+                            item.message.content.includes('```codiby-route'))) &&
+                        !item.message.toolName &&
+                        !item.message.isToolResult
+                          ? {
+                              ...item.message,
+                              content: directMessageText(item.message.content),
+                            }
+                          : item.message
+                      }
+                      group={item.group}
+                      isSelected={stampedId === item.message.id}
+                      onSelect={toggleStamp}
+                      onShowStamp={showStamp}
+                      onRetry={retrySend}
+                      onReply={selectReply}
+                    />
+                  </SendMessageContext.Provider>
                 )
               }
               contentContainerClassName="py-3"

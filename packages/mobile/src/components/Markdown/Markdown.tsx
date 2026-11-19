@@ -4,11 +4,12 @@ import { Linking, Pressable, Text, View } from 'react-native';
 import { ScrollView } from 'react-native-gesture-handler';
 
 import type { InlineNode, MarkdownBlock } from '../../lib/markdown';
-import { inlineText, parseMarkdown } from '../../lib/markdown';
+import { inlineText, parseInline, parseMarkdown } from '../../lib/markdown';
 import { CheckIcon, CopyIcon } from '../Chat/icons';
 import { DiffDocView } from './DiffDocView';
 import { SessionLinkContext } from './SessionLinkContext';
 import { TableScrollBoundary } from './TableScrollBoundary';
+import { UiBlockView } from './UiBlockView';
 import { HorizontalScrollGestureContext } from '../ScrollGestureContext';
 
 export interface MarkdownProps {
@@ -311,6 +312,17 @@ function Table({ block }: { readonly block: Extract<MarkdownBlock, { type: 'tabl
   );
 }
 
+/** Markdown dentro de un bloque ```ui (la vista no puede importar este módulo). */
+function renderNestedMarkdown(text: string) {
+  return parseMarkdown(text).map((block, index) => (
+    <Block key={index} block={block} />
+  ));
+}
+
+function renderNestedInline(text: string) {
+  return <Inline nodes={parseInline(text)} />;
+}
+
 function Block({ block }: { readonly block: MarkdownBlock }) {
   switch (block.type) {
     case 'spacer':
@@ -338,7 +350,16 @@ function Block({ block }: { readonly block: MarkdownBlock }) {
         </View>
       );
     case 'code':
-      // `diffdoc` no es un lenguaje: es una figura que se compone aparte.
+      // `diffdoc` y `ui` no son lenguajes: son figuras que se componen aparte.
+      if (block.lang === 'ui') {
+        return (
+          <UiBlockView
+            source={block.value}
+            renderMd={renderNestedMarkdown}
+            renderInline={renderNestedInline}
+          />
+        );
+      }
       return block.lang === 'diffdoc' ? (
         <DiffDocView source={block.value} />
       ) : (
