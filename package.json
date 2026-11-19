@@ -1,7 +1,7 @@
 {
   "name": "codiby-code",
   "type": "module",
-  "version": "0.31.110",
+  "version": "0.31.111",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "electron-dist/main.js",
@@ -133,11 +133,7 @@
         }
       ],
       "extraResources": [
-        { "from": "packages/desktop/resources/codex-runtime", "to": "codex-runtime" },
-        {
-          "from": "packages/desktop/resources/bun",
-          "to": "bun"
-        }
+        { "from": "packages/desktop/resources/codex-runtime", "to": "codex-runtime" }
       ]
     },
     "win": {
