@@ -5,6 +5,25 @@ All notable changes to Codiby Code are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.116] — 2026-11-19
+
+### Added
+
+- **Windows installer.** A setup assistant that installs or updates Codiby Code, installs WSL and a Linux distro when they're missing, and asks which host runs the server: Windows itself, or a WSL distro with the Windows app as its window. Download it from the `installer` release.
+- **Every project on every host.** Projects now reach every paired host, including ones with no folder of their own in them, with the folders of every host and the same groups. Opening the app on another computer shows the same organization.
+- **`ui` blocks in the mobile app.** The native iOS and Android chat draws the agent's visual blocks, and picking an option sends it as your reply. Flows stack vertically on narrow screens.
+- **Inbox sections for your sessions.** Sessions that finished a turn and the ones still working get their own sections at the top, and every section can be collapsed.
+
+### Changed
+
+- **The server owns the SSH tunnels.** Connections to remote hosts are opened by Codiby's server, with the SSH config and keys of the machine it runs on, instead of by the app window.
+- **WSL as the local host.** When the installer set WSL as the base, the Windows app always uses the distro's server as local, starts it if needed, and never falls back to a server on Windows. Files picked in Windows dialogs open with their WSL paths.
+- **Adding a folder keeps your place.** Switching host in "Add folder to the project" stays on the same folder when the other host has it, at the same path or at the same place under its home.
+
+### Fixed
+
+- **macOS build.** The bundled runtime was copied twice, which could break packaging.
+
 ## [0.31.81] — 2026-11-10
 
 ### Added
