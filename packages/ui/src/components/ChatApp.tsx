@@ -5,6 +5,7 @@ import { Button, Select, SelectTrigger, SelectValue, SelectPopover, SelectIndica
 import Editor, { DiffEditor, type Monaco } from '@monaco-editor/react';
 import { DiffReview, type ReviewComment } from './DiffReview';
 import { MONO_FONT_STACK } from '../lib/fonts';
+import { useAutoCollapse } from '../lib/useAutoCollapse';
 import { ImagePreview } from './ImagePreview';
 import { Providers } from './Providers';
 import { FileExplorer, type GitModifiedState } from './FileExplorer';
@@ -1798,6 +1799,11 @@ export function ChatApp() {
       return next;
     });
   }, []);
+  // Narrow windows leave no room for the chat between both panels: the file
+  // explorer folds first, then the sessions sidebar. Neither write is
+  // persisted, so widening the window brings back the previous layout.
+  useAutoCollapse(1200, explorerCollapsed, setExplorerCollapsed);
+  useAutoCollapse(960, tabsCollapsed, setTabsCollapsed);
   // Top-level layout mode — controls the shape of the main UI. "standard" keeps
   // the current IDE-style layout (sidebar + editor + chat); "focus" hides the
   // IDE chrome and tiles multiple chats. Wiring of the actual mode-switching
